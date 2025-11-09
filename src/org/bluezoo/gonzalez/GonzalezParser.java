@@ -19,6 +19,7 @@
  * along with Gonzalez.  If not, see <http://www.gnu.org/licenses/>.
  */
 package org.bluezoo.gonzalez;
+import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
@@ -128,6 +129,62 @@ public class GonzalezParser implements EntityResolvingParser {
         }
     }
 
+    /**
+     * Saved parser position for backtracking.
+     * Used when a parse method needs to rewind on incomplete data.
+     */
+    private static class SavedPosition {
+        final int bufferPosition;
+        final int line;
+        final int column;
+        final boolean lastCharWasCR;
+
+        SavedPosition(int pos, int line, int col, boolean cr) {
+            this.bufferPosition = pos;
+            this.line = line;
+            this.column = col;
+            this.lastCharWasCR = cr;
+        }
+    }
+
+    /**
+     * Saves current parse position for potential backtracking.
+     */
+    private SavedPosition savePosition() {
+        return new SavedPosition(parseBuffer.position(), line, column, lastCharWasCR);
+    }
+
+    /**
+     * Restores previously saved parse position.
+     */
+    private void restorePosition(SavedPosition saved) {
+        parseBuffer.position(saved.bufferPosition);
+        line = saved.line;
+        column = saved.column;
+        lastCharWasCR = saved.lastCharWasCR;
+    }
+    
+    /**
+     * Saves remaining parseBuffer data to charUnderflow on incomplete parse.
+     * This is called when a parse method can't complete and needs to wait for more data.
+     * After calling this, parseBuffer will be empty and charUnderflow will contain the saved data.
+     */
+    private void saveToUnderflow() {
+        int remaining = parseBuffer.remaining();
+        if (remaining > 0) {
+            // Ensure charUnderflow has capacity
+            if (charUnderflow.capacity() < remaining) {
+                charUnderflow = CharBuffer.allocate(remaining * 2);
+            }
+            charUnderflow.clear();
+            charUnderflow.put(parseBuffer);
+            charUnderflow.flip(); // Ready to read
+        }
+        // Clear parseBuffer so parse() loop exits
+        parseBuffer.clear();
+        parseBuffer.flip(); // Empty in read mode
+    }
+
     // Configuration
     private ContentHandler contentHandler;
     private DTDHandler dtdHandler;
@@ -146,9 +203,9 @@ public class GonzalezParser implements EntityResolvingParser {
 
     // State
     private ParseState state;
-    private ByteBuffer parseBuffer;
-    private CharBuffer charBuffer;
-    private CharBuffer tokenBuffer;  // For buffering incomplete tokens across receive() calls
+    private ByteBuffer byteUnderflow;  // Incomplete byte data before charset determined
+    private CharBuffer charUnderflow;  // Incomplete character data from previous receive (token underflow)
+    private CharBuffer parseBuffer;    // Combined buffer for parsing (underflow + new data)
     private Charset charset;
     private CharsetDecoder decoder;
     private boolean charsetDetermined;
@@ -156,8 +213,8 @@ public class GonzalezParser implements EntityResolvingParser {
 
     // Entity resolution state
     private Deque<EntityReceiverImpl> entityReceiverStack;
-    private ByteBuffer entityBuffer;  // Buffer for main doc data during entity resolution
-    
+    private boolean inEntityResolution;  // True when buffering during entity resolution
+
     // Entity timeout monitoring
     private ScheduledExecutorService entityTimeoutExecutor;
     private ScheduledFuture<?> timeoutMonitorTask;
@@ -183,9 +240,10 @@ public class GonzalezParser implements EntityResolvingParser {
     private static final int MAX_ENTITY_SIZE = 10 * 1024 * 1024; // 10MB
     private static final int MAX_NAME_LENGTH = 8192; // 8KB for element/attribute names
     private static final int MAX_ATTRIBUTE_VALUE_LENGTH = 1024 * 1024; // 1MB for attribute values
+    private static final int MAX_ELEMENT_SIZE = 1024 * 1024; // 1MB for entire element start tag
     private int entityDepth;
     private long totalEntitySize;
-    
+
     /**
      * Creates a new Gonzalez parser with unknown charset.
      * 
@@ -195,7 +253,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public GonzalezParser() {
         this(null);
     }
-    
+
     /**
      * Creates a new Gonzalez parser with the specified charset.
      * 
@@ -208,10 +266,12 @@ public class GonzalezParser implements EntityResolvingParser {
     public GonzalezParser(Charset charset) {
         this.contentHandler = new DefaultHandler();
         this.locator = new GonzalezLocator();
-        this.parseBuffer = ByteBuffer.allocate(8192);
-        this.charBuffer = CharBuffer.allocate(4096);
-        this.tokenBuffer = CharBuffer.allocate(256); // Start small, grows as needed
-        this.tokenBuffer.flip(); // Start in read mode (empty)
+        // NB this will only be an incomplete XML declaration - will not be large
+        this.byteUnderflow = ByteBuffer.allocate(256);
+        this.charUnderflow = CharBuffer.allocate(1024); // For incomplete tokens
+        this.charUnderflow.flip(); // Start empty in read mode
+        this.parseBuffer = CharBuffer.allocate(4096); // Main parsing buffer
+        this.parseBuffer.flip(); // Start empty in read mode
         this.charset = charset;
         this.charsetDetermined = (charset != null);
         if (charset != null) {
@@ -224,7 +284,7 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         this.textAccumulator = new StringBuilder();
         this.entityReceiverStack = new ArrayDeque<>();
-        this.entityBuffer = ByteBuffer.allocate(8192);
+        this.inEntityResolution = false;
         this.elementStack = new ArrayDeque<>();
         this.generalEntities = new HashMap<>();
 
@@ -245,7 +305,7 @@ public class GonzalezParser implements EntityResolvingParser {
         // Initialize namespace support
         this.namespaceSupport = new NamespaceSupport();
     }
-    
+
     /**
      * Sets the content handler to receive SAX events.
      * 
@@ -257,33 +317,29 @@ public class GonzalezParser implements EntityResolvingParser {
         // Check if handler also implements other SAX interfaces
         if (handler instanceof LexicalHandler) {
             this.lexicalHandler = (LexicalHandler) handler;
-        }
-        else {
+        } else {
             this.lexicalHandler = null;
         }
 
         if (handler instanceof DTDHandler) {
             this.dtdHandler = (DTDHandler) handler;
-        }
-        else {
+        } else {
             this.dtdHandler = null;
         }
 
         if (handler instanceof DeclHandler) {
             this.declHandler = (DeclHandler) handler;
-        }
-        else {
+        } else {
             this.declHandler = null;
         }
 
         if (handler instanceof ErrorHandler) {
             this.errorHandler = (ErrorHandler) handler;
-        }
-        else {
+        } else {
             this.errorHandler = null;
         }
     }
-    
+
     /**
      * Returns the current content handler.
      * 
@@ -292,7 +348,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public ContentHandler getContentHandler() {
         return contentHandler;
     }
-    
+
     /**
      * Sets the lexical handler to receive lexical events (comments, CDATA, entities).
      * 
@@ -304,7 +360,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public void setLexicalHandler(LexicalHandler handler) {
         this.lexicalHandler = handler;
     }
-    
+
     /**
      * Returns the current lexical handler.
      * 
@@ -313,7 +369,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public LexicalHandler getLexicalHandler() {
         return lexicalHandler;
     }
-    
+
     /**
      * Sets the DTD handler to receive DTD events.
      * 
@@ -322,7 +378,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public void setDTDHandler(DTDHandler handler) {
         this.dtdHandler = handler;
     }
-    
+
     /**
      * Returns the current DTD handler.
      * 
@@ -331,7 +387,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public DTDHandler getDTDHandler() {
         return dtdHandler;
     }
-    
+
     /**
      * Sets the error handler to receive error events.
      * 
@@ -343,7 +399,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public void setErrorHandler(ErrorHandler handler) {
         this.errorHandler = handler;
     }
-    
+
     /**
      * Returns the current error handler.
      * 
@@ -352,7 +408,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public ErrorHandler getErrorHandler() {
         return errorHandler;
     }
-    
+
     /**
      * Sets the system identifier for the document being parsed.
      * 
@@ -365,7 +421,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public void setSystemId(String systemId) {
         locator.setSystemId(systemId);
     }
-    
+
     /**
      * Returns the system identifier of the document being parsed.
      * 
@@ -374,7 +430,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public String getSystemId() {
         return locator.getSystemId();
     }
-    
+
     /**
      * Sets the public identifier for the document being parsed.
      * 
@@ -385,7 +441,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public void setPublicId(String publicId) {
         locator.setPublicId(publicId);
     }
-    
+
     /**
      * Returns the public identifier of the document being parsed.
      * 
@@ -394,7 +450,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public String getPublicId() {
         return locator.getPublicId();
     }
-    
+
     /**
      * Defines a general entity for use in content and attribute values.
      * 
@@ -404,7 +460,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public void defineEntity(String name, String value) {
         generalEntities.put(name, value);
     }
-    
+
     /**
      * Sets the entity resolver factory for creating resolvers on demand.
      * 
@@ -427,7 +483,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public AsyncEntityResolverFactory getEntityResolverFactory() {
         return entityResolverFactory;
     }
-    
+
     /**
      * Sets the entity resolution timeout in milliseconds.
      * 
@@ -449,7 +505,7 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         this.entityTimeoutMillis = timeoutMillis;
     }
-    
+
     /**
      * Returns the entity resolution timeout in milliseconds.
      * 
@@ -458,7 +514,7 @@ public class GonzalezParser implements EntityResolvingParser {
     public long getEntityTimeout() {
         return entityTimeoutMillis;
     }
-    
+
     /**
      * Receives and processes XML data.
      * 
@@ -478,47 +534,169 @@ public class GonzalezParser implements EntityResolvingParser {
      * @param data the XML data to process
      * @throws SAXParseException if the XML is malformed or a parse error occurs
      */
-    public synchronized void receive(ByteBuffer data)
-            throws SAXParseException {
-            if (documentEnded) {
-                fatalError("Data received after document end");
-            }
-            
-            // Check if entity timeout occurred
-            checkEntityTimeout();
-            
-            // Start document on first receive
-            if (!documentStarted) {
-                try {
-                    contentHandler.setDocumentLocator(locator);
-                    contentHandler.startDocument();
-                    documentStarted = true;
-                }
-                catch (SAXException e) {
-                    throw toParseException(e);
-                }
-            }
-            
-            // If we're currently resolving an entity, buffer this main document data
-            // It will be processed after the entity resolution completes
-            if (!entityReceiverStack.isEmpty()) {
-                bufferMainDocumentData(data);
-                return;  // Don't process now
-            }
-            
-            // Normal processing: append to parse buffer and process
-            ensureBufferCapacity(data.remaining());
-            parseBuffer.put(data);
+    public synchronized void receive(ByteBuffer data) throws SAXParseException {
+        if (documentEnded) {
+            fatalError("Data received after document end");
+        }
 
-            // Process available data
+        // Check if entity timeout occurred
+        checkEntityTimeout();
+
+        // Start document on first receive
+        if (!documentStarted) {
             try {
-                parse();
-            }
-            catch (SAXException e) {
+                contentHandler.setDocumentLocator(locator);
+                contentHandler.startDocument();
+                documentStarted = true;
+            } catch (SAXException e) {
                 throw toParseException(e);
             }
+        }
+
+        // If we're currently resolving an entity, decode and append to charUnderflow
+        // but don't parse yet - wait for entity to complete
+        if (!entityReceiverStack.isEmpty()) {
+            try {
+                // Decode bytes to characters and append to underflow
+                int readPos = charUnderflow.position();
+                charUnderflow.position(charUnderflow.limit());
+                charUnderflow.limit(charUnderflow.capacity());
+                decoder.decode(data, charUnderflow, false);
+                int writeEnd = charUnderflow.position();
+                charUnderflow.limit(writeEnd);
+                charUnderflow.position(readPos);
+                // Don't call parse() - we're buffering during entity resolution
+            } catch (Exception e) {
+                throw toParseException(new SAXException("Decoding error", e));
+            }
+            return;
+        }
+
+        // Normal processing
+        try {
+            if (!charsetDetermined) {
+                // Charset not yet determined - buffer bytes until we can parse XML declaration
+                ensureBufferCapacity(data.remaining());
+                byteUnderflow.put(data);
+                byteUnderflow.flip();
+
+                // Try to detect charset and parse XML declaration
+                if (byteUnderflow.hasRemaining()) {
+                    detectCharset();
+                }
+
+                // Decode whatever bytes we have into parseBuffer
+                if (byteUnderflow != null && byteUnderflow.hasRemaining()) {
+                    // Decode directly into parseBuffer
+                    parseBuffer.clear();
+                    CoderResult result = decoder.decode(byteUnderflow, parseBuffer, false);
+                    if (result.isError()) {
+                        try {
+                            result.throwException();
+                        } catch (Exception e) {
+                            fatalError("Character encoding error: " + e.getMessage(), e);
+                        }
+                    }
+                    parseBuffer.flip(); // Now in read mode
+                } else {
+                    parseBuffer.clear();
+                    parseBuffer.flip(); // Empty
+                }
+
+                // Compact byteUnderflow if not released
+                if (byteUnderflow != null) {
+                    byteUnderflow.compact();
+                }
+
+                // Prepend underflow to parseBuffer (optimization to avoid reallocation)
+                prependUnderflow();
+
+                // Release byteUnderflow if charset is determined and all bytes are decoded
+                if (charsetDetermined && byteUnderflow != null && !byteUnderflow.hasRemaining()) {
+                    byteUnderflow = null;
+                }
+            } else {
+                // Charset determined - decode incoming data into parseBuffer
+
+                // Decode directly into parseBuffer
+                parseBuffer.clear();
+                CoderResult result = decoder.decode(data, parseBuffer, false);
+                if (result.isError()) {
+                    result.throwException();
+                }
+                parseBuffer.flip(); // Now in read mode
+
+                // Prepend underflow to parseBuffer (optimization to avoid reallocation)
+                prependUnderflow();
+            }
+
+            // Parse from parseBuffer (always in read mode)
+            parse();
+
+            // Save any unparsed data as underflow for next receive()
+            if (parseBuffer.hasRemaining()) {
+                int remaining = parseBuffer.remaining();
+                if (charUnderflow.capacity() < remaining) {
+                    charUnderflow = CharBuffer.allocate(remaining * 2);
+                }
+                charUnderflow.clear();
+                charUnderflow.put(parseBuffer);
+                charUnderflow.flip(); // In read mode
+            }
+
+        } catch (SAXException e) {
+            throw toParseException(e);
+        } catch (Exception e) {
+            throw toParseException(new SAXException("Parsing error", e));
+        }
     }
-    
+
+    /**
+     * Prepends charUnderflow to parseBuffer, optimizing to avoid reallocation.
+     * 
+     * <p>parseBuffer is in read mode (position=0 or N, limit=end of new data).
+     * charUnderflow contains incomplete token from previous receive().
+     * 
+     * <p>After this call:
+     * - parseBuffer contains: underflow + parseBuffer data, in read mode
+     * - charUnderflow is empty
+     */
+    private void prependUnderflow() {
+        int underflowSize = charUnderflow.remaining();
+        if (underflowSize == 0) {
+            // No underflow to prepend
+            return;
+        }
+
+        int parseBufferData = parseBuffer.remaining();
+        int totalSize = underflowSize + parseBufferData;
+
+        // Optimization: if everything fits in current parseBuffer capacity, reuse it
+        if (totalSize <= parseBuffer.capacity()) {
+            // Move parseBuffer data to the right to make room for underflow at the start
+            // 1. Read parseBuffer data into temp array
+            char[] temp = new char[parseBufferData];
+            parseBuffer.get(temp);
+
+            // 2. Reset and write: underflow first, then parseBuffer data
+            parseBuffer.clear();
+            parseBuffer.put(charUnderflow);
+            parseBuffer.put(temp, 0, parseBufferData);
+            parseBuffer.flip(); // Ready to parse from position 0
+        } else {
+            // Need to reallocate - not enough capacity
+            CharBuffer newBuffer = CharBuffer.allocate(totalSize * 2);
+            newBuffer.put(charUnderflow);
+            newBuffer.put(parseBuffer);
+            newBuffer.flip();
+            parseBuffer = newBuffer;
+        }
+
+        // Empty the underflow since we've consumed it
+        charUnderflow.clear();
+        charUnderflow.limit(0); // Empty in read mode
+    }
+
     /**
      * Signals that no more data will be provided.
      * 
@@ -541,22 +719,11 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         // Flush any remaining buffered data
         try {
-            // Ensure decoder is flushed
-            parseBuffer.flip();
+            // Process any remaining characters
             if (parseBuffer.hasRemaining()) {
-                decodeToCharBuffer(true); // Flush decoder
-            }
-            parseBuffer.compact();
-
-            // Process any remaining characters (charBuffer uses position/limit for read mode)
-            if (charBuffer.hasRemaining()) {
-                parseCharacters();
+                parse();
             }
 
-            // Check for incomplete tokens
-            if (tokenBuffer.hasRemaining()) {
-                fatalError("Incomplete token at end of document");
-            }
             // Verify we're in a valid end state
             if (state != ParseState.DONE) {
                 fatalError("Incomplete document");
@@ -565,106 +732,21 @@ public class GonzalezParser implements EntityResolvingParser {
             if (!documentEnded) {
                 fatalError("Document not properly ended");
             }
-        }
-        catch (SAXException e) {
+        } catch (SAXException e) {
             throw toParseException(e);
+        } catch (Exception e) {
+            throw toParseException(new SAXException("Error during close", e));
         }
     }
 
     /**
      * Main parsing state machine.
+     * Dispatches to appropriate parse method based on current state.
+     * parseBuffer must have data available and be in read mode.
      */
     private void parse() throws SAXException {
-        parseBuffer.flip();
-
-        // Detect charset on first parse if not already determined
-        if (!charsetDetermined && parseBuffer.hasRemaining()) {
-            detectCharset();
-        }
-
-        // Decode bytes to characters
-        decodeToCharBuffer(false);
-
-        parseBuffer.compact();
-
-        // Parse characters (charBuffer already has correct position/limit from decode)
-        parseCharacters();
-        charBuffer.compact();
-    }
-    
-    /**
-     * Decodes bytes from parseBuffer to charBuffer.
-     * 
-     * @param endOfInput true if this is the final decode operation
-     */
-    private void decodeToCharBuffer(boolean endOfInput) throws SAXException {
-        // Save position (where we're currently reading from)
-        int readPos = charBuffer.position();
-        // Move to end of buffered data (where we can write more)
-        charBuffer.position(charBuffer.limit());
-        charBuffer.limit(charBuffer.capacity());
-
-        CoderResult result = decoder.decode(parseBuffer, charBuffer, endOfInput);
-
-        // Flip back for reading: limit = current position (end of data), position = where we were reading
-        int writeEnd = charBuffer.position();
-        charBuffer.limit(writeEnd);
-        charBuffer.position(readPos);
-
-        if (result.isError()) {
-            try {
-                result.throwException();
-            }
-            catch (Exception e) {
-                fatalError("Character encoding error: " + e.getMessage(), e);
-            }
-        }
-
-        if (result.isOverflow()) {
-            // CharBuffer full, need to expand it
-            expandCharBuffer();
-            // Retry decode with larger buffer
-            decodeToCharBuffer(endOfInput);
-        }
-
-        // Underflow is normal - just need more input bytes
-    }
-    
-    /**
-     * Expands the character buffer capacity.
-     * 
-     * <p>The character buffer is used as a sliding window for parsing, not for
-     * accumulating all character data. Character data is emitted incrementally
-     * via characters() calls. This buffer only needs to be large enough to hold
-     * the data being actively parsed (element names, attributes, etc.).
-     */
-    private void expandCharBuffer() {
-        int newCapacity = charBuffer.capacity() * 2;
-        if (newCapacity > 1024 * 1024) { // 1MB should be more than enough for parsing window
-            throw new IllegalStateException("Character buffer size limit exceeded");
-        }
-
-        CharBuffer newBuffer = CharBuffer.allocate(newCapacity);
-        // Save current position
-        int pos = charBuffer.position();
-        charBuffer.flip();
-        newBuffer.put(charBuffer);
-        // Restore position for reading, set limit to end of data
-        newBuffer.flip();
-        newBuffer.position(pos);
-        charBuffer = newBuffer;
-    }
-    
-    /**
-     * Parses characters from charBuffer.
-     */
-    private void parseCharacters() throws SAXException {
-        // If we have buffered token data, prepend it
-        if (tokenBuffer.hasRemaining()) {
-            prependTokenBuffer();
-        }
-
-        while (charBuffer.hasRemaining()) {
+        // Process all available characters
+        while (parseBuffer.hasRemaining()) {
             switch (state) {
                 case INITIAL:
                     parseInitial();
@@ -704,42 +786,116 @@ public class GonzalezParser implements EntityResolvingParser {
                     break;
                 case DONE:
                     // After endDocument, only whitespace allowed
-                    if (!Character.isWhitespace(charBuffer.get(charBuffer.position()))) {
+                    if (!Character.isWhitespace(parseBuffer.get(parseBuffer.position()))) {
                         fatalError("Content not allowed after document end");
                     }
                     consumeChar(); // Skip whitespace
                     break;
                 default:
                     // More states to be implemented
-                    charBuffer.position(charBuffer.limit());
+                    parseBuffer.position(parseBuffer.limit());
                     break;
             }
         }
     }
-    
+
+    /**
+     * Decodes bytes from byteUnderflow to charUnderflow.
+     * Maintains invariant: charUnderflow is always in read mode (before and after).
+     * 
+     * @param endOfInput true if this is the final decode operation
+     */
+    private void decodeToCharBuffer(boolean endOfInput) throws SAXException {
+        // charUnderflow is in read mode (invariant)
+        // Save read position and calculate where data ends
+        int readPos = charUnderflow.position();
+        int dataEnd = charUnderflow.limit();
+
+        // Temporarily switch to write mode to append decoded data
+        charUnderflow.position(dataEnd);
+        charUnderflow.limit(charUnderflow.capacity());
+
+        CoderResult result = decoder.decode(byteUnderflow, charUnderflow, endOfInput);
+
+        // Immediately restore read mode (restore invariant)
+        int writeEnd = charUnderflow.position();
+        charUnderflow.limit(writeEnd);
+        charUnderflow.position(readPos);
+
+        if (result.isError()) {
+            try {
+                result.throwException();
+            } catch (Exception e) {
+                fatalError("Character encoding error: " + e.getMessage(), e);
+            }
+        }
+
+        if (result.isOverflow()) {
+            // CharBuffer full, need to expand it
+            expandCharBuffer(); // Preserves read mode
+                                // Retry decode with larger buffer
+            decodeToCharBuffer(endOfInput);
+        }
+
+        // Underflow is normal - just need more input bytes
+
+        // Release byteUnderflow if charset is determined and all bytes are decoded
+        if (charsetDetermined && byteUnderflow != null && !byteUnderflow.hasRemaining()) {
+            byteUnderflow = null;  // Release memory - we're in character mode now
+        }
+    }
+
+    /**
+     * Expands the character buffer capacity.
+     * Maintains invariant: charUnderflow is always in read mode (before and after).
+     */
+    private void expandCharBuffer() {
+        int newCapacity = charUnderflow.capacity() * 2;
+        if (newCapacity > 1024 * 1024) { // 1MB should be more than enough for parsing window
+            throw new IllegalStateException("Character buffer size limit exceeded");
+        }
+
+        // charUnderflow is in read mode (invariant)
+        int readPos = charUnderflow.position();
+        int dataEnd = charUnderflow.limit();
+
+        CharBuffer newBuffer = CharBuffer.allocate(newCapacity);
+
+        // Copy existing data (from 0 to dataEnd)
+        charUnderflow.position(0);
+        charUnderflow.limit(dataEnd);
+        newBuffer.put(charUnderflow);
+
+        // Set new buffer to read mode with same read position
+        newBuffer.flip();
+        newBuffer.position(readPos);
+
+        charUnderflow = newBuffer;
+    }
+
     /**
      * Prepends buffered token data to the current character buffer.
      */
     private void prependTokenBuffer() {
         // Create temporary buffer with token + current chars
-        int tokenLen = tokenBuffer.remaining();
-        int charLen = charBuffer.remaining();
+        int tokenLen = charUnderflow.remaining();
+        int charLen = charUnderflow.remaining();
 
         CharBuffer temp = CharBuffer.allocate(tokenLen + charLen);
-        temp.put(tokenBuffer);
-        temp.put(charBuffer);
+        temp.put(charUnderflow);
+        temp.put(charUnderflow);
         temp.flip();
 
-        // Replace charBuffer content with combined data
-        charBuffer.clear();
-        charBuffer.put(temp);
-        charBuffer.flip();
+        // Replace charUnderflow content with combined data
+        charUnderflow.clear();
+        charUnderflow.put(temp);
+        charUnderflow.flip();
 
         // Clear token buffer
-        tokenBuffer.clear();
-        tokenBuffer.flip();
+        charUnderflow.clear();
+        charUnderflow.flip();
     }
-    
+
     /**
      * Buffers remaining characters as an incomplete token.
      * Call this when you need more data to complete the current parse operation.
@@ -751,27 +907,27 @@ public class GonzalezParser implements EntityResolvingParser {
      * @param maxSize the maximum allowed size for this token type
      */
     private void bufferRemainingAsToken(int maxSize) throws SAXException {
-        int remaining = charBuffer.remaining();
+        int remaining = charUnderflow.remaining();
         if (remaining == 0) {
             return;
         }
 
         // Check size limit
-        if (tokenBuffer.position() + remaining > maxSize) {
+        if (charUnderflow.position() + remaining > maxSize) {
             throw new SAXParseException("Token size limit exceeded", locator);
         }
 
-        // Ensure tokenBuffer has capacity
-        if (tokenBuffer.capacity() < tokenBuffer.position() + remaining) {
-            expandTokenBuffer(tokenBuffer.position() + remaining);
+        // Ensure charUnderflow has capacity
+        if (charUnderflow.capacity() < charUnderflow.position() + remaining) {
+            expandTokenBuffer(charUnderflow.position() + remaining);
         }
 
         // Copy remaining chars to token buffer
-        tokenBuffer.compact();
-        tokenBuffer.put(charBuffer);
-        tokenBuffer.flip();
+        charUnderflow.compact();
+        charUnderflow.put(charUnderflow);
+        charUnderflow.flip();
     }
-    
+
     /**
      * Expands the token buffer to the specified capacity.
      */
@@ -781,37 +937,27 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         CharBuffer newBuffer = CharBuffer.allocate(newCapacity);
-        newBuffer.put(tokenBuffer);
+        newBuffer.put(charUnderflow);
         newBuffer.flip();
-        tokenBuffer = newBuffer;
+        charUnderflow = newBuffer;
     }
-    
+
     /**
      * Checks if we have at least n characters available.
-     * If not, buffers the remaining characters as a name token and returns false.
      * Use this for element/attribute names.
      */
-    private boolean requireCharsForName(int n) throws SAXException {
-        if (charBuffer.remaining() < n) {
-            bufferRemainingAsToken(MAX_NAME_LENGTH);
-            return false;
-        }
-        return true;
+    private boolean requireCharsForName(int n) {
+        return parseBuffer.remaining() >= n;
     }
-    
+
     /**
      * Checks if we have at least n characters available.
-     * If not, buffers the remaining characters as an attribute value and returns false.
      * Use this for attribute values which can be larger than names.
      */
-    private boolean requireCharsForAttributeValue(int n) throws SAXException {
-        if (charBuffer.remaining() < n) {
-            bufferRemainingAsToken(MAX_ATTRIBUTE_VALUE_LENGTH);
-            return false;
-        }
-        return true;
+    private boolean requireCharsForAttributeValue(int n) {
+        return parseBuffer.remaining() >= n;
     }
-    
+
     /**
      * Consumes a single character from the buffer and updates position tracking.
      * 
@@ -827,7 +973,7 @@ public class GonzalezParser implements EntityResolvingParser {
      * line increment for the following LF.
      */
     private char consumeChar() {
-        char ch = charBuffer.get();
+        char ch = parseBuffer.get();
 
         // Check if this LF is the second half of a CRLF split across buffers
         if (lastCharWasCR && ch == '\n') {
@@ -847,9 +993,9 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         else if (ch == '\r') {
             // CR - check if followed by LF (CRLF)
-            if (charBuffer.hasRemaining() && peekChar() == '\n') {
+            if (parseBuffer.hasRemaining() && peekChar() == '\n') {
                 // CRLF in same buffer - consume the LF as well
-                charBuffer.get();
+                parseBuffer.get();
             }
             else {
                 // CR at end of buffer or followed by non-LF
@@ -868,25 +1014,25 @@ public class GonzalezParser implements EntityResolvingParser {
 
         return ch;
     }
-    
+
     /**
      * Peeks at the current character without consuming it.
      */
     private char peekChar() {
-        return charBuffer.get(charBuffer.position());
+        return parseBuffer.get(parseBuffer.position());
     }
-    
+
     /**
      * Peeks ahead n characters without consuming.
      */
     private char peekChar(int offset) {
-        int pos = charBuffer.position() + offset;
-        if (pos >= charBuffer.limit()) {
+        int pos = parseBuffer.position() + offset;
+        if (pos >= parseBuffer.limit()) {
             return 0;
         }
-        return charBuffer.get(pos);
+        return parseBuffer.get(pos);
     }
-    
+
     /**
      * Detects the character encoding via BOM and/or XML declaration.
      * 
@@ -898,8 +1044,8 @@ public class GonzalezParser implements EntityResolvingParser {
      * </ol>
      */
     private void detectCharset() throws SAXException {
-        int pos = parseBuffer.position();
-        int remaining = parseBuffer.remaining();
+        int pos = byteUnderflow.position();
+        int remaining = byteUnderflow.remaining();
 
         // Need at least 4 bytes for BOM detection
         if (remaining < 4) {
@@ -907,10 +1053,10 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Read first 4 bytes for BOM detection
-        byte b0 = parseBuffer.get(pos);
-        byte b1 = parseBuffer.get(pos + 1);
-        byte b2 = parseBuffer.get(pos + 2);
-        byte b3 = parseBuffer.get(pos + 3);
+        byte b0 = byteUnderflow.get(pos);
+        byte b1 = byteUnderflow.get(pos + 1);
+        byte b2 = byteUnderflow.get(pos + 2);
+        byte b3 = byteUnderflow.get(pos + 3);
 
         int bomLength = 0;
         Charset detectedCharset = null;
@@ -933,8 +1079,7 @@ public class GonzalezParser implements EntityResolvingParser {
                 try {
                     detectedCharset = Charset.forName("UTF-32LE");
                     bomLength = 4;
-                }
-                catch (Exception e) {
+                } catch (Exception e) {
                     // UTF-32 not supported, fall back to UTF-16LE
                     detectedCharset = StandardCharsets.UTF_16LE;
                     bomLength = 2;
@@ -951,8 +1096,7 @@ public class GonzalezParser implements EntityResolvingParser {
             try {
                 detectedCharset = Charset.forName("UTF-32BE");
                 bomLength = 4;
-            }
-            catch (Exception e) {
+            } catch (Exception e) {
                 // UTF-32 not supported, fall back to UTF-16BE
                 detectedCharset = StandardCharsets.UTF_16BE;
                 bomLength = 2;
@@ -961,7 +1105,7 @@ public class GonzalezParser implements EntityResolvingParser {
 
         if (detectedCharset != null) {
             // BOM found, skip it and set charset
-            parseBuffer.position(pos + bomLength);
+            byteUnderflow.position(pos + bomLength);
             setCharset(detectedCharset);
             charsetDetermined = true;
             return;
@@ -979,15 +1123,15 @@ public class GonzalezParser implements EntityResolvingParser {
         else if (remaining >= 4) {
             // Check for UTF-16 without BOM by looking at byte patterns
             if (b0 == 0 && b1 == '<' && b2 == 0 && b3 == '?') {
-                // UTF-16BE without BOM
+                // UTF-16BE without BOM - has XML declaration
                 setCharset(StandardCharsets.UTF_16BE);
-                charsetDetermined = true;
+                charsetDetermined = false; // Will parse XML declaration
                 return;
             }
             else if (b0 == '<' && b1 == 0 && b2 == '?' && b3 == 0) {
-                // UTF-16LE without BOM
+                // UTF-16LE without BOM - has XML declaration
                 setCharset(StandardCharsets.UTF_16LE);
-                charsetDetermined = true;
+                charsetDetermined = false; // Will parse XML declaration
                 return;
             }
         }
@@ -995,8 +1139,9 @@ public class GonzalezParser implements EntityResolvingParser {
         // No BOM, no XML declaration - default to UTF-8
         setCharset(StandardCharsets.UTF_8);
         charsetDetermined = true;
+        state = ParseState.PROLOG;  // Skip XML declaration parsing, go straight to prolog
     }
-    
+
     /**
      * Sets the character encoding and creates a new decoder.
      */
@@ -1007,15 +1152,15 @@ public class GonzalezParser implements EntityResolvingParser {
             this.locator.setEncoding(newCharset.name());
         }
     }
-    
+
     /**
      * Re-decodes any buffered content with a new charset.
      * 
      * <p>This is called when the XML declaration specifies an encoding
      * different from what was initially detected. We need to:
      * <ol>
-     * <li>Save any unprocessed bytes from parseBuffer</li>
-     * <li>Discard the current charBuffer (which was decoded with old charset)</li>
+     * <li>Save any unprocessed bytes from byteUnderflow</li>
+     * <li>Discard the current charUnderflow (which was decoded with old charset)</li>
      * <li>Change to the new charset</li>
      * <li>Re-decode the saved bytes with the new charset</li>
      * </ol>
@@ -1025,30 +1170,30 @@ public class GonzalezParser implements EntityResolvingParser {
      * primarily for any content that follows the XML declaration.
      */
     private void reDecodeWithNewCharset(Charset newCharset) throws SAXException {
-        // Save the current position in parseBuffer (remaining bytes to decode)
-        parseBuffer.flip(); // Prepare for reading
-        int remainingBytes = parseBuffer.remaining();
-        
-        if (remainingBytes > 0 || charBuffer.hasRemaining()) {
+        // Save the current position in byteUnderflow (remaining bytes to decode)
+        byteUnderflow.flip(); // Prepare for reading
+        int remainingBytes = byteUnderflow.remaining();
+
+        if (remainingBytes > 0 || charUnderflow.hasRemaining()) {
             // We have undecoded bytes or decoded characters that need re-processing
-            
-            // Save the remaining bytes from parseBuffer
+
+            // Save the remaining bytes from byteUnderflow
             byte[] savedBytes = new byte[remainingBytes];
-            parseBuffer.get(savedBytes);
-            
-            // Discard current charBuffer content (it was decoded with old charset)
+            byteUnderflow.get(savedBytes);
+
+            // Discard current charUnderflow content (it was decoded with old charset)
             // Any characters after the XML declaration need to be re-decoded
-            charBuffer.clear();
-            charBuffer.flip(); // Empty buffer
-            
+            charUnderflow.clear();
+            charUnderflow.flip(); // Empty buffer
+
             // Change to new charset
             setCharset(newCharset);
-            
-            // Reset parseBuffer and put saved bytes back
-            parseBuffer.clear();
-            parseBuffer.put(savedBytes);
-            parseBuffer.flip();
-            
+
+            // Reset byteUnderflow and put saved bytes back
+            byteUnderflow.clear();
+            byteUnderflow.put(savedBytes);
+            byteUnderflow.flip();
+
             // Re-decode with new charset
             try {
                 decodeToCharBuffer(false);
@@ -1061,7 +1206,7 @@ public class GonzalezParser implements EntityResolvingParser {
             setCharset(newCharset);
         }
     }
-    
+
     /**
      * Returns the detected or configured character encoding.
      * 
@@ -1070,18 +1215,18 @@ public class GonzalezParser implements EntityResolvingParser {
     public Charset getCharset() {
         return charset;
     }
-    
+
     private boolean isWhitespace(byte b) {
         return b == ' ' || b == '\t' || b == '\r' || b == '\n';
     }
-    
+
     /**
      * Parse initial state (before XML declaration or root element).
      */
     private void parseInitial() throws SAXException {
         // Skip BOM if present (already handled in charset detection)
         // Skip whitespace before XML declaration
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
             if (Character.isWhitespace(ch)) {
                 consumeChar();
@@ -1094,8 +1239,10 @@ public class GonzalezParser implements EntityResolvingParser {
                 fatalError("Unexpected character before document start: '" + ch + "'");
             }
         }
+        // Need more data
+        saveToUnderflow();
     }
-    
+
     /**
      * Parse XML declaration: <?xml version="1.0" encoding="UTF-8"?>
      * 
@@ -1117,7 +1264,7 @@ public class GonzalezParser implements EntityResolvingParser {
         String standaloneStr = null;
 
         // Skip whitespace
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
             if (!Character.isWhitespace(ch)) {
                 break;
@@ -1126,13 +1273,14 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Look for version, encoding, standalone attributes
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
 
             // Check for end of declaration
             if (ch == '?') {
                 consumeChar();
-                if (!charBuffer.hasRemaining()) {
+                if (!parseBuffer.hasRemaining()) {
+                    saveToUnderflow();
                     return; // Need more data
                 }
                 if (peekChar() == '>') {
@@ -1141,7 +1289,7 @@ public class GonzalezParser implements EntityResolvingParser {
                     if (version != null) {
                         locator.setXMLVersion(version);
                     }
-                    
+
                     // Handle standalone attribute
                     if (standaloneStr != null) {
                         if ("yes".equals(standaloneStr)) {
@@ -1152,7 +1300,7 @@ public class GonzalezParser implements EntityResolvingParser {
                             fatalError("Invalid standalone value: " + standaloneStr);
                         }
                     }
-                    
+
                     // Set charset if encoding was specified
                     if (encoding != null) {
                         try {
@@ -1166,10 +1314,10 @@ public class GonzalezParser implements EntityResolvingParser {
                             fatalError("Unsupported encoding: " + encoding, e);
                         }
                     }
-                    
+
                     // Mark charset as finalized
                     charsetDetermined = true;
-                    
+
                     state = ParseState.PROLOG;
                     return;
                 }
@@ -1184,15 +1332,17 @@ public class GonzalezParser implements EntityResolvingParser {
             // Parse attribute name
             String attrName = parseName();
             if (attrName == null) {
+                saveToUnderflow();
                 return; // Need more data
             }
 
             // Skip whitespace before '='
-            while (charBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
+            while (parseBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
                 consumeChar();
             }
 
-            if (!charBuffer.hasRemaining()) {
+            if (!parseBuffer.hasRemaining()) {
+                saveToUnderflow();
                 return; // Need more data
             }
 
@@ -1202,11 +1352,12 @@ public class GonzalezParser implements EntityResolvingParser {
             consumeChar(); // '='
 
             // Skip whitespace after '='
-            while (charBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
+            while (parseBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
                 consumeChar();
             }
 
-            if (!charBuffer.hasRemaining()) {
+            if (!parseBuffer.hasRemaining()) {
+                saveToUnderflow();
                 return; // Need more data
             }
 
@@ -1218,7 +1369,7 @@ public class GonzalezParser implements EntityResolvingParser {
             consumeChar(); // Opening quote
 
             StringBuilder value = new StringBuilder();
-            while (charBuffer.hasRemaining()) {
+            while (parseBuffer.hasRemaining()) {
                 ch = peekChar();
                 if (ch == quote) {
                     consumeChar(); // Closing quote
@@ -1241,18 +1392,23 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Need more data
+        saveToUnderflow();
     }
-    
+
     /**
      * Parse prolog (DOCTYPE, comments, PIs before root).
      */
     private void parseProlog() throws SAXException {
+        SavedPosition startPos = savePosition();
+        
         // Skip whitespace
-        while (charBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
+        while (parseBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
             consumeChar();
         }
 
         if (!requireCharsForName(2)) { // Just checking for markup start
+            restorePosition(startPos);
+            saveToUnderflow();
             return; // Need more data
         }
         if (peekChar() == '<') {
@@ -1264,12 +1420,14 @@ public class GonzalezParser implements EntityResolvingParser {
 
                 // Peek at the target name
                 if (!requireCharsForName(3)) {
+                    restorePosition(startPos);
+                    saveToUnderflow();
                     return;
                 }
 
                 // Check if it's "xml" (case-insensitive)
                 if ((peekChar() == 'x' || peekChar() == 'X') &&
-                        charBuffer.remaining() >= 3) {
+                        parseBuffer.remaining() >= 3) {
                     char c1 = peekChar();
                     char c2 = peekChar(1);
                     char c3 = peekChar(2);
@@ -1288,6 +1446,8 @@ public class GonzalezParser implements EntityResolvingParser {
             else if (next == '!') {
                 // DOCTYPE or comment
                 if (!requireCharsForName(4)) {
+                    restorePosition(startPos);
+                    saveToUnderflow();
                     return;
                 }
                 if (peekChar(2) == '-' && peekChar(3) == '-') {
@@ -1323,76 +1483,107 @@ public class GonzalezParser implements EntityResolvingParser {
             fatalError("Expected '<'");
         }
     }
-    
+
     /**
      * Parse element start tag: &lt;name attr="value"&gt; or &lt;name/&gt;
      */
     private void parseElementStart() throws SAXException {
-        // Consume '<'
-        if (!requireCharsForName(1)) {
-            return;
-        }
-        if (peekChar() != '<') {
-            fatalError("Expected '<'");
-        }
-        consumeChar();
+        // Save position at start - we'll rewind if incomplete
+        SavedPosition startPos = savePosition();
 
-        // Parse element name
-        QName elementQName = parseQName();
-        if (elementQName == null) {
-            return; // Need more data
-        }
-
-        String elementName = elementQName.qName;
-
-        // Parse attributes
+        // Variables we'll need after parsing
+        QName elementQName;
         GonzalezAttributes attrs = new GonzalezAttributes();
         boolean emptyElement = false;
-        boolean hasAttribute = false;
 
-        while (true) {
-            // Skip whitespace and check if we have at least one space after first attribute
-            boolean hasWhitespace = skipWhitespace();
-
+        try {
+            // Consume '<'
             if (!requireCharsForName(1)) {
+                restorePosition(startPos);
+                saveToUnderflow();
+                return;
+            }
+            if (peekChar() != '<') {
+                fatalError("Expected '<'");
+            }
+            consumeChar();
+
+            // Parse element name
+            elementQName = parseQName();
+            if (elementQName == null) {
+                // Need more data - rewind
+                restorePosition(startPos);
+                saveToUnderflow();
                 return;
             }
 
-            char ch = peekChar();
-            if (ch == '>') {
-                // End of start tag
-                consumeChar();
-                break;
-            }
-            else if (ch == '/') {
-                // Empty element tag
-                if (!requireCharsForName(2)) {
+            // Parse attributes
+            boolean hasAttribute = false;
+
+            while (true) {
+                // Skip whitespace and check if we have at least one space after first attribute
+                boolean hasWhitespace = skipWhitespace();
+
+                if (!requireCharsForName(1)) {
+                    // Need more data - rewind
+                    restorePosition(startPos);
+                    saveToUnderflow();
                     return;
                 }
-                consumeChar(); // '/'
-                if (peekChar() != '>') {
-                    fatalError("Expected '>' after '/'");
+
+                char ch = peekChar();
+                if (ch == '>') {
+                    // End of start tag
+                    consumeChar();
+                    break;
                 }
-                consumeChar(); // '>'
-                emptyElement = true;
-                break;
-            }
-            else if (isNameStartChar(ch)) {
-                // After the first attribute, we must have whitespace before the next
-                if (hasAttribute && !hasWhitespace) {
-                    fatalError("Whitespace required between attributes");
+                else if (ch == '/') {
+                    // Empty element tag
+                    if (!requireCharsForName(2)) {
+                        // Need more data - rewind
+                        restorePosition(startPos);
+                        saveToUnderflow();
+                        return;
+                    }
+                    consumeChar(); // '/'
+                    if (peekChar() != '>') {
+                        fatalError("Expected '>' after '/'");
+                    }
+                    consumeChar(); // '>'
+                    emptyElement = true;
+                    break;
                 }
-                
-                // Parse attribute
-                if (!parseAttribute(attrs)) {
-                    return; // Need more data
+                else if (isNameStartChar(ch)) {
+                    // After the first attribute, we must have whitespace before the next
+                    if (hasAttribute && !hasWhitespace) {
+                        fatalError("Whitespace required between attributes");
+                    }
+                    
+                    // Parse attribute
+                    if (!parseAttribute(attrs)) {
+                        // Need more data - rewind
+                        restorePosition(startPos);
+                        saveToUnderflow();
+                        return;
+                    }
+                    hasAttribute = true;
                 }
-                hasAttribute = true;
+                else {
+                    fatalError("Unexpected character in start tag: '" + ch + "'");
+                }
             }
-            else {
-                fatalError("Unexpected character in start tag: '" + ch + "'");
-            }
+
+            // Successfully parsed the start tag
+        } catch (BufferUnderflowException e) {
+            // Ran out of data - rewind
+            restorePosition(startPos);
+            saveToUnderflow();
+            return;
         }
+
+        // If we get here, we successfully parsed the start tag
+        // elementQName, attrs, and emptyElement are now available
+        String elementName = elementQName.qName;
 
         // Process namespaces
         namespaceSupport.pushContext();
@@ -1504,12 +1695,13 @@ public class GonzalezParser implements EntityResolvingParser {
             state = ParseState.ELEMENT_CONTENT;
         }
     }
-    
+
     /**
      * Parse element content (text, nested elements, etc.)
      */
     private void parseElementContent() throws SAXException {
         if (!requireCharsForName(1)) {
+            saveToUnderflow();
             return;
         }
 
@@ -1517,6 +1709,7 @@ public class GonzalezParser implements EntityResolvingParser {
         if (ch == '<') {
             // Markup
             if (!requireCharsForName(2)) {
+                saveToUnderflow();
                 return;
             }
 
@@ -1528,6 +1721,7 @@ public class GonzalezParser implements EntityResolvingParser {
             else if (next == '!') {
                 // Comment or CDATA
                 if (!requireCharsForName(4)) {
+                    saveToUnderflow();
                     return;
                 }
                 if (peekChar(2) == '-' && peekChar(3) == '-') {
@@ -1560,13 +1754,17 @@ public class GonzalezParser implements EntityResolvingParser {
             parseText();
         }
     }
-    
+
     /**
      * Parse element end tag: &lt;/name&gt;
      */
     private void parseElementEnd() throws SAXException {
+        SavedPosition startPos = savePosition();
+        
         // Consume '</'
         if (!requireCharsForName(2)) {
+            restorePosition(startPos);
+            saveToUnderflow();
             return;
         }
         if (peekChar() != '<' || peekChar(1) != '/') {
@@ -1578,6 +1776,8 @@ public class GonzalezParser implements EntityResolvingParser {
         // Parse element name
         QName elementQName = parseQName();
         if (elementQName == null) {
+            restorePosition(startPos);
+            saveToUnderflow();
             return; // Need more data
         }
 
@@ -1587,6 +1787,8 @@ public class GonzalezParser implements EntityResolvingParser {
         skipWhitespace();
 
         if (!requireCharsForName(1)) {
+            restorePosition(startPos);
+            saveToUnderflow();
             return;
         }
         if (peekChar() != '>') {
@@ -1645,7 +1847,7 @@ public class GonzalezParser implements EntityResolvingParser {
             state = ParseState.ELEMENT_CONTENT;
         }
     }
-    
+
     /**
      * Parses an XML name (element name, attribute name, etc.) and returns a QName.
      * Returns null if more data is needed.
@@ -1660,50 +1862,66 @@ public class GonzalezParser implements EntityResolvingParser {
             return null;
         }
 
+        // Mark the current position so we can reset if incomplete
+        parseBuffer.mark();
+
         // Must start with NameStartChar
-        char ch = peekChar();
+        char ch = parseBuffer.get();
         if (!isNameStartChar(ch)) {
             fatalError("Invalid name start character: '" + ch + "'");
         }
 
-        int start = charBuffer.position();
         int colonIndex = -1;
-        int length = 0;
+        int length = 1; // We already consumed the first character
+        StringBuilder nameBuilder = new StringBuilder();
+        nameBuilder.append(ch);
 
-        consumeChar();
-        length++;
+        // Continue consuming NameChars
+        try {
+            while (parseBuffer.hasRemaining()) {
+                ch = parseBuffer.get(parseBuffer.position()); // Peek without consuming
+                if (isNameChar(ch)) {
+                    if (ch == ':' && colonIndex == -1) {
+                        // First colon marks prefix separator
+                        colonIndex = length;
+                    }
+                    parseBuffer.get(); // Now consume it
+                    nameBuilder.append(ch);
+                    length++;
 
-        // Continue with NameChars
-        while (charBuffer.hasRemaining()) {
-            ch = peekChar();
-            if (isNameChar(ch)) {
-                if (ch == ':' && colonIndex == -1) {
-                    // First colon marks prefix separator
-                    colonIndex = length;
+                    if (length > MAX_NAME_LENGTH) {
+                        fatalError("Name exceeds maximum length");
+                    }
                 }
-                consumeChar();
-                length++;
-
-                if (length > MAX_NAME_LENGTH) {
-                    fatalError("Name exceeds maximum length");
+                else {
+                    // Found non-name character - name is complete
+                    break;
                 }
             }
-            else {
-                break;
+
+            // If we exited the loop because buffer is empty, the name might be incomplete
+            if (!parseBuffer.hasRemaining()) {
+                // Reset and return null to get more data
+                parseBuffer.reset();
+                return null;
             }
+
+            // Name is complete - now actually consume it with proper tracking
+            parseBuffer.reset(); // Go back to start
+            for (int i = 0; i < length; i++) {
+                consumeChar(); // This updates line/column correctly
+            }
+
+            String qName = nameBuilder.toString();
+            return new QName(qName, colonIndex);
+
+        } catch (BufferUnderflowException e) {
+            // Ran out of data while trying to read - reset and return null
+            parseBuffer.reset();
+            return null;
         }
-
-        // Extract name
-        char[] nameChars = new char[length];
-        int savedPos = charBuffer.position();
-        charBuffer.position(start);
-        charBuffer.get(nameChars, 0, length);
-        charBuffer.position(savedPos);
-
-        String qName = new String(nameChars);
-        return new QName(qName, colonIndex);
     }
-    
+
     /**
      * Parses an XML name (legacy method that returns String).
      * Used for PI targets and other non-element/attribute names.
@@ -1716,7 +1934,7 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         return qname.qName;
     }
-    
+
     /**
      * Parses an attribute: name="value" or name='value'
      * Returns false if more data is needed.
@@ -1762,7 +1980,7 @@ public class GonzalezParser implements EntityResolvingParser {
 
         return true;
     }
-    
+
     /**
      * Parses an attribute value: "value" or 'value'
      * Returns null if more data is needed.
@@ -1778,38 +1996,38 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         consumeChar();
 
-        int start = charBuffer.position();
+        int start = parseBuffer.position();
         StringBuilder value = new StringBuilder();
 
         while (true) {
-            if (!charBuffer.hasRemaining()) {
+            if (!parseBuffer.hasRemaining()) {
                 // Buffer what we have so far
-                if (charBuffer.position() > start) {
-                    int len = charBuffer.position() - start;
+                if (parseBuffer.position() > start) {
+                    int len = parseBuffer.position() - start;
                     char[] chars = new char[len];
-                    int savedPos = charBuffer.position();
-                    charBuffer.position(start);
-                    charBuffer.get(chars, 0, len);
-                    charBuffer.position(savedPos);
+                    int savedPos = parseBuffer.position();
+                    parseBuffer.position(start);
+                    parseBuffer.get(chars, 0, len);
+                    parseBuffer.position(savedPos);
                     value.append(chars);
                 }
 
                 if (!requireCharsForAttributeValue(1)) {
                     return null;
                 }
-                start = charBuffer.position();
+                start = parseBuffer.position();
             }
 
             char ch = peekChar();
             if (ch == quote) {
                 // End of value
-                if (charBuffer.position() > start) {
-                    int len = charBuffer.position() - start;
+                if (parseBuffer.position() > start) {
+                    int len = parseBuffer.position() - start;
                     char[] chars = new char[len];
-                    int savedPos = charBuffer.position();
-                    charBuffer.position(start);
-                    charBuffer.get(chars, 0, len);
-                    charBuffer.position(savedPos);
+                    int savedPos = parseBuffer.position();
+                    parseBuffer.position(start);
+                    parseBuffer.get(chars, 0, len);
+                    parseBuffer.position(savedPos);
                     value.append(chars);
                 }
                 consumeChar(); // closing quote
@@ -1826,19 +2044,19 @@ public class GonzalezParser implements EntityResolvingParser {
                 }
 
                 // Append what we had before the entity
-                if (charBuffer.position() > start) {
-                    int len = charBuffer.position() - start;
+                if (parseBuffer.position() > start) {
+                    int len = parseBuffer.position() - start;
                     char[] chars = new char[len];
-                    int savedPos = charBuffer.position();
-                    charBuffer.position(start);
-                    charBuffer.get(chars, 0, len);
-                    charBuffer.position(savedPos);
+                    int savedPos = parseBuffer.position();
+                    parseBuffer.position(start);
+                    parseBuffer.get(chars, 0, len);
+                    parseBuffer.position(savedPos);
                     value.append(chars);
                 }
 
                 // Append replacement text
                 value.append(replacement);
-                start = charBuffer.position();
+                start = parseBuffer.position();
             }
             else {
                 consumeChar();
@@ -1851,20 +2069,20 @@ public class GonzalezParser implements EntityResolvingParser {
 
         return value.toString();
     }
-    
+
     /**
      * Skips whitespace characters.
      * Returns true if any whitespace was skipped.
      */
     private boolean skipWhitespace() {
         boolean skipped = false;
-        while (charBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
+        while (parseBuffer.hasRemaining() && Character.isWhitespace(peekChar())) {
             consumeChar();
             skipped = true;
         }
         return skipped;
     }
-    
+
     /**
      * Checks if a character is a NameStartChar according to XML spec.
      */
@@ -1884,7 +2102,7 @@ public class GonzalezParser implements EntityResolvingParser {
             (ch >= 0xF900 && ch <= 0xFDCF) ||
             (ch >= 0xFDF0 && ch <= 0xFFFD);
     }
-    
+
     /**
      * Checks if a character is a NameChar according to XML spec.
      */
@@ -1896,7 +2114,7 @@ public class GonzalezParser implements EntityResolvingParser {
             (ch >= 0x0300 && ch <= 0x036F) ||
             (ch >= 0x203F && ch <= 0x2040);
     }
-    
+
     /**
      * Parse CDATA section: &lt;![CDATA[...]]&gt;
      */
@@ -1904,6 +2122,7 @@ public class GonzalezParser implements EntityResolvingParser {
         // We need to check if we have the full "<![CDATA[" prefix
         // In parseElementContent, we only checked for "<![", so consume the rest
         if (!requireCharsForName(7)) { // "<![CDATA[" = 9 chars, we already have 3 ("<![")
+            saveToUnderflow();
             return;
         }
 
@@ -1930,28 +2149,29 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Find "]]>"
-        int start = charBuffer.position();
+        int start = parseBuffer.position();
 
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
 
             if (ch == ']') {
                 // Check if we have at least "]]>" remaining
-                if (charBuffer.remaining() < 3) {
+                if (parseBuffer.remaining() < 3) {
+                    saveToUnderflow();
                     return; // Need more data
                 }
 
                 if (peekChar(1) == ']' && peekChar(2) == '>') {
                     // Found end of CDATA
-                    int end = charBuffer.position(); // Before "]]>"
+                    int end = parseBuffer.position(); // Before "]]>"
                     int cdataLength = end - start;
 
                     if (cdataLength > 0) {
                         char[] cdataChars = new char[cdataLength];
-                        int savedPos = charBuffer.position();
-                        charBuffer.position(start);
-                        charBuffer.get(cdataChars, 0, cdataLength);
-                        charBuffer.position(savedPos);
+                        int savedPos = parseBuffer.position();
+                        parseBuffer.position(start);
+                        parseBuffer.get(cdataChars, 0, cdataLength);
+                        parseBuffer.position(savedPos);
 
                         // Report as character data
                         contentHandler.characters(cdataChars, 0, cdataLength);
@@ -1977,6 +2197,7 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Need more data
+        saveToUnderflow();
     }
 
     /**
@@ -1988,17 +2209,20 @@ public class GonzalezParser implements EntityResolvingParser {
         // Skip leading whitespace
         skipWhitespace();
 
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
+            saveToUnderflow();
             return; // Need more data
         }
 
         // Parse target name
         if (!requireCharsForName(1)) {
+            saveToUnderflow();
             return;
         }
 
         String target = parseName();
         if (target == null) {
+            saveToUnderflow();
             return; // Need more data
         }
 
@@ -2012,24 +2236,24 @@ public class GonzalezParser implements EntityResolvingParser {
         skipWhitespace();
 
         // Parse data (everything until "?>")
-        int start = charBuffer.position();
+        int start = parseBuffer.position();
         StringBuilder dataBuilder = new StringBuilder();
         boolean questionMark = false;
 
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
 
             if (questionMark && ch == '>') {
                 consumeChar(); // '>'
 
                 // Extract data (excluding the trailing ?)
-                int end = charBuffer.position() - 2; // Before "?>"
+                int end = parseBuffer.position() - 2; // Before "?>"
                 if (end > start) {
                     char[] dataChars = new char[end - start];
-                    int savedPos = charBuffer.position();
-                    charBuffer.position(start);
-                    charBuffer.get(dataChars, 0, dataChars.length);
-                    charBuffer.position(savedPos);
+                    int savedPos = parseBuffer.position();
+                    parseBuffer.position(start);
+                    parseBuffer.get(dataChars, 0, dataChars.length);
+                    parseBuffer.position(savedPos);
                     dataBuilder.append(dataChars);
                 }
 
@@ -2057,17 +2281,18 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Need more data
+        saveToUnderflow();
     }
-    
+
     /**
      * Parse comment.
      */
     private void parseComment() throws SAXException {
         // We've already consumed "<!--", now find "-->"
-        int start = charBuffer.position();
+        int start = parseBuffer.position();
         int dashCount = 0;
 
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
 
             if (ch == '-') {
@@ -2076,7 +2301,8 @@ public class GonzalezParser implements EntityResolvingParser {
 
                 // Check for "-->" 
                 if (dashCount >= 2) {
-                    if (!charBuffer.hasRemaining()) {
+                    if (!parseBuffer.hasRemaining()) {
+                        saveToUnderflow();
                         return; // Need more data to check for '>'
                     }
 
@@ -2084,15 +2310,15 @@ public class GonzalezParser implements EntityResolvingParser {
                         consumeChar(); // '>'
 
                         // Extract comment text (excluding the trailing --)
-                        int end = charBuffer.position() - 3; // Before "-->"
+                        int end = parseBuffer.position() - 3; // Before "-->"
                         int commentLength = end - start;
 
                         if (commentLength > 0) {
                             char[] commentChars = new char[commentLength];
-                            int savedPos = charBuffer.position();
-                            charBuffer.position(start);
-                            charBuffer.get(commentChars, 0, commentLength);
-                            charBuffer.position(savedPos);
+                            int savedPos = parseBuffer.position();
+                            parseBuffer.position(start);
+                            parseBuffer.get(commentChars, 0, commentLength);
+                            parseBuffer.position(savedPos);
 
                             // Report to LexicalHandler if available
                             if (lexicalHandler != null) {
@@ -2131,8 +2357,9 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Need more data
+        saveToUnderflow();
     }
-    
+
     /**
      * Parse DOCTYPE declaration.
      * 
@@ -2145,30 +2372,34 @@ public class GonzalezParser implements EntityResolvingParser {
     private void parseDoctype() throws SAXException {
         // We've already consumed "<!DOCTYPE"
         // Require at least one whitespace character
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
+            saveToUnderflow();
             return; // Need more data
         }
-        
+
         char ch = peekChar();
         if (!Character.isWhitespace(ch)) {
             throw new SAXParseException("Whitespace required after DOCTYPE",
                     locator);
         }
-        
+
         // Skip all whitespace
         skipWhitespace();
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
+            saveToUnderflow();
             return; // Need more data
         }
 
         // Parse root element name
         String rootElement = parseName();
         if (rootElement == null) {
+            saveToUnderflow();
             return; // Need more data
         }
 
         skipWhitespace();
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
+            saveToUnderflow();
             return; // Need more data
         }
 
@@ -2181,7 +2412,8 @@ public class GonzalezParser implements EntityResolvingParser {
             // Parse "SYSTEM" or "PUBLIC"
             String keyword = parseName();
             if (keyword == null) {
-                return; // Need more data
+                saveToUnderflow();
+            return; // Need more data
             }
 
             if ("PUBLIC".equals(keyword)) {
@@ -2189,20 +2421,23 @@ public class GonzalezParser implements EntityResolvingParser {
                 skipWhitespace();
                 publicId = parseQuotedString();
                 if (publicId == null) {
-                    return; // Need more data
+                    saveToUnderflow();
+            return; // Need more data
                 }
 
                 skipWhitespace();
                 systemId = parseQuotedString();
                 if (systemId == null) {
-                    return; // Need more data
+                    saveToUnderflow();
+            return; // Need more data
                 }
             } else if ("SYSTEM".equals(keyword)) {
                 // SYSTEM "systemId"
                 skipWhitespace();
                 systemId = parseQuotedString();
                 if (systemId == null) {
-                    return; // Need more data
+                    saveToUnderflow();
+            return; // Need more data
                 }
             } else {
                 throw new SAXParseException("Expected SYSTEM or PUBLIC in DOCTYPE",
@@ -2210,8 +2445,9 @@ public class GonzalezParser implements EntityResolvingParser {
             }
 
             skipWhitespace();
-            if (!charBuffer.hasRemaining()) {
-                return; // Need more data
+            if (!parseBuffer.hasRemaining()) {
+                saveToUnderflow();
+            return; // Need more data
             }
         }
 
@@ -2264,7 +2500,7 @@ public class GonzalezParser implements EntityResolvingParser {
 
         // Need more data
     }
-    
+
     /**
      * Process internal DTD subset.
      * 
@@ -2272,34 +2508,36 @@ public class GonzalezParser implements EntityResolvingParser {
      */
     private void parseDTDInternalSubset() throws SAXException {
         // Look for ']>' to end the internal subset
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
-            
+
             if (ch == ']') {
                 // Potential end of internal subset
                 consumeChar();
-                
-                if (!charBuffer.hasRemaining()) {
+
+                if (!parseBuffer.hasRemaining()) {
                     // Need more data to check for '>'
-                    return;
+                    saveToUnderflow();
+            return;
                 }
-                
+
                 ch = peekChar();
                 if (ch == '>') {
                     consumeChar(); // '>'
-                    
+
                     // Close DTD parser
                     if (dtdParser != null) {
                         dtdParser.close();
                     }
-                    
+
                     // End LexicalHandler DTD event
                     if (lexicalHandler != null) {
                         lexicalHandler.endDTD();
                     }
-                    
+
                     state = ParseState.PROLOG;
-                    return;
+                    saveToUnderflow();
+            return;
                 }
                 else {
                     // False alarm - ']' was part of DTD content
@@ -2308,23 +2546,23 @@ public class GonzalezParser implements EntityResolvingParser {
                     // For now, just continue feeding data
                 }
             }
-            
+
             // Feed data to DTD parser
-            // Convert current charBuffer position to bytes for DTDParser
+            // Convert current charUnderflow position to bytes for DTDParser
             // This is a bit awkward - we need to re-encode characters to bytes
             // A better approach would be to have DTDParser work with CharBuffer
             // But for now, let's feed it character by character
-            
+
             // Actually, let's take a different approach: collect all DTD content
             // into a buffer and feed it to DTDParser in one go
             // But that requires knowing where it ends first...
-            
-            // Better approach: feed bytes directly from parseBuffer before they're
+
+            // Better approach: feed bytes directly from byteUnderflow before they're
             // decoded. But we've already decoded them here.
-            
+
             // Simplest approach for now: The DTD parser should also work with CharBuffer
             // But we defined it to work with ByteBuffer via EntityReceiver interface
-            
+
             // Let's re-encode the character and feed it
             char c = consumeChar();
             try {
@@ -2334,29 +2572,29 @@ public class GonzalezParser implements EntityResolvingParser {
                 throw new SAXParseException("Error feeding DTD parser", locator, e);
             }
         }
-        
+
         // Need more data
     }
-    
+
     /**
      * Parse a quoted string (single or double quotes).
      * 
      * @return the string content (without quotes), or null if more data needed
      */
     private String parseQuotedString() throws SAXException {
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
             return null;
         }
-        
+
         char quote = peekChar();
         if (quote != '\'' && quote != '"') {
             throw new SAXParseException("Expected quoted string", locator);
         }
-        
+
         consumeChar(); // Opening quote
-        
+
         StringBuilder value = new StringBuilder();
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
             if (ch == quote) {
                 consumeChar(); // Closing quote
@@ -2365,11 +2603,11 @@ public class GonzalezParser implements EntityResolvingParser {
             consumeChar();
             value.append(ch);
         }
-        
+
         // Need more data
         return null;
     }
-    
+
     /**
      * Parse text content.
      * 
@@ -2378,28 +2616,30 @@ public class GonzalezParser implements EntityResolvingParser {
      */
     private void parseText() throws SAXException {
         // Find the next markup character (<, &, etc.)
-        int start = charBuffer.position();
-        while (charBuffer.hasRemaining()) {
+        int start = parseBuffer.position();
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
             if (ch == '<') {
                 // End of text, start of markup
-                if (charBuffer.position() > start) {
+                if (parseBuffer.position() > start) {
                     // Emit accumulated text
-                    emitCharacters(start, charBuffer.position());
+                    emitCharacters(start, parseBuffer.position());
                 }
                 state = ParseState.ELEMENT_CONTENT;
                 return;
             }
             else if (ch == '&') {
                 // Entity reference - emit text before it, then handle entity
-                if (charBuffer.position() > start) {
-                    emitCharacters(start, charBuffer.position());
+                if (parseBuffer.position() > start) {
+                    emitCharacters(start, parseBuffer.position());
                 }
 
                 // Parse and expand entity reference
                 String replacement = parseEntityReference();
                 if (replacement == null) {
-                    return; // Need more data
+                    // Need more data - save to underflow
+                    saveToUnderflow();
+                    return;
                 }
 
                 // Emit replacement text
@@ -2408,7 +2648,7 @@ public class GonzalezParser implements EntityResolvingParser {
                     contentHandler.characters(replacementChars, 0, replacementChars.length);
                 }
 
-                start = charBuffer.position();
+                start = parseBuffer.position();
             }
             else {
                 consumeChar();
@@ -2416,11 +2656,11 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Emit any remaining text (more may come in next receive())
-        if (charBuffer.position() > start) {
-            emitCharacters(start, charBuffer.position());
+        if (parseBuffer.position() > start) {
+            emitCharacters(start, parseBuffer.position());
         }
     }
-    
+
     /**
      * Parses an entity reference: &amp;name; or &amp;#number; or &amp;#xhex;
      * Returns the replacement text, or null if more data is needed.
@@ -2475,8 +2715,8 @@ public class GonzalezParser implements EntityResolvingParser {
         }
 
         // Parse digits
-        int start = charBuffer.position();
-        while (charBuffer.hasRemaining()) {
+        int start = parseBuffer.position();
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
             if (ch == ';') {
                 break;
@@ -2495,7 +2735,7 @@ public class GonzalezParser implements EntityResolvingParser {
             }
         }
 
-        int end = charBuffer.position();
+        int end = parseBuffer.position();
         if (end == start) {
             throw new SAXParseException("Empty character reference",
                     locator);
@@ -2503,10 +2743,10 @@ public class GonzalezParser implements EntityResolvingParser {
 
         // Extract number
         char[] digits = new char[end - start];
-        int savedPos = charBuffer.position();
-        charBuffer.position(start);
-        charBuffer.get(digits, 0, digits.length);
-        charBuffer.position(savedPos);
+        int savedPos = parseBuffer.position();
+        parseBuffer.position(start);
+        parseBuffer.get(digits, 0, digits.length);
+        parseBuffer.position(savedPos);
 
         if (!requireCharsForName(1)) {
             return null;
@@ -2543,21 +2783,20 @@ public class GonzalezParser implements EntityResolvingParser {
                 char[] chars = Character.toChars(codepoint);
                 return new String(chars);
             }
-        }
-        catch (NumberFormatException e) {
+        } catch (NumberFormatException e) {
             throw new SAXParseException("Invalid number in character reference",
                     locator, e);
         }
     }
-    
+
     /**
      * Parses a named entity reference: &name;
      */
     private String parseNamedEntityReference() throws SAXException {
         // Parse entity name
-        int start = charBuffer.position();
+        int start = parseBuffer.position();
 
-        while (charBuffer.hasRemaining()) {
+        while (parseBuffer.hasRemaining()) {
             char ch = peekChar();
             if (ch == ';') {
                 break;
@@ -2571,7 +2810,7 @@ public class GonzalezParser implements EntityResolvingParser {
             }
         }
 
-        int end = charBuffer.position();
+        int end = parseBuffer.position();
         if (end == start) {
             throw new SAXParseException("Empty entity name",
                     locator);
@@ -2579,10 +2818,10 @@ public class GonzalezParser implements EntityResolvingParser {
 
         // Extract name
         char[] nameChars = new char[end - start];
-        int savedPos = charBuffer.position();
-        charBuffer.position(start);
-        charBuffer.get(nameChars, 0, nameChars.length);
-        charBuffer.position(savedPos);
+        int savedPos = parseBuffer.position();
+        parseBuffer.position(start);
+        parseBuffer.get(nameChars, 0, nameChars.length);
+        parseBuffer.position(savedPos);
 
         String name = new String(nameChars);
 
@@ -2613,7 +2852,7 @@ public class GonzalezParser implements EntityResolvingParser {
 
         return replacement;
     }
-    
+
     /**
      * Emits characters to the content handler.
      * 
@@ -2625,10 +2864,10 @@ public class GonzalezParser implements EntityResolvingParser {
         // Convert CharBuffer range to char array
         int len = end - start;
         char[] chars = new char[len];
-        int savedPos = charBuffer.position();
-        charBuffer.position(start);
-        charBuffer.get(chars, 0, len);
-        charBuffer.position(savedPos);
+        int savedPos = parseBuffer.position();
+        parseBuffer.position(start);
+        parseBuffer.get(chars, 0, len);
+        parseBuffer.position(savedPos);
 
         // Check if we should call ignorableWhitespace()
         // This happens when:
@@ -2656,63 +2895,35 @@ public class GonzalezParser implements EntityResolvingParser {
             contentHandler.characters(chars, 0, len);
         }
     }
-    
+
     // Utility methods
-    
+
     private void ensureBufferCapacity(int additional) {
-        if (parseBuffer.remaining() < additional) {
+        if (byteUnderflow.remaining() < additional) {
             ByteBuffer newBuffer = ByteBuffer.allocate(
-                    parseBuffer.capacity() + additional + 4096);
-            parseBuffer.flip();
-            newBuffer.put(parseBuffer);
-            parseBuffer = newBuffer;
+                    byteUnderflow.capacity() + additional + 4096);
+            byteUnderflow.flip();
+            newBuffer.put(byteUnderflow);
+            byteUnderflow = newBuffer;
         }
     }
-    
-    /**
-     * Buffers main document data that arrives while an entity is being resolved.
-     */
-    private void bufferMainDocumentData(ByteBuffer data) {
-        // Ensure capacity in entity buffer
-        if (entityBuffer.remaining() < data.remaining()) {
-            int newCapacity = entityBuffer.capacity() + data.remaining() + 4096;
-            ByteBuffer newBuffer = ByteBuffer.allocate(newCapacity);
-            entityBuffer.flip();
-            newBuffer.put(entityBuffer);
-            entityBuffer = newBuffer;
-        }
-        entityBuffer.put(data);
-    }
-    
-    /**
-     * Processes buffered main document data after entity resolution completes.
-     */
-    private void processBufferedMainDocumentData() throws SAXException {
-        if (entityBuffer.position() == 0) {
-            return; // No buffered data
-        }
-        
-        entityBuffer.flip();
-        ensureBufferCapacity(entityBuffer.remaining());
-        parseBuffer.put(entityBuffer);
-        entityBuffer.clear(); // Ready for next entity
-        
-        // Process the buffered data
-        parse();
-    }
-    
+
     /**
      * Callback from EntityReceiver when entity resolution completes.
      * 
      * <p>Implements {@link EntityResolvingParser#onEntityResolutionComplete()}.
      * This method is called from HTTP client threads, so must be properly synchronized.
      * The synchronization is handled by the caller (EntityReceiverImpl.close()).
+     * 
+     * <p>When entity resolution completes, we simply resume parsing from parseBuffer.
+     * All the buffered characters are already there, waiting to be processed.
      */
     @Override
     public void onEntityResolutionComplete() throws SAXException {
-        processBufferedMainDocumentData();
+        // Just resume parsing - charUnderflow already contains buffered data
+        parse();
     }
-    
+
     /**
      * Starts the entity timeout monitoring thread if not already started.
      */
@@ -2720,21 +2931,21 @@ public class GonzalezParser implements EntityResolvingParser {
         if (entityTimeoutMillis == 0) {
             return; // Timeout disabled
         }
-        
+
         if (entityTimeoutExecutor == null) {
             entityTimeoutExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "Gonzalez-Entity-Timeout-Monitor");
                 t.setDaemon(true);  // Don't prevent JVM shutdown
                 return t;
             });
-            
+
             // Check for timeouts every second
             timeoutMonitorTask = entityTimeoutExecutor.scheduleAtFixedRate(
                     this::checkAllEntityTimeouts,
                     1000, 1000, TimeUnit.MILLISECONDS);
         }
     }
-    
+
     /**
      * Stops the entity timeout monitoring thread.
      */
@@ -2743,7 +2954,7 @@ public class GonzalezParser implements EntityResolvingParser {
             timeoutMonitorTask.cancel(false);
             timeoutMonitorTask = null;
         }
-        
+
         if (entityTimeoutExecutor != null) {
             entityTimeoutExecutor.shutdown();
             try {
@@ -2757,7 +2968,7 @@ public class GonzalezParser implements EntityResolvingParser {
             entityTimeoutExecutor = null;
         }
     }
-    
+
     /**
      * Called by monitoring thread to check all active entities for timeout.
      * Runs in background thread, so must be thread-safe.
@@ -2767,9 +2978,9 @@ public class GonzalezParser implements EntityResolvingParser {
             if (entityReceiverStack.isEmpty()) {
                 return; // No active entities
             }
-            
+
             long now = System.currentTimeMillis();
-            
+
             // Check each active entity receiver
             // We only check the top of stack (most recent entity)
             // because that's the one that should be receiving data
@@ -2781,9 +2992,9 @@ public class GonzalezParser implements EntityResolvingParser {
                     String systemId = topReceiver.systemId != null ? topReceiver.systemId : "unknown";
                     SAXException timeout = new SAXParseException(
                             String.format("Entity resolution timeout after %dms for: %s",
-                                    elapsed, systemId),
+                                elapsed, systemId),
                             locator);
-                    
+
                     // Store exception to be thrown on next parsing activity
                     entityTimeoutException = timeout;
                 }
@@ -2794,7 +3005,7 @@ public class GonzalezParser implements EntityResolvingParser {
             System.err.println("Error in entity timeout monitor: " + e.getMessage());
         }
     }
-    
+
     /**
      * Checks if an entity timeout has occurred and throws if so.
      * Called before any parsing activity.
@@ -2804,10 +3015,10 @@ public class GonzalezParser implements EntityResolvingParser {
         if (timeout != null) {
             // Clear the exception
             entityTimeoutException = null;
-            
+
             // Clean up entity stack
             cleanupEntityStack();
-            
+
             // Throw the timeout exception
             if (timeout instanceof SAXParseException) {
                 throw (SAXParseException) timeout;
@@ -2816,7 +3027,7 @@ public class GonzalezParser implements EntityResolvingParser {
             }
         }
     }
-    
+
     /**
      * Cleans up the entity receiver stack after a timeout or error.
      */
@@ -2826,17 +3037,17 @@ public class GonzalezParser implements EntityResolvingParser {
             receiver.markClosed(); // Mark as closed without further processing
         }
         entityDepth = 0;
-        entityBuffer.clear();
+        // No need to clear entityBuffer - it's been removed
         stopEntityTimeoutMonitoring();
     }
-    
+
     private SAXParseException toParseException(SAXException e) {
         if (e instanceof SAXParseException) {
             return (SAXParseException) e;
         }
         return new SAXParseException(e.getMessage(), locator, e);
     }
-    
+
     /**
      * Reports a fatal error to the ErrorHandler and throws a SAXParseException.
      * 
@@ -2848,6 +3059,27 @@ public class GonzalezParser implements EntityResolvingParser {
      * @throws SAXParseException always thrown after notifying the error handler
      */
     private void fatalError(String message) throws SAXParseException {
+        // Diagnostic output
+        System.err.println("FATAL ERROR: " + message);
+        System.err.println("  State: " + state);
+        System.err.println("  Position: line " + locator.getLineNumber() + ", col " + locator.getColumnNumber());
+
+        // Show charUnderflow content around current position
+        if (charUnderflow != null && charUnderflow.hasRemaining()) {
+            int pos = charUnderflow.position();
+            int remaining = Math.min(charUnderflow.remaining(), 50);
+            StringBuilder context = new StringBuilder();
+            for (int i = 0; i < remaining; i++) {
+                char ch = charUnderflow.get(pos + i);
+                if (ch == '\n') context.append("\\n");
+                else if (ch == '\r') context.append("\\r");
+                else if (ch == '\t') context.append("\\t");
+                else if (ch < 32 || ch > 126) context.append("?");
+                else context.append(ch);
+            }
+            System.err.println("  charUnderflow (" + charUnderflow.remaining() + " chars): \"" + context + "\"");
+        }
+
         SAXParseException e = new SAXParseException(message, locator);
         if (errorHandler != null) {
             try {
@@ -2860,7 +3092,7 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         throw e;
     }
-    
+
     /**
      * Reports a fatal error with a cause to the ErrorHandler and throws a SAXParseException.
      * 
@@ -2881,7 +3113,7 @@ public class GonzalezParser implements EntityResolvingParser {
         }
         throw e;
     }
-    
+
     /**
      * Reports a recoverable error to the ErrorHandler.
      * 
@@ -2901,7 +3133,7 @@ public class GonzalezParser implements EntityResolvingParser {
             errorHandler.error(e);
         }
     }
-    
+
     /**
      * Reports a warning to the ErrorHandler.
      * 
@@ -2917,7 +3149,7 @@ public class GonzalezParser implements EntityResolvingParser {
             errorHandler.warning(e);
         }
     }
-    
+
     /**
      * EntityReceiver implementation that wraps a child parser for entity content.
      * 
@@ -2951,13 +3183,13 @@ public class GonzalezParser implements EntityResolvingParser {
             this.systemId = systemId;
             this.closed = false;
             this.lastActivityTime = System.currentTimeMillis();
-            
+
             // Check depth limit
             if (entityReceiverStack.size() >= MAX_ENTITY_DEPTH) {
                 throw new SAXParseException("Entity nesting depth exceeds maximum: " + MAX_ENTITY_DEPTH,
                         locator);
             }
-            
+
             // Check for circular references by systemId
             for (EntityReceiverImpl active : entityReceiverStack) {
                 if (systemId != null && systemId.equals(active.systemId)) {
@@ -2965,10 +3197,10 @@ public class GonzalezParser implements EntityResolvingParser {
                             locator);
                 }
             }
-            
+
             // Create a new parser instance to parse this entity's content
             this.wrappedParser = new GonzalezParser(getCharset());
-            
+
             // Configure the wrapped parser with same handlers as parent
             wrappedParser.setContentHandler(getContentHandler());
             wrappedParser.setLexicalHandler(getLexicalHandler());
@@ -2976,7 +3208,7 @@ public class GonzalezParser implements EntityResolvingParser {
             wrappedParser.setErrorHandler(getErrorHandler());
             wrappedParser.setEntityResolverFactory(getEntityResolverFactory());
             wrappedParser.setEntityTimeout(getEntityTimeout()); // Propagate timeout setting
-            
+
             // Set identifiers for error reporting
             if (systemId != null) {
                 wrappedParser.setSystemId(systemId);
@@ -2984,16 +3216,16 @@ public class GonzalezParser implements EntityResolvingParser {
             if (publicId != null) {
                 wrappedParser.setPublicId(publicId);
             }
-            
+
             // Push onto stack BEFORE starting resolution
             entityReceiverStack.push(this);
             entityDepth++;
-            
+
             // Start timeout monitoring if this is the first entity
             if (entityReceiverStack.size() == 1) {
                 startEntityTimeoutMonitoring();
             }
-            
+
             // Report entity start to lexical handler
             if (lexicalHandler != null) {
                 try {
@@ -3004,14 +3236,14 @@ public class GonzalezParser implements EntityResolvingParser {
                 }
             }
         }
-        
+
         /**
          * Returns the last activity time for timeout monitoring.
          */
         long getLastActivityTime() {
             return lastActivityTime;
         }
-        
+
         /**
          * Marks this receiver as closed without further processing.
          * Called during cleanup after timeout or error.
@@ -3025,18 +3257,18 @@ public class GonzalezParser implements EntityResolvingParser {
             if (closed) {
                 throw new IllegalStateException("EntityReceiver already closed");
             }
-            
+
             // Update activity time BEFORE processing
             // This ensures timeout measures gaps between data, not processing time
             lastActivityTime = System.currentTimeMillis();
-            
+
             // Check entity size limit
             totalEntitySize += data.remaining();
             if (totalEntitySize > MAX_ENTITY_SIZE) {
                 throw new SAXParseException("Entity size exceeds maximum: " + MAX_ENTITY_SIZE,
                         wrappedParser.locator);
             }
-            
+
             try {
                 // Forward data to wrapped parser
                 // The wrapped parser will process it and may encounter more entities,
@@ -3055,7 +3287,7 @@ public class GonzalezParser implements EntityResolvingParser {
                 return; // Already closed
             }
             closed = true;
-            
+
             // Close the wrapped parser
             try {
                 wrappedParser.close();
@@ -3063,7 +3295,7 @@ public class GonzalezParser implements EntityResolvingParser {
                 // Entity parsing failed - propagate error
                 throw e;
             }
-            
+
             // Report entity end to lexical handler
             if (lexicalHandler != null) {
                 try {
@@ -3073,7 +3305,7 @@ public class GonzalezParser implements EntityResolvingParser {
                     // Continue even if handler fails
                 }
             }
-            
+
             // CRITICAL: Synchronize on parent parser before modifying its state
             // This callback is invoked from HTTP client thread, but parent parser
             // might be receiving data from application thread
@@ -3084,12 +3316,12 @@ public class GonzalezParser implements EntityResolvingParser {
                     throw new IllegalStateException("Entity receiver stack corruption");
                 }
                 entityDepth--;
-                
+
                 // Stop timeout monitoring if no more entities
                 if (entityReceiverStack.isEmpty()) {
                     stopEntityTimeoutMonitoring();
                 }
-                
+
                 // Resume parent parser: process buffered main document data
                 // This calls the interface method which routes to the correct implementation
                 onEntityResolutionComplete();

@@ -106,7 +106,6 @@ public interface AsyncEntityResolver {
    * @throws SAXException if the entity cannot be resolved or an immediate
    *                      error occurs
    */
-  void resolveEntity(String publicId, String systemId, EntityReceiver receiver)
-      throws SAXException;
+  void resolveEntity(String publicId, String systemId, EntityReceiver receiver) throws SAXException;
 
 }

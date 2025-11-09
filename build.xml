@@ -23,17 +23,28 @@
   <property name='src' location='src'/>
   <property name='build' location='build'/>
   <property name='dist' location='dist'/>
+  <property name='test' location='test'/>
   <property name='gumdrop.home' location='../gumdrop'/>
   <property name='gumdrop.jar' location='${gumdrop.home}/dist/server.jar'/>
   
   <!-- Gonzalez version -->
   <property name='version' value='0.1.0'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
+  
+  <!-- JUnit dependencies -->
+  <property name='junit.jar' value='junit-4.13.1.jar'/>
+  <property name='hamcrest.jar' value='hamcrest-3.0.jar'/>
 
   <!-- Clean build artifacts -->
-  <target name='clean'>
+  <target name='clean' depends='clean-junit'>
     <delete dir='${build}'/>
     <delete dir='${dist}'/>
+  </target>
+  
+  <target name='clean-junit'>
+    <delete dir='${test}/junit/classes'/>
+    <delete dir='${test}/junit/results'/>
+    <delete dir='${test}/output'/>
   </target>
 
   <!-- Compile core parser (no Gumdrop dependency) -->
@@ -78,6 +89,62 @@
 
   <!-- Distribution target -->
   <target name='dist' depends='jar'/>
+  
+  <!-- JUnit test compilation -->
+  <target name='junit-build' depends='build-core'>
+    <mkdir dir='${test}/junit/classes'/>
+    <javac srcdir='${test}/junit/src' destdir='${test}/junit/classes' debug='true' includeantruntime='false'>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+    </javac>
+  </target>
+  
+  <!-- Run JUnit tests -->
+  <target name='junit-test' depends='junit-build'>
+    <mkdir dir='${test}/junit/results'/>
+    <mkdir dir='${test}/output'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes'>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='${test}/junit/classes'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+      <formatter type='xml'/>
+      <formatter type='plain' usefile='false'/>
+      <batchtest fork='yes' todir='${test}/junit/results'>
+        <fileset dir='${test}/junit/src'>
+          <include name='**/*Test.java'/>
+        </fileset>
+      </batchtest>
+    </junit>
+    
+    <!-- Display results summary -->
+    <echo message=''/>
+    <echo message='Test results written to ${test}/junit/results'/>
+    <echo message='Conformance report written to ${test}/output/conformance-report.txt'/>
+  </target>
+  
+  <!-- Main test target -->
+  <target name='test' depends='junit-test' description='Run W3C XML conformance tests'>
+    <echo message='W3C XML Conformance Test Suite complete'/>
+  </target>
+  
+  <!-- Simple parse test (no JUnit) -->
+  <target name='simple-test' depends='build-core' description='Compile simple parse test'>
+    <javac srcdir='${test}' destdir='${test}' debug='true' includeantruntime='false'>
+      <classpath>
+        <pathelement location='${build}'/>
+      </classpath>
+      <include name='SimpleParseTest.java'/>
+    </javac>
+    <echo message=''/>
+    <echo message='To run: java -cp build:test SimpleParseTest &lt;xml-file&gt;'/>
+    <echo message='Example: java -cp build:test SimpleParseTest xmlconf/eduni/errata-2e/errata2e.xml'/>
+  </target>
 
 </project>
 
