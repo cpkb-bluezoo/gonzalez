@@ -30,6 +30,10 @@ import java.util.Deque;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
@@ -79,7 +83,7 @@ import org.xml.sax.helpers.NamespaceSupport;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class GonzalezParser {
+public class GonzalezParser implements EntityResolvingParser {
 
     private enum ParseState {
         INITIAL,              // Before any content
@@ -151,8 +155,14 @@ public class GonzalezParser {
     private StringBuilder textAccumulator;
 
     // Entity resolution state
-    private Deque<ParseContext> contextStack;
-    private boolean inEntity;
+    private Deque<EntityReceiverImpl> entityReceiverStack;
+    private ByteBuffer entityBuffer;  // Buffer for main doc data during entity resolution
+    
+    // Entity timeout monitoring
+    private ScheduledExecutorService entityTimeoutExecutor;
+    private ScheduledFuture<?> timeoutMonitorTask;
+    private long entityTimeoutMillis = 10_000; // 10 seconds default
+    private volatile SAXException entityTimeoutException; // Set by monitor thread
 
     // Element stack for validation
     private Deque<String> elementStack;
@@ -213,7 +223,8 @@ public class GonzalezParser {
             this.decoder = StandardCharsets.UTF_8.newDecoder();
         }
         this.textAccumulator = new StringBuilder();
-        this.contextStack = new ArrayDeque<>();
+        this.entityReceiverStack = new ArrayDeque<>();
+        this.entityBuffer = ByteBuffer.allocate(8192);
         this.elementStack = new ArrayDeque<>();
         this.generalEntities = new HashMap<>();
 
@@ -418,6 +429,37 @@ public class GonzalezParser {
     }
     
     /**
+     * Sets the entity resolution timeout in milliseconds.
+     * 
+     * <p>This timeout applies to the period between receiving data chunks for
+     * an external entity. If no data is received for an entity within this
+     * timeout period, entity resolution fails with a fatal error.
+     * 
+     * <p>The timeout is measured from the last receive() call, not from the
+     * start of entity resolution. This ensures that only network delays (not
+     * processing time) are measured.
+     * 
+     * <p>Default: 10000ms (10 seconds)
+     * 
+     * @param timeoutMillis the timeout in milliseconds, or 0 to disable timeout
+     */
+    public void setEntityTimeout(long timeoutMillis) {
+        if (timeoutMillis < 0) {
+            throw new IllegalArgumentException("Timeout must be non-negative");
+        }
+        this.entityTimeoutMillis = timeoutMillis;
+    }
+    
+    /**
+     * Returns the entity resolution timeout in milliseconds.
+     * 
+     * @return the timeout in milliseconds, or 0 if disabled
+     */
+    public long getEntityTimeout() {
+        return entityTimeoutMillis;
+    }
+    
+    /**
      * Receives and processes XML data.
      * 
      * <p>This method may be called multiple times to feed data incrementally
@@ -428,14 +470,23 @@ public class GonzalezParser {
      * The buffer is not modified otherwise and may be reused after this method
      * returns.
      * 
+     * <p><strong>Thread Safety:</strong> This method is synchronized. While it's
+     * safe to call from multiple threads, it's designed for single-threaded use.
+     * External entity resolution may cause callbacks from HTTP client threads,
+     * which are properly synchronized.
+     * 
      * @param data the XML data to process
      * @throws SAXParseException if the XML is malformed or a parse error occurs
      */
-    public void receive(ByteBuffer data)
+    public synchronized void receive(ByteBuffer data)
             throws SAXParseException {
             if (documentEnded) {
                 fatalError("Data received after document end");
             }
+            
+            // Check if entity timeout occurred
+            checkEntityTimeout();
+            
             // Start document on first receive
             if (!documentStarted) {
                 try {
@@ -447,7 +498,15 @@ public class GonzalezParser {
                     throw toParseException(e);
                 }
             }
-            // Append to parse buffer
+            
+            // If we're currently resolving an entity, buffer this main document data
+            // It will be processed after the entity resolution completes
+            if (!entityReceiverStack.isEmpty()) {
+                bufferMainDocumentData(data);
+                return;  // Don't process now
+            }
+            
+            // Normal processing: append to parse buffer and process
             ensureBufferCapacity(data.remaining());
             parseBuffer.put(data);
 
@@ -468,9 +527,12 @@ public class GonzalezParser {
      * finalize processing and generate an exception if the document is not
      * complete.
      * 
+     * <p><strong>Thread Safety:</strong> This method is synchronized and safe
+     * to call from any thread.
+     * 
      * @throws SAXParseException if the document is incomplete or invalid
      */
-    public void close() throws SAXParseException {
+    public synchronized void close() throws SAXParseException {
         if (documentEnded) {
             return; // Already closed
         }
@@ -2607,6 +2669,167 @@ public class GonzalezParser {
         }
     }
     
+    /**
+     * Buffers main document data that arrives while an entity is being resolved.
+     */
+    private void bufferMainDocumentData(ByteBuffer data) {
+        // Ensure capacity in entity buffer
+        if (entityBuffer.remaining() < data.remaining()) {
+            int newCapacity = entityBuffer.capacity() + data.remaining() + 4096;
+            ByteBuffer newBuffer = ByteBuffer.allocate(newCapacity);
+            entityBuffer.flip();
+            newBuffer.put(entityBuffer);
+            entityBuffer = newBuffer;
+        }
+        entityBuffer.put(data);
+    }
+    
+    /**
+     * Processes buffered main document data after entity resolution completes.
+     */
+    private void processBufferedMainDocumentData() throws SAXException {
+        if (entityBuffer.position() == 0) {
+            return; // No buffered data
+        }
+        
+        entityBuffer.flip();
+        ensureBufferCapacity(entityBuffer.remaining());
+        parseBuffer.put(entityBuffer);
+        entityBuffer.clear(); // Ready for next entity
+        
+        // Process the buffered data
+        parse();
+    }
+    
+    /**
+     * Callback from EntityReceiver when entity resolution completes.
+     * 
+     * <p>Implements {@link EntityResolvingParser#onEntityResolutionComplete()}.
+     * This method is called from HTTP client threads, so must be properly synchronized.
+     * The synchronization is handled by the caller (EntityReceiverImpl.close()).
+     */
+    @Override
+    public void onEntityResolutionComplete() throws SAXException {
+        processBufferedMainDocumentData();
+    }
+    
+    /**
+     * Starts the entity timeout monitoring thread if not already started.
+     */
+    private synchronized void startEntityTimeoutMonitoring() {
+        if (entityTimeoutMillis == 0) {
+            return; // Timeout disabled
+        }
+        
+        if (entityTimeoutExecutor == null) {
+            entityTimeoutExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "Gonzalez-Entity-Timeout-Monitor");
+                t.setDaemon(true);  // Don't prevent JVM shutdown
+                return t;
+            });
+            
+            // Check for timeouts every second
+            timeoutMonitorTask = entityTimeoutExecutor.scheduleAtFixedRate(
+                    this::checkAllEntityTimeouts,
+                    1000, 1000, TimeUnit.MILLISECONDS);
+        }
+    }
+    
+    /**
+     * Stops the entity timeout monitoring thread.
+     */
+    private synchronized void stopEntityTimeoutMonitoring() {
+        if (timeoutMonitorTask != null) {
+            timeoutMonitorTask.cancel(false);
+            timeoutMonitorTask = null;
+        }
+        
+        if (entityTimeoutExecutor != null) {
+            entityTimeoutExecutor.shutdown();
+            try {
+                if (!entityTimeoutExecutor.awaitTermination(1, TimeUnit.SECONDS)) {
+                    entityTimeoutExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                entityTimeoutExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+            entityTimeoutExecutor = null;
+        }
+    }
+    
+    /**
+     * Called by monitoring thread to check all active entities for timeout.
+     * Runs in background thread, so must be thread-safe.
+     */
+    private void checkAllEntityTimeouts() {
+        try {
+            if (entityReceiverStack.isEmpty()) {
+                return; // No active entities
+            }
+            
+            long now = System.currentTimeMillis();
+            
+            // Check each active entity receiver
+            // We only check the top of stack (most recent entity)
+            // because that's the one that should be receiving data
+            EntityReceiverImpl topReceiver = entityReceiverStack.peek();
+            if (topReceiver != null) {
+                long elapsed = now - topReceiver.getLastActivityTime();
+                if (elapsed > entityTimeoutMillis) {
+                    // Timeout occurred!
+                    String systemId = topReceiver.systemId != null ? topReceiver.systemId : "unknown";
+                    SAXException timeout = new SAXParseException(
+                            String.format("Entity resolution timeout after %dms for: %s",
+                                    elapsed, systemId),
+                            locator);
+                    
+                    // Store exception to be thrown on next parsing activity
+                    entityTimeoutException = timeout;
+                }
+            }
+        } catch (Exception e) {
+            // Don't let exceptions in monitor thread kill the thread
+            // Just log and continue
+            System.err.println("Error in entity timeout monitor: " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Checks if an entity timeout has occurred and throws if so.
+     * Called before any parsing activity.
+     */
+    private void checkEntityTimeout() throws SAXParseException {
+        SAXException timeout = entityTimeoutException;
+        if (timeout != null) {
+            // Clear the exception
+            entityTimeoutException = null;
+            
+            // Clean up entity stack
+            cleanupEntityStack();
+            
+            // Throw the timeout exception
+            if (timeout instanceof SAXParseException) {
+                throw (SAXParseException) timeout;
+            } else {
+                throw new SAXParseException(timeout.getMessage(), locator, timeout);
+            }
+        }
+    }
+    
+    /**
+     * Cleans up the entity receiver stack after a timeout or error.
+     */
+    private void cleanupEntityStack() {
+        while (!entityReceiverStack.isEmpty()) {
+            EntityReceiverImpl receiver = entityReceiverStack.pop();
+            receiver.markClosed(); // Mark as closed without further processing
+        }
+        entityDepth = 0;
+        entityBuffer.clear();
+        stopEntityTimeoutMonitoring();
+    }
+    
     private SAXParseException toParseException(SAXException e) {
         if (e instanceof SAXParseException) {
             return (SAXParseException) e;
@@ -2696,19 +2919,181 @@ public class GonzalezParser {
     }
     
     /**
-     * Parse context for entity resolution.
+     * EntityReceiver implementation that wraps a child parser for entity content.
+     * 
+     * <p>When an external entity is encountered, this receiver:
+     * <ul>
+     * <li>Creates a new parser instance to parse the entity content</li>
+     * <li>Forwards entity data to the wrapped parser</li>
+     * <li>Detects circular entity references by checking the stack</li>
+     * <li>Notifies parent parser when entity resolution completes</li>
+     * </ul>
+     * 
+     * <p>The parent parser switches to buffering mode while this receiver is active,
+     * and resumes normal processing when close() is called.
      */
-    private static class ParseContext {
-        ParseState state;
-        int line;
-        int column;
-        String entityName;
+    private class EntityReceiverImpl implements EntityReceiver {
+        private final String publicId;
+        private final String systemId;
+        private final GonzalezParser wrappedParser;
+        private volatile long lastActivityTime;
+        private boolean closed;
 
-        ParseContext(ParseState state, int line, int column, String entityName) {
-            this.state = state;
-            this.line = line;
-            this.column = column;
-            this.entityName = entityName;
+        /**
+         * Creates a new entity receiver for the specified external entity.
+         * 
+         * @param publicId the public identifier (may be null)
+         * @param systemId the system identifier (URL)
+         * @throws SAXException if circular reference detected or depth limit exceeded
+         */
+        EntityReceiverImpl(String publicId, String systemId) throws SAXException {
+            this.publicId = publicId;
+            this.systemId = systemId;
+            this.closed = false;
+            this.lastActivityTime = System.currentTimeMillis();
+            
+            // Check depth limit
+            if (entityReceiverStack.size() >= MAX_ENTITY_DEPTH) {
+                throw new SAXParseException("Entity nesting depth exceeds maximum: " + MAX_ENTITY_DEPTH,
+                        locator);
+            }
+            
+            // Check for circular references by systemId
+            for (EntityReceiverImpl active : entityReceiverStack) {
+                if (systemId != null && systemId.equals(active.systemId)) {
+                    throw new SAXParseException("Circular entity reference detected: " + systemId,
+                            locator);
+                }
+            }
+            
+            // Create a new parser instance to parse this entity's content
+            this.wrappedParser = new GonzalezParser(getCharset());
+            
+            // Configure the wrapped parser with same handlers as parent
+            wrappedParser.setContentHandler(getContentHandler());
+            wrappedParser.setLexicalHandler(getLexicalHandler());
+            wrappedParser.setDTDHandler(getDTDHandler());
+            wrappedParser.setErrorHandler(getErrorHandler());
+            wrappedParser.setEntityResolverFactory(getEntityResolverFactory());
+            wrappedParser.setEntityTimeout(getEntityTimeout()); // Propagate timeout setting
+            
+            // Set identifiers for error reporting
+            if (systemId != null) {
+                wrappedParser.setSystemId(systemId);
+            }
+            if (publicId != null) {
+                wrappedParser.setPublicId(publicId);
+            }
+            
+            // Push onto stack BEFORE starting resolution
+            entityReceiverStack.push(this);
+            entityDepth++;
+            
+            // Start timeout monitoring if this is the first entity
+            if (entityReceiverStack.size() == 1) {
+                startEntityTimeoutMonitoring();
+            }
+            
+            // Report entity start to lexical handler
+            if (lexicalHandler != null) {
+                try {
+                    String entityName = systemId != null ? systemId : "[external]";
+                    lexicalHandler.startEntity(entityName);
+                } catch (SAXException e) {
+                    // Continue even if handler fails
+                }
+            }
+        }
+        
+        /**
+         * Returns the last activity time for timeout monitoring.
+         */
+        long getLastActivityTime() {
+            return lastActivityTime;
+        }
+        
+        /**
+         * Marks this receiver as closed without further processing.
+         * Called during cleanup after timeout or error.
+         */
+        void markClosed() {
+            this.closed = true;
+        }
+
+        @Override
+        public void receive(ByteBuffer data) throws SAXException {
+            if (closed) {
+                throw new IllegalStateException("EntityReceiver already closed");
+            }
+            
+            // Update activity time BEFORE processing
+            // This ensures timeout measures gaps between data, not processing time
+            lastActivityTime = System.currentTimeMillis();
+            
+            // Check entity size limit
+            totalEntitySize += data.remaining();
+            if (totalEntitySize > MAX_ENTITY_SIZE) {
+                throw new SAXParseException("Entity size exceeds maximum: " + MAX_ENTITY_SIZE,
+                        wrappedParser.locator);
+            }
+            
+            try {
+                // Forward data to wrapped parser
+                // The wrapped parser will process it and may encounter more entities,
+                // which will create nested EntityReceiverImpl instances
+                wrappedParser.receive(data);
+            } finally {
+                // Update activity time AFTER processing
+                // This ensures we reset the timeout after processing completes
+                lastActivityTime = System.currentTimeMillis();
+            }
+        }
+
+        @Override
+        public void close() throws SAXException {
+            if (closed) {
+                return; // Already closed
+            }
+            closed = true;
+            
+            // Close the wrapped parser
+            try {
+                wrappedParser.close();
+            } catch (SAXParseException e) {
+                // Entity parsing failed - propagate error
+                throw e;
+            }
+            
+            // Report entity end to lexical handler
+            if (lexicalHandler != null) {
+                try {
+                    String entityName = systemId != null ? systemId : "[external]";
+                    lexicalHandler.endEntity(entityName);
+                } catch (SAXException e) {
+                    // Continue even if handler fails
+                }
+            }
+            
+            // CRITICAL: Synchronize on parent parser before modifying its state
+            // This callback is invoked from HTTP client thread, but parent parser
+            // might be receiving data from application thread
+            synchronized(GonzalezParser.this) {
+                // Pop from stack
+                EntityReceiverImpl popped = entityReceiverStack.pop();
+                if (popped != this) {
+                    throw new IllegalStateException("Entity receiver stack corruption");
+                }
+                entityDepth--;
+                
+                // Stop timeout monitoring if no more entities
+                if (entityReceiverStack.isEmpty()) {
+                    stopEntityTimeoutMonitoring();
+                }
+                
+                // Resume parent parser: process buffered main document data
+                // This calls the interface method which routes to the correct implementation
+                onEntityResolutionComplete();
+            }
         }
     }
 

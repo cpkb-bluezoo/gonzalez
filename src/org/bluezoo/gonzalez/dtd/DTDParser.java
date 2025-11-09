@@ -27,12 +27,17 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
 import org.bluezoo.gonzalez.AsyncEntityResolverFactory;
 import org.bluezoo.gonzalez.EntityReceiver;
+import org.bluezoo.gonzalez.EntityResolvingParser;
 import org.bluezoo.gonzalez.GonzalezAttributes;
+import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
+import org.xml.sax.ErrorHandler;
 import org.xml.sax.ext.DeclHandler;
 import org.xml.sax.ext.LexicalHandler;
 import org.xml.sax.SAXException;
@@ -50,6 +55,9 @@ import org.xml.sax.SAXParseException;
  * via {@link #receive(ByteBuffer)} and reports declarations through the
  * {@link DTDHandler}, {@link DeclHandler}, and {@link LexicalHandler} interfaces.
  *
+ * <p>It also implements {@link EntityResolvingParser} to support resolution
+ * of external parameter entities within the DTD.
+ *
  * <p><strong>Features:</strong>
  * <ul>
  * <li>Parses internal and external DTD subsets</li>
@@ -64,7 +72,7 @@ import org.xml.sax.SAXParseException;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class DTDParser implements EntityReceiver {
+public class DTDParser implements EntityReceiver, EntityResolvingParser {
 
   // Parse state
   private enum DTDState {
@@ -86,6 +94,10 @@ public class DTDParser implements EntityReceiver {
   private LexicalHandler lexicalHandler;
   private AsyncEntityResolverFactory entityResolverFactory;
   private Charset charset;
+  private ErrorHandler errorHandler;
+  private String systemId;
+  private String publicId;
+  private long entityTimeout = 10_000; // Default 10 seconds
 
   // State
   private DTDState state;
@@ -107,6 +119,10 @@ public class DTDParser implements EntityReceiver {
   // Element content models
   // Key: elementName, Value: content model string
   private Map<String, String> elementContentModels;
+  
+  // Entity resolution state (for parameter entities in DTD)
+  private Deque<Object> entityReceiverStack; // Stack of entity receivers
+  private ByteBuffer entityBuffer; // Buffer for DTD data during entity resolution
 
   /**
    * Creates a new DTD parser.
@@ -141,6 +157,8 @@ public class DTDParser implements EntityReceiver {
     this.attributeDeclarations = new HashMap<>();
     this.parameterEntities = new HashMap<>();
     this.elementContentModels = new HashMap<>();
+    this.entityReceiverStack = new ArrayDeque<>();
+    this.entityBuffer = ByteBuffer.allocate(8192);
   }
 
   /**
@@ -1175,6 +1193,133 @@ public class DTDParser implements EntityReceiver {
       return (SAXParseException) e;
     }
     return new SAXParseException(e.getMessage(), null, null, line, column, e);
+  }
+  
+  // EntityResolvingParser interface implementation
+  
+  /**
+   * Callback from EntityReceiver when parameter entity resolution completes.
+   * 
+   * <p>Implements {@link EntityResolvingParser#onEntityResolutionComplete()}.
+   */
+  @Override
+  public void onEntityResolutionComplete() throws SAXException {
+    // Process buffered DTD data that arrived while entity was being resolved
+    if (entityBuffer.position() == 0) {
+      return; // No buffered data
+    }
+    
+    entityBuffer.flip();
+    
+    // Ensure capacity in parse buffer
+    if (parseBuffer.remaining() < entityBuffer.remaining()) {
+      int newCapacity = parseBuffer.capacity() + entityBuffer.remaining() + 4096;
+      ByteBuffer newBuffer = ByteBuffer.allocate(newCapacity);
+      parseBuffer.flip();
+      newBuffer.put(parseBuffer);
+      parseBuffer = newBuffer;
+    }
+    
+    parseBuffer.put(entityBuffer);
+    entityBuffer.clear(); // Ready for next entity
+    
+    // Process the buffered data by calling receive's internal logic
+    // (we don't call receive() directly to avoid recursive issues)
+    parseBuffer.flip();
+    CoderResult result = decoder.decode(parseBuffer, charBuffer, false);
+    parseBuffer.compact();
+    
+    if (result.isError()) {
+      throw new SAXParseException("Character decoding error", null, null, line, column);
+    }
+    
+    charBuffer.flip();
+    parse();
+    charBuffer.compact();
+  }
+  
+  @Override
+  public Charset getCharset() {
+    return charset;
+  }
+  
+  @Override
+  public ContentHandler getContentHandler() {
+    return null; // DTD parser doesn't use ContentHandler
+  }
+  
+  @Override
+  public LexicalHandler getLexicalHandler() {
+    return lexicalHandler;
+  }
+  
+  @Override
+  public DTDHandler getDTDHandler() {
+    return dtdHandler;
+  }
+  
+  @Override
+  public ErrorHandler getErrorHandler() {
+    return errorHandler;
+  }
+  
+  @Override
+  public AsyncEntityResolverFactory getEntityResolverFactory() {
+    return entityResolverFactory;
+  }
+  
+  @Override
+  public long getEntityTimeout() {
+    return entityTimeout;
+  }
+  
+  @Override
+  public String getSystemId() {
+    return systemId;
+  }
+  
+  @Override
+  public String getPublicId() {
+    return publicId;
+  }
+  
+  /**
+   * Sets the error handler for error reporting.
+   * 
+   * @param handler the error handler, or null
+   */
+  public void setErrorHandler(ErrorHandler handler) {
+    this.errorHandler = handler;
+  }
+  
+  /**
+   * Sets the system identifier for error reporting.
+   * 
+   * @param systemId the system identifier (URI)
+   */
+  public void setSystemId(String systemId) {
+    this.systemId = systemId;
+  }
+  
+  /**
+   * Sets the public identifier for error reporting.
+   * 
+   * @param publicId the public identifier
+   */
+  public void setPublicId(String publicId) {
+    this.publicId = publicId;
+  }
+  
+  /**
+   * Sets the entity resolution timeout in milliseconds.
+   * 
+   * @param timeoutMillis the timeout in milliseconds, or 0 to disable
+   */
+  public void setEntityTimeout(long timeoutMillis) {
+    if (timeoutMillis < 0) {
+      throw new IllegalArgumentException("Timeout must be non-negative");
+    }
+    this.entityTimeout = timeoutMillis;
   }
 
 }

@@ -19,6 +19,12 @@ Traditional SAX parsers use a pull model where the parser controls the flow of d
 
 The parser is a state machine that processes whatever data is available and buffers incomplete tokens. When the end of available data is reached, it returns control to the caller, who can then feed more data when it arrives. This makes Gonzalez ideal for integration with async I/O frameworks like the Gumdrop HTTP client.
 
+### DTD Parser
+
+Most XML documents in practice are standalone documents without DTDs. To minimize memory overhead for the common case, the DTD parser is a separate component that is loaded only when a DOCTYPE declaration is encountered.
+
+The DTD parser uses the same non-blocking architecture as the main parser. It receives DTD content via `receive(ByteBuffer)` and reports declarations through the standard SAX interfaces: DTDHandler for notations and unparsed entities, DeclHandler for element and attribute declarations, and LexicalHandler for comments and entity boundaries.
+
 ### Entity Resolution
 
 The biggest architectural challenge for a non-blocking XML parser is external entity resolution. Traditional SAX uses EntityResolver, which returns an InputSource that the parser then reads from synchronously. This is fundamentally a blocking operation.
@@ -27,11 +33,106 @@ Gonzalez solves this with AsyncEntityResolver, which receives an EntityReceiver 
 
 This design allows entities to be fetched via any asynchronous mechanism (HTTP, filesystem with async I/O, etc.) without blocking the parser. Entity resolution becomes just another source of ByteBuffers being fed into the parser.
 
-### DTD Parser
+## External Entity Resolution: Performance and Complexity
 
-Most XML documents in practice are standalone documents without DTDs. To minimize memory overhead for the common case, the DTD parser is a separate component that is loaded only when a DOCTYPE declaration is encountered.
+**In 99% of real-world cases**, XML documents are **standalone** - they contain no external entity references. For these documents, Gonzalez's non-blocking, asynchronous architecture delivers **superior performance**:
 
-The DTD parser uses the same non-blocking architecture as the main parser. It receives DTD content via `receive(ByteBuffer)` and reports declarations through the standard SAX interfaces: DTDHandler for notations and unparsed entities, DeclHandler for element and attribute declarations, and LexicalHandler for comments and entity boundaries.
+- Zero blocking I/O
+- No thread coordination overhead
+- Predictable memory usage
+- Linear processing of incoming data
+
+However, **external entities represent a fundamental challenge** to the non-blocking model. When an external entity is encountered, the parser must:
+
+1. **Suspend main document processing** (enter buffering mode)
+2. **Resolve the entity asynchronously** (potentially via HTTP)
+3. **Process entity content** (which may itself contain more entities)
+4. **Resume main document processing** (process buffered data)
+
+This creates significant complexity because:
+
+- **Main document data continues to arrive** while entities are being resolved
+- **Entities can be nested** (entities referencing other entities)
+- **Network delays** can cause entities to resolve in any order
+- **Failures must be detected** (timeouts, network errors)
+
+### Entity Receiver Architecture
+
+Gonzalez handles this complexity through a **chain of entity receivers**, each managing one entity resolution:
+
+```
+Main Parser (document.xml)
+    ├─ buffering main document data
+    └─ EntityReceiver 1 (http://example.com/entity1.xml)
+        ├─ Wraps child parser instance
+        ├─ Processes entity1 content
+        └─ EntityReceiver 2 (http://example.com/entity2.xml)
+            ├─ Wraps grandchild parser instance
+            ├─ Processes entity2 content
+            └─ Completes → callbacks to EntityReceiver 1
+                └─ Completes → callbacks to Main Parser
+```
+
+**Key behaviors:**
+
+1. **Each entity gets its own parser instance** that processes entity content independently
+2. **Parent parsers buffer incoming data** while waiting for child entities to complete
+3. **Memory usage grows** with nesting depth and buffered data size
+4. **Thread safety** is maintained through synchronization on the parent parser
+5. **Circular references are detected** by tracking systemIds (URLs) in the resolution chain
+
+### Timeout Configuration
+
+Since entity resolution involves network I/O, **timeouts are essential** to prevent the parser from hanging indefinitely. Gonzalez provides configurable per-entity timeouts:
+
+```java
+// Set timeout to 10 seconds (default)
+parser.setEntityTimeout(10_000);
+
+// Increase timeout for slow networks
+parser.setEntityTimeout(30_000);
+
+// Disable timeout (not recommended)
+parser.setEntityTimeout(0);
+```
+
+**How timeouts work:**
+
+- Timeout measures **gaps between data chunks**, not total resolution time
+- Timer **resets on each receive()** call, so only network delays are measured
+- Timeout applies **per entity**, allowing identification of which entity failed
+- When timeout occurs, a **fatal error** is raised and propagates up the resolution chain
+- All active entities are **cleaned up** and buffering stops
+
+**Configuration guidelines:**
+
+- **LAN/localhost**: 5-10 seconds is usually sufficient
+- **Internet**: 15-30 seconds to account for network variability
+- **Slow/unreliable networks**: 30-60 seconds or more
+- **Known fast sources**: Can use shorter timeouts (2-5 seconds)
+
+**Important:** You must configure timeouts based on your knowledge of:
+- Network topology (LAN vs Internet)
+- Entity source reliability (internal server vs third-party)
+- Expected entity sizes (small DTDs vs large documents)
+- Acceptable failure modes (fail fast vs tolerate delays)
+
+**Security note:** Entity resolution is a known attack vector (XXE - XML External Entity attacks). Always:
+- Validate entity URLs in your `AsyncEntityResolverFactory`
+- Use allowlists for trusted entity sources
+- Set reasonable timeouts to prevent resource exhaustion
+- Consider disabling external entities entirely for untrusted input
+
+### Memory Considerations
+
+When external entities are encountered:
+
+- **Main document buffering**: All incoming main document data is buffered until the entity completes
+- **Nested buffering**: Each nesting level buffers its parent's data
+- **Maximum depth**: Limited to 10 levels by default to prevent unbounded memory growth
+- **Maximum entity size**: Limited to 10MB per entity to prevent memory exhaustion
+
+For documents with many or large entities, memory usage can be significant. Monitor your application's memory footprint when processing entity-heavy documents.
 
 ## Usage
 
