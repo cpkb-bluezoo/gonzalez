@@ -31,7 +31,7 @@ This design allows entities to be fetched via any asynchronous mechanism (HTTP, 
 
 Most XML documents in practice are standalone documents without DTDs. To minimize memory overhead for the common case, the DTD parser is a separate component that is loaded only when a DOCTYPE declaration is encountered.
 
-The DTD parser uses the same non-blocking architecture as the main parser. It receives DTD content via `receive(ByteBuffer)` and reports declarations through the ExtendedDTDHandler interface, which extends the standard SAX DTDHandler with additional methods for element declarations, attribute lists, and complete entity information.
+The DTD parser uses the same non-blocking architecture as the main parser. It receives DTD content via `receive(ByteBuffer)` and reports declarations through the standard SAX interfaces: DTDHandler for notations and unparsed entities, DeclHandler for element and attribute declarations, and LexicalHandler for comments and entity boundaries.
 
 ## Usage
 
@@ -153,32 +153,25 @@ public interface AsyncEntityResolver {
 
 The implementation initiates fetching of the entity content and feeds it to the receiver as it arrives, then closes the receiver when complete.
 
-### ExtendedDTDHandler
+### SAX Handler Interfaces
 
-Extends the standard SAX DTDHandler to report additional DTD declarations:
+The parser supports the standard SAX2 handler interfaces plus extensions:
 
-```java
-public interface ExtendedDTDHandler extends DTDHandler {
-  void elementDecl(String name, String model) throws SAXException;
-  void attributeDecl(String elementName, String attributeName, 
-                     String type, String mode, String value) throws SAXException;
-  void internalEntityDecl(String name, String value, 
-                          boolean isParameter) throws SAXException;
-  void externalEntityDecl(String name, String publicId, String systemId,
-                          boolean isParameter) throws SAXException;
-}
-```
+- **ContentHandler**: Core XML events (startElement, endElement, characters, etc.)
+- **DTDHandler**: Notation and unparsed entity declarations
+- **LexicalHandler**: Comments, CDATA sections, and entity boundaries
+- **DeclHandler**: Element and attribute declarations from DTD
+- **Attributes2**: Extended attribute information (whether declared/specified)
 
 ## Building
 
 Use ant to build the project:
 
 ```bash
-cd ~/cpkb-bluezoo/gonzalez
-ant dist
+ant
 ```
 
-This produces `dist/gonzalez-0.1.0.jar`.
+This produces a jar file in the `dist` directory.
 
 The core parser has no external dependencies. The HTTP entity resolver requires Gumdrop's HTTP client implementation and is built separately if Gumdrop is available.
 
@@ -216,6 +209,7 @@ HTTP entity resolver:
 
 Gonzalez is licensed under the GNU General Public License version 3.
 See `COPYING` for full terms.
+
 
 -- Chris Burdess
 

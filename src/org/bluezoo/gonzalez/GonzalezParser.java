@@ -33,6 +33,7 @@ import java.util.Map;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
+import org.xml.sax.ErrorHandler;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 import org.xml.sax.ext.DeclHandler;
@@ -128,6 +129,7 @@ public class GonzalezParser {
     private DTDHandler dtdHandler;
     private LexicalHandler lexicalHandler;
     private DeclHandler declHandler;
+    private ErrorHandler errorHandler;
     private GonzalezLocator locator;
     private AsyncEntityResolverFactory entityResolverFactory;
 
@@ -262,6 +264,13 @@ public class GonzalezParser {
         else {
             this.declHandler = null;
         }
+
+        if (handler instanceof ErrorHandler) {
+            this.errorHandler = (ErrorHandler) handler;
+        }
+        else {
+            this.errorHandler = null;
+        }
     }
     
     /**
@@ -310,6 +319,27 @@ public class GonzalezParser {
      */
     public DTDHandler getDTDHandler() {
         return dtdHandler;
+    }
+    
+    /**
+     * Sets the error handler to receive error events.
+     * 
+     * <p>This allows setting a separate error handler even if the content handler
+     * doesn't implement ErrorHandler.
+     * 
+     * @param handler the error handler
+     */
+    public void setErrorHandler(ErrorHandler handler) {
+        this.errorHandler = handler;
+    }
+    
+    /**
+     * Returns the current error handler.
+     * 
+     * @return the error handler, or null if none set
+     */
+    public ErrorHandler getErrorHandler() {
+        return errorHandler;
     }
     
     /**
@@ -404,8 +434,7 @@ public class GonzalezParser {
     public void receive(ByteBuffer data)
             throws SAXParseException {
             if (documentEnded) {
-                throw new SAXParseException("Data received after document end",
-                        null, null, line, column);
+                fatalError("Data received after document end");
             }
             // Start document on first receive
             if (!documentStarted) {
@@ -446,7 +475,7 @@ public class GonzalezParser {
             return; // Already closed
         }
         if (!documentStarted) {
-            throw new SAXParseException("No data received", null, null, line, column);
+            fatalError("No data received");
         }
         // Flush any remaining buffered data
         try {
@@ -464,18 +493,15 @@ public class GonzalezParser {
 
             // Check for incomplete tokens
             if (tokenBuffer.hasRemaining()) {
-                throw new SAXParseException("Incomplete token at end of document",
-                        null, null, line, column);
+                fatalError("Incomplete token at end of document");
             }
             // Verify we're in a valid end state
             if (state != ParseState.DONE) {
-                throw new SAXParseException("Incomplete document", 
-                        null, null, line, column);
+                fatalError("Incomplete document");
             }
             // documentEnded should already be true from parsing
             if (!documentEnded) {
-                throw new SAXParseException("Document not properly ended",
-                        null, null, line, column);
+                fatalError("Document not properly ended");
             }
         }
         catch (SAXException e) {
@@ -528,8 +554,7 @@ public class GonzalezParser {
                 result.throwException();
             }
             catch (Exception e) {
-                throw new SAXParseException("Character encoding error: " + e.getMessage(),
-                        null, null, line, column, e);
+                fatalError("Character encoding error: " + e.getMessage(), e);
             }
         }
 
@@ -618,9 +643,7 @@ public class GonzalezParser {
                 case DONE:
                     // After endDocument, only whitespace allowed
                     if (!Character.isWhitespace(charBuffer.get(charBuffer.position()))) {
-                        throw new SAXParseException(
-                                "Content not allowed after document end",
-                                null, null, line, column);
+                        fatalError("Content not allowed after document end");
                     }
                     consumeChar(); // Skip whitespace
                     break;
@@ -673,8 +696,7 @@ public class GonzalezParser {
 
         // Check size limit
         if (tokenBuffer.position() + remaining > maxSize) {
-            throw new SAXParseException("Token size limit exceeded",
-                    null, null, line, column);
+            throw new SAXParseException("Token size limit exceeded", locator);
         }
 
         // Ensure tokenBuffer has capacity
@@ -967,10 +989,10 @@ public class GonzalezParser {
             
             // Re-decode with new charset
             try {
-                decodeToCharBuffer();
+                decodeToCharBuffer(false);
             } catch (Exception e) {
                 throw new SAXParseException("Error re-decoding with new charset: " + newCharset,
-                        null, null, line, column, e);
+                        locator, e);
             }
         } else {
             // No remaining content to re-decode, just change charset
@@ -1007,9 +1029,7 @@ public class GonzalezParser {
                 return;
             }
             else {
-                throw new SAXParseException(
-                        "Unexpected character before document start: '" + ch + "'",
-                        null, null, line, column);
+                fatalError("Unexpected character before document start: '" + ch + "'");
             }
         }
     }
@@ -1067,8 +1087,7 @@ public class GonzalezParser {
                         } else if ("no".equals(standaloneStr)) {
                             standalone = false;
                         } else {
-                            throw new SAXParseException("Invalid standalone value: " + standaloneStr,
-                                    null, null, line, column);
+                            fatalError("Invalid standalone value: " + standaloneStr);
                         }
                     }
                     
@@ -1082,8 +1101,7 @@ public class GonzalezParser {
                                 reDecodeWithNewCharset(declaredCharset);
                             }
                         } catch (Exception e) {
-                            throw new SAXParseException("Unsupported encoding: " + encoding,
-                                    null, null, line, column, e);
+                            fatalError("Unsupported encoding: " + encoding, e);
                         }
                     }
                     
@@ -1117,8 +1135,7 @@ public class GonzalezParser {
             }
 
             if (peekChar() != '=') {
-                throw new SAXParseException("Expected '=' after attribute name in XML declaration",
-                        null, null, line, column);
+                fatalError("Expected '=' after attribute name in XML declaration");
             }
             consumeChar(); // '='
 
@@ -1134,8 +1151,7 @@ public class GonzalezParser {
             // Parse attribute value
             char quote = peekChar();
             if (quote != '"' && quote != '\'') {
-                throw new SAXParseException("Expected quote for attribute value in XML declaration",
-                        null, null, line, column);
+                fatalError("Expected quote for attribute value in XML declaration");
             }
             consumeChar(); // Opening quote
 
@@ -1233,8 +1249,7 @@ public class GonzalezParser {
                     state = ParseState.DOCTYPE;
                 }
                 else {
-                    throw new SAXParseException("Unexpected markup in prolog",
-                            null, null, line, column);
+                    fatalError("Unexpected markup in prolog");
                 }
             }
             else {
@@ -1243,7 +1258,7 @@ public class GonzalezParser {
             }
         }
         else {
-            throw new SAXParseException("Expected '<'", null, null, line, column);
+            fatalError("Expected '<'");
         }
     }
     
@@ -1256,7 +1271,7 @@ public class GonzalezParser {
             return;
         }
         if (peekChar() != '<') {
-            throw new SAXParseException("Expected '<'", null, null, line, column);
+            fatalError("Expected '<'");
         }
         consumeChar();
 
@@ -1294,8 +1309,7 @@ public class GonzalezParser {
                 }
                 consumeChar(); // '/'
                 if (peekChar() != '>') {
-                    throw new SAXParseException("Expected '>' after '/'",
-                            null, null, line, column);
+                    fatalError("Expected '>' after '/'");
                 }
                 consumeChar(); // '>'
                 emptyElement = true;
@@ -1304,8 +1318,7 @@ public class GonzalezParser {
             else if (isNameStartChar(ch)) {
                 // After the first attribute, we must have whitespace before the next
                 if (hasAttribute && !hasWhitespace) {
-                    throw new SAXParseException("Whitespace required between attributes",
-                            null, null, line, column);
+                    fatalError("Whitespace required between attributes");
                 }
                 
                 // Parse attribute
@@ -1315,8 +1328,7 @@ public class GonzalezParser {
                 hasAttribute = true;
             }
             else {
-                throw new SAXParseException("Unexpected character in start tag: '" + ch + "'",
-                        null, null, line, column);
+                fatalError("Unexpected character in start tag: '" + ch + "'");
             }
         }
 
@@ -1359,8 +1371,7 @@ public class GonzalezParser {
                 if (colonIdx >= 0) {
                     uri = namespaceSupport.getURI(prefix);
                     if (uri == null) {
-                        throw new SAXParseException("Undeclared namespace prefix: " + prefix,
-                                null, null, line, column);
+                        fatalError("Undeclared namespace prefix: " + prefix);
                     }
                 }
 
@@ -1383,8 +1394,7 @@ public class GonzalezParser {
         if (elementQName.hasPrefix()) {
             uri = namespaceSupport.getURI(prefix);
             if (uri == null) {
-                throw new SAXParseException("Undeclared namespace prefix: " + prefix,
-                        null, null, line, column);
+                fatalError("Undeclared namespace prefix: " + prefix);
             }
         }
         else {
@@ -1469,8 +1479,7 @@ public class GonzalezParser {
                     state = ParseState.CDATA;
                 }
                 else {
-                    throw new SAXParseException("Unexpected markup",
-                            null, null, line, column);
+                    fatalError("Unexpected markup");
                 }
             }
             else if (next == '?') {
@@ -1499,7 +1508,7 @@ public class GonzalezParser {
             return;
         }
         if (peekChar() != '<' || peekChar(1) != '/') {
-            throw new SAXParseException("Expected '</'", null, null, line, column);
+            fatalError("Expected '</'");
         }
         consumeChar(); // '<'
         consumeChar(); // '/'
@@ -1519,21 +1528,19 @@ public class GonzalezParser {
             return;
         }
         if (peekChar() != '>') {
-            throw new SAXParseException("Expected '>'", null, null, line, column);
+            fatalError("Expected '>'");
         }
         consumeChar();
 
         // Validate element matches stack
         if (elementStack.isEmpty()) {
-            throw new SAXParseException("Unexpected end tag: " + elementName,
-                    null, null, line, column);
+            fatalError("Unexpected end tag: " + elementName);
         }
 
         String expectedName = elementStack.pop();
         if (!elementName.equals(expectedName)) {
-            throw new SAXParseException("Mismatched end tag: expected " + expectedName +
-                    " but got " + elementName,
-                    null, null, line, column);
+            fatalError("Mismatched end tag: expected " + expectedName +
+                    " but got " + elementName);
         }
 
         // Resolve element name namespace
@@ -1544,8 +1551,7 @@ public class GonzalezParser {
         if (elementQName.hasPrefix()) {
             uri = namespaceSupport.getURI(prefix);
             if (uri == null) {
-                throw new SAXParseException("Undeclared namespace prefix in end tag: " + prefix,
-                        null, null, line, column);
+                fatalError("Undeclared namespace prefix in end tag: " + prefix);
             }
         }
         else {
@@ -1595,8 +1601,7 @@ public class GonzalezParser {
         // Must start with NameStartChar
         char ch = peekChar();
         if (!isNameStartChar(ch)) {
-            throw new SAXParseException("Invalid name start character: '" + ch + "'",
-                    null, null, line, column);
+            fatalError("Invalid name start character: '" + ch + "'");
         }
 
         int start = charBuffer.position();
@@ -1618,8 +1623,7 @@ public class GonzalezParser {
                 length++;
 
                 if (length > MAX_NAME_LENGTH) {
-                    throw new SAXParseException("Name exceeds maximum length",
-                            null, null, line, column);
+                    fatalError("Name exceeds maximum length");
                 }
             }
             else {
@@ -1670,8 +1674,7 @@ public class GonzalezParser {
             return false;
         }
         if (peekChar() != '=') {
-            throw new SAXParseException("Expected '=' after attribute name",
-                    null, null, line, column);
+            fatalError("Expected '=' after attribute name");
         }
         consumeChar();
 
@@ -1687,8 +1690,7 @@ public class GonzalezParser {
         // Check for duplicate attribute
         for (int i = 0; i < attrs.getLength(); i++) {
             if (attrs.getQName(i).equals(attrQName.qName)) {
-                throw new SAXParseException("Duplicate attribute: " + attrQName.qName,
-                        null, null, line, column);
+                fatalError("Duplicate attribute: " + attrQName.qName);
             }
         }
 
@@ -1710,7 +1712,7 @@ public class GonzalezParser {
 
         char quote = peekChar();
         if (quote != '"' && quote != '\'') {
-            throw new SAXParseException("Expected quote", null, null, line, column);
+            fatalError("Expected quote");
         }
         consumeChar();
 
@@ -1752,8 +1754,7 @@ public class GonzalezParser {
                 break;
             }
             else if (ch == '<') {
-                throw new SAXParseException("'<' not allowed in attribute value",
-                        null, null, line, column);
+                fatalError("'<' not allowed in attribute value");
             }
             else if (ch == '&') {
                 // Entity reference in attribute value
@@ -1782,8 +1783,7 @@ public class GonzalezParser {
             }
 
             if (value.length() > MAX_ATTRIBUTE_VALUE_LENGTH) {
-                throw new SAXParseException("Attribute value too long",
-                        null, null, line, column);
+                fatalError("Attribute value too long");
             }
         }
 
@@ -1849,7 +1849,7 @@ public class GonzalezParser {
         if (peekChar() != '<' || peekChar(1) != '!' || peekChar(2) != '[' ||
                 peekChar(3) != 'C' || peekChar(4) != 'D' || peekChar(5) != 'A' ||
                 peekChar(6) != 'T' || peekChar(7) != 'A' || peekChar(8) != '[') {
-            throw new SAXParseException("Expected '<![CDATA['", null, null, line, column);
+            throw new SAXParseException("Expected '<![CDATA['", locator);
                 }
 
         consumeChar(); // '<'
@@ -1943,7 +1943,7 @@ public class GonzalezParser {
         // Validate target
         if (target.equalsIgnoreCase("xml")) {
             throw new SAXParseException("'xml' is reserved and cannot be used as PI target",
-                    null, null, line, column);
+                    locator);
         }
 
         // Skip whitespace between target and data
@@ -2054,7 +2054,7 @@ public class GonzalezParser {
                     else if (peekChar() == '-') {
                         // Three consecutive dashes: "---" is not allowed
                         throw new SAXParseException("'--' not allowed in comment content",
-                                null, null, line, column);
+                                locator);
                     }
                     else {
                         // False alarm, continue
@@ -2090,7 +2090,7 @@ public class GonzalezParser {
         char ch = peekChar();
         if (!Character.isWhitespace(ch)) {
             throw new SAXParseException("Whitespace required after DOCTYPE",
-                    null, null, line, column);
+                    locator);
         }
         
         // Skip all whitespace
@@ -2114,7 +2114,7 @@ public class GonzalezParser {
         String systemId = null;
 
         // Check for SYSTEM or PUBLIC
-        char ch = peekChar();
+        ch = peekChar();
         if (ch == 'S' || ch == 'P') {
             // Parse "SYSTEM" or "PUBLIC"
             String keyword = parseName();
@@ -2144,13 +2144,21 @@ public class GonzalezParser {
                 }
             } else {
                 throw new SAXParseException("Expected SYSTEM or PUBLIC in DOCTYPE",
-                        null, null, line, column);
+                        locator);
             }
 
             skipWhitespace();
             if (!charBuffer.hasRemaining()) {
                 return; // Need more data
             }
+        }
+
+        // If user hasn't set publicId/systemId, use them from DOCTYPE
+        if (publicId != null && locator.getPublicId() == null) {
+            locator.setPublicId(publicId);
+        }
+        if (systemId != null && locator.getSystemId() == null) {
+            locator.setSystemId(systemId);
         }
 
         // Check for internal subset
@@ -2261,7 +2269,7 @@ public class GonzalezParser {
                 ByteBuffer encoded = charset.encode(String.valueOf(c));
                 dtdParser.receive(encoded);
             } catch (Exception e) {
-                throw new SAXParseException("Error feeding DTD parser", null, null, line, column, e);
+                throw new SAXParseException("Error feeding DTD parser", locator, e);
             }
         }
         
@@ -2280,7 +2288,7 @@ public class GonzalezParser {
         
         char quote = peekChar();
         if (quote != '\'' && quote != '"') {
-            throw new SAXParseException("Expected quoted string", null, null, line, column);
+            throw new SAXParseException("Expected quoted string", locator);
         }
         
         consumeChar(); // Opening quote
@@ -2369,7 +2377,7 @@ public class GonzalezParser {
         }
 
         if (peekChar() != '&') {
-            throw new SAXParseException("Expected '&'", null, null, line, column);
+            throw new SAXParseException("Expected '&'", locator);
         }
         consumeChar(); // '&'
 
@@ -2384,7 +2392,7 @@ public class GonzalezParser {
         }
         else {
             throw new SAXParseException("Invalid entity reference",
-                    null, null, line, column);
+                    locator);
         }
     }
 
@@ -2421,14 +2429,14 @@ public class GonzalezParser {
             }
             else {
                 throw new SAXParseException("Invalid character in character reference",
-                        null, null, line, column);
+                        locator);
             }
         }
 
         int end = charBuffer.position();
         if (end == start) {
             throw new SAXParseException("Empty character reference",
-                    null, null, line, column);
+                    locator);
         }
 
         // Extract number
@@ -2444,7 +2452,7 @@ public class GonzalezParser {
 
         if (peekChar() != ';') {
             throw new SAXParseException("Expected ';' after character reference",
-                    null, null, line, column);
+                    locator);
         }
         consumeChar(); // ';'
 
@@ -2461,7 +2469,7 @@ public class GonzalezParser {
             // Validate codepoint
             if (!Character.isValidCodePoint(codepoint)) {
                 throw new SAXParseException("Invalid Unicode codepoint: " + codepoint,
-                        null, null, line, column);
+                        locator);
             }
 
             // Convert to string
@@ -2476,7 +2484,7 @@ public class GonzalezParser {
         }
         catch (NumberFormatException e) {
             throw new SAXParseException("Invalid number in character reference",
-                    null, null, line, column, e);
+                    locator, e);
         }
     }
     
@@ -2497,14 +2505,14 @@ public class GonzalezParser {
             }
             else {
                 throw new SAXParseException("Invalid character in entity name",
-                        null, null, line, column);
+                        locator);
             }
         }
 
         int end = charBuffer.position();
         if (end == start) {
             throw new SAXParseException("Empty entity name",
-                    null, null, line, column);
+                    locator);
         }
 
         // Extract name
@@ -2522,7 +2530,7 @@ public class GonzalezParser {
 
         if (peekChar() != ';') {
             throw new SAXParseException("Expected ';' after entity name",
-                    null, null, line, column);
+                    locator);
         }
         consumeChar(); // ';'
 
@@ -2534,7 +2542,7 @@ public class GonzalezParser {
             // 2. An external entity that needs resolution
             // For now, treat as error
             throw new SAXParseException("Undefined entity: &" + name + ";",
-                    null, null, line, column);
+                    locator);
         }
 
         // Note: startEntity/endEntity are for external parsed entities only,
@@ -2603,7 +2611,88 @@ public class GonzalezParser {
         if (e instanceof SAXParseException) {
             return (SAXParseException) e;
         }
-        return new SAXParseException(e.getMessage(), null, null, line, column, e);
+        return new SAXParseException(e.getMessage(), locator, e);
+    }
+    
+    /**
+     * Reports a fatal error to the ErrorHandler and throws a SAXParseException.
+     * 
+     * <p>Fatal errors are non-recoverable violations of the XML specification
+     * that prevent further parsing. Examples: malformed markup, mismatched tags,
+     * invalid character encoding.
+     * 
+     * @param message the error message
+     * @throws SAXParseException always thrown after notifying the error handler
+     */
+    private void fatalError(String message) throws SAXParseException {
+        SAXParseException e = new SAXParseException(message, locator);
+        if (errorHandler != null) {
+            try {
+                errorHandler.fatalError(e);
+            } catch (SAXException handlerException) {
+                // Handler threw exception, wrap it
+                throw new SAXParseException("Error handler threw exception: " + handlerException.getMessage(),
+                        locator, handlerException);
+            }
+        }
+        throw e;
+    }
+    
+    /**
+     * Reports a fatal error with a cause to the ErrorHandler and throws a SAXParseException.
+     * 
+     * @param message the error message
+     * @param cause the underlying exception
+     * @throws SAXParseException always thrown after notifying the error handler
+     */
+    private void fatalError(String message, Exception cause) throws SAXParseException {
+        SAXParseException e = new SAXParseException(message, locator, cause);
+        if (errorHandler != null) {
+            try {
+                errorHandler.fatalError(e);
+            } catch (SAXException handlerException) {
+                // Handler threw exception, wrap it
+                throw new SAXParseException("Error handler threw exception: " + handlerException.getMessage(),
+                        locator, handlerException);
+            }
+        }
+        throw e;
+    }
+    
+    /**
+     * Reports a recoverable error to the ErrorHandler.
+     * 
+     * <p>Recoverable errors are violations that can potentially be recovered from,
+     * allowing parsing to continue. Examples: validity constraint violations,
+     * undefined entities (if lenient mode enabled).
+     * 
+     * <p>If the error handler throws an exception, parsing will stop. Otherwise,
+     * parsing continues.
+     * 
+     * @param message the error message
+     * @throws SAXException if the error handler throws an exception
+     */
+    private void error(String message) throws SAXException {
+        SAXParseException e = new SAXParseException(message, locator);
+        if (errorHandler != null) {
+            errorHandler.error(e);
+        }
+    }
+    
+    /**
+     * Reports a warning to the ErrorHandler.
+     * 
+     * <p>Warnings are informational messages about potential issues that don't
+     * prevent parsing. Examples: use of deprecated features, unusual constructs.
+     * 
+     * @param message the warning message
+     * @throws SAXException if the error handler throws an exception
+     */
+    private void warning(String message) throws SAXException {
+        SAXParseException e = new SAXParseException(message, locator);
+        if (errorHandler != null) {
+            errorHandler.warning(e);
+        }
     }
     
     /**
