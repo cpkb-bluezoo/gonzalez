@@ -46,60 +46,61 @@ import org.xml.sax.ext.Locator2;
  * @see org.bluezoo.gonzalez.dtd.DTDParser
  */
 public class XMLParserBuffer implements Locator2 {
-    
+
+    static enum State {
+        INIT, IN_XMLDECL, XMLDECL_DONE;
+    }
+
+    private State state = State.INIT;
+
     // Buffers
     private ByteBuffer underflowBytes;     // Undecoded bytes (phase 1: before charset detection)
     private CharBuffer underflowChars;     // Incomplete tokens from previous receive()
     private CharBuffer parseBuffer;        // Active parsing buffer (always in read mode)
-    
+
     // Charset state
     private Charset charset;
     private CharsetDecoder decoder;
     private boolean charsetDetermined;
-    
+
     // Locator state
     private String publicId;
     private String systemId;
     private String xmlVersion = "1.0";
-    
+
     // Position tracking (for line/column calculation)
     private int line;
     private int column;
     private boolean lastCharWasCR;  // Track if last consumed char was CR (for CRLF handling)
-    
+
     /**
      * Creates a new parser buffer with default initial charset (UTF-8).
      */
     public XMLParserBuffer() {
         this(StandardCharsets.UTF_8);
     }
-    
+
     /**
      * Creates a new parser buffer with specified initial charset.
      * 
      * <p>The initial charset is used as a hint and may be overridden by BOM
      * or XML/text declaration detection.
      * 
-     * @param initialCharset the initial charset hint (must not be null)
+     * @param initialCharset the initial charset hint. If null, defaults to
+     * UTF-8
      */
     public XMLParserBuffer(Charset initialCharset) {
         if (initialCharset == null) {
-            throw new IllegalArgumentException("initialCharset must not be null");
+            initialCharset = StandardCharsets.UTF_8;
         }
-        
-        this.charset = initialCharset;
-        this.decoder = initialCharset.newDecoder();
-        this.underflowBytes = ByteBuffer.allocate(256);  // Small - just for BOM/declaration
-        this.underflowChars = CharBuffer.allocate(1024);
-        this.underflowChars.flip(); // Start empty in read mode
-        this.parseBuffer = CharBuffer.allocate(2048);
-        this.parseBuffer.flip(); // Start empty in read mode
-        this.charsetDetermined = false;
-        this.line = 1;
-        this.column = 0;
-        this.lastCharWasCR = false;
+        charset = initialCharset;
+        decoder = initialCharset.newDecoder();
+        charsetDetermined = false;
+        line = 1;
+        column = 0;
+        lastCharWasCR = false;
     }
-    
+
     /**
      * Receives incoming byte data and prepares the parse buffer.
      * 
@@ -110,57 +111,36 @@ public class XMLParserBuffer implements Locator2 {
      * @param data the incoming byte data
      * @throws CharacterCodingException if character decoding fails
      */
-    public void receive(ByteBuffer data) throws Exception {
+    public void receive(ByteBuffer data) throws CharacterCodingException {
         if (!charsetDetermined) {
-            // Phase 1: Charset not yet determined - buffer bytes
-            ensureByteCapacity(data.remaining());
-            underflowBytes.put(data);
-            underflowBytes.flip();
-            
             // Try to detect charset from BOM or declaration
-            if (underflowBytes.hasRemaining()) {
-                detectCharset();
-            }
-            
+            parseXMLDeclaration();
+        }
+        if (charsetDetermined) {
             // Decode whatever bytes we have into parseBuffer
-            if (underflowBytes != null && underflowBytes.hasRemaining()) {
-                parseBuffer.clear();
-                CoderResult result = decoder.decode(underflowBytes, parseBuffer, false);
-                if (result.isError()) {
-                    result.throwException();
-                }
-                parseBuffer.flip(); // Now in read mode
-            } else {
-                parseBuffer.clear();
-                parseBuffer.flip(); // Empty
+            // number of characters will always be strictly smaller than
+            // number of bytes
+            int underflowSize = (underflowChars == null) ? 0 : underflowChars.remaining();
+            int dataSize = data.remaining();
+            if (parseBuffer == null || parseBuffer.capacity() < (underflowSize + dataSize)) {
+                parseBuffer = CharBuffer.allocate(underflowSize + dataSize);
             }
-            
-            // Compact underflowBytes if not released
-            if (underflowBytes != null) {
-                underflowBytes.compact();
-            }
-            
-            // Prepend underflow to parseBuffer
-            prependUnderflow();
-            
-            // Release underflowBytes if charset is determined and all bytes decoded
-            if (charsetDetermined && underflowBytes != null && !underflowBytes.hasRemaining()) {
-                underflowBytes = null;
-            }
-        } else {
-            // Phase 2: Charset determined - decode directly
             parseBuffer.clear();
+            if (underflowSize > 0) {
+                // prepend any underflow
+                parseBuffer.put(underflowChars);
+                underflowChars.clear();
+                underflowChars.limit(0);
+            }
+            // decode data into parse buffer
             CoderResult result = decoder.decode(data, parseBuffer, false);
             if (result.isError()) {
                 result.throwException();
             }
             parseBuffer.flip(); // Now in read mode
-            
-            // Prepend underflow to parseBuffer
-            prependUnderflow();
         }
     }
-    
+
     /**
      * Signals that no more data will arrive.
      * 
@@ -174,13 +154,13 @@ public class XMLParserBuffer implements Locator2 {
             charsetDetermined = true;
             underflowBytes = null;
         }
-        
+
         // Process any remaining underflow
         if (underflowChars.hasRemaining()) {
             prependUnderflow();
         }
     }
-    
+
     /**
      * Moves remaining parseBuffer data to underflow.
      * 
@@ -204,7 +184,7 @@ public class XMLParserBuffer implements Locator2 {
         parseBuffer.clear();
         parseBuffer.flip(); // Empty in read mode
     }
-    
+
     /**
      * Returns the parse buffer for reading.
      * 
@@ -215,7 +195,7 @@ public class XMLParserBuffer implements Locator2 {
     public CharBuffer getParseBuffer() {
         return parseBuffer;
     }
-    
+
     /**
      * Returns whether the parse buffer has remaining characters.
      * 
@@ -224,7 +204,7 @@ public class XMLParserBuffer implements Locator2 {
     public boolean hasRemaining() {
         return parseBuffer.hasRemaining();
     }
-    
+
     /**
      * Returns whether at least {@code count} characters are available.
      * 
@@ -234,7 +214,7 @@ public class XMLParserBuffer implements Locator2 {
     public boolean hasAvailable(int count) {
         return parseBuffer.remaining() >= count;
     }
-    
+
     /**
      * Peeks at the current character without consuming it.
      * 
@@ -246,7 +226,7 @@ public class XMLParserBuffer implements Locator2 {
         }
         return parseBuffer.get(parseBuffer.position());
     }
-    
+
     /**
      * Peeks ahead {@code offset} characters without consuming.
      * 
@@ -260,7 +240,7 @@ public class XMLParserBuffer implements Locator2 {
         }
         return parseBuffer.get(pos);
     }
-    
+
     /**
      * Consumes a single character from the buffer and updates position tracking.
      * 
@@ -275,17 +255,17 @@ public class XMLParserBuffer implements Locator2 {
      */
     public char consumeChar() {
         char ch = parseBuffer.get();
-        
+
         // Check if this LF is the second half of a CRLF split across buffers
         if (lastCharWasCR && ch == '\n') {
             // Already counted the line for CR, just clear the flag
             lastCharWasCR = false;
             return ch;
         }
-        
+
         // Clear the CR flag if we're consuming anything other than LF after CR
         lastCharWasCR = false;
-        
+
         if (ch == '\n') {
             // LF - new line
             line++;
@@ -305,10 +285,10 @@ public class XMLParserBuffer implements Locator2 {
         } else {
             column++;
         }
-        
+
         return ch;
     }
-    
+
     /**
      * Skips whitespace characters.
      */
@@ -322,7 +302,7 @@ public class XMLParserBuffer implements Locator2 {
             }
         }
     }
-    
+
     /**
      * Checks if the parse buffer starts with the given keyword.
      * 
@@ -333,7 +313,7 @@ public class XMLParserBuffer implements Locator2 {
         if (parseBuffer.remaining() < keyword.length()) {
             return false;
         }
-        
+
         int pos = parseBuffer.position();
         for (int i = 0; i < keyword.length(); i++) {
             if (parseBuffer.get(pos + i) != keyword.charAt(i)) {
@@ -342,7 +322,7 @@ public class XMLParserBuffer implements Locator2 {
         }
         return true;
     }
-    
+
     /**
      * Returns the determined character encoding.
      * 
@@ -351,7 +331,7 @@ public class XMLParserBuffer implements Locator2 {
     public Charset getCharset() {
         return charsetDetermined ? charset : null;
     }
-    
+
     /**
      * Returns whether the charset has been determined.
      * 
@@ -360,13 +340,13 @@ public class XMLParserBuffer implements Locator2 {
     public boolean isCharsetDetermined() {
         return charsetDetermined;
     }
-    
+
     // Position tracking
     private int savedBufferPosition;
     private int savedLine;
     private int savedColumn;
     private boolean savedLastCharWasCR;
-    
+
     /**
      * Saves the current parse position for potential backtracking.
      * Call this before attempting a parse operation that might need to be rewound.
@@ -377,7 +357,7 @@ public class XMLParserBuffer implements Locator2 {
         savedColumn = column;
         savedLastCharWasCR = lastCharWasCR;
     }
-    
+
     /**
      * Restores the previously saved parse position.
      * Call this to rewind to the position saved by {@link #savePosition()}.
@@ -388,9 +368,9 @@ public class XMLParserBuffer implements Locator2 {
         column = savedColumn;
         lastCharWasCR = savedLastCharWasCR;
     }
-    
+
     // Locator2 interface implementation
-    
+
     /**
      * Sets the public identifier for the current document location.
      * 
@@ -399,7 +379,7 @@ public class XMLParserBuffer implements Locator2 {
     public void setPublicId(String publicId) {
         this.publicId = publicId;
     }
-    
+
     /**
      * Sets the system identifier for the current document location.
      * 
@@ -408,7 +388,7 @@ public class XMLParserBuffer implements Locator2 {
     public void setSystemId(String systemId) {
         this.systemId = systemId;
     }
-    
+
     /**
      * Sets the XML version.
      * 
@@ -417,39 +397,39 @@ public class XMLParserBuffer implements Locator2 {
     public void setXMLVersion(String version) {
         this.xmlVersion = version;
     }
-    
+
     @Override
-    public String getPublicId() {
-        return publicId;
-    }
-    
+        public String getPublicId() {
+            return publicId;
+        }
+
     @Override
-    public String getSystemId() {
-        return systemId;
-    }
-    
+        public String getSystemId() {
+            return systemId;
+        }
+
     @Override
-    public int getLineNumber() {
-        return line;
-    }
-    
+        public int getLineNumber() {
+            return line;
+        }
+
     @Override
-    public int getColumnNumber() {
-        return column;
-    }
-    
+        public int getColumnNumber() {
+            return column;
+        }
+
     @Override
-    public String getXMLVersion() {
-        return xmlVersion;
-    }
-    
+        public String getXMLVersion() {
+            return xmlVersion;
+        }
+
     @Override
-    public String getEncoding() {
-        return (charset != null) ? charset.name() : null;
-    }
-    
+        public String getEncoding() {
+            return (charset != null) ? charset.name() : null;
+        }
+
     // Private helper methods
-    
+
     private void ensureByteCapacity(int additional) {
         if (underflowBytes.remaining() < additional) {
             int newCapacity = underflowBytes.capacity() + additional;
@@ -459,22 +439,22 @@ public class XMLParserBuffer implements Locator2 {
             underflowBytes = newBuffer;
         }
     }
-    
+
     private void prependUnderflow() {
         int underflowSize = underflowChars.remaining();
         if (underflowSize == 0) {
             return;
         }
-        
+
         int parseBufferData = parseBuffer.remaining();
         int totalSize = underflowSize + parseBufferData;
-        
+
         // Optimization: if everything fits in current parseBuffer capacity, reuse it
         if (totalSize <= parseBuffer.capacity()) {
             // 1. Save parseBuffer data
             char[] temp = new char[parseBufferData];
             parseBuffer.get(temp);
-            
+
             // 2. Reset and write: underflow first, then parseBuffer data
             parseBuffer.clear();
             parseBuffer.put(underflowChars);
@@ -488,14 +468,14 @@ public class XMLParserBuffer implements Locator2 {
             newBuffer.flip();
             parseBuffer = newBuffer;
         }
-        
+
         // Empty the underflow since we've consumed it
         underflowChars.clear();
         underflowChars.limit(0); // Empty in read mode
     }
-    
+
     /**
-     * Detects the character encoding via BOM and/or XML/text declaration.
+     * Parse the BOM and/or XML declaration.
      * 
      * <p>External parsed entities can have their own encoding per XML spec section 4.3.3.
      * This method detects:
@@ -505,67 +485,100 @@ public class XMLParserBuffer implements Locator2 {
      * <li>Defaults to initial charset if neither present</li>
      * </ul>
      */
-    private void detectCharset() throws Exception {
+    private void parseXMLDeclaration(ByteBuffer data) throws CharacterCodingException {
+        // if underflow exists, prepend it to data
+        if (underflowBytes != null) {
+            int underflowSize = underflowBytes.remaining();
+            int dataSize = data.remaining();
+            ByteBuffer tmp = ByteBuffer.allocate(underflowSize + dataSize);
+            tmp.put(underflowBytes);
+            tmp.put(data);
+            data = tmp;
+            data.flip();
+        }
         // Check for BOM
-        if (underflowBytes.remaining() >= 2) {
-            int b1 = underflowBytes.get(0) & 0xFF;
-            int b2 = underflowBytes.get(1) & 0xFF;
-            
-            // UTF-16 BE BOM
-            if (b1 == 0xFE && b2 == 0xFF) {
+        // The minimum size we need to determine a BOM is 3
+        // There must be at least 4 bytes for a complete root element in any
+        // case so demanding 4 is safe here even if in some cases we can
+        // make a decision with 2.
+        if (data.remaining() >= 4) {
+            data.mark();
+            byte b1 = data.get();
+            byte b2 = data.get();
+            if (b1 == (byte) 0xFE && b2 == (byte) 0xFF) {
+                // UTF-16 BE BOM
                 setCharset(StandardCharsets.UTF_16BE);
-                underflowBytes.position(underflowBytes.position() + 2); // Skip BOM
                 charsetDetermined = true;
-                return;
-            }
-            
-            // UTF-16 LE BOM
-            if (b1 == 0xFF && b2 == 0xFE) {
-                // Could also be UTF-32 LE, check for 00 00
-                if (underflowBytes.remaining() >= 4) {
-                    int b3 = underflowBytes.get(2) & 0xFF;
-                    int b4 = underflowBytes.get(3) & 0xFF;
-                    if (b3 == 0x00 && b4 == 0x00) {
-                        // UTF-32 LE
-                        try {
-                            setCharset(Charset.forName("UTF-32LE"));
-                            underflowBytes.position(underflowBytes.position() + 4);
-                            charsetDetermined = true;
-                            return;
-                        } catch (Exception e) {
-                            // UTF-32 not supported, fall through
-                        }
-                    }
-                }
+            } else if (b1 == (byte) 0xFF && b2 == (byte) 0xFE) {
                 // UTF-16 LE
                 setCharset(StandardCharsets.UTF_16LE);
-                underflowBytes.position(underflowBytes.position() + 2);
                 charsetDetermined = true;
-                return;
-            }
-            
-            // UTF-8 BOM
-            if (underflowBytes.remaining() >= 3) {
-                int b3 = underflowBytes.get(2) & 0xFF;
-                if (b1 == 0xEF && b2 == 0xBB && b3 == 0xBF) {
+            } else if (b1 == (byte) 0xEF && b2 == (byte) 0xBB){
+                byte b3 = data.get();
+                if (b3 == (byte) 0xBF) {
+                    // UTF-8 BOM
                     setCharset(StandardCharsets.UTF_8);
-                    underflowBytes.position(underflowBytes.position() + 3); // Skip BOM
                     charsetDetermined = true;
-                    return;
+                } else {
+                    // invalid
+                    throw new CharacterCodingException("Invalid byte order mark");
                 }
+            } else {
+                data.reset();
             }
         }
-        
-        // TODO: Parse XML/text declaration for encoding attribute
-        // For now, just use the initial charset
-        
-        // No BOM found - use initial charset and switch to character mode
-        charsetDetermined = true;
+        // Parse XML declaration
+        // https://www.w3.org/TR/REC-xml/#sec-TextDecl
+        if (charsetDetermined) {
+            // decode data into parseBuffer
+            CoderResult result = decoder.decode(data, parseBuffer, false);
+            if (result.isError()) {
+                result.throwException();
+            }
+            // TODO
+        } else {
+            // parse bytes
+            if (data.remaining() >= 4) {
+                data.mark();
+                byte b1 = data.get();
+                byte b2 = data.get();
+                byte b3 = data.get();
+                byte b4 = data.get();
+                if (b1 == '<' && b2 == '?' && b3 == 'x' && b4 == 'm') {
+                    // still need 2 bytes to be sure this is XMLDecl
+                    // otherwise it might be a PI
+                    if (data.remaining() >= 2) {
+                        byte b5 = data.get();
+                        byte b6 = data.get();
+                        if (b5 == 'l' && isWhitespace(b6)) {
+                            // XMLDecl now for sure
+                            state = State.IN_XMLDECL;
+                            // TODO
+                        } else {
+                            // this is a PI
+                            charsetDetermined = true;
+                            data.reset();
+                            state = State.XMLDECL_DONE;
+                            // process main loop
+                        }
+                    }
+                } else {
+                    charsetDetermined = true;
+                    data.reset();
+                    state = State.XMLDECL_DONE;
+                }
+            } else {
+                // not enough data
+                underflowBytes();
+                return;
+            }
+        }
     }
-    
+
     private void setCharset(Charset newCharset) {
         this.charset = newCharset;
         this.decoder = newCharset.newDecoder();
     }
+
 }
 
