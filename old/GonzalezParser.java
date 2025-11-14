@@ -129,62 +129,6 @@ public class GonzalezParser implements EntityResolvingParser {
         }
     }
 
-    /**
-     * Saved parser position for backtracking.
-     * Used when a parse method needs to rewind on incomplete data.
-     */
-    private static class SavedPosition {
-        final int bufferPosition;
-        final int line;
-        final int column;
-        final boolean lastCharWasCR;
-
-        SavedPosition(int pos, int line, int col, boolean cr) {
-            this.bufferPosition = pos;
-            this.line = line;
-            this.column = col;
-            this.lastCharWasCR = cr;
-        }
-    }
-
-    /**
-     * Saves current parse position for potential backtracking.
-     */
-    private SavedPosition savePosition() {
-        return new SavedPosition(parseBuffer.position(), line, column, lastCharWasCR);
-    }
-
-    /**
-     * Restores previously saved parse position.
-     */
-    private void restorePosition(SavedPosition saved) {
-        parseBuffer.position(saved.bufferPosition);
-        line = saved.line;
-        column = saved.column;
-        lastCharWasCR = saved.lastCharWasCR;
-    }
-    
-    /**
-     * Saves remaining parseBuffer data to charUnderflow on incomplete parse.
-     * This is called when a parse method can't complete and needs to wait for more data.
-     * After calling this, parseBuffer will be empty and charUnderflow will contain the saved data.
-     */
-    private void saveToUnderflow() {
-        int remaining = parseBuffer.remaining();
-        if (remaining > 0) {
-            // Ensure charUnderflow has capacity
-            if (charUnderflow.capacity() < remaining) {
-                charUnderflow = CharBuffer.allocate(remaining * 2);
-            }
-            charUnderflow.clear();
-            charUnderflow.put(parseBuffer);
-            charUnderflow.flip(); // Ready to read
-        }
-        // Clear parseBuffer so parse() loop exits
-        parseBuffer.clear();
-        parseBuffer.flip(); // Empty in read mode
-    }
-
     // Configuration
     private ContentHandler contentHandler;
     private DTDHandler dtdHandler;
@@ -203,12 +147,10 @@ public class GonzalezParser implements EntityResolvingParser {
 
     // State
     private ParseState state;
-    private ByteBuffer byteUnderflow;  // Incomplete byte data before charset determined
-    private CharBuffer charUnderflow;  // Incomplete character data from previous receive (token underflow)
-    private CharBuffer parseBuffer;    // Combined buffer for parsing (underflow + new data)
-    private Charset charset;
-    private CharsetDecoder decoder;
-    private boolean charsetDetermined;
+    
+    // Buffer management (delegates to XMLParserBuffer which also serves as Locator2)
+    private XMLParserBuffer buffer;
+    
     private StringBuilder textAccumulator;
 
     // Entity resolution state
@@ -228,9 +170,6 @@ public class GonzalezParser implements EntityResolvingParser {
     private Map<String, String> generalEntities;
 
     // Document state
-    private int line;
-    private int column;
-    private boolean lastCharWasCR; // Track if last consumed char was CR to handle CRLF splits
     private boolean documentStarted;
     private boolean documentEnded;
     private boolean standalone; // From XML declaration
@@ -266,22 +205,10 @@ public class GonzalezParser implements EntityResolvingParser {
     public GonzalezParser(Charset charset) {
         this.contentHandler = new DefaultHandler();
         this.locator = new GonzalezLocator();
-        // NB this will only be an incomplete XML declaration - will not be large
-        this.byteUnderflow = ByteBuffer.allocate(256);
-        this.charUnderflow = CharBuffer.allocate(1024); // For incomplete tokens
-        this.charUnderflow.flip(); // Start empty in read mode
-        this.parseBuffer = CharBuffer.allocate(4096); // Main parsing buffer
-        this.parseBuffer.flip(); // Start empty in read mode
-        this.charset = charset;
-        this.charsetDetermined = (charset != null);
-        if (charset != null) {
-            this.decoder = charset.newDecoder();
-            this.locator.setEncoding(charset.name());
-        }
-        else {
-            // Start with UTF-8 decoder, will be replaced after BOM/XML decl detection
-            this.decoder = StandardCharsets.UTF_8.newDecoder();
-        }
+        
+        // Initialize buffer (which also implements Locator2)
+        this.buffer = new XMLParserBuffer(charset != null ? charset : StandardCharsets.UTF_8);
+        
         this.textAccumulator = new StringBuilder();
         this.entityReceiverStack = new ArrayDeque<>();
         this.inEntityResolution = false;
@@ -296,9 +223,6 @@ public class GonzalezParser implements EntityResolvingParser {
         generalEntities.put("apos", "'");
 
         this.state = ParseState.INITIAL;
-        this.line = 1;
-        this.column = 0;
-        this.lastCharWasCR = false;
         this.entityDepth = 0;
         this.totalEntitySize = 0;
 

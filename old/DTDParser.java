@@ -101,10 +101,12 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
 
   // State
   private DTDState state;
-  private ByteBuffer parseBuffer;
-  private CharBuffer charBuffer;
+  private ByteBuffer byteUnderflow;     // Undecoded bytes (for BOM/text declaration detection)
+  private CharBuffer charUnderflow;     // Incomplete tokens between receive() calls
+  private CharBuffer parseBuffer;       // Active parsing buffer (decoded characters)
   private CharsetDecoder decoder;
   private StringBuilder tokenBuffer;
+  private boolean charsetDetermined;    // True once charset is detected and we're in char mode
 
   // Position tracking
   private int line;
@@ -146,10 +148,13 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     this.lexicalHandler = lexicalHandler;
     this.entityResolverFactory = entityResolverFactory;
     this.charset = (charset != null) ? charset : StandardCharsets.UTF_8;
-    this.parseBuffer = ByteBuffer.allocate(4096);
-    this.charBuffer = CharBuffer.allocate(2048);
+    this.byteUnderflow = ByteBuffer.allocate(256);  // Small - just for text declaration
+    this.charUnderflow = CharBuffer.allocate(1024);
+    this.charUnderflow.flip(); // Start empty in read mode
+    this.parseBuffer = CharBuffer.allocate(2048);
     this.decoder = this.charset.newDecoder();
     this.tokenBuffer = new StringBuilder();
+    this.charsetDetermined = false;  // Will detect charset from BOM/text declaration
     this.state = DTDState.INITIAL;
     this.line = 1;
     this.column = 0;
@@ -299,6 +304,191 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
   }
 
   /**
+   * Saved parser position for backtracking.
+   */
+  private static class SavedPosition {
+    final int bufferPosition;
+    final int line;
+    final int column;
+    final boolean lastCharWasCR;
+
+    SavedPosition(int pos, int line, int col, boolean cr) {
+      this.bufferPosition = pos;
+      this.line = line;
+      this.column = col;
+      this.lastCharWasCR = cr;
+    }
+  }
+
+  /**
+   * Saves current parse position for potential backtracking.
+   */
+  private SavedPosition savePosition() {
+    return new SavedPosition(parseBuffer.position(), line, column, lastCharWasCR);
+  }
+
+  /**
+   * Restores previously saved parse position.
+   */
+  private void restorePosition(SavedPosition saved) {
+    parseBuffer.position(saved.bufferPosition);
+    line = saved.line;
+    column = saved.column;
+    lastCharWasCR = saved.lastCharWasCR;
+  }
+
+  /**
+   * Saves remaining parseBuffer data to charUnderflow on incomplete parse.
+   * This is called when a parse method can't complete and needs to wait for more data.
+   * After calling this, parseBuffer will be empty and charUnderflow will contain the saved data.
+   */
+  private void saveToUnderflow() {
+    int remaining = parseBuffer.remaining();
+    if (remaining > 0) {
+      // Ensure charUnderflow has capacity
+      if (charUnderflow.capacity() < remaining) {
+        charUnderflow = CharBuffer.allocate(remaining * 2);
+      }
+      charUnderflow.clear();
+      charUnderflow.put(parseBuffer);
+      charUnderflow.flip(); // Ready to read
+    }
+    // Clear parseBuffer so parse() loop exits
+    parseBuffer.clear();
+    parseBuffer.flip(); // Empty in read mode
+  }
+
+  /**
+   * Prepends charUnderflow to parseBuffer, optimizing to avoid reallocation.
+   * After this, charUnderflow is empty and parseBuffer contains underflow + new data.
+   */
+  private void prependUnderflow() {
+    int underflowSize = charUnderflow.remaining();
+    if (underflowSize == 0) {
+      return;
+    }
+
+    int parseBufferData = parseBuffer.remaining();
+    int totalSize = underflowSize + parseBufferData;
+
+    // Optimization: if everything fits in current parseBuffer capacity, reuse it
+    if (totalSize <= parseBuffer.capacity()) {
+      // 1. Save parseBuffer data
+      char[] temp = new char[parseBufferData];
+      parseBuffer.get(temp);
+
+      // 2. Reset and write: underflow first, then parseBuffer data
+      parseBuffer.clear();
+      parseBuffer.put(charUnderflow);
+      parseBuffer.put(temp);
+      parseBuffer.flip();
+    } else {
+      // Need larger buffer
+      CharBuffer newBuffer = CharBuffer.allocate(totalSize * 2);
+      newBuffer.put(charUnderflow);
+      newBuffer.put(parseBuffer);
+      newBuffer.flip();
+      parseBuffer = newBuffer;
+    }
+
+    // Empty the underflow since we've consumed it
+    charUnderflow.clear();
+    charUnderflow.limit(0); // Empty in read mode
+  }
+
+  /**
+   * Ensures byteUnderflow has capacity for additional bytes.
+   */
+  private void ensureByteCapacity(int additional) {
+    if (byteUnderflow.remaining() < additional) {
+      int newCapacity = byteUnderflow.capacity() + additional;
+      ByteBuffer newBuffer = ByteBuffer.allocate(newCapacity);
+      byteUnderflow.flip();
+      newBuffer.put(byteUnderflow);
+      byteUnderflow = newBuffer;
+    }
+  }
+
+  /**
+   * Detects the character encoding via BOM and/or text declaration.
+   * 
+   * <p>External parsed entities (including external DTD subsets) can have their own
+   * encoding per XML spec section 4.3.3. This method detects:
+   * <ul>
+   * <li>UTF-8/16/32 BOMs</li>
+   * <li>Text declarations: {@code <?xml encoding="..."?>}</li>
+   * <li>Defaults to UTF-8 if neither present</li>
+   * </ul>
+   */
+  private void detectCharset() throws SAXException {
+    // Check for BOM
+    if (byteUnderflow.remaining() >= 2) {
+      int b1 = byteUnderflow.get(0) & 0xFF;
+      int b2 = byteUnderflow.get(1) & 0xFF;
+
+      // UTF-16 BE BOM
+      if (b1 == 0xFE && b2 == 0xFF) {
+        setCharset(StandardCharsets.UTF_16BE);
+        byteUnderflow.position(byteUnderflow.position() + 2); // Skip BOM
+        charsetDetermined = true;
+        return;
+      }
+
+      // UTF-16 LE BOM
+      if (b1 == 0xFF && b2 == 0xFE) {
+        // Could also be UTF-32 LE, check for 00 00
+        if (byteUnderflow.remaining() >= 4) {
+          int b3 = byteUnderflow.get(2) & 0xFF;
+          int b4 = byteUnderflow.get(3) & 0xFF;
+          if (b3 == 0x00 && b4 == 0x00) {
+            // UTF-32 LE
+            try {
+              setCharset(Charset.forName("UTF-32LE"));
+              byteUnderflow.position(byteUnderflow.position() + 4);
+              charsetDetermined = true;
+              return;
+            } catch (Exception e) {
+              // UTF-32 not supported, fall through
+            }
+          }
+        }
+        // UTF-16 LE
+        setCharset(StandardCharsets.UTF_16LE);
+        byteUnderflow.position(byteUnderflow.position() + 2);
+        charsetDetermined = true;
+        return;
+      }
+
+      // UTF-8 BOM
+      if (byteUnderflow.remaining() >= 3) {
+        int b3 = byteUnderflow.get(2) & 0xFF;
+        if (b1 == 0xEF && b2 == 0xBB && b3 == 0xBF) {
+          setCharset(StandardCharsets.UTF_8);
+          byteUnderflow.position(byteUnderflow.position() + 3); // Skip BOM
+          charsetDetermined = true;
+          return;
+        }
+      }
+    }
+
+    // Check for text declaration: <?xml encoding="..."?>
+    // For now, just default to charset from constructor (which is parent's charset)
+    // A full implementation would parse the text declaration here
+    // TODO: Implement text declaration parsing for external entities
+
+    // No BOM found - use default charset and switch to character mode
+    charsetDetermined = true;
+  }
+
+  /**
+   * Sets the character encoding and creates a new decoder.
+   */
+  private void setCharset(Charset newCharset) {
+    this.charset = newCharset;
+    this.decoder = newCharset.newDecoder();
+  }
+
+  /**
    * Receives and processes DTD content.
    *
    * <p>Implements {@link EntityReceiver#receive(ByteBuffer)}.
@@ -308,31 +498,83 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
    */
   @Override
   public void receive(ByteBuffer data) throws SAXParseException {
-    // Ensure buffer capacity
-    if (parseBuffer.remaining() < data.remaining()) {
-      expandBuffer(data.remaining());
-    }
-
-    parseBuffer.put(data);
-
-    // Decode bytes to characters
-    parseBuffer.flip();
-    CoderResult result = decoder.decode(parseBuffer, charBuffer, false);
-    parseBuffer.compact();
-
-    if (result.isError()) {
-      throw new SAXParseException("Character decoding error",
-          null, null, line, column);
-    }
-
-    // Process available characters
-    charBuffer.flip();
     try {
+      if (!charsetDetermined) {
+        // Phase 1: Charset not yet determined - buffer bytes until we can detect it
+        ensureByteCapacity(data.remaining());
+        byteUnderflow.put(data);
+        byteUnderflow.flip();
+
+        // Try to detect charset from BOM or text declaration
+        if (byteUnderflow.hasRemaining()) {
+          detectCharset();
+        }
+
+        // Decode whatever bytes we have into parseBuffer
+        if (byteUnderflow != null && byteUnderflow.hasRemaining()) {
+          // Decode directly into parseBuffer
+          parseBuffer.clear();
+          CoderResult result = decoder.decode(byteUnderflow, parseBuffer, false);
+          if (result.isError()) {
+            try {
+              result.throwException();
+            } catch (Exception e) {
+              throw new SAXParseException("Character encoding error: " + e.getMessage(),
+                  null, null, line, column, e);
+            }
+          }
+          parseBuffer.flip(); // Now in read mode
+        } else {
+          parseBuffer.clear();
+          parseBuffer.flip(); // Empty
+        }
+
+        // Compact byteUnderflow if not released
+        if (byteUnderflow != null) {
+          byteUnderflow.compact();
+        }
+
+        // Prepend underflow to parseBuffer
+        prependUnderflow();
+
+        // Release byteUnderflow if charset is determined and all bytes are decoded
+        if (charsetDetermined && byteUnderflow != null && !byteUnderflow.hasRemaining()) {
+          byteUnderflow = null;
+        }
+      } else {
+        // Phase 2: Charset determined - decode incoming data into parseBuffer
+
+        // Decode directly into parseBuffer
+        parseBuffer.clear();
+        CoderResult result = decoder.decode(data, parseBuffer, false);
+        if (result.isError()) {
+          result.throwException();
+        }
+        parseBuffer.flip(); // Now in read mode
+
+        // Prepend underflow to parseBuffer
+        prependUnderflow();
+      }
+
+      // Parse from parseBuffer (always in read mode)
       parse();
+
+      // Save any unparsed data as underflow for next receive()
+      if (parseBuffer.hasRemaining()) {
+        int remaining = parseBuffer.remaining();
+        if (charUnderflow.capacity() < remaining) {
+          charUnderflow = CharBuffer.allocate(remaining * 2);
+        }
+        charUnderflow.clear();
+        charUnderflow.put(parseBuffer);
+        charUnderflow.flip(); // In read mode
+      }
+
     } catch (SAXException e) {
       throw toParseException(e);
-    } finally {
-      charBuffer.compact();
+    } catch (Exception e) {
+      throw new SAXParseException("Parsing error: " + e.getMessage(),
+          null, null, line, column, e);
     }
   }
 
@@ -345,36 +587,32 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
    */
   @Override
   public void close() throws SAXParseException {
-    // Final decode flush
-    parseBuffer.flip();
-    CoderResult result = decoder.decode(parseBuffer, charBuffer, true);
-    parseBuffer.compact();
-
-    if (result.isError()) {
-      throw new SAXParseException("Character decoding error",
-          null, null, line, column);
-    }
-
-    // Flush decoder
-    charBuffer.flip();
-    result = decoder.flush(charBuffer);
-
-    if (result.isError()) {
-      throw new SAXParseException("Character decoding flush error",
-          null, null, line, column);
-    }
-
-    // Process any remaining characters
     try {
-      parse();
+      // If charset not yet determined, just switch to char mode now
+      if (!charsetDetermined) {
+        charsetDetermined = true;
+        byteUnderflow = null;
+      }
+
+      // Process any remaining characters in charUnderflow or parseBuffer
+      if (charUnderflow.hasRemaining() || parseBuffer.hasRemaining()) {
+        // Prepend any underflow
+        prependUnderflow();
+        
+        // Parse remaining data
+        parse();
+      }
+
+      // Verify we're in a valid end state
+      if (parseBuffer.hasRemaining() && state != DTDState.DONE && state != DTDState.INITIAL) {
+        throw new SAXParseException("Incomplete DTD declaration",
+            null, null, line, column);
+      }
     } catch (SAXException e) {
       throw toParseException(e);
-    }
-
-    // Verify we're in a valid end state
-    if (!charBuffer.hasRemaining() && state != DTDState.DONE && state != DTDState.INITIAL) {
-      throw new SAXParseException("Incomplete DTD declaration",
-          null, null, line, column);
+    } catch (Exception e) {
+      throw new SAXParseException("Error closing DTD parser: " + e.getMessage(),
+          null, null, line, column, e);
     }
   }
 
@@ -382,7 +620,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
    * Main DTD parsing state machine.
    */
   private void parse() throws SAXException {
-    while (charBuffer.hasRemaining()) {
+    while (parseBuffer.hasRemaining()) {
       switch (state) {
         case INITIAL:
           parseInitial();
@@ -415,7 +653,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       }
 
       // Safety check to prevent infinite loops
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
         break;
       }
     }
@@ -424,7 +662,8 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
   private void parseInitial() throws SAXException {
     skipWhitespace();
 
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return;
     }
 
@@ -442,6 +681,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
 
   private void parseMarkup() throws SAXException {
     if (!hasAvailable(2)) {
+      saveToUnderflow();
       return;
     }
 
@@ -451,6 +691,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     if (next == '!') {
       consumeChar(); // '!'
       if (!hasAvailable(2)) {
+        saveToUnderflow();
         return;
       }
 
@@ -481,18 +722,21 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     // We've already consumed "<!ELEMENT"
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return; // Need more data
     }
 
     // Parse element name
     String name = parseName();
     if (name == null) {
+      saveToUnderflow();
       return; // Need more data
     }
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return; // Need more data
     }
 
@@ -501,7 +745,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     int depth = 0;
     boolean inParens = false;
 
-    while (charBuffer.hasRemaining()) {
+    while (parseBuffer.hasRemaining()) {
       char ch = peekChar();
 
       if (ch == '(') {
@@ -531,6 +775,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
         elementContentModels.put(name, contentModel);
 
         state = DTDState.INITIAL;
+        saveToUnderflow();
         return;
       } else {
         model.append(ch);
@@ -539,6 +784,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     }
 
     // Need more data
+    saveToUnderflow();
   }
 
   private void parseAttlistDecl() throws SAXException {
@@ -546,20 +792,23 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     // We've already consumed "<!ATTLIST"
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return;
     }
 
     // Parse element name
     String elementName = parseName();
     if (elementName == null) {
+      saveToUnderflow();
       return;
     }
 
     // Parse attribute definitions (can be multiple)
     while (true) {
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
 
@@ -567,28 +816,33 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       if (peekChar() == '>') {
         consumeChar();
         state = DTDState.INITIAL;
+        saveToUnderflow();
         return;
       }
 
       // Parse attribute name
       String attName = parseName();
       if (attName == null) {
+        saveToUnderflow();
         return;
       }
 
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
 
       // Parse attribute type
       String attType = parseAttType();
       if (attType == null) {
+        saveToUnderflow();
         return;
       }
 
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
 
@@ -602,17 +856,20 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
         consumeChar(); // '#'
         String keyword = parseName();
         if (keyword == null) {
+          saveToUnderflow();
           return;
         }
         mode = "#" + keyword;
 
         if ("#FIXED".equals(mode)) {
           skipWhitespace();
-          if (!charBuffer.hasRemaining()) {
+          if (!parseBuffer.hasRemaining()) {
+            saveToUnderflow();
             return;
           }
           value = parseQuotedValue();
           if (value == null) {
+            saveToUnderflow();
             return;
           }
         }
@@ -620,6 +877,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
         // Default value
         value = parseQuotedValue();
         if (value == null) {
+          saveToUnderflow();
           return;
         }
       }
@@ -640,7 +898,8 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     // We've already consumed "<!ENTITY"
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return;
     }
 
@@ -650,7 +909,8 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       isParameter = true;
       consumeChar();
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
     }
@@ -658,11 +918,13 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     // Parse entity name
     String name = parseName();
     if (name == null) {
+      saveToUnderflow();
       return;
     }
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return;
     }
 
@@ -672,11 +934,13 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       // Internal entity
       String value = parseQuotedValue();
       if (value == null) {
+        saveToUnderflow();
         return;
       }
 
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
 
@@ -699,32 +963,38 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
 
       String keyword = parseName();
       if (keyword == null) {
+        saveToUnderflow();
         return;
       }
 
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
 
       if ("PUBLIC".equals(keyword)) {
         publicId = parseQuotedValue();
         if (publicId == null) {
+          saveToUnderflow();
           return;
         }
         skipWhitespace();
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
+          saveToUnderflow();
           return;
         }
       }
 
       systemId = parseQuotedValue();
       if (systemId == null) {
+        saveToUnderflow();
         return;
       }
 
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
 
@@ -732,22 +1002,26 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       if (peekChar() == 'N') {
         String ndataKeyword = parseName();
         if (ndataKeyword == null) {
+          saveToUnderflow();
           return;
         }
 
         if ("NDATA".equals(ndataKeyword)) {
           skipWhitespace();
-          if (!charBuffer.hasRemaining()) {
+          if (!parseBuffer.hasRemaining()) {
+            saveToUnderflow();
             return;
           }
 
           String notationName = parseName();
           if (notationName == null) {
+            saveToUnderflow();
             return;
           }
 
           skipWhitespace();
-          if (!charBuffer.hasRemaining()) {
+          if (!parseBuffer.hasRemaining()) {
+            saveToUnderflow();
             return;
           }
 
@@ -763,6 +1037,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
           }
 
           state = DTDState.INITIAL;
+          saveToUnderflow();
           return;
         }
       }
@@ -790,27 +1065,32 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     // We've already consumed "<!NOTATION"
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return;
     }
 
     String name = parseName();
     if (name == null) {
+      saveToUnderflow();
       return;
     }
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return;
     }
 
     String keyword = parseName();
     if (keyword == null) {
+      saveToUnderflow();
       return;
     }
 
     skipWhitespace();
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
+      saveToUnderflow();
       return;
     }
 
@@ -820,11 +1100,13 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     if ("PUBLIC".equals(keyword)) {
       publicId = parseQuotedValue();
       if (publicId == null) {
+        saveToUnderflow();
         return;
       }
 
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
 
@@ -832,20 +1114,24 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       if (peekChar() == '"' || peekChar() == '\'') {
         systemId = parseQuotedValue();
         if (systemId == null) {
+          saveToUnderflow();
           return;
         }
         skipWhitespace();
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
+          saveToUnderflow();
           return;
         }
       }
     } else if ("SYSTEM".equals(keyword)) {
       systemId = parseQuotedValue();
       if (systemId == null) {
+        saveToUnderflow();
         return;
       }
       skipWhitespace();
-      if (!charBuffer.hasRemaining()) {
+      if (!parseBuffer.hasRemaining()) {
+        saveToUnderflow();
         return;
       }
     } else {
@@ -877,7 +1163,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     boolean dash1 = false;
     boolean dash2 = false;
 
-    while (charBuffer.hasRemaining()) {
+    while (parseBuffer.hasRemaining()) {
       char ch = peekChar();
 
       if (dash1 && dash2 && ch == '>') {
@@ -895,6 +1181,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
         }
 
         state = DTDState.INITIAL;
+        saveToUnderflow();
         return;
       }
 
@@ -905,6 +1192,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     }
 
     // Need more data
+    saveToUnderflow();
   }
 
   // Helper parsing methods
@@ -914,11 +1202,11 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
    * Returns null if more data is needed.
    */
   private String parseName() throws SAXException {
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
       return null;
     }
 
-    int start = charBuffer.position();
+    int start = parseBuffer.position();
 
     // First character must be NameStartChar
     char ch = peekChar();
@@ -929,7 +1217,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     consumeChar();
 
     // Subsequent characters can be NameChar
-    while (charBuffer.hasRemaining()) {
+    while (parseBuffer.hasRemaining()) {
       ch = peekChar();
       if (isNameChar(ch)) {
         consumeChar();
@@ -939,14 +1227,14 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
     }
 
     // Extract name
-    int end = charBuffer.position();
+    int end = parseBuffer.position();
     int length = end - start;
 
     char[] nameChars = new char[length];
-    int savedPos = charBuffer.position();
-    charBuffer.position(start);
-    charBuffer.get(nameChars, 0, length);
-    charBuffer.position(savedPos);
+    int savedPos = parseBuffer.position();
+    parseBuffer.position(start);
+    parseBuffer.get(nameChars, 0, length);
+    parseBuffer.position(savedPos);
 
     return new String(nameChars);
   }
@@ -956,7 +1244,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
    * Returns null if more data is needed.
    */
   private String parseQuotedValue() throws SAXException {
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
       return null;
     }
 
@@ -969,7 +1257,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
 
     StringBuilder value = new StringBuilder();
 
-    while (charBuffer.hasRemaining()) {
+    while (parseBuffer.hasRemaining()) {
       char ch = peekChar();
       if (ch == quote) {
         consumeChar();
@@ -989,7 +1277,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
    * Returns null if more data is needed.
    */
   private String parseAttType() throws SAXException {
-    if (!charBuffer.hasRemaining()) {
+    if (!parseBuffer.hasRemaining()) {
       return null;
     }
 
@@ -1000,7 +1288,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       StringBuilder type = new StringBuilder();
       int depth = 0;
 
-      while (charBuffer.hasRemaining()) {
+      while (parseBuffer.hasRemaining()) {
         ch = peekChar();
         type.append(ch);
         consumeChar();
@@ -1027,7 +1315,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       // NOTATION can be followed by enumeration
       if ("NOTATION".equals(typeName)) {
         skipWhitespace();
-        if (!charBuffer.hasRemaining()) {
+        if (!parseBuffer.hasRemaining()) {
           return null;
         }
 
@@ -1035,7 +1323,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
           StringBuilder notation = new StringBuilder("NOTATION ");
           int depth = 0;
 
-          while (charBuffer.hasRemaining()) {
+          while (parseBuffer.hasRemaining()) {
             ch = peekChar();
             notation.append(ch);
             consumeChar();
@@ -1093,16 +1381,8 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
 
   // Utility methods
 
-  private void expandBuffer(int additional) {
-    ByteBuffer newBuffer = ByteBuffer.allocate(
-        parseBuffer.capacity() + additional + 2048);
-    parseBuffer.flip();
-    newBuffer.put(parseBuffer);
-    parseBuffer = newBuffer;
-  }
-
   private void skipWhitespace() {
-    while (charBuffer.hasRemaining()) {
+    while (parseBuffer.hasRemaining()) {
       char ch = peekChar();
       if (Character.isWhitespace(ch)) {
         consumeChar();
@@ -1113,15 +1393,15 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
   }
 
   private char peekChar() {
-    return charBuffer.get(charBuffer.position());
+    return parseBuffer.get(parseBuffer.position());
   }
 
   private char peekChar(int offset) {
-    int pos = charBuffer.position() + offset;
-    if (pos < charBuffer.limit()) {
-      return charBuffer.get(pos);
+    int pos = parseBuffer.position() + offset;
+    if (pos >= parseBuffer.limit()) {
+      return 0;
     }
-    return 0;
+    return parseBuffer.get(pos);
   }
 
   /**
@@ -1129,7 +1409,7 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
    * Handles line endings according to XML 1.0 spec section 2.11.
    */
   private char consumeChar() {
-    char ch = charBuffer.get();
+    char ch = parseBuffer.get();
 
     // Check if this LF is the second half of a CRLF split across buffers
     if (lastCharWasCR && ch == '\n') {
@@ -1147,9 +1427,9 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
       column = 0;
     } else if (ch == '\r') {
       // CR - check if followed by LF (CRLF)
-      if (charBuffer.hasRemaining() && peekChar() == '\n') {
+      if (parseBuffer.hasRemaining() && peekChar() == '\n') {
         // CRLF in same buffer - consume the LF as well
-        charBuffer.get();
+        parseBuffer.get();
       } else {
         // CR at end of buffer or followed by non-LF
         lastCharWasCR = true;
@@ -1165,17 +1445,17 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
   }
 
   private boolean hasAvailable(int count) {
-    return charBuffer.remaining() >= count;
+    return parseBuffer.remaining() >= count;
   }
 
   private boolean matchesKeyword(String keyword) {
-    if (charBuffer.remaining() < keyword.length()) {
+    if (parseBuffer.remaining() < keyword.length()) {
       return false;
     }
 
-    int pos = charBuffer.position();
+    int pos = parseBuffer.position();
     for (int i = 0; i < keyword.length(); i++) {
-      if (charBuffer.get(pos + i) != keyword.charAt(i)) {
+      if (parseBuffer.get(pos + i) != keyword.charAt(i)) {
         return false;
       }
     }
@@ -1205,37 +1485,12 @@ public class DTDParser implements EntityReceiver, EntityResolvingParser {
   @Override
   public void onEntityResolutionComplete() throws SAXException {
     // Process buffered DTD data that arrived while entity was being resolved
-    if (entityBuffer.position() == 0) {
-      return; // No buffered data
+    // In the new architecture, buffered data is in charUnderflow
+    // Just resume parsing
+    if (parseBuffer.hasRemaining() || charUnderflow.hasRemaining()) {
+      prependUnderflow();
+      parse();
     }
-    
-    entityBuffer.flip();
-    
-    // Ensure capacity in parse buffer
-    if (parseBuffer.remaining() < entityBuffer.remaining()) {
-      int newCapacity = parseBuffer.capacity() + entityBuffer.remaining() + 4096;
-      ByteBuffer newBuffer = ByteBuffer.allocate(newCapacity);
-      parseBuffer.flip();
-      newBuffer.put(parseBuffer);
-      parseBuffer = newBuffer;
-    }
-    
-    parseBuffer.put(entityBuffer);
-    entityBuffer.clear(); // Ready for next entity
-    
-    // Process the buffered data by calling receive's internal logic
-    // (we don't call receive() directly to avoid recursive issues)
-    parseBuffer.flip();
-    CoderResult result = decoder.decode(parseBuffer, charBuffer, false);
-    parseBuffer.compact();
-    
-    if (result.isError()) {
-      throw new SAXParseException("Character decoding error", null, null, line, column);
-    }
-    
-    charBuffer.flip();
-    parse();
-    charBuffer.compact();
   }
   
   @Override

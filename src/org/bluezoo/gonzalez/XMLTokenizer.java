@@ -134,8 +134,26 @@ public class XMLTokenizer implements Locator2 {
         CHARACTERS      // Normal tokenization mode
     }
 
+    /**
+     * Tokenizer context - tracks what syntactic context we're in.
+     * This determines whether to emit NAME or CDATA tokens.
+     */
+    static enum TokenizerContext {
+        CONTENT,            // Element content (between tags) - emit CDATA for text
+        ELEMENT_NAME,       // After '<' or '</' - emit NAME for element name
+        ELEMENT_ATTRS,      // After element name - emit NAME for attribute names
+        ATTR_VALUE,         // Inside attribute value (quoted) - emit CDATA for text
+        COMMENT,            // Inside comment - emit CDATA for text
+        CDATA_SECTION,      // Inside CDATA section - emit CDATA for text
+        PI_TARGET,          // After '<?' - emit NAME for PI target
+        PI_DATA,            // Inside PI data - emit CDATA for text
+        DOCTYPE_INTERNAL    // Inside DOCTYPE internal subset - emit NAME for keywords/names
+    }
+
     private State state = State.INIT;
     private boolean closed;
+    private TokenizerContext context = TokenizerContext.CONTENT;
+    private char attrQuoteChar = '\0'; // Current attribute quote character (for tracking attr values)
     
     /**
      * The token consumer that will receive tokens.
@@ -236,10 +254,22 @@ public class XMLTokenizer implements Locator2 {
                 // XML declaration parsed (or determined not present)
                 // Now switch to normal tokenization mode
                 state = State.CHARACTERS;
-                // Fall through
+                // Fall through to process any remaining bytes or charUnderflow
             case CHARACTERS:
                 // Decode the data into the character buffer and tokenize
-                decodeAndTokenize(combined);
+                // If there are no more bytes but we have charUnderflow, tokenize that
+                if (!combined.hasRemaining() && charUnderflow != null && charUnderflow.hasRemaining()) {
+                    // Just tokenize the charUnderflow without decoding more bytes
+                    charBuffer.clear();
+                    charBuffer.put(charUnderflow);
+                    charUnderflow.clear();
+                    charUnderflow.limit(0);
+                    charBuffer.flip();
+                    tokenize();
+                } else {
+                    // Decode and tokenize normally
+                    decodeAndTokenize(combined);
+                }
                 break;
         }
     }
@@ -410,6 +440,7 @@ public class XMLTokenizer implements Locator2 {
         
         // Extract the declaration content (between "<?xml" and "?>")
         int declEnd = charBuffer.position();
+        int originalLimit = charBuffer.limit(); // Save original limit
         charBuffer.reset(); // Back to start of "<?xml"
         
         // Skip past "<?xml" (5 characters)
@@ -421,7 +452,7 @@ public class XMLTokenizer implements Locator2 {
         charBuffer.limit(contentEnd);
         CharBuffer declContent = charBuffer.slice();
         
-        // Restore buffer position/limit for line tracking
+        // Restore buffer for line tracking of the declaration
         charBuffer.limit(declEnd);
         charBuffer.position(declEnd);
         
@@ -434,6 +465,10 @@ public class XMLTokenizer implements Locator2 {
         // The encoding will be handled by setCharset() called from xmlDeclReceive()
         // Pass the byte buffer so setCharset() can reset position if needed
         extractXMLDeclarationAttributes(declContent, buffer);
+        
+        // Restore original limit and position after declaration
+        charBuffer.limit(originalLimit);
+        charBuffer.position(declEnd);
         
         // Save any remaining decoded characters to charUnderflow
         if (charBuffer.hasRemaining()) {
@@ -653,71 +688,75 @@ public class XMLTokenizer implements Locator2 {
         // Context object to hold mutable state
         XMLDeclContext ctx = new XMLDeclContext();
         ctx.byteBuffer = byteBuffer;
+        ctx.state = XMLDeclState.EXPECT_WHITESPACE_OR_NAME;
         
         while (declBuffer.hasRemaining()) {
-            Token token = nextXMLDeclToken(declBuffer);
-            if (token == null) {
-                break; // End of declaration content
-            }
+            char c = declBuffer.get();
             
-            xmlDeclReceive(token, declBuffer, ctx);
-            
-            // Update state based on token
             switch (ctx.state) {
-                case EXPECT_WHITESPACE_BEFORE_NAME:
-                    if (token == Token.S) {
-                        ctx.state = XMLDeclState.EXPECT_NAME;
-                    } else {
-                        throw new SAXException("Expected whitespace before attribute name in XML declaration");
-                    }
-                    break;
-                    
-                case EXPECT_NAME:
-                    if (token == Token.NAME) {
-                        // currentName set by xmlDeclReceive
-                        ctx.state = XMLDeclState.EXPECT_EQ;
-                    } else if (token == Token.S) {
-                        // More whitespace, stay in this state
+                case EXPECT_WHITESPACE_OR_NAME:
+                    if (isWhitespace(c)) {
+                        // Skip whitespace
+                    } else if (isNameStartChar(c)) {
+                        // Start of attribute name
+                        ctx.nameStart = declBuffer.position() - 1;
+                        ctx.state = XMLDeclState.IN_NAME;
                     } else {
                         throw new SAXException("Expected attribute name in XML declaration");
                     }
                     break;
                     
+                case IN_NAME:
+                    if (isNameChar(c)) {
+                        // Continue consuming name
+                    } else if (isWhitespace(c) || c == '=') {
+                        // End of name - extract it
+                        int nameEnd = declBuffer.position() - 1;
+                        ctx.currentName = extractSubstring(declBuffer, ctx.nameStart, nameEnd);
+                        validateAndRegisterAttribute(ctx);
+                        
+                        if (c == '=') {
+                            ctx.state = XMLDeclState.EXPECT_QUOTE;
+                        } else {
+                            ctx.state = XMLDeclState.EXPECT_EQ;
+                        }
+                    } else {
+                        throw new SAXException("Invalid character in attribute name in XML declaration");
+                    }
+                    break;
+                    
                 case EXPECT_EQ:
-                    if (token == Token.EQ) {
+                    if (isWhitespace(c)) {
+                        // Skip whitespace before =
+                    } else if (c == '=') {
                         ctx.state = XMLDeclState.EXPECT_QUOTE;
-                    } else if (token == Token.S) {
-                        // Whitespace before =, stay in this state
                     } else {
                         throw new SAXException("Expected '=' after attribute name in XML declaration");
                     }
                     break;
                     
                 case EXPECT_QUOTE:
-                    if (token == Token.QUOT || token == Token.APOS) {
-                        ctx.state = XMLDeclState.EXPECT_VALUE;
-                    } else if (token == Token.S) {
-                        // Whitespace after =, stay in this state
+                    if (isWhitespace(c)) {
+                        // Skip whitespace after =
+                    } else if (c == '"' || c == '\'') {
+                        ctx.quoteChar = c;
+                        ctx.valueStart = declBuffer.position();
+                        ctx.state = XMLDeclState.IN_VALUE;
                     } else {
                         throw new SAXException("Expected quote after '=' in XML declaration");
                     }
                     break;
                     
-                case EXPECT_VALUE:
-                    if (token == Token.CDATA) {
-                        // Value extracted by xmlDeclReceive
-                        ctx.state = XMLDeclState.EXPECT_CLOSE_QUOTE;
-                    } else {
-                        throw new SAXException("Expected attribute value in XML declaration");
+                case IN_VALUE:
+                    if (c == ctx.quoteChar) {
+                        // End of value - extract it
+                        int valueEnd = declBuffer.position() - 1;
+                        String value = extractSubstring(declBuffer, ctx.valueStart, valueEnd);
+                        storeAttributeValue(ctx, value);
+                        ctx.currentName = null;
+                        ctx.state = XMLDeclState.EXPECT_WHITESPACE_OR_NAME;
                     }
-                    break;
-                    
-                case EXPECT_CLOSE_QUOTE:
-                    if (token == Token.QUOT || token == Token.APOS) {
-                        ctx.state = XMLDeclState.EXPECT_WHITESPACE_BEFORE_NAME;
-                    } else {
-                        throw new SAXException("Expected closing quote in XML declaration");
-                    }
+                    // Otherwise continue consuming value
                     break;
             }
         }
@@ -727,9 +766,6 @@ public class XMLTokenizer implements Locator2 {
             throw new SAXException("XML declaration missing required 'version' attribute");
         }
         
-        // Check attribute order: version must be first, encoding before standalone
-        // This is enforced during parsing
-        
         // Now that the declaration is fully parsed, handle charset switching if needed
         if (ctx.encoding != null) {
             setCharset(ctx.encoding, ctx.byteBuffer);
@@ -737,15 +773,72 @@ public class XMLTokenizer implements Locator2 {
     }
     
     /**
+     * Validates and registers an attribute name in the XML declaration context.
+     */
+    private void validateAndRegisterAttribute(XMLDeclContext ctx) throws SAXException {
+        if ("version".equals(ctx.currentName)) {
+            if (ctx.seenAttributes != 0) {
+                throw new SAXException("'version' must be the first attribute in XML declaration");
+            }
+            ctx.seenAttributes |= 1;
+        } else if ("encoding".equals(ctx.currentName)) {
+            if ((ctx.seenAttributes & 1) == 0) {
+                throw new SAXException("'version' must come before 'encoding' in XML declaration");
+            }
+            if ((ctx.seenAttributes & 4) != 0) {
+                throw new SAXException("'encoding' must come before 'standalone' in XML declaration");
+            }
+            ctx.seenAttributes |= 2;
+        } else if ("standalone".equals(ctx.currentName)) {
+            if ((ctx.seenAttributes & 1) == 0) {
+                throw new SAXException("'version' must come before 'standalone' in XML declaration");
+            }
+            ctx.seenAttributes |= 4;
+        } else {
+            throw new SAXException("Unknown attribute in XML declaration: " + ctx.currentName);
+        }
+    }
+    
+    /**
+     * Stores an attribute value in the XML declaration context.
+     */
+    private void storeAttributeValue(XMLDeclContext ctx, String value) throws SAXException {
+        if ("version".equals(ctx.currentName)) {
+            version = value;
+        } else if ("encoding".equals(ctx.currentName)) {
+            ctx.encoding = value;
+        } else if ("standalone".equals(ctx.currentName)) {
+            if ("yes".equals(value)) {
+                standalone = true;
+            } else if ("no".equals(value)) {
+                standalone = false;
+            } else {
+                throw new SAXException("Invalid value for 'standalone' attribute: " + value + 
+                                     " (must be 'yes' or 'no')");
+            }
+        }
+    }
+    
+    /**
+     * Extracts a substring from the buffer between start and end positions.
+     */
+    private String extractSubstring(CharBuffer buffer, int start, int end) {
+        char[] chars = new char[end - start];
+        for (int i = 0; i < chars.length; i++) {
+            chars[i] = buffer.get(start + i);
+        }
+        return new String(chars);
+    }
+    
+    /**
      * States for XML declaration parsing.
      */
     private enum XMLDeclState {
-        EXPECT_WHITESPACE_BEFORE_NAME,
-        EXPECT_NAME,
+        EXPECT_WHITESPACE_OR_NAME,
+        IN_NAME,
         EXPECT_EQ,
         EXPECT_QUOTE,
-        EXPECT_VALUE,
-        EXPECT_CLOSE_QUOTE
+        IN_VALUE
     }
     
     /**
@@ -753,173 +846,14 @@ public class XMLTokenizer implements Locator2 {
      * Holds mutable state during tokenization.
      */
     private static class XMLDeclContext {
-        XMLDeclState state = XMLDeclState.EXPECT_WHITESPACE_BEFORE_NAME;
+        XMLDeclState state;
         String currentName = null;
         short seenAttributes = 0; // Bit flags: 1=version, 2=encoding, 4=standalone
         String encoding = null; // Store encoding for setCharset() call after parsing complete
         ByteBuffer byteBuffer = null; // For resetting position during charset switch
-    }
-    
-    /**
-     * Processes a token during XML declaration parsing.
-     * Updates internal state (version, encoding, standalone) based on tokens.
-     * 
-     * @param token the token type
-     * @param buffer the character buffer (for extracting values)
-     * @param ctx the parsing context (mutable state)
-     * @throws SAXException if there's an error in the declaration
-     */
-    private void xmlDeclReceive(Token token, CharBuffer buffer, XMLDeclContext ctx) throws SAXException {
-        
-        if (token == Token.NAME) {
-            // Extract the name
-            ctx.currentName = extractTokenValue(buffer);
-            
-            // Check attribute order
-            if ("version".equals(ctx.currentName)) {
-                if (ctx.seenAttributes != 0) {
-                    throw new SAXException("'version' must be the first attribute in XML declaration");
-                }
-                ctx.seenAttributes |= 1;
-            } else if ("encoding".equals(ctx.currentName)) {
-                if ((ctx.seenAttributes & 1) == 0) {
-                    throw new SAXException("'version' must come before 'encoding' in XML declaration");
-                }
-                if ((ctx.seenAttributes & 4) != 0) {
-                    throw new SAXException("'encoding' must come before 'standalone' in XML declaration");
-                }
-                ctx.seenAttributes |= 2;
-            } else if ("standalone".equals(ctx.currentName)) {
-                if ((ctx.seenAttributes & 1) == 0) {
-                    throw new SAXException("'version' must come before 'standalone' in XML declaration");
-                }
-                ctx.seenAttributes |= 4;
-            } else {
-                throw new SAXException("Unknown attribute in XML declaration: " + ctx.currentName);
-            }
-        } else if (token == Token.CDATA && ctx.currentName != null) {
-            // Extract the value
-            String value = extractTokenValue(buffer);
-            
-            // Store based on currentName
-            if ("version".equals(ctx.currentName)) {
-                version = value;
-            } else if ("encoding".equals(ctx.currentName)) {
-                // Store for setCharset() call after declaration is fully parsed
-                ctx.encoding = value;
-            } else if ("standalone".equals(ctx.currentName)) {
-                if ("yes".equals(value)) {
-                    standalone = true;
-                } else if ("no".equals(value)) {
-                    standalone = false;
-                } else {
-                    throw new SAXException("Invalid value for 'standalone' attribute: " + value + 
-                                         " (must be 'yes' or 'no')");
-                }
-            }
-            
-            ctx.currentName = null; // Reset for next attribute
-        }
-    }
-    
-    /**
-     * Extracts the next token from the XML declaration buffer.
-     * This is a simplified tokenizer for XML declaration content only.
-     * 
-     * @param buffer the character buffer to tokenize
-     * @return the next token, or null if end of buffer
-     */
-    private Token nextXMLDeclToken(CharBuffer buffer) {
-        if (!buffer.hasRemaining()) {
-            return null;
-        }
-        
-        buffer.mark();
-        char c = buffer.get();
-        
-        // Whitespace
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-            // Consume all consecutive whitespace
-            while (buffer.hasRemaining()) {
-                buffer.mark();
-                c = buffer.get();
-                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
-                    buffer.reset(); // Put back non-whitespace
-                    break;
-                }
-            }
-            return Token.S;
-        }
-        
-        // Equals
-        if (c == '=') {
-            return Token.EQ;
-        }
-        
-        // Double quote
-        if (c == '"') {
-            return Token.QUOT;
-        }
-        
-        // Single quote
-        if (c == '\'') {
-            return Token.APOS;
-        }
-        
-        // Name (attribute name or value)
-        if (isNameStartChar(c)) {
-            // Consume entire name
-            while (buffer.hasRemaining()) {
-                buffer.mark();
-                c = buffer.get();
-                if (!isNameChar(c)) {
-                    buffer.reset(); // Put back non-name char
-                    break;
-                }
-            }
-            return Token.NAME;
-        }
-        
-        // CDATA (attribute value content)
-        // In XML declaration, values can contain any characters except the quote
-        // For simplicity, treat everything else as CDATA
-        buffer.reset(); // Back to start of data
-        return Token.CDATA;
-    }
-    
-    /**
-     * Extracts the token value that was just tokenized.
-     * The buffer should be positioned after the token.
-     * 
-     * @param buffer the character buffer
-     * @return the extracted token value
-     */
-    private String extractTokenValue(CharBuffer buffer) {
-        // This is a placeholder - in real implementation we'd track
-        // the start/end positions during tokenization
-        // For now, we'll need to implement proper token value extraction
-        
-        // Save current position
-        int end = buffer.position();
-        
-        // Find start by scanning backwards to whitespace or special char
-        int start = end - 1;
-        while (start > 0) {
-            char c = buffer.get(start - 1);
-            if (c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
-                c == '=' || c == '"' || c == '\'') {
-                break;
-            }
-            start--;
-        }
-        
-        // Extract substring
-        char[] chars = new char[end - start];
-        for (int i = 0; i < chars.length; i++) {
-            chars[i] = buffer.get(start + i);
-        }
-        
-        return new String(chars);
+        int nameStart = 0; // Start position of current name
+        int valueStart = 0; // Start position of current value
+        char quoteChar = '\0'; // Current quote character
     }
     
     /**
@@ -1080,7 +1014,12 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '#':
-                    emitToken(Token.HASH, null);
+                    // Could be '#' or '#PCDATA', '#REQUIRED', '#IMPLIED', '#FIXED'
+                    if (!tryEmitHashKeyword()) {
+                        // Not enough data or not a keyword, rewind
+                        charBuffer.reset();
+                        return;
+                    }
                     break;
                     
                 case '|':
@@ -1089,6 +1028,26 @@ public class XMLTokenizer implements Locator2 {
                     
                 case '[':
                     emitToken(Token.OPEN_BRACKET, null);
+                    break;
+                    
+                case '(':
+                    emitToken(Token.OPEN_PAREN, null);
+                    break;
+                    
+                case ')':
+                    emitToken(Token.CLOSE_PAREN, null);
+                    break;
+                    
+                case '*':
+                    emitToken(Token.STAR, null);
+                    break;
+                    
+                case '+':
+                    emitToken(Token.PLUS, null);
+                    break;
+                    
+                case ',':
+                    emitToken(Token.COMMA, null);
                     break;
                     
                 case '/':
@@ -1153,7 +1112,7 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case ']':
-                    // Could be part of ']]>'
+                    // Could be ']', ']]>' (END_CDATA), or ']]>' (END_CONDITIONAL)
                     if (charBuffer.hasRemaining()) {
                         charBuffer.mark();
                         char next = charBuffer.get();
@@ -1163,13 +1122,12 @@ public class XMLTokenizer implements Locator2 {
                                 char next2 = charBuffer.get();
                                 if (next2 == '>') {
                                     updateColumn(); updateColumn();
+                                    // Emit END_CDATA for ]]> (also used for conditional sections)
                                     emitToken(Token.END_CDATA, null);
                                 } else {
                                     charBuffer.reset();
-                                    // ']]' not followed by '>', treat as CDATA
-                                    if (!tryEmitCDATA()) {
-                                        return;
-                                    }
+                                    // ']]' not followed by '>', emit CLOSE_BRACKET
+                                    emitToken(Token.CLOSE_BRACKET, null);
                                 }
                             } else {
                                 // Need more data
@@ -1178,10 +1136,8 @@ public class XMLTokenizer implements Locator2 {
                             }
                         } else {
                             charBuffer.reset();
-                            // Single ']', treat as CDATA
-                            if (!tryEmitCDATA()) {
-                                return;
-                            }
+                            // Single ']', emit CLOSE_BRACKET
+                            emitToken(Token.CLOSE_BRACKET, null);
                         }
                     } else {
                         // Need more data
@@ -1203,20 +1159,38 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 default:
-                    // Check if this is a name start character
-                    if (isNameStartChar(c)) {
-                        charBuffer.reset(); // Go back to start of name
-                        if (!tryEmitName()) {
-                            // Not enough data, rewind and save to underflow
-                            return;
-                        }
-                    } else {
-                        // Regular character data
-                        charBuffer.reset(); // Go back to start of CDATA
-                        if (!tryEmitCDATA()) {
-                            // Not enough data
-                            return;
-                        }
+                    // Context-aware token emission: NAME for identifiers, CDATA for text content
+                    charBuffer.reset(); // Go back to start of content
+                    
+                    // Determine what to emit based on context
+                    switch (context) {
+                        case CONTENT:
+                        case ATTR_VALUE:
+                        case COMMENT:
+                        case CDATA_SECTION:
+                        case PI_DATA:
+                            // In these contexts, everything is CDATA (text content)
+                            if (!tryEmitCDATA()) {
+                                return;
+                            }
+                            break;
+                            
+                        case ELEMENT_NAME:
+                        case ELEMENT_ATTRS:
+                        case PI_TARGET:
+                        case DOCTYPE_INTERNAL:
+                            // In these contexts, try NAME first (identifiers)
+                            if (isNameStartChar(c)) {
+                                if (!tryEmitName()) {
+                                    return;
+                                }
+                            } else {
+                                // Not a name start char, treat as CDATA
+                                if (!tryEmitCDATA()) {
+                                    return;
+                                }
+                            }
+                            break;
                     }
                     break;
             }
@@ -1469,7 +1443,7 @@ public class XMLTokenizer implements Locator2 {
         if (count > 0) {
             // Emit whitespace token
             int end = charBuffer.position();
-            CharBuffer wsBuffer = charBuffer.slice();
+            CharBuffer wsBuffer = charBuffer.duplicate();
             wsBuffer.position(start);
             wsBuffer.limit(end);
             emitToken(Token.S, wsBuffer);
@@ -1480,7 +1454,8 @@ public class XMLTokenizer implements Locator2 {
     }
     
     /**
-     * Tries to emit a NAME token.
+     * Tries to emit a NAME token or a keyword token.
+     * This method performs context-aware keyword recognition.
      * @return true if token was emitted, false if more data is needed
      */
     private boolean tryEmitName() throws SAXException {
@@ -1503,12 +1478,128 @@ public class XMLTokenizer implements Locator2 {
             return false; // Need more data
         }
         
-        // Emit NAME token
+        // Extract the name
         int end = charBuffer.position();
-        CharBuffer savedBuffer = charBuffer.duplicate();
-        savedBuffer.position(start);
-        savedBuffer.limit(end);
-        emitToken(Token.NAME, savedBuffer);
+        CharBuffer nameBuffer = charBuffer.duplicate();
+        nameBuffer.position(start);
+        nameBuffer.limit(end);
+        
+        // Convert to string for keyword matching
+        StringBuilder sb = new StringBuilder();
+        while (nameBuffer.hasRemaining()) {
+            sb.append(nameBuffer.get());
+        }
+        String name = sb.toString();
+        
+        // Check if this is a keyword (context-aware)
+        Token keyword = recognizeKeyword(name);
+        if (keyword != null) {
+            emitToken(keyword, null);
+        } else {
+            // Emit NAME token
+            CharBuffer savedBuffer = charBuffer.duplicate();
+            savedBuffer.position(start);
+            savedBuffer.limit(end);
+            emitToken(Token.NAME, savedBuffer);
+        }
+        return true;
+    }
+    
+    /**
+     * Recognizes XML keywords in a context-aware manner.
+     * Returns the keyword token if the name is a keyword, null otherwise.
+     * 
+     * Note: For now, we'll emit keywords whenever we see them.
+     * A more sophisticated approach would track parser state to determine
+     * when keywords are valid vs. when they're just names.
+     * 
+     * @param name the name to check
+     * @return the keyword token, or null if not a keyword
+     */
+    private Token recognizeKeyword(String name) {
+        // DOCTYPE keywords
+        switch (name) {
+            case "SYSTEM": return Token.SYSTEM;
+            case "PUBLIC": return Token.PUBLIC;
+            case "NDATA": return Token.NDATA;
+            
+            // ELEMENT content model keywords
+            case "EMPTY": return Token.EMPTY;
+            case "ANY": return Token.ANY;
+            
+            // ATTLIST type keywords
+            case "CDATA": return Token.CDATA_TYPE;
+            case "ID": return Token.ID;
+            case "IDREF": return Token.IDREF;
+            case "IDREFS": return Token.IDREFS;
+            case "ENTITY": return Token.ENTITY;
+            case "ENTITIES": return Token.ENTITIES;
+            case "NMTOKEN": return Token.NMTOKEN;
+            case "NMTOKENS": return Token.NMTOKENS;
+            case "NOTATION": return Token.NOTATION;
+            
+            // Conditional section keywords
+            case "INCLUDE": return Token.INCLUDE;
+            case "IGNORE": return Token.IGNORE;
+            
+            default: return null; // Not a keyword
+        }
+    }
+    
+    /**
+     * Tries to emit a hash-prefixed keyword token (#PCDATA, #REQUIRED, #IMPLIED, #FIXED).
+     * @return true if token was emitted, false if more data is needed
+     */
+    private boolean tryEmitHashKeyword() throws SAXException {
+        // We've already consumed '#'
+        if (!charBuffer.hasRemaining()) {
+            return false; // Need more data
+        }
+        
+        charBuffer.mark();
+        int nameStart = charBuffer.position();
+        
+        // Try to read a name
+        while (charBuffer.hasRemaining()) {
+            char c = charBuffer.get();
+            if (!isNameChar(c)) {
+                charBuffer.reset();
+                charBuffer.position(charBuffer.position() - 1); // Back to before non-name char
+                break;
+            }
+        }
+        
+        int nameEnd = charBuffer.position();
+        
+        // Extract the name
+        if (nameEnd > nameStart) {
+            charBuffer.position(nameStart);
+            StringBuilder sb = new StringBuilder();
+            while (charBuffer.position() < nameEnd) {
+                sb.append(charBuffer.get());
+                updateColumn();
+            }
+            String keyword = sb.toString();
+            
+            // Check if it's a known hash keyword
+            Token token = null;
+            switch (keyword) {
+                case "PCDATA": token = Token.PCDATA; break;
+                case "REQUIRED": token = Token.REQUIRED; break;
+                case "IMPLIED": token = Token.IMPLIED; break;
+                case "FIXED": token = Token.FIXED; break;
+            }
+            
+            if (token != null) {
+                emitToken(token, null);
+                return true;
+            }
+        }
+        
+        // Not a keyword, just emit HASH
+        charBuffer.reset();
+        charBuffer.position(nameStart); // Back to after '#'
+        emitToken(Token.HASH, null);
         return true;
     }
     
@@ -1543,12 +1634,48 @@ public class XMLTokenizer implements Locator2 {
             charBuffer.mark();
             char c = charBuffer.get();
             
-            // Check if this is a special character
-            if (c == '<' || c == '&' || c == '>' || c == '\'' || c == '"' ||
-                c == ':' || c == '!' || c == '?' || c == '=' || c == '%' ||
-                c == ';' || c == '#' || c == '|' || c == '[' || 
-                isWhitespace(c) || isNameStartChar(c)) {
-                // Special character, rewind and stop
+            // Stop at special XML characters based on context
+            boolean stopHere = false;
+            
+            switch (context) {
+                case CONTENT:
+                    // In element content, stop at: < & (and whitespace is separate token)
+                    stopHere = (c == '<' || c == '&' || isWhitespace(c));
+                    break;
+                    
+                case ATTR_VALUE:
+                    // In attribute values, stop at: < & > and the matching quote
+                    stopHere = (c == '<' || c == '&' || c == '>' ||
+                               (attrQuoteChar != '\0' && c == attrQuoteChar));
+                    break;
+                    
+                case COMMENT:
+                    // In comments, stop at: - (for -->)
+                    stopHere = (c == '-');
+                    break;
+                    
+                case CDATA_SECTION:
+                    // In CDATA sections, stop at: ] (for ]]>)
+                    stopHere = (c == ']');
+                    break;
+                    
+                case PI_DATA:
+                    // In PI data, stop at: ? (for ?>)
+                    stopHere = (c == '?');
+                    break;
+                    
+                default:
+                    // Shouldn't reach here in CDATA-emitting context, but be safe
+                    // Use old conservative logic: stop at any special char
+                    stopHere = (c == '<' || c == '&' || c == '>' || c == '\'' || c == '"' ||
+                               c == ':' || c == '!' || c == '?' || c == '=' || c == '%' ||
+                               c == ';' || c == '#' || c == '|' || c == '[' || c == ']' ||
+                               c == '(' || c == ')' || c == '*' || c == '+' || c == ',' ||
+                               isWhitespace(c));
+                    break;
+            }
+            
+            if (stopHere) {
                 charBuffer.reset();
                 break;
             }
@@ -1596,6 +1723,97 @@ public class XMLTokenizer implements Locator2 {
      */
     private void emitToken(Token token, CharBuffer data) throws SAXException {
         consumer.receive(token, data);
+        updateContext(token);
+    }
+    
+    /**
+     * Updates the tokenizer context based on the token that was just emitted.
+     * This tracks whether we're in element content, attributes, comments, etc.
+     * @param token the token that was just emitted
+     */
+    private void updateContext(Token token) {
+        switch (token) {
+            // Start element or end element tag
+            case LT:
+                context = TokenizerContext.ELEMENT_NAME;
+                break;
+            case START_END_ELEMENT:
+                context = TokenizerContext.ELEMENT_NAME;
+                break;
+                
+            // After element name, we can have attributes or closing
+            case NAME:
+                if (context == TokenizerContext.ELEMENT_NAME) {
+                    context = TokenizerContext.ELEMENT_ATTRS;
+                } else if (context == TokenizerContext.PI_TARGET) {
+                    context = TokenizerContext.PI_DATA;
+                }
+                // In other contexts, NAME doesn't change context
+                break;
+                
+            // Quotes in attribute context
+            case QUOT:
+            case APOS:
+                if (context == TokenizerContext.ELEMENT_ATTRS) {
+                    // Starting attribute value
+                    context = TokenizerContext.ATTR_VALUE;
+                    attrQuoteChar = (token == Token.QUOT) ? '"' : '\'';
+                } else if (context == TokenizerContext.ATTR_VALUE) {
+                    // Ending attribute value
+                    context = TokenizerContext.ELEMENT_ATTRS;
+                    attrQuoteChar = '\0';
+                }
+                break;
+                
+            // End of element tag
+            case GT:
+                if (context == TokenizerContext.ELEMENT_ATTRS || context == TokenizerContext.ELEMENT_NAME) {
+                    context = TokenizerContext.CONTENT;
+                }
+                break;
+            case END_EMPTY_ELEMENT:
+                context = TokenizerContext.CONTENT;
+                break;
+                
+            // Processing instruction
+            case START_PI:
+                context = TokenizerContext.PI_TARGET;
+                break;
+            case END_PI:
+                context = TokenizerContext.CONTENT;
+                break;
+                
+            // Comment
+            case START_COMMENT:
+                context = TokenizerContext.COMMENT;
+                break;
+            case END_COMMENT:
+                context = TokenizerContext.CONTENT;
+                break;
+                
+            // CDATA section
+            case START_CDATA:
+                context = TokenizerContext.CDATA_SECTION;
+                break;
+            case END_CDATA:
+                context = TokenizerContext.CONTENT;
+                break;
+                
+            // DOCTYPE
+            case START_DOCTYPE:
+            case OPEN_BRACKET: // Internal subset
+                context = TokenizerContext.DOCTYPE_INTERNAL;
+                break;
+            case CLOSE_BRACKET:
+                if (context == TokenizerContext.DOCTYPE_INTERNAL) {
+                    context = TokenizerContext.ELEMENT_ATTRS; // Back to DOCTYPE declaration attrs
+                }
+                break;
+                
+            default:
+                // Most tokens don't change context
+                break;
+        }
     }
 
     /**

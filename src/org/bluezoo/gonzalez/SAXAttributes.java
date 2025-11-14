@@ -1,5 +1,5 @@
 /*
- * GonzalezAttributes.java
+ * SAXAttributes.java
  * Copyright (C) 2025 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -25,8 +25,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import org.bluezoo.gonzalez.dtd.AttributeDeclaration;
-import org.bluezoo.gonzalez.dtd.DTDParser;
 import org.xml.sax.Attributes;
 import org.xml.sax.ext.Attributes2;
 
@@ -50,7 +48,7 @@ import org.xml.sax.ext.Attributes2;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class GonzalezAttributes implements Attributes2 {
+public class SAXAttributes implements Attributes2 {
 
   /**
    * Single attribute holder.
@@ -85,7 +83,7 @@ public class GonzalezAttributes implements Attributes2 {
   /**
    * Creates a new empty attribute list.
    */
-  public GonzalezAttributes() {
+  public SAXAttributes() {
     this.attributes = new ArrayList<>();
     this.qnameMap = new HashMap<>();
     this.stringNameMap = new HashMap<>();
@@ -191,14 +189,14 @@ public class GonzalezAttributes implements Attributes2 {
 
     Attribute attr = attributes.get(index);
 
-    // Check DTD for more specific type information
-    if (dtdParser != null && elementName != null) {
-      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
-          elementName, attr.qname.getQName());
-      if (decl != null) {
-        return decl.type;
-      }
-    }
+    // TODO: Check DTD for more specific type information
+    // if (dtdParser != null && elementName != null) {
+    //   AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
+    //       elementName, attr.qname.getQName());
+    //   if (decl != null) {
+    //     return decl.type;
+    //   }
+    // }
 
     return attr.type;
   }
@@ -246,15 +244,7 @@ public class GonzalezAttributes implements Attributes2 {
       return null;
     }
 
-    // Check DTD for more specific type information
-    if (dtdParser != null && elementName != null) {
-      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
-          elementName, attr.qname.getQName());
-      if (decl != null) {
-        return decl.type;
-      }
-    }
-
+    // TODO: Check DTD for more specific type information
     return attr.type;
   }
 
@@ -266,15 +256,7 @@ public class GonzalezAttributes implements Attributes2 {
       return null;
     }
 
-    // Check DTD for more specific type information
-    if (dtdParser != null && elementName != null) {
-      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
-          elementName, qName);
-      if (decl != null) {
-        return decl.type;
-      }
-    }
-
+    // TODO: Check DTD for more specific type information
     return attr.type;
   }
 
@@ -299,15 +281,8 @@ public class GonzalezAttributes implements Attributes2 {
       throw new ArrayIndexOutOfBoundsException(index);
     }
 
-    // Lazy lookup: query DTD parser if available
-    if (dtdParser != null && elementName != null) {
-      Attribute attr = attributes.get(index);
-      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
-          elementName, attr.qname.getQName());
-      return (decl != null);
-    }
-
-    // No DTD available
+    // TODO: Lazy lookup: query DTD parser if available
+    // No DTD available for now
     return false;
   }
 
@@ -318,12 +293,7 @@ public class GonzalezAttributes implements Attributes2 {
       throw new IllegalArgumentException("Unknown attribute: " + qName);
     }
 
-    // Lazy lookup: query DTD parser if available
-    if (dtdParser != null && elementName != null) {
-      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(elementName, qName);
-      return (decl != null);
-    }
-
+    // TODO: Lazy lookup: query DTD parser if available
     return false;
   }
 
@@ -336,13 +306,7 @@ public class GonzalezAttributes implements Attributes2 {
       throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
     }
 
-    // Lazy lookup: query DTD parser if available
-    if (dtdParser != null && elementName != null) {
-      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
-          elementName, attr.qname.getQName());
-      return (decl != null);
-    }
-
+    // TODO: Lazy lookup: query DTD parser if available
     return false;
   }
 

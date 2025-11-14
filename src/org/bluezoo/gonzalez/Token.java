@@ -61,5 +61,42 @@ public enum Token {
     START_NOTATIONDECL, // "<!NOTATION"
     START_CONDITIONAL, // "<!["
     OPEN_BRACKET, // '['
+    CLOSE_BRACKET, // ']'
+    OPEN_PAREN, // '('
+    CLOSE_PAREN, // ')'
+    STAR, // '*'
+    PLUS, // '+'
+    COMMA, // ','
+    
+    // DOCTYPE keywords
+    SYSTEM, // "SYSTEM"
+    PUBLIC, // "PUBLIC"
+    NDATA, // "NDATA"
+    
+    // ELEMENT content model keywords
+    EMPTY, // "EMPTY"
+    ANY, // "ANY"
+    PCDATA, // "#PCDATA"
+    
+    // ATTLIST type keywords
+    CDATA_TYPE, // "CDATA" (attribute type, distinct from CDATA token for character data)
+    ID, // "ID"
+    IDREF, // "IDREF"
+    IDREFS, // "IDREFS"
+    ENTITY, // "ENTITY"
+    ENTITIES, // "ENTITIES"
+    NMTOKEN, // "NMTOKEN"
+    NMTOKENS, // "NMTOKENS"
+    NOTATION, // "NOTATION"
+    
+    // ATTLIST default value keywords
+    REQUIRED, // "#REQUIRED"
+    IMPLIED, // "#IMPLIED"
+    FIXED, // "#FIXED"
+    
+    // Conditional section keywords
+    INCLUDE, // "INCLUDE"
+    IGNORE, // "IGNORE"
+    END_CONDITIONAL, // "]]>"
 
 }
