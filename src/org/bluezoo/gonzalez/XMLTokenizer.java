@@ -24,6 +24,8 @@ package org.bluezoo.gonzalez;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
 import org.xml.sax.SAXException;
 import org.xml.sax.ext.Locator2;
@@ -64,7 +66,7 @@ public class XMLTokenizer implements Locator2 {
     private boolean standalone;
 
     /**
-     * The internal byte buffer.
+     * The internal byte underflow buffer.
      * This will be used in 2 phases:
      * <ol>
      * <li>Before the BOM/XML declaration is completely parsed, if
@@ -76,18 +78,26 @@ public class XMLTokenizer implements Locator2 {
      * This buffer will always be kept ready for a read between
      * operations.
      */
-    private ByteBuffer byteBuffer;
+    private ByteBuffer byteUnderflow;
 
     /**
-     * The internal character buffer.
+     * The internal character underflow buffer.
      * This will only be allocated once the charset is determined.
      * Its presence indicates that we are now in character mode.
      * Tokens will be extracted from this buffer and pushed to the
      * parser until no more are possible. Then the underflow, if any,
-     * is relocated to the start of the buffer.
+     * is relocated to the start of the character buffer.
      * <p>
      * This buffer will always be kept ready for a read between
      * operations.
+     */
+    private CharBuffer charUnderflow;
+
+    /**
+     * The main character buffer.
+     * The contents of this buffer are transient, but we will reuse the same
+     * allocated buffer object if possible. It is used for storing the
+     * decoded input ready for processing into tokens.
      */
     private CharBuffer charBuffer;
 
@@ -118,17 +128,47 @@ public class XMLTokenizer implements Locator2 {
     private final String systemId;
 
     static enum State {
-        INIT, BOM_READ, CHARACTERS
+        INIT,           // Initial state, detecting BOM
+        BOM_READ,       // BOM detected (or determined not present), ready for XML decl
+        XMLDECL,        // Parsing XML declaration in special character mode
+        CHARACTERS      // Normal tokenization mode
     }
 
     private State state = State.INIT;
     private boolean closed;
+    
+    /**
+     * The token consumer that will receive tokens.
+     */
+    private final TokenConsumer consumer;
+    
+    /**
+     * The charset determined by the BOM (if present).
+     * This is used to validate against the encoding attribute in the XML declaration.
+     */
+    private Charset bomCharset;
+    
+    /**
+     * Position in the byte buffer after the XML declaration.
+     * Used when we need to switch charsets and re-decode.
+     */
+    private int postXMLDeclBytePosition;
+    
+    /**
+     * Last character seen from the previous receive().
+     * Used to handle CR-LF normalization that straddles buffer boundaries.
+     * Value is '\0' if no character has been seen yet, otherwise the last character.
+     * Specifically, if this is '\r' (CR), and the next buffer starts with '\n' (LF),
+     * we skip the LF.
+     */
+    private char lastCharSeen = '\0';
 
     /**
      * Constructs a new XMLTokenizer with no publicId or systemId.
+     * @param consumer the TokenConsumer that will receive tokens
      */
-    public XMLTokenizer() {
-        this(null, null);
+    public XMLTokenizer(TokenConsumer consumer) {
+        this(consumer, null, null);
     }
 
     /**
@@ -136,12 +176,15 @@ public class XMLTokenizer implements Locator2 {
      * and systemId.
      * These are metadata about the document that can describe how
      * it was resolved as an entity.
+     * @param consumer the TokenConsumer that will receive tokens
      * @param publicId the public identifier of the document
      * @param systemId the system identifier of the document
      */
-    public XMLTokenizer(String publicId, String systemId) {
+    public XMLTokenizer(TokenConsumer consumer, String publicId, String systemId) {
+        this.consumer = consumer;
         this.publicId = publicId;
         this.systemId = systemId;
+        this.consumer.setLocator(this);
     }
 
     /**
@@ -155,32 +198,1404 @@ public class XMLTokenizer implements Locator2 {
             throw new IllegalStateException();
         }
         
+        // Prepend byte underflow if it exists
+        ByteBuffer combined = data;
+        if (byteUnderflow != null && byteUnderflow.hasRemaining()) {
+            combined = prependByteUnderflow(data);
+        }
+        
         switch (state) {
             case INIT:
-                // If there is enough data to read the BOM, do so,
-                // otherwise store the underflow in the byte buffer
-                // and return.
-                // TODO
+                // Try to detect BOM
+                if (!detectBOM(combined)) {
+                    // Not enough data, save as underflow and return
+                    saveByteUnderflow(combined);
+                    return;
+                }
                 state = State.BOM_READ;
                 // Fall through
             case BOM_READ:
-                // If there is enough data to read the XML declaration,
-                // do so, otherwise store the underflow in the byte
-                // buffer and return.
-                // TODO
-                charBuffer = CharBuffer.allocate(Math.max(4096, data.capacity()));
-                decoder = charset.newDecoder();
+                // Allocate decoder for the charset determined by BOM (or default UTF-8)
+                if (decoder == null) {
+                    decoder = charset.newDecoder();
+                    charBuffer = CharBuffer.allocate(Math.max(4096, combined.capacity() * 2));
+                    charUnderflow = CharBuffer.allocate(4096);
+                    charUnderflow.limit(0); // Empty, ready for reading
+                }
+                state = State.XMLDECL;
+                // Fall through
+            case XMLDECL:
+                // Parse XML declaration in special character mode
+                // This handles line-end normalization and locator tracking
+                // but doesn't emit tokens yet
+                if (!parseXMLDeclaration(combined)) {
+                    // Not enough data, save as underflow and return
+                    saveByteUnderflow(combined);
+                    return;
+                }
+                // XML declaration parsed (or determined not present)
+                // Now switch to normal tokenization mode
                 state = State.CHARACTERS;
                 // Fall through
             case CHARACTERS:
-                // Prepend the byte underflow to the data if the
-                // underflow exists.
-                // Decode the data into the character buffer.
-                // If this operation returned an underflow, store
-                // unconsumed bytes back into the byte underflow.
-                // TODO 2.11 End-of-Line Handling
-                // TODO
+                // Decode the data into the character buffer and tokenize
+                decodeAndTokenize(combined);
+                break;
         }
+    }
+
+    /**
+     * Prepends the byte underflow to the incoming data.
+     * @param data the new data buffer
+     * @return a combined buffer with underflow prepended to data
+     */
+    private ByteBuffer prependByteUnderflow(ByteBuffer data) {
+        int totalSize = byteUnderflow.remaining() + data.remaining();
+        ByteBuffer combined = ByteBuffer.allocate(totalSize);
+        combined.put(byteUnderflow);
+        combined.put(data);
+        combined.flip(); // Ready for reading
+        // Clear the underflow
+        byteUnderflow.clear();
+        byteUnderflow.limit(0);
+        return combined;
+    }
+
+    /**
+     * Saves remaining bytes in the buffer as underflow for next receive().
+     * @param buffer the buffer to save from
+     */
+    private void saveByteUnderflow(ByteBuffer buffer) {
+        if (!buffer.hasRemaining()) {
+            return;
+        }
+        if (byteUnderflow == null) {
+            byteUnderflow = ByteBuffer.allocate(Math.max(1024, buffer.remaining()));
+        } else if (byteUnderflow.capacity() < buffer.remaining()) {
+            // Expand the underflow buffer
+            ByteBuffer newBuffer = ByteBuffer.allocate(buffer.remaining() * 2);
+            byteUnderflow.flip();
+            newBuffer.put(byteUnderflow);
+            byteUnderflow = newBuffer;
+        } else {
+            // Reuse existing buffer
+            byteUnderflow.clear();
+        }
+        byteUnderflow.put(buffer);
+        byteUnderflow.flip(); // Ready for reading
+    }
+    
+    /**
+     * Detects and processes a BOM (Byte Order Mark) if present.
+     * After detecting a BOM, the charset is determined and we can proceed
+     * to character mode. Note that if a UTF-16 BOM is found, the XML
+     * declaration (if present) will be encoded in UTF-16, not ASCII.
+     * 
+     * @param buffer the buffer to read from
+     * @return true if we can proceed, false if we need more data
+     */
+    private boolean detectBOM(ByteBuffer buffer) {
+        // We need at least 2 bytes to detect UTF-16, 3 for UTF-8
+        if (buffer.remaining() < 2) {
+            return false; // Need more data
+        }
+
+        buffer.mark();
+        int b1 = buffer.get() & 0xFF;
+        int b2 = buffer.get() & 0xFF;
+
+        // Check for UTF-16 BOMs
+        if (b1 == 0xFE && b2 == 0xFF) {
+            charset = StandardCharsets.UTF_16BE;
+            bomCharset = charset; // Save BOM charset for validation
+            return true; // BOM consumed, charset determined
+        } else if (b1 == 0xFF && b2 == 0xFE) {
+            charset = StandardCharsets.UTF_16LE;
+            bomCharset = charset; // Save BOM charset for validation
+            return true; // BOM consumed, charset determined
+        }
+
+        // Check for UTF-8 BOM (need 3 bytes)
+        if (buffer.hasRemaining()) {
+            int b3 = buffer.get() & 0xFF;
+            if (b1 == 0xEF && b2 == 0xBB && b3 == 0xBF) {
+                charset = StandardCharsets.UTF_8;
+                bomCharset = charset; // Save BOM charset for validation
+                return true; // BOM consumed, charset determined
+            }
+            buffer.reset(); // No BOM, rewind
+            return true; // Can proceed with default charset (no BOM)
+        }
+
+        // Only have 2 bytes, might be UTF-8 BOM
+        buffer.reset();
+        return false; // Need more data
+    }
+
+    /**
+     * Parses the XML/Text declaration if present.
+     * This is done in CHARACTER MODE with special handling:
+     * 
+     * 1. No tokens are emitted to the parser yet
+     * 2. Line-end normalization is performed (CRLF-&gt;LF, CR-&gt;LF)
+     * 3. Line/column tracking is maintained for locator
+     * 4. If BOM present and encoding differs, this is an error
+     * 5. If no BOM and encoding specified, switch charset and re-decode
+     * 
+     * @param buffer the byte buffer to read from
+     * @return true if we can proceed, false if we need more data
+     * @throws SAXException if there's a charset mismatch or other error
+     */
+    private boolean parseXMLDeclaration(ByteBuffer buffer) throws SAXException {
+        // Decode bytes into characters with line-end normalization
+        charBuffer.clear();
+        int initialBytePos = buffer.position();
+        
+        // Decode the bytes
+        CoderResult result = decoder.decode(buffer, charBuffer, false);
+        charBuffer.flip();
+        
+        // Normalize line endings (CRLF->LF, CR->LF) in-place
+        normalizeLineEndings(charBuffer);
+        
+        // Check if we have enough characters to decide
+        if (charBuffer.remaining() < 5) {
+            // Not enough data decoded yet
+            buffer.position(initialBytePos); // Rewind
+            return false;
+        }
+        
+        // Check if it starts with "<?xml"
+        charBuffer.mark();
+        if (charBuffer.get() != '<' || charBuffer.get() != '?' ||
+            charBuffer.get() != 'x' || charBuffer.get() != 'm' ||
+            charBuffer.get() != 'l') {
+            // No XML declaration
+            // Save what we decoded to charUnderflow for later tokenization
+            charBuffer.reset();
+            updateLocationFromChars(charBuffer); // Track line/column
+            saveCharUnderflow(charBuffer);
+            return true;
+        }
+        
+        // We have "<?xml", now find the end "?>"
+        boolean foundEnd = false;
+        int searchLimit = Math.min(charBuffer.remaining(), 512);
+        for (int i = 0; i < searchLimit - 1; i++) {
+            if (charBuffer.get(charBuffer.position() + i) == '?' &&
+                charBuffer.get(charBuffer.position() + i + 1) == '>') {
+                foundEnd = true;
+                // Position after the "?>"
+                charBuffer.position(charBuffer.position() + i + 2);
+                break;
+            }
+        }
+        
+        if (!foundEnd) {
+            // Haven't found the end yet
+            if (charBuffer.remaining() >= 512) {
+                // Declaration is too long, something is wrong
+                charBuffer.reset();
+                updateLocationFromChars(charBuffer);
+                saveCharUnderflow(charBuffer);
+                throw new SAXException("XML declaration too long (>512 characters)");
+            }
+            // Need more data
+            buffer.position(initialBytePos); // Rewind byte buffer
+            return false;
+        }
+        
+        // Save the byte position after the XML declaration
+        postXMLDeclBytePosition = buffer.position();
+        
+        // Extract the declaration content (between "<?xml" and "?>")
+        int declEnd = charBuffer.position();
+        charBuffer.reset(); // Back to start of "<?xml"
+        
+        // Skip past "<?xml" (5 characters)
+        charBuffer.position(charBuffer.position() + 5);
+        
+        // Create a slice for just the declaration content
+        int contentStart = charBuffer.position();
+        int contentEnd = declEnd - 2; // Exclude "?>"
+        charBuffer.limit(contentEnd);
+        CharBuffer declContent = charBuffer.slice();
+        
+        // Restore buffer position/limit for line tracking
+        charBuffer.limit(declEnd);
+        charBuffer.position(declEnd);
+        
+        // Update line/column from the entire declaration
+        charBuffer.reset();
+        charBuffer.position(declEnd);
+        updateLocationFromChars(charBuffer);
+        
+        // Parse the declaration to extract version, encoding, standalone
+        // The encoding will be handled by setCharset() called from xmlDeclReceive()
+        // Pass the byte buffer so setCharset() can reset position if needed
+        extractXMLDeclarationAttributes(declContent, buffer);
+        
+        // Save any remaining decoded characters to charUnderflow
+        if (charBuffer.hasRemaining()) {
+            saveCharUnderflow(charBuffer);
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Sets the charset based on the encoding attribute in the XML declaration.
+     * Handles three scenarios:
+     * 1. BOM present + encoding differs = ERROR
+     * 2. No BOM + encoding differs = SWITCH CHARSET
+     * 3. BOM present + encoding matches = SUCCESS (continue)
+     * 
+     * This is called after the entire XML declaration has been parsed,
+     * following the event-driven pattern.
+     * 
+     * @param encodingName the encoding name from the XML declaration
+     * @param byteBuffer the byte buffer (for resetting position during charset switch)
+     * @throws SAXException if there's a charset mismatch or unsupported encoding
+     */
+    private void setCharset(String encodingName, ByteBuffer byteBuffer) throws SAXException {
+        // Try to resolve the declared charset
+        // Per XML spec: charset names are case-insensitive and should match IANA names
+        // Java's Charset.forName() already handles case-insensitivity
+        Charset declaredCharset;
+        try {
+            declaredCharset = Charset.forName(encodingName);
+        } catch (Exception e) {
+            // Unsupported or invalid charset name
+            throw new SAXException("Unsupported encoding in XML declaration: " + 
+                encodingName + " (reason: " + e.getMessage() + ")");
+        }
+        
+        // Case 1: BOM present + encoding differs = ERROR
+        // Note: We need to check if charsets are compatible, not just equal
+        // e.g., "UTF-16" is compatible with UTF-16LE/BE BOMs
+        if (bomCharset != null && !isCharsetCompatible(bomCharset, declaredCharset)) {
+            throw new SAXException("Encoding mismatch: BOM indicates " + 
+                bomCharset.name() + " but XML declaration specifies " + 
+                encodingName);
+        }
+        
+        // Case 2: No BOM + encoding differs from current = SWITCH CHARSET
+        if (bomCharset == null && !charset.equals(declaredCharset)) {
+            // Switch to the declared charset
+            charset = declaredCharset;
+            decoder = charset.newDecoder();
+            
+            // Reset byte buffer to position after XML declaration
+            // This allows re-decoding the remaining document with the correct charset
+            if (byteBuffer != null) {
+                byteBuffer.position(postXMLDeclBytePosition);
+            }
+            
+            // Clear character buffers for re-decode
+            charBuffer.clear();
+            charUnderflow.clear();
+            charUnderflow.limit(0);
+            
+            // Note: The actual re-decoding will happen when we fall through
+            // to CHARACTERS state or on the next receive()
+        }
+        
+        // Case 3: BOM present + encoding matches (or compatible) = SUCCESS
+        // No action needed, continue with current charset
+    }
+    
+    /**
+     * Checks if two charsets are compatible.
+     * This handles cases like UTF-16 being compatible with UTF-16LE/BE.
+     * 
+     * Per XML spec and Java behavior:
+     * - "UTF-16" with BOM is compatible with UTF-16LE or UTF-16BE
+     * - "UTF-16BE" requires UTF-16BE
+     * - "UTF-16LE" requires UTF-16LE
+     * - Other charsets must match exactly
+     * 
+     * @param bomCharset the charset detected from the BOM
+     * @param declaredCharset the charset declared in the XML declaration
+     * @return true if compatible, false otherwise
+     */
+    private boolean isCharsetCompatible(Charset bomCharset, Charset declaredCharset) {
+        // Exact match is always compatible
+        if (bomCharset.equals(declaredCharset)) {
+            return true;
+        }
+        
+        // Get normalized names for comparison
+        String bomName = bomCharset.name().toLowerCase();
+        String declName = declaredCharset.name().toLowerCase();
+        
+        // UTF-16 (generic) is compatible with UTF-16LE or UTF-16BE
+        // since the BOM determines which one to use
+        if (declName.equals("utf-16") || declName.equals("utf16")) {
+            return bomName.equals("utf-16le") || bomName.equals("utf-16be") ||
+                   bomName.equals("utf-16") || bomName.equals("utf16");
+        }
+        
+        // Check if they're aliases of each other
+        // Java's Charset handles many aliases (e.g., "UTF8" == "UTF-8")
+        return bomCharset.aliases().contains(declName) ||
+               declaredCharset.aliases().contains(bomName);
+    }
+    
+    /**
+     * Saves remaining characters in the buffer to charUnderflow.
+     * @param buffer the buffer to save from
+     */
+    private void saveCharUnderflow(CharBuffer buffer) {
+        if (!buffer.hasRemaining()) {
+            return;
+        }
+        if (charUnderflow.capacity() < buffer.remaining()) {
+            charUnderflow = CharBuffer.allocate(buffer.remaining() * 2);
+        } else {
+            charUnderflow.clear();
+        }
+        charUnderflow.put(buffer);
+        charUnderflow.flip(); // Ready for reading
+    }
+
+    /**
+     * Normalizes line endings in the character buffer.
+     * Converts CRLF -> LF and CR -> LF as per XML spec section 2.11.
+     * Modifies the buffer in-place and adjusts its limit.
+     * 
+     * This method handles the case where a CRLF straddles buffer boundaries:
+     * if the previous receive() ended with CR, and this buffer starts with LF,
+     * the LF is skipped.
+     * 
+     * @param buffer the buffer to normalize (must be in read mode)
+     */
+    private void normalizeLineEndings(CharBuffer buffer) {
+        int readPos = buffer.position();
+        int writePos = readPos;
+        int limit = buffer.limit();
+        
+        // Handle straddle case: previous buffer ended with CR, this starts with LF
+        if (lastCharSeen == '\r' && readPos < limit) {
+            char firstChar = buffer.get(readPos);
+            if (firstChar == '\n') {
+                // Skip the LF (already converted the CR to LF in previous receive)
+                readPos++;
+            }
+        }
+        
+        while (readPos < limit) {
+            char c = buffer.get(readPos);
+            if (c == '\r') {
+                // Check if next char is \n
+                if (readPos + 1 < limit && buffer.get(readPos + 1) == '\n') {
+                    // CRLF -> LF: write LF, skip CR
+                    buffer.put(writePos++, '\n');
+                    readPos += 2; // Skip both CR and LF
+                    lastCharSeen = '\n'; // Store LF as last seen
+                } else {
+                    // CR alone -> LF: convert to \n
+                    buffer.put(writePos++, '\n');
+                    readPos++;
+                    lastCharSeen = '\r'; // Store CR (might be followed by LF in next buffer)
+                }
+            } else {
+                // Normal character: write it
+                if (writePos != readPos) {
+                    buffer.put(writePos, c);
+                }
+                writePos++;
+                readPos++;
+                lastCharSeen = c;
+            }
+        }
+        
+        // Adjust buffer limit to reflect normalized content
+        buffer.limit(writePos);
+        buffer.position(buffer.position()); // Keep original position
+    }
+    
+    /**
+     * Updates line and column numbers by consuming characters from the buffer.
+     * This is called during XML declaration parsing to track position.
+     * 
+     * @param buffer the buffer to read from (consumes from current position)
+     */
+    private void updateLocationFromChars(CharBuffer buffer) {
+        int start = buffer.position();
+        int end = buffer.limit();
+        
+        for (int i = start; i < end; i++) {
+            char c = buffer.get(i);
+            if (c == '\n') {
+                lineNumber++;
+                columnNumber = 0;
+            } else {
+                columnNumber++;
+            }
+        }
+    }
+    
+    /**
+     * Extracts attributes from the XML declaration using tokenization.
+     * The buffer should be positioned after "<?xml" and limited to before "?>".
+     * 
+     * This performs well-formedness checking and proper XML tokenization
+     * instead of simple string manipulation.
+     * 
+     * Uses event-driven pattern: when encoding attribute is found, setCharset()
+     * is called directly to handle charset switching.
+     * 
+     * @param declBuffer the character buffer containing the XML declaration content
+     * @param byteBuffer the byte buffer (for resetting position during charset switch)
+     * @throws SAXException if the XML declaration is malformed
+     */
+    private void extractXMLDeclarationAttributes(CharBuffer declBuffer, ByteBuffer byteBuffer) throws SAXException {
+        // Context object to hold mutable state
+        XMLDeclContext ctx = new XMLDeclContext();
+        ctx.byteBuffer = byteBuffer;
+        
+        while (declBuffer.hasRemaining()) {
+            Token token = nextXMLDeclToken(declBuffer);
+            if (token == null) {
+                break; // End of declaration content
+            }
+            
+            xmlDeclReceive(token, declBuffer, ctx);
+            
+            // Update state based on token
+            switch (ctx.state) {
+                case EXPECT_WHITESPACE_BEFORE_NAME:
+                    if (token == Token.S) {
+                        ctx.state = XMLDeclState.EXPECT_NAME;
+                    } else {
+                        throw new SAXException("Expected whitespace before attribute name in XML declaration");
+                    }
+                    break;
+                    
+                case EXPECT_NAME:
+                    if (token == Token.NAME) {
+                        // currentName set by xmlDeclReceive
+                        ctx.state = XMLDeclState.EXPECT_EQ;
+                    } else if (token == Token.S) {
+                        // More whitespace, stay in this state
+                    } else {
+                        throw new SAXException("Expected attribute name in XML declaration");
+                    }
+                    break;
+                    
+                case EXPECT_EQ:
+                    if (token == Token.EQ) {
+                        ctx.state = XMLDeclState.EXPECT_QUOTE;
+                    } else if (token == Token.S) {
+                        // Whitespace before =, stay in this state
+                    } else {
+                        throw new SAXException("Expected '=' after attribute name in XML declaration");
+                    }
+                    break;
+                    
+                case EXPECT_QUOTE:
+                    if (token == Token.QUOT || token == Token.APOS) {
+                        ctx.state = XMLDeclState.EXPECT_VALUE;
+                    } else if (token == Token.S) {
+                        // Whitespace after =, stay in this state
+                    } else {
+                        throw new SAXException("Expected quote after '=' in XML declaration");
+                    }
+                    break;
+                    
+                case EXPECT_VALUE:
+                    if (token == Token.CDATA) {
+                        // Value extracted by xmlDeclReceive
+                        ctx.state = XMLDeclState.EXPECT_CLOSE_QUOTE;
+                    } else {
+                        throw new SAXException("Expected attribute value in XML declaration");
+                    }
+                    break;
+                    
+                case EXPECT_CLOSE_QUOTE:
+                    if (token == Token.QUOT || token == Token.APOS) {
+                        ctx.state = XMLDeclState.EXPECT_WHITESPACE_BEFORE_NAME;
+                    } else {
+                        throw new SAXException("Expected closing quote in XML declaration");
+                    }
+                    break;
+            }
+        }
+        
+        // Validate required attributes
+        if ((ctx.seenAttributes & 1) == 0) {
+            throw new SAXException("XML declaration missing required 'version' attribute");
+        }
+        
+        // Check attribute order: version must be first, encoding before standalone
+        // This is enforced during parsing
+        
+        // Now that the declaration is fully parsed, handle charset switching if needed
+        if (ctx.encoding != null) {
+            setCharset(ctx.encoding, ctx.byteBuffer);
+        }
+    }
+    
+    /**
+     * States for XML declaration parsing.
+     */
+    private enum XMLDeclState {
+        EXPECT_WHITESPACE_BEFORE_NAME,
+        EXPECT_NAME,
+        EXPECT_EQ,
+        EXPECT_QUOTE,
+        EXPECT_VALUE,
+        EXPECT_CLOSE_QUOTE
+    }
+    
+    /**
+     * Context for XML declaration parsing.
+     * Holds mutable state during tokenization.
+     */
+    private static class XMLDeclContext {
+        XMLDeclState state = XMLDeclState.EXPECT_WHITESPACE_BEFORE_NAME;
+        String currentName = null;
+        short seenAttributes = 0; // Bit flags: 1=version, 2=encoding, 4=standalone
+        String encoding = null; // Store encoding for setCharset() call after parsing complete
+        ByteBuffer byteBuffer = null; // For resetting position during charset switch
+    }
+    
+    /**
+     * Processes a token during XML declaration parsing.
+     * Updates internal state (version, encoding, standalone) based on tokens.
+     * 
+     * @param token the token type
+     * @param buffer the character buffer (for extracting values)
+     * @param ctx the parsing context (mutable state)
+     * @throws SAXException if there's an error in the declaration
+     */
+    private void xmlDeclReceive(Token token, CharBuffer buffer, XMLDeclContext ctx) throws SAXException {
+        
+        if (token == Token.NAME) {
+            // Extract the name
+            ctx.currentName = extractTokenValue(buffer);
+            
+            // Check attribute order
+            if ("version".equals(ctx.currentName)) {
+                if (ctx.seenAttributes != 0) {
+                    throw new SAXException("'version' must be the first attribute in XML declaration");
+                }
+                ctx.seenAttributes |= 1;
+            } else if ("encoding".equals(ctx.currentName)) {
+                if ((ctx.seenAttributes & 1) == 0) {
+                    throw new SAXException("'version' must come before 'encoding' in XML declaration");
+                }
+                if ((ctx.seenAttributes & 4) != 0) {
+                    throw new SAXException("'encoding' must come before 'standalone' in XML declaration");
+                }
+                ctx.seenAttributes |= 2;
+            } else if ("standalone".equals(ctx.currentName)) {
+                if ((ctx.seenAttributes & 1) == 0) {
+                    throw new SAXException("'version' must come before 'standalone' in XML declaration");
+                }
+                ctx.seenAttributes |= 4;
+            } else {
+                throw new SAXException("Unknown attribute in XML declaration: " + ctx.currentName);
+            }
+        } else if (token == Token.CDATA && ctx.currentName != null) {
+            // Extract the value
+            String value = extractTokenValue(buffer);
+            
+            // Store based on currentName
+            if ("version".equals(ctx.currentName)) {
+                version = value;
+            } else if ("encoding".equals(ctx.currentName)) {
+                // Store for setCharset() call after declaration is fully parsed
+                ctx.encoding = value;
+            } else if ("standalone".equals(ctx.currentName)) {
+                if ("yes".equals(value)) {
+                    standalone = true;
+                } else if ("no".equals(value)) {
+                    standalone = false;
+                } else {
+                    throw new SAXException("Invalid value for 'standalone' attribute: " + value + 
+                                         " (must be 'yes' or 'no')");
+                }
+            }
+            
+            ctx.currentName = null; // Reset for next attribute
+        }
+    }
+    
+    /**
+     * Extracts the next token from the XML declaration buffer.
+     * This is a simplified tokenizer for XML declaration content only.
+     * 
+     * @param buffer the character buffer to tokenize
+     * @return the next token, or null if end of buffer
+     */
+    private Token nextXMLDeclToken(CharBuffer buffer) {
+        if (!buffer.hasRemaining()) {
+            return null;
+        }
+        
+        buffer.mark();
+        char c = buffer.get();
+        
+        // Whitespace
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+            // Consume all consecutive whitespace
+            while (buffer.hasRemaining()) {
+                buffer.mark();
+                c = buffer.get();
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                    buffer.reset(); // Put back non-whitespace
+                    break;
+                }
+            }
+            return Token.S;
+        }
+        
+        // Equals
+        if (c == '=') {
+            return Token.EQ;
+        }
+        
+        // Double quote
+        if (c == '"') {
+            return Token.QUOT;
+        }
+        
+        // Single quote
+        if (c == '\'') {
+            return Token.APOS;
+        }
+        
+        // Name (attribute name or value)
+        if (isNameStartChar(c)) {
+            // Consume entire name
+            while (buffer.hasRemaining()) {
+                buffer.mark();
+                c = buffer.get();
+                if (!isNameChar(c)) {
+                    buffer.reset(); // Put back non-name char
+                    break;
+                }
+            }
+            return Token.NAME;
+        }
+        
+        // CDATA (attribute value content)
+        // In XML declaration, values can contain any characters except the quote
+        // For simplicity, treat everything else as CDATA
+        buffer.reset(); // Back to start of data
+        return Token.CDATA;
+    }
+    
+    /**
+     * Extracts the token value that was just tokenized.
+     * The buffer should be positioned after the token.
+     * 
+     * @param buffer the character buffer
+     * @return the extracted token value
+     */
+    private String extractTokenValue(CharBuffer buffer) {
+        // This is a placeholder - in real implementation we'd track
+        // the start/end positions during tokenization
+        // For now, we'll need to implement proper token value extraction
+        
+        // Save current position
+        int end = buffer.position();
+        
+        // Find start by scanning backwards to whitespace or special char
+        int start = end - 1;
+        while (start > 0) {
+            char c = buffer.get(start - 1);
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r' ||
+                c == '=' || c == '"' || c == '\'') {
+                break;
+            }
+            start--;
+        }
+        
+        // Extract substring
+        char[] chars = new char[end - start];
+        for (int i = 0; i < chars.length; i++) {
+            chars[i] = buffer.get(start + i);
+        }
+        
+        return new String(chars);
+    }
+    
+    /**
+     * Checks if a character is a valid XML name start character.
+     * Simplified version for ASCII range.
+     * 
+     * @param c the character to check
+     * @return true if valid name start character
+     */
+    private boolean isNameStartChar(char c) {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || 
+               c == ':' || c == '_';
+    }
+    
+    /**
+     * Checks if a character is a valid XML name character.
+     * Simplified version for ASCII range.
+     * 
+     * @param c the character to check
+     * @return true if valid name character
+     */
+    private boolean isNameChar(char c) {
+        return isNameStartChar(c) || (c >= '0' && c <= '9') || 
+               c == '-' || c == '.';
+    }
+
+    /**
+     * Decodes bytes to characters and tokenizes them.
+     * @param buffer the byte buffer to decode
+     */
+    private void decodeAndTokenize(ByteBuffer buffer) throws SAXException {
+        // Clear charBuffer for writing
+        charBuffer.clear();
+        
+        // Prepend character underflow if it exists
+        if (charUnderflow.hasRemaining()) {
+            charBuffer.put(charUnderflow);
+            charUnderflow.clear();
+            charUnderflow.limit(0);
+        }
+        
+        // Decode bytes into charBuffer
+        CoderResult result = decoder.decode(buffer, charBuffer, false);
+        charBuffer.flip(); // Ready for reading
+        
+        // Normalize line endings (CRLF->LF, CR->LF) in-place
+        // This also handles the case where CRLF straddles buffer boundaries
+        normalizeLineEndings(charBuffer);
+        
+        // Save any remaining bytes as underflow
+        if (buffer.hasRemaining()) {
+            saveByteUnderflow(buffer);
+        } else if (byteUnderflow != null) {
+            byteUnderflow.clear();
+            byteUnderflow.limit(0);
+        }
+        
+        // Tokenize the characters
+        tokenize();
+        
+        // Save any remaining characters as underflow
+        if (charBuffer.hasRemaining()) {
+            if (charUnderflow.capacity() < charBuffer.remaining()) {
+                charUnderflow = CharBuffer.allocate(charBuffer.remaining() * 2);
+            } else {
+                charUnderflow.clear();
+            }
+            charUnderflow.put(charBuffer);
+            charUnderflow.flip();
+        }
+    }
+
+    /**
+     * Tokenizes the characters in charBuffer and emits tokens to the parser.
+     * This is the main tokenization loop that processes characters and emits
+     * tokens based on XML syntax rules.
+     */
+    private void tokenize() throws SAXException {
+        while (charBuffer.hasRemaining()) {
+            charBuffer.mark(); // Save position in case we need to backtrack
+            char c = charBuffer.get();
+            
+            // Update line/column tracking
+            if (c == '\n') {
+                lineNumber++;
+                columnNumber = 0;
+            } else {
+                columnNumber++;
+            }
+            
+            switch (c) {
+                case '<':
+                    if (!tryEmitLtSequence()) {
+                        // Not enough data, rewind and save to underflow
+                        charBuffer.reset();
+                        return;
+                    }
+                    break;
+                    
+                case '>':
+                    // Could be '>' or part of '-->' or ']]>'
+                    emitToken(Token.GT, null);
+                    break;
+                    
+                case '&':
+                    if (!tryEmitEntityRef()) {
+                        // Not enough data, rewind and save to underflow
+                        charBuffer.reset();
+                        return;
+                    }
+                    break;
+                    
+                case '\'':
+                    emitToken(Token.APOS, null);
+                    break;
+                    
+                case '"':
+                    emitToken(Token.QUOT, null);
+                    break;
+                    
+                case ':':
+                    emitToken(Token.COLON, null);
+                    break;
+                    
+                case '!':
+                    emitToken(Token.BANG, null);
+                    break;
+                    
+                case '?':
+                    // Could be '?' or '?>'
+                    if (charBuffer.hasRemaining()) {
+                        charBuffer.mark();
+                        char next = charBuffer.get();
+                        if (next == '>') {
+                            updateColumn();
+                            emitToken(Token.END_PI, null);
+                        } else {
+                            charBuffer.reset();
+                            emitToken(Token.QUERY, null);
+                        }
+                    } else {
+                        // Need more data to decide
+                        charBuffer.reset();
+                        return;
+                    }
+                    break;
+                    
+                case '=':
+                    emitToken(Token.EQ, null);
+                    break;
+                    
+                case '%':
+                    emitToken(Token.PERCENT, null);
+                    break;
+                    
+                case ';':
+                    emitToken(Token.SEMICOLON, null);
+                    break;
+                    
+                case '#':
+                    emitToken(Token.HASH, null);
+                    break;
+                    
+                case '|':
+                    emitToken(Token.PIPE, null);
+                    break;
+                    
+                case '[':
+                    emitToken(Token.OPEN_BRACKET, null);
+                    break;
+                    
+                case '/':
+                    // Could be '/' or '/>'
+                    if (charBuffer.hasRemaining()) {
+                        charBuffer.mark();
+                        char next = charBuffer.get();
+                        if (next == '>') {
+                            updateColumn();
+                            emitToken(Token.END_EMPTY_ELEMENT, null);
+                        } else {
+                            charBuffer.reset();
+                            // '/' is not a valid standalone token in XML, treat as CDATA
+                            charBuffer.reset(); // Go back before '/'
+                            if (!tryEmitCDATA()) {
+                                return;
+                            }
+                        }
+                    } else {
+                        // Need more data to decide
+                        charBuffer.reset();
+                        return;
+                    }
+                    break;
+                    
+                case '-':
+                    // Could be part of '-->'
+                    if (charBuffer.hasRemaining()) {
+                        charBuffer.mark();
+                        char next = charBuffer.get();
+                        if (next == '-') {
+                            // '--'
+                            if (charBuffer.hasRemaining()) {
+                                char next2 = charBuffer.get();
+                                if (next2 == '>') {
+                                    updateColumn(); updateColumn();
+                                    emitToken(Token.END_COMMENT, null);
+                                } else {
+                                    charBuffer.reset();
+                                    // '--' not followed by '>', treat as CDATA
+                                    if (!tryEmitCDATA()) {
+                                        return;
+                                    }
+                                }
+                            } else {
+                                // Need more data
+                                charBuffer.reset();
+                                return;
+                            }
+                        } else {
+                            charBuffer.reset();
+                            // Single '-', treat as CDATA
+                            if (!tryEmitCDATA()) {
+                                return;
+                            }
+                        }
+                    } else {
+                        // Need more data
+                        charBuffer.reset();
+                        return;
+                    }
+                    break;
+                    
+                case ']':
+                    // Could be part of ']]>'
+                    if (charBuffer.hasRemaining()) {
+                        charBuffer.mark();
+                        char next = charBuffer.get();
+                        if (next == ']') {
+                            // ']]'
+                            if (charBuffer.hasRemaining()) {
+                                char next2 = charBuffer.get();
+                                if (next2 == '>') {
+                                    updateColumn(); updateColumn();
+                                    emitToken(Token.END_CDATA, null);
+                                } else {
+                                    charBuffer.reset();
+                                    // ']]' not followed by '>', treat as CDATA
+                                    if (!tryEmitCDATA()) {
+                                        return;
+                                    }
+                                }
+                            } else {
+                                // Need more data
+                                charBuffer.reset();
+                                return;
+                            }
+                        } else {
+                            charBuffer.reset();
+                            // Single ']', treat as CDATA
+                            if (!tryEmitCDATA()) {
+                                return;
+                            }
+                        }
+                    } else {
+                        // Need more data
+                        charBuffer.reset();
+                        return;
+                    }
+                    break;
+                    
+                case ' ':
+                case '\t':
+                case '\n':
+                case '\r': // Should already be normalized, but handle for safety
+                    // Whitespace - collect all consecutive whitespace
+                    charBuffer.reset(); // Go back to start of whitespace
+                    if (!tryEmitWhitespace()) {
+                        // Not enough data (shouldn't happen for whitespace, but be safe)
+                        return;
+                    }
+                    break;
+                    
+                default:
+                    // Check if this is a name start character
+                    if (isNameStartChar(c)) {
+                        charBuffer.reset(); // Go back to start of name
+                        if (!tryEmitName()) {
+                            // Not enough data, rewind and save to underflow
+                            return;
+                        }
+                    } else {
+                        // Regular character data
+                        charBuffer.reset(); // Go back to start of CDATA
+                        if (!tryEmitCDATA()) {
+                            // Not enough data
+                            return;
+                        }
+                    }
+                    break;
+            }
+        }
+    }
+    
+    /**
+     * Tries to emit a token that starts with '<'.
+     * Handles: </, <?, <!, <!--, <![CDATA[, <!DOCTYPE, <!ELEMENT, <!ATTLIST, <!ENTITY, <!NOTATION, <![
+     * @return true if token was emitted, false if more data is needed
+     */
+    private boolean tryEmitLtSequence() throws SAXException {
+        // We've already consumed '<'
+        if (!charBuffer.hasRemaining()) {
+            return false; // Need more data
+        }
+        
+        charBuffer.mark();
+        char c = charBuffer.get();
+        updateColumn();
+        
+        if (c == '/') {
+            // </
+            emitToken(Token.START_END_ELEMENT, null);
+            return true;
+        } else if (c == '?') {
+            // <? - could be <?xml or other PI
+            if (!charBuffer.hasRemaining()) {
+                return false; // Need more data
+            }
+            // Peek ahead for "xml"
+            if (charBuffer.remaining() >= 3) {
+                charBuffer.mark();
+                if (charBuffer.get() == 'x' && charBuffer.get() == 'm' && charBuffer.get() == 'l') {
+                    // Check if followed by whitespace or '?'
+                    if (charBuffer.hasRemaining()) {
+                        char next = charBuffer.get();
+                        if (isWhitespace(next) || next == '?') {
+                            // It's <?xml
+                            charBuffer.reset(); // Back to after 'l'
+                            charBuffer.position(charBuffer.position() + 3); // Skip 'xml'
+                            updateColumn(); updateColumn(); updateColumn();
+                            emitToken(Token.START_XMLDECL, null);
+                            return true;
+                        }
+                    } else {
+                        return false; // Need more data
+                    }
+                }
+                charBuffer.reset(); // Back to after '?'
+            } else {
+                return false; // Need more data
+            }
+            // It's a regular PI
+            emitToken(Token.START_PI, null);
+            return true;
+        } else if (c == '!') {
+            // <! - could be <!--, <![CDATA[, <!DOCTYPE, etc.
+            if (!charBuffer.hasRemaining()) {
+                return false; // Need more data
+            }
+            charBuffer.mark();
+            c = charBuffer.get();
+            updateColumn();
+            
+            if (c == '-') {
+                // <!- - check for <!--
+                if (!charBuffer.hasRemaining()) {
+                    return false;
+                }
+                c = charBuffer.get();
+                updateColumn();
+                if (c == '-') {
+                    emitToken(Token.START_COMMENT, null);
+                    return true;
+                } else {
+                    throw new SAXException("Invalid sequence: <!-" + c);
+                }
+            } else if (c == '[') {
+                // <![ - could be <![CDATA[ or <![
+                if (charBuffer.remaining() >= 6) {
+                    charBuffer.mark();
+                    if (charBuffer.get() == 'C' && charBuffer.get() == 'D' &&
+                        charBuffer.get() == 'A' && charBuffer.get() == 'T' &&
+                        charBuffer.get() == 'A' && charBuffer.get() == '[') {
+                        updateColumn(); updateColumn(); updateColumn();
+                        updateColumn(); updateColumn(); updateColumn();
+                        emitToken(Token.START_CDATA, null);
+                        return true;
+                    }
+                    charBuffer.reset(); // Back to after '['
+                } else {
+                    return false; // Need more data
+                }
+                emitToken(Token.START_CONDITIONAL, null);
+                return true;
+            } else if (isNameStartChar(c)) {
+                // <!NAME - could be DOCTYPE, ELEMENT, ATTLIST, ENTITY, NOTATION
+                charBuffer.reset(); // Back to before name char
+                int nameStart = charBuffer.position();
+                // Collect the name
+                if (!tryConsumeNameChars()) {
+                    return false; // Need more data
+                }
+                int nameEnd = charBuffer.position();
+                
+                // Extract the name
+                charBuffer.position(nameStart);
+                StringBuilder sb = new StringBuilder();
+                while (charBuffer.position() < nameEnd) {
+                    sb.append(charBuffer.get());
+                    updateColumn();
+                }
+                String name = sb.toString();
+                
+                // Determine the token type
+                switch (name) {
+                    case "DOCTYPE":
+                        emitToken(Token.START_DOCTYPE, null);
+                        return true;
+                    case "ELEMENT":
+                        emitToken(Token.START_ELEMENTDECL, null);
+                        return true;
+                    case "ATTLIST":
+                        emitToken(Token.START_ATTLISTDECL, null);
+                        return true;
+                    case "ENTITY":
+                        emitToken(Token.START_ENTITYDECL, null);
+                        return true;
+                    case "NOTATION":
+                        emitToken(Token.START_NOTATIONDECL, null);
+                        return true;
+                    default:
+                        throw new SAXException("Unknown declaration: <!" + name);
+                }
+            } else {
+                throw new SAXException("Invalid character after '<!': " + c);
+            }
+        } else {
+            // Regular '<' followed by something else (probably a name)
+            charBuffer.reset(); // Back to the character after '<'
+            emitToken(Token.LT, null);
+            return true;
+        }
+    }
+    
+    /**
+     * Tries to emit an entity reference or the special sequences ]] or />.
+     * @return true if token was emitted, false if more data is needed
+     */
+    private boolean tryEmitEntityRef() throws SAXException {
+        // We've already consumed '&'
+        if (!charBuffer.hasRemaining()) {
+            return false; // Need more data
+        }
+        
+        charBuffer.mark();
+        int refStart = charBuffer.position();
+        
+        // Look for the semicolon
+        while (charBuffer.hasRemaining()) {
+            char c = charBuffer.get();
+            if (c == ';') {
+                // Found end of entity reference
+                int refEnd = charBuffer.position() - 1; // Before the ';'
+                int savedPos = charBuffer.position();
+                
+                // Extract the entity name
+                charBuffer.position(refStart);
+                StringBuilder sb = new StringBuilder();
+                while (charBuffer.position() < refEnd) {
+                    sb.append(charBuffer.get());
+                }
+                String entityName = sb.toString();
+                
+                // Restore position
+                charBuffer.position(savedPos);
+                
+                // Update column for the entire entity reference
+                for (int i = 0; i < entityName.length() + 1; i++) { // +1 for ';'
+                    updateColumn();
+                }
+                
+                // Check for predefined entities
+                String replacement = null;
+                switch (entityName) {
+                    case "amp": replacement = "&"; break;
+                    case "lt": replacement = "<"; break;
+                    case "gt": replacement = ">"; break;
+                    case "apos": replacement = "'"; break;
+                    case "quot": replacement = "\""; break;
+                    case "#38": replacement = "&"; break;  // &#38;
+                    case "#60": replacement = "<"; break;  // &#60;
+                    case "#62": replacement = ">"; break;  // &#62;
+                    case "#39": replacement = "'"; break;  // &#39;
+                    case "#34": replacement = "\""; break; // &#34;
+                }
+                
+                if (replacement != null) {
+                    // Emit ENTITYREF with replacement text
+                    CharBuffer refBuffer = CharBuffer.wrap(replacement);
+                    emitToken(Token.ENTITYREF, refBuffer);
+                    return true;
+                } else {
+                    // For now, just emit AMP token for unknown entity refs
+                    // The parser will handle them
+                    charBuffer.reset();
+                    emitToken(Token.AMP, null);
+                    return true;
+                }
+            } else if (!isNameChar(c) && c != '#') {
+                // Invalid entity reference character
+                charBuffer.reset();
+                emitToken(Token.AMP, null);
+                return true;
+            }
+        }
+        
+        // Didn't find ';' - need more data
+        charBuffer.reset();
+        return false;
+    }
+    
+    /**
+     * Tries to emit a whitespace token (S production).
+     * @return true if token was emitted, false if more data is needed
+     */
+    private boolean tryEmitWhitespace() throws SAXException {
+        int start = charBuffer.position();
+        int count = 0;
+        
+        while (charBuffer.hasRemaining()) {
+            charBuffer.mark();
+            char c = charBuffer.get();
+            if (isWhitespace(c)) {
+                count++;
+                if (c == '\n') {
+                    lineNumber++;
+                    columnNumber = 0;
+                } else {
+                    columnNumber++;
+                }
+            } else {
+                // Not whitespace, rewind
+                charBuffer.reset();
+                break;
+            }
+        }
+        
+        if (count > 0) {
+            // Emit whitespace token
+            int end = charBuffer.position();
+            CharBuffer wsBuffer = charBuffer.slice();
+            wsBuffer.position(start);
+            wsBuffer.limit(end);
+            emitToken(Token.S, wsBuffer);
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Tries to emit a NAME token.
+     * @return true if token was emitted, false if more data is needed
+     */
+    private boolean tryEmitName() throws SAXException {
+        int start = charBuffer.position();
+        
+        // Must start with NameStartChar
+        if (!charBuffer.hasRemaining()) {
+            return false;
+        }
+        charBuffer.mark();
+        char c = charBuffer.get();
+        if (!isNameStartChar(c)) {
+            charBuffer.reset();
+            return false;
+        }
+        updateColumn();
+        
+        // Followed by NameChar*
+        if (!tryConsumeNameChars()) {
+            return false; // Need more data
+        }
+        
+        // Emit NAME token
+        int end = charBuffer.position();
+        CharBuffer savedBuffer = charBuffer.duplicate();
+        savedBuffer.position(start);
+        savedBuffer.limit(end);
+        emitToken(Token.NAME, savedBuffer);
+        return true;
+    }
+    
+    /**
+     * Consumes NameChar* from the buffer.
+     * @return true if we can proceed, false if we need more data
+     */
+    private boolean tryConsumeNameChars() {
+        while (charBuffer.hasRemaining()) {
+            charBuffer.mark();
+            char c = charBuffer.get();
+            if (isNameChar(c)) {
+                updateColumn();
+            } else {
+                charBuffer.reset();
+                break;
+            }
+        }
+        return true; // We can always proceed (zero or more NameChars)
+    }
+    
+    /**
+     * Tries to emit CDATA token.
+     * CDATA is any character that is not a special token character.
+     * @return true if token was emitted, false if more data is needed
+     */
+    private boolean tryEmitCDATA() throws SAXException {
+        int start = charBuffer.position();
+        int count = 0;
+        
+        while (charBuffer.hasRemaining()) {
+            charBuffer.mark();
+            char c = charBuffer.get();
+            
+            // Check if this is a special character
+            if (c == '<' || c == '&' || c == '>' || c == '\'' || c == '"' ||
+                c == ':' || c == '!' || c == '?' || c == '=' || c == '%' ||
+                c == ';' || c == '#' || c == '|' || c == '[' || 
+                isWhitespace(c) || isNameStartChar(c)) {
+                // Special character, rewind and stop
+                charBuffer.reset();
+                break;
+            }
+            
+            count++;
+            if (c == '\n') {
+                lineNumber++;
+                columnNumber = 0;
+            } else {
+                columnNumber++;
+            }
+        }
+        
+        if (count > 0) {
+            // Emit CDATA token
+            int end = charBuffer.position();
+            CharBuffer savedBuffer = charBuffer.duplicate();
+            savedBuffer.position(start);
+            savedBuffer.limit(end);
+            emitToken(Token.CDATA, savedBuffer);
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Helper to check if a character is XML whitespace.
+     */
+    private boolean isWhitespace(char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    }
+    
+    /**
+     * Helper to update column number by 1.
+     */
+    private void updateColumn() {
+        columnNumber++;
+    }
+    
+    /**
+     * Emits a token to the consumer.
+     * @param token the token type
+     * @param data the token data (CharBuffer in read mode, or null)
+     */
+    private void emitToken(Token token, CharBuffer data) throws SAXException {
+        consumer.receive(token, data);
     }
 
     /**
@@ -195,15 +1610,74 @@ public class XMLTokenizer implements Locator2 {
         closed = true;
 
         // Process any remaining bytes
-        if (decoder != null && byteBuffer != null) {
-            // TODO Ensure there is capacity in the charBuffer
+        if (decoder != null && byteUnderflow != null && byteUnderflow.hasRemaining()) {
             // Decode byte underflow into charBuffer
-            charBuffer.flip(); // ready for writing
-            CoderResult result = decoder.decode(byteBuffer, charBuffer, true);
+            charBuffer.clear(); // ready for writing
+            if (charUnderflow != null && charUnderflow.hasRemaining()) {
+                // prepend charUnderflow
+                charBuffer.put(charUnderflow);
+                // clear underflow
+                charUnderflow.clear();
+                charUnderflow.limit(0);
+            }
+            CoderResult result = decoder.decode(byteUnderflow, charBuffer, true);
             charBuffer.flip();
-            // Process charBuffer
-            parse();
+            
+            // Normalize line endings
+            normalizeLineEndings(charBuffer);
+            
+            // Tokenize remaining chars
+            tokenize();
+        } else if (charUnderflow != null && charUnderflow.hasRemaining()) {
+            // No byte underflow, but we have character underflow
+            charBuffer.clear();
+            charBuffer.put(charUnderflow);
+            charBuffer.flip();
+            
+            // Normalize line endings
+            normalizeLineEndings(charBuffer);
+            
+            // Tokenize remaining chars
+            tokenize();
         }
+        
+        // Any remaining characters in charBuffer indicate incomplete tokens
+        // This is an error condition for well-formed XML
+        if (charBuffer.hasRemaining()) {
+            throw new SAXException("Incomplete token at end of document");
+        }
+    }
+
+    // Locator2 interface implementation
+
+    @Override
+    public String getPublicId() {
+        return publicId;
+    }
+
+    @Override
+    public String getSystemId() {
+        return systemId;
+    }
+
+    @Override
+    public int getLineNumber() {
+        return (int) lineNumber;
+    }
+
+    @Override
+    public int getColumnNumber() {
+        return (int) columnNumber;
+    }
+
+    @Override
+    public String getXMLVersion() {
+        return version;
+    }
+
+    @Override
+    public String getEncoding() {
+        return charset.name();
     }
 
 }

@@ -36,6 +36,7 @@ public enum Token {
     S, // whitespace
     NAME, // name token
     CDATA, // character data
+    ENTITYREF, // entity reference replacement text (e.g., &amp; -> '&', &lt; -> '<')
     COLON, // ':'
     BANG, // '!'
     QUERY, // '?'

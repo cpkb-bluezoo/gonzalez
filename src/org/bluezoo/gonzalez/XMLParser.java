@@ -21,9 +21,10 @@
 
 package org.bluezoo.gonzalez;
 
-import javax.nio.CharBuffer;
+import java.nio.CharBuffer;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
 /**
  * XML parser.
@@ -33,7 +34,7 @@ import org.xml.sax.SAXException;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-public class XMLParser {
+public class XMLParser implements TokenConsumer {
 
     enum State {
         INIT,
@@ -53,20 +54,13 @@ public class XMLParser {
     private State state = State.INIT;
     private Locator locator;
 
-    void setLocator(Locator locator) {
+    @Override
+    public void setLocator(Locator locator) {
         this.locator = locator;
     }
 
-    /**
-     * Receive a token.
-     * In most cases the token type is all that is important and we don't
-     * need to examine the data.
-     * For NAME, S, and CDATA token types the data will be relevant and will
-     * need to be processed.
-     * @param token the token type
-     * @param data the token data
-     */
-    public void receive(Token token, CharBuffer data) throws SAXParseException {
+    @Override
+    public void receive(Token token, CharBuffer data) throws SAXException {
         // TODO
     }
 
