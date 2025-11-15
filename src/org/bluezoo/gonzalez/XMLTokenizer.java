@@ -1609,6 +1609,12 @@ public class XMLTokenizer implements Locator2 {
      * Consumes NameChar* from the buffer.
      * @return true if we can proceed, false if we need more data
      */
+    /**
+     * Tries to consume NameChar* characters.
+     * Returns true if we've reached a definitive name boundary (non-NameChar).
+     * Returns false if we need more data (buffer exhausted while still seeing NameChars).
+     * This ensures we never emit a partial NAME token.
+     */
     private boolean tryConsumeNameChars() {
         while (charBuffer.hasRemaining()) {
             charBuffer.mark();
@@ -1616,11 +1622,13 @@ public class XMLTokenizer implements Locator2 {
             if (isNameChar(c)) {
                 updateColumn();
             } else {
+                // Found non-NameChar - this is a name boundary
                 charBuffer.reset();
-                break;
+                return true; // We can emit the name
             }
         }
-        return true; // We can always proceed (zero or more NameChars)
+        // Exhausted buffer while still in NameChars - need more data
+        return false;
     }
     
     /**
@@ -1801,18 +1809,20 @@ public class XMLTokenizer implements Locator2 {
                 
             // Comment
             case START_COMMENT:
+                prevContext = context; // Save current context
                 context = TokenizerContext.COMMENT;
                 break;
             case END_COMMENT:
-                context = TokenizerContext.CONTENT;
+                context = prevContext; // Restore previous context
                 break;
                 
             // CDATA section
             case START_CDATA:
+                prevContext = context; // Save current context
                 context = TokenizerContext.CDATA_SECTION;
                 break;
             case END_CDATA:
-                context = TokenizerContext.CONTENT;
+                context = prevContext; // Restore previous context
                 break;
                 
             // DOCTYPE

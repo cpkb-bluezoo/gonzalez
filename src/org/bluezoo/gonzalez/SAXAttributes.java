@@ -189,14 +189,14 @@ public class SAXAttributes implements Attributes2 {
 
     Attribute attr = attributes.get(index);
 
-    // TODO: Check DTD for more specific type information
-    // if (dtdParser != null && elementName != null) {
-    //   AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
-    //       elementName, attr.qname.getQName());
-    //   if (decl != null) {
-    //     return decl.type;
-    //   }
-    // }
+    // Check DTD for more specific type information
+    if (dtdParser != null && elementName != null) {
+      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
+          elementName, attr.qname.getQName());
+      if (decl != null) {
+        return decl.type;
+      }
+    }
 
     return attr.type;
   }
@@ -244,7 +244,15 @@ public class SAXAttributes implements Attributes2 {
       return null;
     }
 
-    // TODO: Check DTD for more specific type information
+    // Check DTD for more specific type information
+    if (dtdParser != null && elementName != null) {
+      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
+          elementName, attr.qname.getQName());
+      if (decl != null) {
+        return decl.type;
+      }
+    }
+
     return attr.type;
   }
 
@@ -256,7 +264,15 @@ public class SAXAttributes implements Attributes2 {
       return null;
     }
 
-    // TODO: Check DTD for more specific type information
+    // Check DTD for more specific type information
+    if (dtdParser != null && elementName != null) {
+      AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
+          elementName, qName);
+      if (decl != null) {
+        return decl.type;
+      }
+    }
+
     return attr.type;
   }
 
@@ -281,9 +297,14 @@ public class SAXAttributes implements Attributes2 {
       throw new ArrayIndexOutOfBoundsException(index);
     }
 
-    // TODO: Lazy lookup: query DTD parser if available
-    // No DTD available for now
-    return false;
+    if (dtdParser == null || elementName == null) {
+      return false;
+    }
+
+    Attribute attr = attributes.get(index);
+    AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
+        elementName, attr.qname.getQName());
+    return decl != null;
   }
 
   @Override
@@ -293,8 +314,12 @@ public class SAXAttributes implements Attributes2 {
       throw new IllegalArgumentException("Unknown attribute: " + qName);
     }
 
-    // TODO: Lazy lookup: query DTD parser if available
-    return false;
+    if (dtdParser == null || elementName == null) {
+      return false;
+    }
+
+    AttributeDeclaration decl = dtdParser.getAttributeDeclaration(elementName, qName);
+    return decl != null;
   }
 
   @Override
@@ -306,8 +331,13 @@ public class SAXAttributes implements Attributes2 {
       throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
     }
 
-    // TODO: Lazy lookup: query DTD parser if available
-    return false;
+    if (dtdParser == null || elementName == null) {
+      return false;
+    }
+
+    AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
+        elementName, attr.qname.getQName());
+    return decl != null;
   }
 
   @Override

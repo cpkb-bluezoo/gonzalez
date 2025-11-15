@@ -39,6 +39,7 @@
   <target name='clean' depends='clean-junit'>
     <delete dir='${build}'/>
     <delete dir='${dist}'/>
+    <delete dir='${test}/build'/>
   </target>
   
   <target name='clean-junit'>
@@ -144,6 +145,23 @@
     <echo message=''/>
     <echo message='To run: java -cp build:test SimpleParseTest &lt;xml-file&gt;'/>
     <echo message='Example: java -cp build:test SimpleParseTest xmlconf/eduni/errata-2e/errata2e.xml'/>
+  </target>
+  
+  <!-- Build standalone test files -->
+  <target name='build-tests' depends='build-core' description='Compile standalone test files'>
+    <mkdir dir='${test}/build'/>
+    <javac srcdir='${test}' destdir='${test}/build' debug='true' includeantruntime='false'>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='lib/sax2.jar'/>
+      </classpath>
+      <include name='*Test.java'/>
+      <exclude name='SimpleParseTest.java'/>
+    </javac>
+    <echo message=''/>
+    <echo message='Test files compiled to ${test}/build'/>
+    <echo message='To run tests: java -cp ${test}/build:${build}:lib/sax2.jar &lt;TestClassName&gt;'/>
+    <echo message='Example: java -cp test/build:build:lib/sax2.jar QuickATTLISTTest'/>
   </target>
 
 </project>

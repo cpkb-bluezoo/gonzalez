@@ -23,8 +23,12 @@ package org.bluezoo.gonzalez;
 
 import java.io.IOException;
 import java.nio.CharBuffer;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.Locator;
@@ -64,12 +68,52 @@ public class DTDParser implements TokenConsumer {
         AFTER_INTERNAL_SUBSET,  // Read ], expecting GT
         IN_ELEMENTDECL,         // Parsing &lt;!ELEMENT declaration
         IN_ATTLISTDECL,         // Parsing &lt;!ATTLIST declaration
+        IN_COMMENT,             // Parsing comment (<!-- ... -->)
+        IN_PI,                  // Parsing processing instruction (<? ... ?>)
         DONE                    // Read final GT, done processing
     }
 
     private State state = State.INITIAL;
-    private State savedState = State.IN_INTERNAL_SUBSET; // For returning after declarations
+    private State savedState = State.IN_INTERNAL_SUBSET; // For returning after declarations/comments/PIs
+    
+    /**
+     * Sub-states for parsing &lt;!ELEMENT declarations.
+     * Tracks position within the element declaration to enforce well-formedness.
+     */
+    private enum ElementDeclState {
+        EXPECT_NAME,           // After &lt;!ELEMENT, expecting element name
+        AFTER_NAME,            // After element name, expecting whitespace
+        EXPECT_CONTENTSPEC,    // After whitespace, expecting EMPTY|ANY|(
+        IN_CONTENT_MODEL,      // Inside ( ... ), building content model
+        AFTER_CONTENTSPEC,     // After content spec, expecting whitespace or &gt;
+        EXPECT_GT              // Expecting &gt; to close declaration
+    }
+    
+    private ElementDeclState elementDeclState;
+    private int contentModelDepth = 0; // Track parenthesis nesting in content models
+    
+    /**
+     * Sub-states for parsing &lt;!ATTLIST declarations.
+     * Tracks position within the attribute list declaration to enforce well-formedness.
+     */
+    private enum AttListDeclState {
+        EXPECT_ELEMENT_NAME,    // After &lt;!ATTLIST, expecting element name
+        AFTER_ELEMENT_NAME,     // After element name, expecting whitespace
+        EXPECT_ATTR_OR_GT,      // Expecting attribute name or &gt;
+        AFTER_ATTR_NAME,        // After attribute name, expecting whitespace
+        EXPECT_ATTR_TYPE,       // After whitespace, expecting type
+        AFTER_ATTR_TYPE,        // After type, expecting whitespace
+        EXPECT_DEFAULT_DECL,    // After whitespace, expecting #REQUIRED|#IMPLIED|#FIXED|value
+        AFTER_HASH,             // After #, expecting REQUIRED|IMPLIED|FIXED keyword
+        AFTER_FIXED,            // After #FIXED, expecting whitespace
+        EXPECT_DEFAULT_VALUE,   // After whitespace following #FIXED, expecting quoted value
+        AFTER_DEFAULT_VALUE     // After CDATA value, expecting closing quote
+    }
+    
+    private AttListDeclState attListDeclState;
+    
     private Locator locator;
+    private ContentHandler contentHandler;
     private DTDHandler dtdHandler;
     private LexicalHandler lexicalHandler;
     private ErrorHandler errorHandler;
@@ -122,18 +166,42 @@ public class DTDParser implements TokenConsumer {
     
     /**
      * Current element declaration being parsed.
+     * Created on START_ELEMENTDECL, properties set during parsing, added to map on GT.
+     * Uses a stack to build nested content models as tokens arrive.
      */
-    private String currentElementName;
-    private StringBuilder currentContentModel;
+    private ElementDeclaration currentElementDecl;
+    private Deque<ElementDeclaration.ContentModel> contentModelStack;
     
     /**
      * Current attribute list declaration being parsed.
+     * 
+     * <p>currentAttlistElement: The element name these attributes belong to
+     * <p>currentAttlistMap: Map of attribute name → AttributeDeclaration being built
+     * <p>currentAttributeDecl: The current attribute being parsed (added to map when complete)
+     * <p>defaultValueBuilder: Accumulates CDATA chunks for default values (asynchronous parsing)
+     * 
+     * <p>When an attribute is complete, it's added to currentAttlistMap keyed by its name.
+     * When GT is encountered, currentAttlistMap is merged into attributeDecls keyed by currentAttlistElement.
      */
     private String currentAttlistElement;
-    private String currentAttributeName;
-    private String currentAttributeType;
-    private String currentAttributeMode;
-    private String currentAttributeValue;
+    private Map<String, AttributeDeclaration> currentAttlistMap;
+    private AttributeDeclaration currentAttributeDecl;
+    private StringBuilder defaultValueBuilder;
+    
+    /**
+     * Comment text accumulator.
+     * Accumulates CDATA chunks for comments (asynchronous parsing).
+     * Created on START_COMMENT, emitted on END_COMMENT.
+     */
+    private StringBuilder commentBuilder;
+    
+    /**
+     * Processing instruction accumulators.
+     * PI target captured as single NAME token, PI data accumulated across CDATA chunks.
+     * Created on START_PI, emitted on END_PI.
+     */
+    private String piTarget;
+    private StringBuilder piDataBuilder;
 
     /**
      * Constructs a new DTDParser.
@@ -152,6 +220,10 @@ public class DTDParser implements TokenConsumer {
      * Sets the DTD handler for receiving DTD events.
      * @param handler the DTD handler
      */
+    public void setContentHandler(ContentHandler handler) {
+        this.contentHandler = handler;
+    }
+    
     public void setDTDHandler(DTDHandler handler) {
         this.dtdHandler = handler;
     }
@@ -231,6 +303,14 @@ public class DTDParser implements TokenConsumer {
             case IN_ATTLISTDECL:
                 handleInAttlistDecl(token, data);
                 break;
+                
+            case IN_COMMENT:
+                handleInComment(token, data);
+                break;
+                
+            case IN_PI:
+                handleInPI(token, data);
+                break;
         }
     }
 
@@ -246,7 +326,7 @@ public class DTDParser implements TokenConsumer {
             case NAME:
                 // This is the DOCTYPE name (root element name)
                 doctypeName = extractString(data);
-                state = State.AFTER_NAME;
+                changeState(State.AFTER_NAME);
                 break;
 
             default:
@@ -263,21 +343,27 @@ public class DTDParser implements TokenConsumer {
                 // Whitespace, ignore
                 break;
 
+            case START_COMMENT:
+                // Comment - just enter comment state (savedState already contains current state)
+                commentBuilder = new StringBuilder();
+                state = State.IN_COMMENT;
+                break;
+
             case SYSTEM:
                 // SYSTEM external ID
                 sawPublicKeyword = false;
-                state = State.AFTER_SYSTEM_PUBLIC;
+                changeState(State.AFTER_SYSTEM_PUBLIC);
                 break;
 
             case PUBLIC:
                 // PUBLIC external ID
                 sawPublicKeyword = true;
-                state = State.AFTER_SYSTEM_PUBLIC;
+                changeState(State.AFTER_SYSTEM_PUBLIC);
                 break;
 
             case OPEN_BRACKET:
                 // Internal subset starts
-                state = State.IN_INTERNAL_SUBSET;
+                changeState(State.IN_INTERNAL_SUBSET);
                 nestingDepth = 1;
                 // Report start of DTD
                 if (lexicalHandler != null) {
@@ -287,7 +373,7 @@ public class DTDParser implements TokenConsumer {
 
             case GT:
                 // End of DOCTYPE (no external ID, no internal subset)
-                state = State.DONE;
+                changeState(State.DONE);
                 // Report start and end of DTD
                 if (lexicalHandler != null) {
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
@@ -309,6 +395,12 @@ public class DTDParser implements TokenConsumer {
                 // Whitespace, ignore
                 break;
 
+            case START_COMMENT:
+                // Comment - just enter comment state (savedState already contains current state)
+                commentBuilder = new StringBuilder();
+                state = State.IN_COMMENT;
+                break;
+
             case QUOT:
             case APOS:
                 // Start of quoted string, ignore quote
@@ -320,16 +412,16 @@ public class DTDParser implements TokenConsumer {
                     // PUBLIC keyword - first string is publicId, second is systemId
                     if (publicId == null) {
                         publicId = extractString(data);
-                        state = State.AFTER_PUBLIC_ID;
+                        changeState(State.AFTER_PUBLIC_ID);
                     } else {
                         // Second string after PUBLIC
                         systemId = extractString(data);
-                        state = State.AFTER_EXTERNAL_ID;
+                        changeState(State.AFTER_EXTERNAL_ID);
                     }
                 } else {
                     // SYSTEM keyword - only one string, and it's the systemId
                     systemId = extractString(data);
-                    state = State.AFTER_EXTERNAL_ID;
+                    changeState(State.AFTER_EXTERNAL_ID);
                 }
                 break;
 
@@ -347,6 +439,12 @@ public class DTDParser implements TokenConsumer {
                 // Whitespace, ignore
                 break;
 
+            case START_COMMENT:
+                // Comment - just enter comment state (savedState already contains current state)
+                commentBuilder = new StringBuilder();
+                state = State.IN_COMMENT;
+                break;
+
             case QUOT:
             case APOS:
                 // Quote closing previous string or opening next, ignore
@@ -355,7 +453,7 @@ public class DTDParser implements TokenConsumer {
             case CDATA:
                 // This is the system ID
                 systemId = extractString(data);
-                state = State.AFTER_EXTERNAL_ID;
+                changeState(State.AFTER_EXTERNAL_ID);
                 break;
 
             default:
@@ -377,6 +475,12 @@ public class DTDParser implements TokenConsumer {
                 // Quote closing system ID, ignore
                 break;
 
+            case START_COMMENT:
+                // Comment - just enter comment state (savedState already contains current state)
+                commentBuilder = new StringBuilder();
+                state = State.IN_COMMENT;
+                break;
+
             case OPEN_BRACKET:
                 // Internal subset starts (after external ID)
                 // Report start of DTD
@@ -384,7 +488,7 @@ public class DTDParser implements TokenConsumer {
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
                 }
                 // Enter internal subset state FIRST (so external DTD tokens are processed correctly)
-                state = State.IN_INTERNAL_SUBSET;
+                changeState(State.IN_INTERNAL_SUBSET);
                 nestingDepth = 1;
                 // Now process external DTD subset (tokens processed as internal subset)
                 processExternalDTDSubset();
@@ -399,12 +503,12 @@ public class DTDParser implements TokenConsumer {
                 }
                 // Enter internal subset state (even though there's no [ ... ])
                 // This allows external DTD tokens to be processed as internal subset
-                state = State.IN_INTERNAL_SUBSET;
+                changeState(State.IN_INTERNAL_SUBSET);
                 nestingDepth = 0; // No bracket nesting
                 // Process external DTD subset (tokens processed as internal subset)
                 processExternalDTDSubset();
                 // External DTD processing complete, now we're done
-                state = State.DONE;
+                changeState(State.DONE);
                 // Report end of DTD
                 if (lexicalHandler != null) {
                     lexicalHandler.endDTD();
@@ -425,7 +529,7 @@ public class DTDParser implements TokenConsumer {
                 // End of internal subset
                 nestingDepth--;
                 if (nestingDepth == 0) {
-                    state = State.AFTER_INTERNAL_SUBSET;
+                    changeState(State.AFTER_INTERNAL_SUBSET);
                 }
                 break;
 
@@ -435,22 +539,23 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             case START_ELEMENTDECL:
-                // Start parsing element declaration
+                // Start parsing element declaration - save current state
                 savedState = state;
                 state = State.IN_ELEMENTDECL;
-                currentElementName = null;
-                currentContentModel = new StringBuilder();
+                elementDeclState = ElementDeclState.EXPECT_NAME;
+                currentElementDecl = new ElementDeclaration();
+                contentModelStack = new ArrayDeque<>();
+                contentModelDepth = 0;
                 break;
 
             case START_ATTLISTDECL:
-                // Start parsing attribute list declaration
+                // Start parsing attribute list declaration - save current state
                 savedState = state;
                 state = State.IN_ATTLISTDECL;
+                attListDeclState = AttListDeclState.EXPECT_ELEMENT_NAME;
                 currentAttlistElement = null;
-                currentAttributeName = null;
-                currentAttributeType = null;
-                currentAttributeMode = null;
-                currentAttributeValue = null;
+                currentAttlistMap = new HashMap<>();
+                currentAttributeDecl = null;
                 break;
 
             case START_ENTITYDECL:
@@ -462,11 +567,16 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             case START_COMMENT:
-                // TODO: Handle comments
+                // Comment - just enter comment state (savedState already contains current state)
+                commentBuilder = new StringBuilder();
+                state = State.IN_COMMENT;
                 break;
 
             case START_PI:
-                // TODO: Handle processing instructions
+                // Processing instruction - just enter PI state (savedState already contains current state)
+                piTarget = null;
+                piDataBuilder = new StringBuilder();
+                state = State.IN_PI;
                 break;
 
             case START_CONDITIONAL:
@@ -488,9 +598,15 @@ public class DTDParser implements TokenConsumer {
                 // Whitespace, ignore
                 break;
 
+            case START_COMMENT:
+                // Comment - just enter comment state (savedState already contains current state)
+                commentBuilder = new StringBuilder();
+                state = State.IN_COMMENT;
+                break;
+
             case GT:
                 // End of DOCTYPE
-                state = State.DONE;
+                changeState(State.DONE);
                 // Report end of DTD
                 if (lexicalHandler != null) {
                     lexicalHandler.endDTD();
@@ -504,237 +620,698 @@ public class DTDParser implements TokenConsumer {
 
     /**
      * Handles tokens within an &lt;!ELEMENT declaration.
+     * Uses a sub-state machine to enforce well-formedness constraints.
+     * Builds the ContentModel tree incrementally using a stack.
      */
     private void handleInElementDecl(Token token, CharBuffer data) throws SAXException {
-        switch (token) {
-            case S:
-                // Whitespace, ignore
-                break;
-                
-            case NAME:
-                if (currentElementName == null) {
-                    // This is the element name
-                    currentElementName = extractString(data);
+        switch (elementDeclState) {
+            case EXPECT_NAME:
+                // Must see NAME token for element name (whitespace allowed first)
+                if (token == Token.NAME) {
+                    currentElementDecl.name = extractString(data);
+                    elementDeclState = ElementDeclState.AFTER_NAME;
+                } else if (token == Token.S) {
+                    // Skip whitespace before element name
                 } else {
-                    // This is part of the content model
-                    String nameStr = extractString(data);
-                    if (currentContentModel.length() > 0) {
-                        currentContentModel.append(' ');
-                    }
-                    // Check if this is PCDATA (tokenizer may emit as NAME in some contexts)
-                    if (nameStr.equals("PCDATA")) {
-                        currentContentModel.append("#PCDATA");
-                    } else {
-                        currentContentModel.append(nameStr);
-                    }
+                    throw new SAXException("Expected element name after &lt;!ELEMENT, got: " + token);
                 }
                 break;
                 
-            case OPEN_PAREN:
-            case CLOSE_PAREN:
-            case STAR:
-            case PLUS:
-            case QUERY:
-            case PIPE:
-            case COMMA:
-                // Content model punctuation (but not HASH - that's part of #PCDATA)
-                currentContentModel.append(token == Token.OPEN_PAREN ? '(' :
-                                          token == Token.CLOSE_PAREN ? ')' :
-                                          token == Token.STAR ? '*' :
-                                          token == Token.PLUS ? '+' :
-                                          token == Token.QUERY ? '?' :
-                                          token == Token.PIPE ? '|' :
-                                          ',');
-                break;
-                
-            case EMPTY:
-                currentContentModel.append("EMPTY");
-                break;
-                
-            case ANY:
-                currentContentModel.append("ANY");
-                break;
-                
-            case PCDATA:
-                currentContentModel.append("#PCDATA");
-                break;
-                
-            case GT:
-                // End of element declaration
-                if (currentElementName != null) {
-                    // Determine content type from model string
-                    String modelStr = currentContentModel.toString().trim();
-                    ElementDeclaration.ContentType contentType;
-                    
-                    if (modelStr.equals("EMPTY")) {
-                        contentType = ElementDeclaration.ContentType.EMPTY;
-                    } else if (modelStr.equals("ANY")) {
-                        contentType = ElementDeclaration.ContentType.ANY;
-                    } else if (modelStr.indexOf("#PCDATA") >= 0) {
-                        // Mixed content: contains #PCDATA anywhere
-                        contentType = ElementDeclaration.ContentType.MIXED;
-                    } else {
-                        // Element content: structured content model
-                        contentType = ElementDeclaration.ContentType.ELEMENT;
-                    }
-                    
-                    // For now, create simple declaration (no content model tree parsing)
-                    // TODO: Parse content model into tree structure
-                    ElementDeclaration decl = new ElementDeclaration(currentElementName, contentType);
-                    addElementDeclaration(decl);
+            case AFTER_NAME:
+                // Must see whitespace after element name
+                if (token == Token.S) {
+                    elementDeclState = ElementDeclState.EXPECT_CONTENTSPEC;
+                } else {
+                    throw new SAXException("Expected whitespace after element name in &lt;!ELEMENT, got: " + token);
                 }
-                // Return to saved state
-                state = savedState;
                 break;
                 
-            default:
-                // Other tokens, ignore
+            case EXPECT_CONTENTSPEC:
+                // Expecting EMPTY | ANY | content model
+                switch (token) {
+                    case S:
+                        // Skip extra whitespace
+                        break;
+                        
+                    case EMPTY:
+                        currentElementDecl.contentType = ElementDeclaration.ContentType.EMPTY;
+                        elementDeclState = ElementDeclState.AFTER_CONTENTSPEC;
+                        break;
+                        
+                    case ANY:
+                        currentElementDecl.contentType = ElementDeclaration.ContentType.ANY;
+                        elementDeclState = ElementDeclState.AFTER_CONTENTSPEC;
+                        break;
+                        
+                    case OPEN_PAREN:
+                        // Start content model group
+                        ElementDeclaration.ContentModel group = new ElementDeclaration.ContentModel();
+                        // Don't know if it's SEQUENCE or CHOICE yet - will determine from first separator
+                        contentModelStack.push(group);
+                        contentModelDepth = 1;
+                        elementDeclState = ElementDeclState.IN_CONTENT_MODEL;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected content specification (EMPTY, ANY, or '(') in &lt;!ELEMENT, got: " + token);
+                }
+                break;
+                
+            case IN_CONTENT_MODEL:
+                // Inside ( ... ), building content model
+                switch (token) {
+                    case S:
+                        // Whitespace in content model is allowed, ignore
+                        break;
+                        
+                    case NAME:
+                        String nameStr = extractString(data);
+                        // Handle PCDATA special case (tokenizer may emit as NAME)
+                        if (nameStr.equals("PCDATA")) {
+                            // Create #PCDATA leaf node
+                            ElementDeclaration.ContentModel leaf = new ElementDeclaration.ContentModel();
+                            leaf.type = ElementDeclaration.ContentModel.NodeType.PCDATA;
+                            leaf.occurrence = ElementDeclaration.ContentModel.Occurrence.ONCE;
+                            contentModelStack.peek().addChild(leaf);
+                        } else {
+                            // Create element name leaf node
+                            ElementDeclaration.ContentModel leaf = new ElementDeclaration.ContentModel();
+                            leaf.type = ElementDeclaration.ContentModel.NodeType.ELEMENT;
+                            leaf.elementName = nameStr;
+                            leaf.occurrence = ElementDeclaration.ContentModel.Occurrence.ONCE;
+                            contentModelStack.peek().addChild(leaf);
+                        }
+                        break;
+                        
+                    case PCDATA:
+                        // Create #PCDATA leaf node
+                        ElementDeclaration.ContentModel pcdataLeaf = new ElementDeclaration.ContentModel();
+                        pcdataLeaf.type = ElementDeclaration.ContentModel.NodeType.PCDATA;
+                        pcdataLeaf.occurrence = ElementDeclaration.ContentModel.Occurrence.ONCE;
+                        contentModelStack.peek().addChild(pcdataLeaf);
+                        break;
+                        
+                    case OPEN_PAREN:
+                        // Nested group
+                        ElementDeclaration.ContentModel nestedGroup = new ElementDeclaration.ContentModel();
+                        contentModelStack.push(nestedGroup);
+                        contentModelDepth++;
+                        break;
+                        
+                    case CLOSE_PAREN:
+                        contentModelDepth--;
+                        if (contentModelDepth == 0) {
+                            // Exited the top-level content model
+                            ElementDeclaration.ContentModel root = contentModelStack.pop();
+                            currentElementDecl.contentModel = root;
+                            
+                            // Determine content type
+                            if (containsPCDATA(root)) {
+                                currentElementDecl.contentType = ElementDeclaration.ContentType.MIXED;
+                            } else {
+                                currentElementDecl.contentType = ElementDeclaration.ContentType.ELEMENT;
+                            }
+                            
+                            elementDeclState = ElementDeclState.AFTER_CONTENTSPEC;
+                        } else if (contentModelDepth < 0) {
+                            throw new SAXException("Unmatched closing parenthesis in &lt;!ELEMENT content model");
+                        } else {
+                            // Finished a nested group - pop it and add to parent
+                            ElementDeclaration.ContentModel completed = contentModelStack.pop();
+                            contentModelStack.peek().addChild(completed);
+                        }
+                        break;
+                        
+                    case PIPE:
+                        // Set group type to CHOICE if not already set
+                        ElementDeclaration.ContentModel current = contentModelStack.peek();
+                        if (current.type == null) {
+                            current.type = ElementDeclaration.ContentModel.NodeType.CHOICE;
+                        } else if (current.type != ElementDeclaration.ContentModel.NodeType.CHOICE) {
+                            throw new SAXException("Cannot mix ',' and '|' at same level in content model");
+                        }
+                        break;
+                        
+                    case COMMA:
+                        // Set group type to SEQUENCE if not already set
+                        ElementDeclaration.ContentModel currentSeq = contentModelStack.peek();
+                        if (currentSeq.type == null) {
+                            currentSeq.type = ElementDeclaration.ContentModel.NodeType.SEQUENCE;
+                        } else if (currentSeq.type != ElementDeclaration.ContentModel.NodeType.SEQUENCE) {
+                            throw new SAXException("Cannot mix ',' and '|' at same level in content model");
+                        }
+                        break;
+                        
+                    case QUERY:
+                    case PLUS:
+                    case STAR:
+                        // Apply occurrence indicator to last child added
+                        ElementDeclaration.ContentModel parent = contentModelStack.peek();
+                        if (parent.children != null && !parent.children.isEmpty()) {
+                            ElementDeclaration.ContentModel lastChild = parent.children.get(parent.children.size() - 1);
+                            lastChild.occurrence = token == Token.QUERY ? ElementDeclaration.ContentModel.Occurrence.OPTIONAL :
+                                                  token == Token.PLUS ? ElementDeclaration.ContentModel.Occurrence.ONE_OR_MORE :
+                                                  ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE;
+                        }
+                        break;
+                        
+                    case HASH:
+                        // Hash by itself (followed by PCDATA token or NAME("PCDATA"))
+                        // Just ignore - will be handled by PCDATA or NAME token
+                        break;
+                        
+                    default:
+                        throw new SAXException("Unexpected token in &lt;!ELEMENT content model: " + token);
+                }
+                break;
+                
+            case AFTER_CONTENTSPEC:
+                // After content spec, expecting optional whitespace then GT
+                switch (token) {
+                    case S:
+                        // Optional whitespace before GT
+                        elementDeclState = ElementDeclState.EXPECT_GT;
+                        break;
+                        
+                    case GT:
+                        // Save and return
+                        saveElementDeclaration();
+                        state = savedState;
+                        break;
+                        
+                    case QUERY:
+                    case PLUS:
+                    case STAR:
+                        // Occurrence indicator after content spec - apply to root
+                        if (currentElementDecl.contentModel != null) {
+                            currentElementDecl.contentModel.occurrence = 
+                                token == Token.QUERY ? ElementDeclaration.ContentModel.Occurrence.OPTIONAL :
+                                token == Token.PLUS ? ElementDeclaration.ContentModel.Occurrence.ONE_OR_MORE :
+                                ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE;
+                        }
+                        // Stay in AFTER_CONTENTSPEC to allow optional whitespace before GT
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected '&gt;' to close &lt;!ELEMENT declaration, got: " + token);
+                }
+                break;
+                
+            case EXPECT_GT:
+                // Must see GT to close declaration
+                if (token == Token.GT) {
+                    saveElementDeclaration();
+                    state = savedState;
+                } else if (token == Token.S) {
+                    // Allow extra whitespace
+                } else {
+                    throw new SAXException("Expected '&gt;' to close &lt;!ELEMENT declaration, got: " + token);
+                }
                 break;
         }
+    }
+    
+    /**
+     * Helper to check if a content model contains #PCDATA.
+     */
+    private boolean containsPCDATA(ElementDeclaration.ContentModel model) {
+        if (model.type == ElementDeclaration.ContentModel.NodeType.PCDATA) {
+            return true;
+        }
+        if (model.children != null) {
+            for (ElementDeclaration.ContentModel child : model.children) {
+                if (containsPCDATA(child)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Helper method to save the current element declaration.
+     * Called when the &lt;!ELEMENT declaration is complete (GT encountered).
+     */
+    private void saveElementDeclaration() throws SAXException {
+        if (currentElementDecl.name == null) {
+            throw new SAXException("No element name in &lt;!ELEMENT declaration");
+        }
+        
+        if (currentElementDecl.contentType == null) {
+            throw new SAXException("No content specification in &lt;!ELEMENT declaration");
+        }
+        
+        // Add to map with interned key
+        addElementDeclaration(currentElementDecl);
     }
 
     /**
      * Handles tokens within an &lt;!ATTLIST declaration.
+     * Uses a sub-state machine to enforce well-formedness constraints.
      */
     private void handleInAttlistDecl(Token token, CharBuffer data) throws SAXException {
+        switch (attListDeclState) {
+            case EXPECT_ELEMENT_NAME:
+                // Must see NAME for element name (whitespace allowed first)
+                switch (token) {
+                    case S:
+                        // Skip whitespace before element name
+                        break;
+                        
+                    case NAME:
+                        currentAttlistElement = extractString(data);
+                        attListDeclState = AttListDeclState.AFTER_ELEMENT_NAME;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected element name after &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case AFTER_ELEMENT_NAME:
+                // Must see whitespace after element name
+                switch (token) {
+                    case S:
+                        attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected whitespace after element name in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case EXPECT_ATTR_OR_GT:
+                // Expecting attribute name or GT to close
+                switch (token) {
+                    case S:
+                        // Skip extra whitespace
+                        break;
+                        
+                    case NAME:
+                        // Start new attribute
+                        currentAttributeDecl = new AttributeDeclaration();
+                        currentAttributeDecl.name = extractString(data);
+                        attListDeclState = AttListDeclState.AFTER_ATTR_NAME;
+                        break;
+                        
+                    case GT:
+                        // End of ATTLIST
+                        saveCurrentAttlist();
+                        state = savedState;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected attribute name or '&gt;' in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case AFTER_ATTR_NAME:
+                // Must see whitespace after attribute name
+                switch (token) {
+                    case S:
+                        attListDeclState = AttListDeclState.EXPECT_ATTR_TYPE;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected whitespace after attribute name in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case EXPECT_ATTR_TYPE:
+                // Expecting attribute type
+                switch (token) {
+                    case S:
+                        // Skip extra whitespace
+                        break;
+                        
+                    case CDATA_TYPE:
+                        currentAttributeDecl.type = "CDATA";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case ID:
+                        currentAttributeDecl.type = "ID";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case IDREF:
+                        currentAttributeDecl.type = "IDREF";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case IDREFS:
+                        currentAttributeDecl.type = "IDREFS";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case ENTITY:
+                        currentAttributeDecl.type = "ENTITY";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case ENTITIES:
+                        currentAttributeDecl.type = "ENTITIES";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case NMTOKEN:
+                        currentAttributeDecl.type = "NMTOKEN";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case NMTOKENS:
+                        currentAttributeDecl.type = "NMTOKENS";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case NOTATION:
+                        currentAttributeDecl.type = "NOTATION";
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case NAME:
+                        // Enumeration or NOTATION type - treat as NAME for now
+                        currentAttributeDecl.type = extractString(data);
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    case OPEN_PAREN:
+                        // Enumeration starting - for now, treat as enumeration type
+                        currentAttributeDecl.type = "ENUMERATION";
+                        // TODO: Parse enumeration values
+                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected attribute type in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case AFTER_ATTR_TYPE:
+                // Must see whitespace after type (or part of enumeration)
+                switch (token) {
+                    case S:
+                        attListDeclState = AttListDeclState.EXPECT_DEFAULT_DECL;
+                        break;
+                        
+                    case CLOSE_PAREN:
+                        // End of enumeration - stay in AFTER_ATTR_TYPE
+                        // TODO: Properly handle enumeration parsing
+                        break;
+                        
+                    case PIPE:
+                    case NAME:
+                        // Part of enumeration - stay in AFTER_ATTR_TYPE
+                        // TODO: Properly handle enumeration parsing
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected whitespace after attribute type in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case EXPECT_DEFAULT_DECL:
+                // Expecting #REQUIRED | #IMPLIED | #FIXED | default value
+                switch (token) {
+                    case S:
+                        // Skip extra whitespace
+                        break;
+                        
+                    case HASH:
+                        // Hash before keyword - transition to AFTER_HASH to expect keyword
+                        attListDeclState = AttListDeclState.AFTER_HASH;
+                        break;
+                        
+                    case REQUIRED:
+                        // #REQUIRED without hash (tokenizer combined them)
+                        currentAttributeDecl.mode = "#REQUIRED";
+                        saveCurrentAttribute();
+                        attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                        break;
+                        
+                    case IMPLIED:
+                        // #IMPLIED without hash (tokenizer combined them)
+                        currentAttributeDecl.mode = "#IMPLIED";
+                        saveCurrentAttribute();
+                        attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                        break;
+                        
+                    case FIXED:
+                        // #FIXED without hash (tokenizer combined them)
+                        currentAttributeDecl.mode = "#FIXED";
+                        attListDeclState = AttListDeclState.AFTER_FIXED;
+                        break;
+                        
+                    case QUOT:
+                    case APOS:
+                        // Default value starting (no #FIXED) - initialize accumulator
+                        defaultValueBuilder = new StringBuilder();
+                        break;
+                        
+                    case CDATA:
+                        // Default value chunk - accumulate (may receive multiple CDATA tokens)
+                        if (defaultValueBuilder == null) {
+                            defaultValueBuilder = new StringBuilder();
+                        }
+                        defaultValueBuilder.append(extractString(data));
+                        attListDeclState = AttListDeclState.AFTER_DEFAULT_VALUE;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected default declaration (#REQUIRED, #IMPLIED, #FIXED, or value) in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case AFTER_HASH:
+                // After #, must see REQUIRED | IMPLIED | FIXED keyword (or NAME workaround)
+                switch (token) {
+                    case REQUIRED:
+                        currentAttributeDecl.mode = "#REQUIRED";
+                        saveCurrentAttribute();
+                        attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                        break;
+                        
+                    case IMPLIED:
+                        currentAttributeDecl.mode = "#IMPLIED";
+                        saveCurrentAttribute();
+                        attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                        break;
+                        
+                    case FIXED:
+                        currentAttributeDecl.mode = "#FIXED";
+                        attListDeclState = AttListDeclState.AFTER_FIXED;
+                        break;
+                        
+                    case NAME:
+                        // Workaround: Tokenizer may emit keywords as NAME in DOCTYPE context
+                        String nameStr = extractString(data);
+                        switch (nameStr) {
+                            case "REQUIRED":
+                                currentAttributeDecl.mode = "#REQUIRED";
+                                saveCurrentAttribute();
+                                attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                                break;
+                                
+                            case "IMPLIED":
+                                currentAttributeDecl.mode = "#IMPLIED";
+                                saveCurrentAttribute();
+                                attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                                break;
+                                
+                            case "FIXED":
+                                currentAttributeDecl.mode = "#FIXED";
+                                attListDeclState = AttListDeclState.AFTER_FIXED;
+                                break;
+                                
+                            default:
+                                throw new SAXException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got NAME: " + nameStr);
+                        }
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case AFTER_FIXED:
+                // Must see whitespace after #FIXED
+                switch (token) {
+                    case S:
+                        attListDeclState = AttListDeclState.EXPECT_DEFAULT_VALUE;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected whitespace after #FIXED in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case EXPECT_DEFAULT_VALUE:
+                // Expecting quoted default value after #FIXED
+                switch (token) {
+                    case S:
+                        // Skip extra whitespace
+                        break;
+                        
+                    case QUOT:
+                    case APOS:
+                        // Quote starting value - initialize accumulator
+                        defaultValueBuilder = new StringBuilder();
+                        break;
+                        
+                    case CDATA:
+                        // Fixed default value chunk - accumulate (may receive multiple CDATA tokens)
+                        if (defaultValueBuilder == null) {
+                            defaultValueBuilder = new StringBuilder();
+                        }
+                        defaultValueBuilder.append(extractString(data));
+                        attListDeclState = AttListDeclState.AFTER_DEFAULT_VALUE;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected quoted value after #FIXED in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            case AFTER_DEFAULT_VALUE:
+                // After default value CDATA, expecting more CDATA chunks or closing quote
+                switch (token) {
+                    case CDATA:
+                        // Additional chunk of default value - accumulate
+                        defaultValueBuilder.append(extractString(data));
+                        break;
+                        
+                    case QUOT:
+                    case APOS:
+                        // Closing quote - finalize default value, save attribute, and return to expecting next attribute
+                        currentAttributeDecl.defaultValue = defaultValueBuilder.toString();
+                        defaultValueBuilder = null;
+                        saveCurrentAttribute();
+                        attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
+                        break;
+                        
+                    default:
+                        throw new SAXException("Expected closing quote after default value in &lt;!ATTLIST, got: " + token);
+                }
+                break;
+                
+            default:
+                throw new SAXException("Invalid ATTLIST parser state: " + attListDeclState);
+        }
+    }
+    
+    /**
+     * Handles tokens within a comment (&lt;!-- ... --&gt;).
+     * Accumulates CDATA chunks until END_COMMENT is encountered.
+     * Comments can appear in various locations within the DTD.
+     */
+    private void handleInComment(Token token, CharBuffer data) throws SAXException {
         switch (token) {
-            case S:
-                // Whitespace, ignore
-                break;
-                
-            case NAME:
-                String nameStr = extractString(data);
-                
-                if (currentAttlistElement == null) {
-                    // This is the element name
-                    currentAttlistElement = nameStr;
-                } else if (currentAttributeName == null) {
-                    // This is the first attribute name
-                    currentAttributeName = nameStr;
-                } else if (currentAttributeType == null) {
-                    // This is the attribute type
-                    // Check if this looks like a type keyword
-                    switch (nameStr) {
-                        case "CDATA":
-                        case "ID":
-                        case "IDREF":
-                        case "IDREFS":
-                        case "ENTITY":
-                        case "ENTITIES":
-                        case "NMTOKEN":
-                        case "NMTOKENS":
-                        case "NOTATION":
-                            currentAttributeType = nameStr;
-                            break;
-                        default:
-                            // Enumerated type or other
-                            currentAttributeType = nameStr;
-                            break;
-                    }
-                } else if (currentAttributeMode != null || currentAttributeValue != null) {
-                    // We have a complete attribute (name, type, and mode/value)
-                    // This NAME must be a new attribute
-                    saveCurrentAttribute();
-                    // Start new attribute
-                    currentAttributeName = nameStr;
-                    currentAttributeType = null;
-                    currentAttributeMode = null;
-                    currentAttributeValue = null;
-                }
-                // If we have name and type but no mode/value yet, wait for more tokens
-                break;
-                
-            case CDATA_TYPE:
-                currentAttributeType = "CDATA";
-                break;
-                
-            case ID:
-                currentAttributeType = "ID";
-                break;
-                
-            case IDREF:
-                currentAttributeType = "IDREF";
-                break;
-                
-            case IDREFS:
-                currentAttributeType = "IDREFS";
-                break;
-                
-            case ENTITY:
-                currentAttributeType = "ENTITY";
-                break;
-                
-            case ENTITIES:
-                currentAttributeType = "ENTITIES";
-                break;
-                
-            case NMTOKEN:
-                currentAttributeType = "NMTOKEN";
-                break;
-                
-            case NMTOKENS:
-                currentAttributeType = "NMTOKENS";
-                break;
-                
-            case NOTATION:
-                currentAttributeType = "NOTATION";
-                break;
-                
-            case REQUIRED:
-                currentAttributeMode = "#REQUIRED";
-                // After mode, next NAME is a new attribute
-                break;
-                
-            case IMPLIED:
-                currentAttributeMode = "#IMPLIED";
-                // After mode, next NAME is a new attribute
-                break;
-                
-            case FIXED:
-                currentAttributeMode = "#FIXED";
-                // After FIXED, we expect a default value
-                break;
-                
-            case QUOT:
-            case APOS:
-                // Quote, ignore (value will come in CDATA)
-                break;
-                
             case CDATA:
-                // This is the default value
-                if (currentAttributeValue == null) {
-                    currentAttributeValue = extractString(data);
+            case S:
+                // Accumulate comment text (may receive multiple chunks)
+                if (data != null) {
+                    commentBuilder.append(extractString(data));
                 }
-                // After default value, next NAME is a new attribute
                 break;
                 
-            case GT:
-                // End of ATTLIST - save any pending attribute
-                saveCurrentAttribute();
-                // Return to saved state
+            case END_COMMENT:
+                // End of comment - emit event and return to saved state
+                if (lexicalHandler != null) {
+                    String text = commentBuilder.toString();
+                    lexicalHandler.comment(text.toCharArray(), 0, text.length());
+                }
+                commentBuilder = null;
                 state = savedState;
                 break;
                 
             default:
-                // Other tokens, ignore
+                // Other tokens might be part of comment content
+                // (tokenizer should emit everything as CDATA within comments)
                 break;
+        }
+    }
+    
+    /**
+     * Handles tokens within a processing instruction (&lt;? ... ?&gt;).
+     * First token must be NAME (PI target), followed by optional data (CDATA chunks), then END_PI.
+     * PIs can appear in various locations within the DTD.
+     */
+    private void handleInPI(Token token, CharBuffer data) throws SAXException {
+        switch (token) {
+            case NAME:
+                // First token should be the PI target
+                if (piTarget == null) {
+                    piTarget = extractString(data);
+                } else {
+                    throw new SAXException("Unexpected NAME token in PI data");
+                }
+                break;
+                
+            case S:
+            case CDATA:
+                // Accumulate PI data (may receive multiple chunks)
+                if (data != null) {
+                    piDataBuilder.append(extractString(data));
+                }
+                break;
+                
+            case END_PI:
+                // End of PI - emit event and return to saved state
+                if (piTarget == null) {
+                    throw new SAXException("Processing instruction missing target");
+                }
+                if (contentHandler != null) {
+                    contentHandler.processingInstruction(piTarget, piDataBuilder.toString());
+                }
+                piTarget = null;
+                piDataBuilder = null;
+                state = savedState;
+                break;
+                
+            default:
+                // Unexpected token in PI
+                throw new SAXException("Unexpected token in processing instruction: " + token);
         }
     }
     
     /**
      * Helper method to save the current attribute being parsed.
      * Called when we detect a new attribute starting or when GT is encountered.
+     * Adds the attribute to currentAttlistMap keyed by attribute name.
      */
     private void saveCurrentAttribute() {
-        if (currentAttlistElement != null && currentAttributeName != null) {
-            // Create and store attribute declaration
-            AttributeDeclaration decl = new AttributeDeclaration(
-                currentAttributeName,
-                currentAttributeType != null ? currentAttributeType : "CDATA",
-                currentAttributeMode,
-                currentAttributeValue
-            );
-            addAttributeDeclaration(currentAttlistElement, decl);
+        if (currentAttributeDecl != null && currentAttributeDecl.name != null) {
+            // Set default type if not specified
+            if (currentAttributeDecl.type == null) {
+                currentAttributeDecl.type = "CDATA";
+            }
+            // Add to current ATTLIST map keyed by attribute name
+            currentAttlistMap.put(currentAttributeDecl.name.intern(), currentAttributeDecl);
+            currentAttributeDecl = null;
+        }
+    }
+    
+    /**
+     * Helper method to save the entire ATTLIST declaration.
+     * Called when GT is encountered at the end of the ATTLIST.
+     * Merges currentAttlistMap into attributeDecls keyed by element name.
+     */
+    private void saveCurrentAttlist() {
+        if (currentAttlistElement != null && !currentAttlistMap.isEmpty()) {
+            // Ensure attributeDecls map exists
+            if (attributeDecls == null) {
+                attributeDecls = new HashMap<>();
+            }
+            // Get or create the attribute map for this element
+            String internedElementName = currentAttlistElement.intern();
+            Map<String, AttributeDeclaration> elementAttrs = attributeDecls.get(internedElementName);
+            if (elementAttrs == null) {
+                // First ATTLIST for this element - use our map directly
+                attributeDecls.put(internedElementName, currentAttlistMap);
+            } else {
+                // Merge with existing attributes for this element
+                elementAttrs.putAll(currentAttlistMap);
+            }
         }
     }
 
@@ -752,6 +1329,17 @@ public class DTDParser implements TokenConsumer {
             sb.append(buffer.get());
         }
         return sb.toString();
+    }
+    
+    /**
+     * Changes the parser state and saves the new state.
+     * This ensures savedState always contains the current state for returning from comments.
+     * Use this instead of direct state assignment (except for START_COMMENT).
+     * 
+     * @param newState the new state to transition to
+     */
+    private void changeState(State newState) {
+        savedState = state = newState;
     }
 
     /**
@@ -834,32 +1422,6 @@ public class DTDParser implements TokenConsumer {
         }
         // Intern element name for fast comparison
         elementDecls.put(decl.name.intern(), decl);
-    }
-
-    /**
-     * Stores an attribute declaration.
-     * Called internally when parsing &lt;!ATTLIST declarations.
-     *
-     * @param elementName the element this attribute belongs to
-     * @param decl the attribute declaration to store
-     */
-    private void addAttributeDeclaration(String elementName, AttributeDeclaration decl) {
-        if (attributeDecls == null) {
-            attributeDecls = new HashMap<>();
-        }
-        // Intern keys for fast comparison
-        elementName = elementName.intern();
-        String attrName = decl.name.intern();
-        
-        // Get or create the attribute map for this element
-        Map<String, AttributeDeclaration> elementAttrs = attributeDecls.get(elementName);
-        if (elementAttrs == null) {
-            elementAttrs = new HashMap<>();
-            attributeDecls.put(elementName, elementAttrs);
-        }
-        
-        // Store the attribute declaration
-        elementAttrs.put(attrName, decl);
     }
 
     /**

@@ -21,6 +21,9 @@
 
 package org.bluezoo.gonzalez;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Represents an element declaration from the DTD.
  *
@@ -41,7 +44,7 @@ package org.bluezoo.gonzalez;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class ElementDeclaration {
+public class ElementDeclaration {
 
     /**
      * Content model types.
@@ -56,43 +59,18 @@ public final class ElementDeclaration {
     /**
      * The element name.
      */
-    public final String name;
+    public String name;
 
     /**
      * The content type.
      */
-    public final ContentType contentType;
+    public ContentType contentType;
 
     /**
      * The content model root node (null for EMPTY and ANY).
      * For MIXED and ELEMENT content, this is the root of the content model tree.
      */
-    public final ContentModel contentModel;
-
-    /**
-     * Creates an element declaration with simple content (EMPTY or ANY).
-     *
-     * @param name the element name
-     * @param contentType the content type (EMPTY or ANY)
-     */
-    public ElementDeclaration(String name, ContentType contentType) {
-        this.name = name;
-        this.contentType = contentType;
-        this.contentModel = null;
-    }
-
-    /**
-     * Creates an element declaration with a content model.
-     *
-     * @param name the element name
-     * @param contentType the content type (MIXED or ELEMENT)
-     * @param contentModel the content model tree
-     */
-    public ElementDeclaration(String name, ContentType contentType, ContentModel contentModel) {
-        this.name = name;
-        this.contentType = contentType;
-        this.contentModel = contentModel;
-    }
+    public ContentModel contentModel;
 
     @Override
     public String toString() {
@@ -146,10 +124,18 @@ public final class ElementDeclaration {
             ONE_OR_MORE  // +
         }
 
-        public final NodeType type;
-        public final String elementName;  // For ELEMENT type
-        public final ContentModel[] children; // For SEQUENCE and CHOICE
-        public final Occurrence occurrence;
+        public NodeType type;
+        public String elementName;  // For ELEMENT type
+        public Occurrence occurrence;
+        public List<ContentModel> children;
+
+        /**
+         * Default constructor for building incrementally.
+         */
+        public ContentModel() {
+            this.occurrence = Occurrence.ONCE;
+            this.children = new ArrayList<>();
+        }
 
         /**
          * Creates a leaf node (#PCDATA or element name).
@@ -164,11 +150,21 @@ public final class ElementDeclaration {
         /**
          * Creates an internal node (sequence or choice).
          */
-        public ContentModel(NodeType type, ContentModel[] children, Occurrence occurrence) {
+        public ContentModel(NodeType type, List<ContentModel> children, Occurrence occurrence) {
             this.type = type;
             this.elementName = null;
             this.children = children;
             this.occurrence = occurrence;
+        }
+        
+        /**
+         * Adds a child node during building (for SEQUENCE and CHOICE nodes).
+         */
+        public void addChild(ContentModel child) {
+            if (children == null) {
+                children = new ArrayList<>();
+            }
+            children.add(child);
         }
 
         @Override
@@ -184,11 +180,13 @@ public final class ElementDeclaration {
                 case SEQUENCE:
                 case CHOICE:
                     sb.append("(");
-                    for (int i = 0; i < children.length; i++) {
-                        if (i > 0) {
-                            sb.append(type == NodeType.SEQUENCE ? ", " : " | ");
+                    if (children != null) {
+                        for (int i = 0; i < children.size(); i++) {
+                            if (i > 0) {
+                                sb.append(type == NodeType.SEQUENCE ? ", " : " | ");
+                            }
+                            sb.append(children.get(i));
                         }
-                        sb.append(children[i]);
                     }
                     sb.append(")");
                     break;

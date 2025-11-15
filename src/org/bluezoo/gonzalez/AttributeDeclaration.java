@@ -27,69 +27,30 @@ package org.bluezoo.gonzalez;
  * <p>Attribute declarations define the allowed attributes for an element,
  * their types, default values, and whether they are required, implied, or fixed.
  *
- * <p>This class is immutable and optimized for memory efficiency:
- * - Uses string interning for common type values
- * - Shares default value strings where possible
- *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class AttributeDeclaration {
+public class AttributeDeclaration {
 
     /**
      * The attribute name.
      */
-    public final String name;
+    public String name;
 
     /**
      * The attribute type (CDATA, ID, IDREF, IDREFS, ENTITY, ENTITIES,
      * NMTOKEN, NMTOKENS, NOTATION, or an enumeration).
      */
-    public final String type;
+    public String type;
 
     /**
      * The default value mode: #REQUIRED, #IMPLIED, #FIXED, or null for default value.
      */
-    public final String mode;
+    public String mode;
 
     /**
      * The default value, or null if not specified or if mode is #REQUIRED or #IMPLIED.
      */
-    public final String defaultValue;
-
-    /**
-     * Creates a new attribute declaration.
-     *
-     * @param name the attribute name
-     * @param type the attribute type
-     * @param mode the default value mode (#REQUIRED, #IMPLIED, #FIXED, or null)
-     * @param defaultValue the default value (null if not specified)
-     */
-    public AttributeDeclaration(String name, String type, String mode, String defaultValue) {
-        this.name = name;
-        // Intern common type strings to save memory
-        this.type = internType(type);
-        this.mode = mode;
-        this.defaultValue = defaultValue;
-    }
-
-    /**
-     * Interns common attribute type strings to reduce memory usage.
-     */
-    private static String internType(String type) {
-        // Common types - use constants to share memory
-        switch (type) {
-            case "CDATA": return "CDATA";
-            case "ID": return "ID";
-            case "IDREF": return "IDREF";
-            case "IDREFS": return "IDREFS";
-            case "ENTITY": return "ENTITY";
-            case "ENTITIES": return "ENTITIES";
-            case "NMTOKEN": return "NMTOKEN";
-            case "NMTOKENS": return "NMTOKENS";
-            case "NOTATION": return "NOTATION";
-            default: return type; // Enumeration or other
-        }
-    }
+    public String defaultValue;
 
     /**
      * Returns true if this attribute is required.

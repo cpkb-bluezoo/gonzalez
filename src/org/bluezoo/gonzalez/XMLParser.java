@@ -658,6 +658,7 @@ public class XMLParser implements TokenConsumer {
                 // Lazily construct DTDParser
                 dtdParser = new DTDParser(this);
                 dtdParser.setLocator(locator);
+                dtdParser.setContentHandler(contentHandler);
                 dtdParser.setDTDHandler(dtdHandler);
                 dtdParser.setLexicalHandler(lexicalHandler);
                 dtdParser.setErrorHandler(errorHandler);
@@ -728,6 +729,8 @@ public class XMLParser implements TokenConsumer {
                     } else {
                         attributes.clear();
                     }
+                    // Set DTD context for attribute type lookup
+                    attributes.setDTDContext(currentElementName, dtdParser);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                 }
                 state = State.ELEMENT_CONTENT;
@@ -742,6 +745,8 @@ public class XMLParser implements TokenConsumer {
                     } else {
                         attributes.clear();
                     }
+                    // Set DTD context for attribute type lookup
+                    attributes.setDTDContext(currentElementName, dtdParser);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                     contentHandler.endElement("", currentElementName, currentElementName);
                 }
@@ -779,6 +784,8 @@ public class XMLParser implements TokenConsumer {
             case GT:
                 // End of start tag
                 if (contentHandler != null) {
+                    // Set DTD context for attribute type lookup
+                    attributes.setDTDContext(currentElementName, dtdParser);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                 }
                 state = State.ELEMENT_CONTENT;
@@ -787,6 +794,8 @@ public class XMLParser implements TokenConsumer {
             case END_EMPTY_ELEMENT:
                 // Empty element
                 if (contentHandler != null) {
+                    // Set DTD context for attribute type lookup
+                    attributes.setDTDContext(currentElementName, dtdParser);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                     contentHandler.endElement("", currentElementName, currentElementName);
                 }
