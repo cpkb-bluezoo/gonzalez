@@ -5,17 +5,18 @@ Non-blocking streaming XML parser for event-driven I/O
 This is Gonzalez, a data-driven XML parser using non-blocking, event-driven I/O.
 Unlike traditional SAX parsers that pull data from an InputSource, Gonzalez is
 completely feedforward: you push data to it as it arrives, and it produces SAX
-events without ever blocking.
+events without ever blocking, as long as the documents are standalone.
 
 ## Features
 
-- completely non-blocking: never reads from streams or waits for data
+- non-blocking: in streaming mode, will only ever block for external
+  entities
 - data-driven: processes whatever is available, state machine driven
-- SAX-compatible: generates standard ContentHandler events
-- asynchronous entity resolution: external entities resolved without blocking
+- SAX-compatible: generates standard ContentHandler events and has a SAX2
+  convenience front end (which is blocking, of course)
 - lazy DTD parsing: DTD parser loaded only when a DOCTYPE is encountered
 - memory efficient: streaming architecture handles documents of any size
-- Java NIO throughout: uses ByteBuffer for all I/O operations
+- Java NIO throughput: uses ByteBuffer for content I/O operations
 
 ## Architecture
 
@@ -58,16 +59,23 @@ blocking process.
 
 ## Usage
 
-```java Parser parser = new Parser();
+```java
+Parser parser = new Parser();
 
-// Set handlers parser.setContentHandler(myContentHandler);
+// Set handlers
+parser.setContentHandler(myContentHandler);
 
 // Set document identifiers (optional, for Locator reporting)
 parser.setSystemId("http://example.com/document.xml");
 parser.setPublicId("-//Example//DTD Example 1.0//EN");
 
-// Feed data as it arrives parser.receive(byteBuffer1);
-parser.receive(byteBuffer2); // ...  parser.close(); // Signal end of document
+// Feed data as it arrives. Do this instead of parse() for non-blocking
+// behaviour
+parser.receive(byteBuffer1);
+parser.receive(byteBuffer2);
+// ...
+parser.close();
+// Signal end of document
 ```
 
 ### Document Location Tracking
@@ -84,11 +92,13 @@ The locator tracks:
 - Character encoding
 - XML version
 
-Since Gonzalez is data-driven and doesn't use InputSource, you must explicitly
-set the system and public identifiers if you want them reported:
+Since Gonzalez is data-driven, you must explicitly set the system and
+public identifiers if you want them reported:
 
-```java parser.setSystemId("http://example.com/document.xml");
-parser.setPublicId("-//Example//DTD Example 1.0//EN"); ```
+```java
+parser.setSystemId("http://example.com/document.xml");
+parser.setPublicId("-//Example//DTD Example 1.0//EN");
+```
 
 Line endings are handled according to XML 1.0 specification section 2.11:
 - LF (U+000A)
@@ -102,7 +112,9 @@ boundaries.
 
 Use ant to build the project:
 
-```bash ant ```
+```bash
+ant
+```
 
 This produces a jar file in the `dist` directory.
 
@@ -114,7 +126,7 @@ available.
 
 The architecture has been designed to support the full XML specification,
 including:
-- XML declaration
+- XML declaration with all charsets supported by Java
 - DOCTYPE with internal and external subsets
 - Elements with attributes
 - Character data and CDATA sections
