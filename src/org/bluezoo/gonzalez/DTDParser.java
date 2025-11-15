@@ -22,6 +22,8 @@
 package org.bluezoo.gonzalez;
 
 import java.nio.CharBuffer;
+import java.util.HashMap;
+import java.util.Map;
 import org.xml.sax.DTDHandler;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.Locator;
@@ -82,6 +84,18 @@ public class DTDParser implements TokenConsumer {
      * The system identifier for the external DTD subset.
      */
     private String systemId;
+
+    /**
+     * Element declarations: element name -> ElementDeclaration.
+     * Uses HashMap for O(1) lookup during validation.
+     */
+    private Map<String, ElementDeclaration> elementDecls;
+
+    /**
+     * Attribute declarations: "elementName:attributeName" -> AttributeDeclaration.
+     * Composite key allows efficient lookup of specific attribute for element.
+     */
+    private Map<String, AttributeDeclaration> attributeDecls;
 
     /**
      * Depth tracking for nested structures (e.g., conditional sections).
@@ -450,6 +464,59 @@ public class DTDParser implements TokenConsumer {
      */
     public String getSystemId() {
         return systemId;
+    }
+
+    /**
+     * Gets the element declaration for a given element name.
+     *
+     * @param elementName the element name
+     * @return the ElementDeclaration, or null if not declared
+     */
+    public ElementDeclaration getElementDeclaration(String elementName) {
+        return elementDecls != null ? elementDecls.get(elementName) : null;
+    }
+
+    /**
+     * Gets the attribute declaration for a specific attribute on an element.
+     *
+     * @param elementName the element name
+     * @param attributeName the attribute name
+     * @return the AttributeDeclaration, or null if not declared
+     */
+    public AttributeDeclaration getAttributeDeclaration(String elementName, String attributeName) {
+        if (attributeDecls == null) {
+            return null;
+        }
+        String key = elementName + ":" + attributeName;
+        return attributeDecls.get(key);
+    }
+
+    /**
+     * Stores an element declaration.
+     * Called internally when parsing <!ELEMENT declarations.
+     *
+     * @param decl the element declaration to store
+     */
+    private void addElementDeclaration(ElementDeclaration decl) {
+        if (elementDecls == null) {
+            elementDecls = new HashMap<>();
+        }
+        elementDecls.put(decl.name, decl);
+    }
+
+    /**
+     * Stores an attribute declaration.
+     * Called internally when parsing <!ATTLIST declarations.
+     *
+     * @param elementName the element this attribute belongs to
+     * @param decl the attribute declaration to store
+     */
+    private void addAttributeDeclaration(String elementName, AttributeDeclaration decl) {
+        if (attributeDecls == null) {
+            attributeDecls = new HashMap<>();
+        }
+        String key = elementName + ":" + decl.name;
+        attributeDecls.put(key, decl);
     }
 
 }
