@@ -711,6 +711,15 @@ public class XMLTokenizer implements Locator2 {
                     }
                     break;
                     
+                case EXPECT_WHITESPACE:
+                    if (isWhitespace(c)) {
+                        // Found required whitespace, now can accept a name
+                        ctx.state = XMLDeclState.EXPECT_WHITESPACE_OR_NAME;
+                    } else {
+                        throw consumer.fatalError("Expected whitespace after attribute value in XML declaration");
+                    }
+                    break;
+                    
                 case IN_NAME:
                     if (isNameChar(c)) {
                         // Continue consuming name
@@ -759,7 +768,8 @@ public class XMLTokenizer implements Locator2 {
                         String value = extractSubstring(declBuffer, ctx.valueStart, valueEnd);
                         storeAttributeValue(ctx, value);
                         ctx.currentName = null;
-                        ctx.state = XMLDeclState.EXPECT_WHITESPACE_OR_NAME;
+                        // After an attribute value, we must see whitespace or end of declaration
+                        ctx.state = XMLDeclState.EXPECT_WHITESPACE;
                     }
                     // Otherwise continue consuming value
                     break;
@@ -844,6 +854,7 @@ public class XMLTokenizer implements Locator2 {
      */
     private enum XMLDeclState {
         EXPECT_WHITESPACE_OR_NAME,
+        EXPECT_WHITESPACE,
         IN_NAME,
         EXPECT_EQ,
         EXPECT_QUOTE,
@@ -1431,7 +1442,12 @@ public class XMLTokenizer implements Locator2 {
             // Peek ahead for "xml"
             if (charBuffer.remaining() >= 3) {
                 charBuffer.mark();
-                if (charBuffer.get() == 'x' && charBuffer.get() == 'm' && charBuffer.get() == 'l') {
+                char c1 = charBuffer.get();
+                char c2 = charBuffer.get();
+                char c3 = charBuffer.get();
+                
+                // Check for lowercase "xml" (valid XML declaration)
+                if (c1 == 'x' && c2 == 'm' && c3 == 'l') {
                     // Check if followed by whitespace or '?'
                     if (charBuffer.hasRemaining()) {
                         char next = charBuffer.get();
@@ -1447,6 +1463,14 @@ public class XMLTokenizer implements Locator2 {
                         return false; // Need more data
                     }
                 }
+                
+                // Check for any case variation of "xml" (invalid)
+                if ((c1 == 'x' || c1 == 'X') && (c2 == 'm' || c2 == 'M') && (c3 == 'l' || c3 == 'L')) {
+                    // Processing instructions named "xml" (case insensitive) are reserved
+                    throw consumer.fatalError(
+                        "Processing instruction target cannot be 'xml' (case insensitive) - it is reserved");
+                }
+                
                 charBuffer.reset(); // Back to after '?'
             } else {
                 return false; // Need more data
@@ -1627,8 +1651,9 @@ public class XMLTokenizer implements Locator2 {
                         return true;
                     }
                 }
-            } else if (!isNameChar(c) && c != '#' && c != 'x' && c != 'X') {
+            } else if (!isNameChar(c) && c != '#' && c != 'x') {
                 // Invalid entity reference character - well-formedness error
+                // Note: Only lowercase 'x' is valid for hex character references
                 throw consumer.fatalError(
                     "Invalid character in entity reference: '&" + c + "'");
             }
@@ -1653,20 +1678,39 @@ public class XMLTokenizer implements Locator2 {
             String numPart = refContent.substring(1); // Skip the '#'
             int codePoint;
             
-            if (numPart.startsWith("x") || numPart.startsWith("X")) {
-                // Hexadecimal
+            if (numPart.startsWith("x")) {
+                // Hexadecimal (only lowercase 'x' is valid per XML spec)
                 codePoint = Integer.parseInt(numPart.substring(1), 16);
+            } else if (numPart.startsWith("X")) {
+                // Uppercase 'X' is not valid per XML spec
+                return null;
             } else {
                 // Decimal
                 codePoint = Integer.parseInt(numPart);
             }
             
-            // Validate code point
+            // Validate code point range
             if (codePoint < 0 || codePoint > 0x10FFFF) {
                 return null;
             }
             
-            return new String(Character.toChars(codePoint));
+            // Convert to character(s) and validate it's a legal XML character
+            String result;
+            try {
+                result = new String(Character.toChars(codePoint));
+            } catch (IllegalArgumentException e) {
+                // Invalid code point (e.g., unpaired surrogate)
+                return null;
+            }
+            
+            // Validate each character is legal XML
+            for (int i = 0; i < result.length(); i++) {
+                if (!isLegalXMLChar(result.charAt(i))) {
+                    return null; // Character reference expands to illegal character
+                }
+            }
+            
+            return result;
         } catch (NumberFormatException e) {
             return null;
         }
@@ -2271,7 +2315,7 @@ public class XMLTokenizer implements Locator2 {
         
         // Any remaining characters in charBuffer indicate incomplete tokens
         // This is an error condition for well-formed XML
-        if (charBuffer.hasRemaining()) {
+        if (charBuffer != null && charBuffer.hasRemaining()) {
             throw consumer.fatalError("Incomplete token at end of document");
         }
     }

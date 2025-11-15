@@ -116,6 +116,7 @@ public class DTDParser implements TokenConsumer {
     }
     
     private AttListDeclState attListDeclState;
+    private boolean sawWhitespaceAfterAttrType; // Track whitespace before enumeration
     
     /**
      * Sub-states for parsing &lt;!NOTATION declarations.
@@ -155,6 +156,9 @@ public class DTDParser implements TokenConsumer {
     }
     
     private EntityDeclState entityDeclState;
+    private boolean sawWhitespaceAfterEntityPublicId; // Track whitespace requirement in entity decls
+    private boolean sawWhitespaceAfterSystemId; // Track whitespace before NDATA
+    private boolean sawWhitespaceAfterEntityKeyword;  // Track whitespace after <!ENTITY keyword
     private EntityDeclaration currentEntity;
     private List<Object> entityValueBuilder;  // Accumulates String and GeneralEntityReference
     private StringBuilder entityValueTextBuilder;  // Accumulates current text segment
@@ -185,6 +189,12 @@ public class DTDParser implements TokenConsumer {
      * Track whether we saw SYSTEM or PUBLIC keyword.
      */
     private boolean sawPublicKeyword;
+    
+    /**
+     * Track whether required whitespace was seen after public ID.
+     * Used to enforce whitespace between public and system IDs.
+     */
+    private boolean sawWhitespaceAfterPublicId;
 
     /**
      * Element declarations: element name → ElementDeclaration.
@@ -234,6 +244,7 @@ public class DTDParser implements TokenConsumer {
      */
     private ElementDeclaration currentElementDecl;
     private Deque<ElementDeclaration.ContentModel> contentModelStack;
+    private boolean sawWhitespaceInContentModel; // Track whitespace before occurrence indicators
     
     /**
      * Current attribute list declaration being parsed.
@@ -318,6 +329,23 @@ public class DTDParser implements TokenConsumer {
     public void setErrorHandler(ErrorHandler handler) {
         this.errorHandler = handler;
     }
+    
+    /**
+     * Reports a fatal error through the error handler and returns the exception.
+     * Implements TokenConsumer interface.
+     * 
+     * @param message the error message
+     * @return the SAXException to throw
+     * @throws SAXException if the ErrorHandler itself throws
+     */
+    @Override
+    public SAXException fatalError(String message) throws SAXException {
+        SAXParseException exception = new SAXParseException(message, locator);
+        if (errorHandler != null) {
+            errorHandler.fatalError(exception);
+        }
+        return exception;
+    }
 
     /**
      * Checks if this parser can receive more tokens.
@@ -334,6 +362,30 @@ public class DTDParser implements TokenConsumer {
      */
     public boolean canReceive(Token token) {
         return state != State.DONE;
+    }
+    
+    /**
+     * Validates a public ID according to XML spec.
+     * Public IDs may only contain: space, CR, LF, letters, digits,
+     * and the punctuation: - ' () + , . / : = ? ; ! * # @ $ _ %
+     * 
+     * @param publicId the public ID to validate
+     * @throws SAXException if the public ID contains illegal characters
+     */
+    private void validatePublicId(String publicId) throws SAXException {
+        for (int i = 0; i < publicId.length(); i++) {
+            char c = publicId.charAt(i);
+            boolean valid = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                           (c >= '0' && c <= '9') || c == ' ' || c == '\r' || c == '\n' ||
+                           c == '-' || c == '\'' || c == '(' || c == ')' || c == '+' ||
+                           c == ',' || c == '.' || c == '/' || c == ':' || c == '=' ||
+                           c == '?' || c == ';' || c == '!' || c == '*' || c == '#' ||
+                           c == '@' || c == '$' || c == '_' || c == '%';
+            if (!valid) {
+                throw new SAXParseException("Illegal character in public ID: '" + c + 
+                    "' (0x" + Integer.toHexString(c) + ")", locator);
+            }
+        }
     }
 
     @Override
@@ -435,12 +487,14 @@ public class DTDParser implements TokenConsumer {
             case SYSTEM:
                 // SYSTEM external ID
                 sawPublicKeyword = false;
+                sawWhitespaceAfterPublicId = false; // Reset for new external ID
                 changeState(State.AFTER_SYSTEM_PUBLIC);
                 break;
 
             case PUBLIC:
                 // PUBLIC external ID
                 sawPublicKeyword = true;
+                sawWhitespaceAfterPublicId = false; // Reset for new external ID
                 changeState(State.AFTER_SYSTEM_PUBLIC);
                 break;
 
@@ -503,7 +557,9 @@ public class DTDParser implements TokenConsumer {
                         doctypeExternalID = new ExternalID();
                     }
                     if (doctypeExternalID.publicId == null) {
-                        doctypeExternalID.publicId = extractString(data);
+                        String publicId = extractString(data);
+                        validatePublicId(publicId);
+                        doctypeExternalID.publicId = publicId;
                         changeState(State.AFTER_PUBLIC_ID);
                     } else {
                         // Second string after PUBLIC
@@ -531,7 +587,8 @@ public class DTDParser implements TokenConsumer {
     private void handleAfterPublicId(Token token, CharBuffer data) throws SAXException {
         switch (token) {
             case S:
-                // Whitespace, ignore
+                // Whitespace after public ID - required before system ID
+                sawWhitespaceAfterPublicId = true;
                 break;
 
             case START_COMMENT:
@@ -542,11 +599,18 @@ public class DTDParser implements TokenConsumer {
 
             case QUOT:
             case APOS:
-                // Quote closing previous string or opening next, ignore
+                // Quote opening next string - must have whitespace first
+                if (!sawWhitespaceAfterPublicId) {
+                    throw new SAXParseException("Expected whitespace between public ID and system ID", locator);
+                }
+                // Opening quote for system ID, ignore
                 break;
 
             case CDATA:
-                // This is the system ID
+                // This is the system ID - must have seen whitespace and quote first
+                if (!sawWhitespaceAfterPublicId) {
+                    throw new SAXParseException("Expected whitespace between public ID and system ID", locator);
+                }
                 if (doctypeExternalID == null) {
                     doctypeExternalID = new ExternalID();
                 }
@@ -671,6 +735,7 @@ public class DTDParser implements TokenConsumer {
                 entityValueBuilder = null;
                 entityValueTextBuilder = null;
                 entityValueQuote = '\0';
+                sawWhitespaceAfterEntityKeyword = false; // Reset whitespace tracking
                 break;
 
             case START_NOTATIONDECL:
@@ -711,6 +776,14 @@ public class DTDParser implements TokenConsumer {
                     "Parameter entity reference in DTD markup not yet supported: %" + refName + ";" +
                     " (only parameter entities in entity values are currently supported)",
                     locator);
+                    
+            case START_XMLDECL:
+                // XML declarations are not allowed in DTD
+                throw new SAXParseException("XML declaration is not allowed in DOCTYPE internal subset", locator);
+                
+            case START_CDATA:
+                // CDATA sections are not allowed in DTD
+                throw new SAXParseException("CDATA sections are not allowed in DOCTYPE internal subset", locator);
 
             default:
                 // Other tokens within declarations, ignore for now
@@ -812,7 +885,8 @@ public class DTDParser implements TokenConsumer {
                 // Inside ( ... ), building content model
                 switch (token) {
                     case S:
-                        // Whitespace in content model is allowed, ignore
+                        // Whitespace in content model - track it for occurrence indicator validation
+                        sawWhitespaceInContentModel = true;
                         break;
                         
                     case NAME:
@@ -832,6 +906,8 @@ public class DTDParser implements TokenConsumer {
                             leaf.occurrence = ElementDeclaration.ContentModel.Occurrence.ONCE;
                             contentModelStack.peek().addChild(leaf);
                         }
+                        // Reset whitespace flag after adding element
+                        sawWhitespaceInContentModel = false;
                         break;
                         
                     case PCDATA:
@@ -840,6 +916,8 @@ public class DTDParser implements TokenConsumer {
                         pcdataLeaf.type = ElementDeclaration.ContentModel.NodeType.PCDATA;
                         pcdataLeaf.occurrence = ElementDeclaration.ContentModel.Occurrence.ONCE;
                         contentModelStack.peek().addChild(pcdataLeaf);
+                        // Reset whitespace flag after adding PCDATA
+                        sawWhitespaceInContentModel = false;
                         break;
                         
                     case OPEN_PAREN:
@@ -855,6 +933,11 @@ public class DTDParser implements TokenConsumer {
                             // Exited the top-level content model
                             ElementDeclaration.ContentModel root = contentModelStack.pop();
                             
+                            // Validate that content model is not empty
+                            if (root.children == null || root.children.isEmpty()) {
+                                throw new SAXParseException("Empty content model () is not allowed in <!ELEMENT", locator);
+                            }
+                            
                             // Set default type if not already set (single element case like "(a)")
                             if (root.type == null) {
                                 // Single child or no separator - treat as sequence
@@ -863,29 +946,33 @@ public class DTDParser implements TokenConsumer {
                             
                             currentElementDecl.contentModel = root;
                             
-                            // Determine content type
+                            // Determine content type (validation happens later in saveElementDeclaration)
                             if (containsPCDATA(root)) {
                                 currentElementDecl.contentType = ElementDeclaration.ContentType.MIXED;
                             } else {
-                                currentElementDecl.contentType = ElementDeclaration.ContentType.ELEMENT;
-                            }
-                            
-                            elementDeclState = ElementDeclState.AFTER_CONTENTSPEC;
-                        } else if (contentModelDepth < 0) {
-                            throw new SAXParseException("Unmatched closing parenthesis in &lt;!ELEMENT content model", locator);
-                        } else {
-                            // Finished a nested group - pop it and add to parent
-                            ElementDeclaration.ContentModel completed = contentModelStack.pop();
-                            
-                            // Set default type if not already set (single element case)
-                            if (completed.type == null) {
-                                completed.type = ElementDeclaration.ContentModel.NodeType.SEQUENCE;
-                            }
-                            
-                            contentModelStack.peek().addChild(completed);
+                            currentElementDecl.contentType = ElementDeclaration.ContentType.ELEMENT;
                         }
-                        break;
                         
+                        // Reset whitespace flag after closing paren
+                        sawWhitespaceInContentModel = false;
+                        elementDeclState = ElementDeclState.AFTER_CONTENTSPEC;
+                    } else if (contentModelDepth < 0) {
+                        throw new SAXParseException("Unmatched closing parenthesis in &lt;!ELEMENT content model", locator);
+                    } else {
+                        // Finished a nested group - pop it and add to parent
+                        ElementDeclaration.ContentModel completed = contentModelStack.pop();
+                        
+                        // Set default type if not already set (single element case)
+                        if (completed.type == null) {
+                            completed.type = ElementDeclaration.ContentModel.NodeType.SEQUENCE;
+                        }
+                        
+                        contentModelStack.peek().addChild(completed);
+                        // Reset whitespace flag after closing paren
+                        sawWhitespaceInContentModel = false;
+                    }
+                    break;
+
                     case PIPE:
                         // Set group type to CHOICE if not already set
                         ElementDeclaration.ContentModel current = contentModelStack.peek();
@@ -909,10 +996,23 @@ public class DTDParser implements TokenConsumer {
                     case QUERY:
                     case PLUS:
                     case STAR:
+                        // Occurrence indicator must immediately follow element or ) with no whitespace
+                        if (sawWhitespaceInContentModel) {
+                            throw new SAXParseException(
+                                "Whitespace not allowed before occurrence indicator in content model", locator);
+                        }
+                        
                         // Apply occurrence indicator to last child added
                         ElementDeclaration.ContentModel parent = contentModelStack.peek();
                         if (parent.children != null && !parent.children.isEmpty()) {
                             ElementDeclaration.ContentModel lastChild = parent.children.get(parent.children.size() - 1);
+                            
+                            // Check for double occurrence indicator (e.g., *?)
+                            if (lastChild.occurrence != ElementDeclaration.ContentModel.Occurrence.ONCE) {
+                                throw new SAXParseException(
+                                    "Multiple occurrence indicators not allowed in content model", locator);
+                            }
+                            
                             lastChild.occurrence = token == Token.QUERY ? ElementDeclaration.ContentModel.Occurrence.OPTIONAL :
                                                   token == Token.PLUS ? ElementDeclaration.ContentModel.Occurrence.ONE_OR_MORE :
                                                   ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE;
@@ -993,6 +1093,94 @@ public class DTDParser implements TokenConsumer {
     }
     
     /**
+     * Validates mixed content constraints per XML spec:
+     * 1. If content model contains #PCDATA, it must be a CHOICE group at top level (or just #PCDATA alone)
+     * 2. #PCDATA must be first in the choice
+     * 3. The occurrence indicator on #PCDATA must be * or none (not + or ?)
+     * 4. No nested groups allowed in mixed content
+     */
+    private void validateMixedContent(ElementDeclaration.ContentModel model) throws SAXException {
+        // Special case: (#PCDATA) alone is valid - could be SEQUENCE with single PCDATA child
+        if (model.children != null && model.children.size() == 1) {
+            ElementDeclaration.ContentModel child = model.children.get(0);
+            if (child.type == ElementDeclaration.ContentModel.NodeType.PCDATA) {
+                // This is (#PCDATA) which is valid
+                // Check occurrence on the PCDATA itself
+                if (child.occurrence != ElementDeclaration.ContentModel.Occurrence.ONCE &&
+                    child.occurrence != ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE) {
+                    throw new SAXParseException(
+                        "Mixed content with #PCDATA can only have * or no occurrence indicator", locator);
+                }
+                // Check occurrence on the group
+                if (model.occurrence != ElementDeclaration.ContentModel.Occurrence.ONCE &&
+                    model.occurrence != ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE) {
+                    throw new SAXParseException(
+                        "Mixed content can only have * or no occurrence indicator", locator);
+                }
+                return; // Valid
+            }
+            // If single child that is a group, check for unnecessary nesting
+            if (child.type == ElementDeclaration.ContentModel.NodeType.CHOICE ||
+                child.type == ElementDeclaration.ContentModel.NodeType.SEQUENCE) {
+                if (child.children != null && child.children.size() == 1 &&
+                    child.children.get(0).type == ElementDeclaration.ContentModel.NodeType.PCDATA) {
+                    // This is ((#PCDATA)) - unnecessary nesting
+                    throw new SAXParseException(
+                        "Unnecessary nested parentheses in mixed content", locator);
+                }
+            }
+        }
+        
+        // If the model itself is just PCDATA (not wrapped), check occurrence
+        if (model.type == ElementDeclaration.ContentModel.NodeType.PCDATA) {
+            if (model.occurrence != ElementDeclaration.ContentModel.Occurrence.ONCE &&
+                model.occurrence != ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE) {
+                throw new SAXParseException(
+                    "Mixed content with #PCDATA can only have * or no occurrence indicator", locator);
+            }
+            return; // Valid
+        }
+        
+        // Mixed content with multiple elements must be a CHOICE at top level
+        if (model.type != ElementDeclaration.ContentModel.NodeType.CHOICE) {
+            // Only error if there are multiple children or if first child is not PCDATA alone
+            if (model.children != null && model.children.size() > 1) {
+                throw new SAXParseException(
+                    "Mixed content must use | (choice), not , (sequence)", locator);
+            }
+        }
+        
+        // If CHOICE, #PCDATA must be first child
+        if (model.type == ElementDeclaration.ContentModel.NodeType.CHOICE) {
+            if (model.children != null && !model.children.isEmpty()) {
+                ElementDeclaration.ContentModel first = model.children.get(0);
+                if (first.type != ElementDeclaration.ContentModel.NodeType.PCDATA) {
+                    throw new SAXParseException(
+                        "#PCDATA must be first in mixed content choice", locator);
+                }
+            }
+            
+            // Check for nested groups (not allowed in mixed content)
+            if (model.children != null) {
+                for (ElementDeclaration.ContentModel child : model.children) {
+                    if (child.type == ElementDeclaration.ContentModel.NodeType.CHOICE ||
+                        child.type == ElementDeclaration.ContentModel.NodeType.SEQUENCE) {
+                        throw new SAXParseException(
+                            "Nested groups not allowed in mixed content", locator);
+                    }
+                }
+            }
+            
+            // Occurrence indicator on choice must be * or none
+            if (model.occurrence != ElementDeclaration.ContentModel.Occurrence.ONCE &&
+                model.occurrence != ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE) {
+                throw new SAXParseException(
+                    "Mixed content can only have * or no occurrence indicator", locator);
+            }
+        }
+    }
+    
+    /**
      * Helper method to save the current element declaration.
      * Called when the &lt;!ELEMENT declaration is complete (GT encountered).
      */
@@ -1003,6 +1191,12 @@ public class DTDParser implements TokenConsumer {
         
         if (currentElementDecl.contentType == null) {
             throw new SAXParseException("No content specification in &lt;!ELEMENT declaration", locator);
+        }
+        
+        // Validate mixed content constraints (after occurrence indicators have been applied)
+        if (currentElementDecl.contentType == ElementDeclaration.ContentType.MIXED &&
+            currentElementDecl.contentModel != null) {
+            validateMixedContent(currentElementDecl.contentModel);
         }
         
         // Add to map with interned key
@@ -1073,6 +1267,7 @@ public class DTDParser implements TokenConsumer {
                 // Must see whitespace after attribute name
                 switch (token) {
                     case S:
+                        sawWhitespaceAfterAttrType = false; // Reset for new attribute
                         attListDeclState = AttListDeclState.EXPECT_ATTR_TYPE;
                         break;
                         
@@ -1134,12 +1329,6 @@ public class DTDParser implements TokenConsumer {
                         attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
                         break;
                         
-                    case NAME:
-                        // Enumeration or NOTATION type - treat as NAME for now
-                        currentAttributeDecl.type = extractString(data);
-                        attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
-                        break;
-                        
                     case OPEN_PAREN:
                         // Enumeration starting - collect values
                         currentAttributeDecl.type = "ENUMERATION";
@@ -1148,7 +1337,8 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXParseException("Expected attribute type in &lt;!ATTLIST, got: " + token, locator);
+                        throw new SAXParseException("Invalid attribute type in <!ATTLIST: " + 
+                            (data != null ? extractString(data) : token.toString()), locator);
                 }
                 break;
                 
@@ -1157,6 +1347,7 @@ public class DTDParser implements TokenConsumer {
                 switch (token) {
                     case S:
                         // Whitespace after type means we're done with enumeration (if any)
+                        sawWhitespaceAfterAttrType = true;
                         if (enumerationBuilder != null) {
                             currentAttributeDecl.enumeration = enumerationBuilder;
                             enumerationBuilder = null;
@@ -1166,6 +1357,10 @@ public class DTDParser implements TokenConsumer {
                         
                     case OPEN_PAREN:
                         // Start of enumeration (for NOTATION or after OPEN_PAREN in EXPECT_ATTR_TYPE)
+                        // For NOTATION type, require whitespace before enumeration
+                        if ("NOTATION".equals(currentAttributeDecl.type) && !sawWhitespaceAfterAttrType) {
+                            throw new SAXParseException("Expected whitespace after NOTATION keyword in <!ATTLIST", locator);
+                        }
                         if (enumerationBuilder == null) {
                             enumerationBuilder = new ArrayList<>();
                         }
@@ -1513,7 +1708,9 @@ public class DTDParser implements TokenConsumer {
                     case CDATA:
                     case NAME:
                         // Public ID (tokenizer may emit NAME or CDATA in DOCTYPE context)
-                        currentNotationExternalID.publicId = extractString(data);
+                        String publicId = extractString(data);
+                        validatePublicId(publicId);
+                        currentNotationExternalID.publicId = publicId;
                         notationDeclState = NotationDeclState.AFTER_PUBLIC_ID;
                         break;
                         
@@ -1719,15 +1916,24 @@ public class DTDParser implements TokenConsumer {
                 // After <!ENTITY, expecting optional % or entity name
                 switch (token) {
                     case S:
-                        // Skip whitespace
+                        // Whitespace after <!ENTITY keyword is required
+                        sawWhitespaceAfterEntityKeyword = true;
                         break;
                     case PERCENT:
-                        // Parameter entity
+                        // Parameter entity - must have whitespace before %
+                        if (!sawWhitespaceAfterEntityKeyword) {
+                            throw new SAXParseException(
+                                "Expected whitespace after <!ENTITY keyword", locator);
+                        }
                         currentEntity.isParameter = true;
                         entityDeclState = EntityDeclState.EXPECT_NAME;
                         break;
                     case NAME:
-                        // General entity name
+                        // General entity name - must have whitespace before name
+                        if (!sawWhitespaceAfterEntityKeyword) {
+                            throw new SAXParseException(
+                                "Expected whitespace after <!ENTITY keyword", locator);
+                        }
                         currentEntity.isParameter = false;
                         currentEntity.name = extractString(data);
                         entityDeclState = EntityDeclState.AFTER_NAME;
@@ -1778,11 +1984,13 @@ public class DTDParser implements TokenConsumer {
                     case SYSTEM:
                         // External entity with system ID
                         currentEntity.externalID = new ExternalID();
+                        sawWhitespaceAfterSystemId = false; // Reset for new external ID
                         entityDeclState = EntityDeclState.EXPECT_SYSTEM_ID;
                         break;
                     case PUBLIC:
                         // External entity with public ID
                         currentEntity.externalID = new ExternalID();
+                        sawWhitespaceAfterEntityPublicId = false; // Reset for new external ID
                         entityDeclState = EntityDeclState.EXPECT_PUBLIC_ID;
                         break;
                     default:
@@ -1877,15 +2085,13 @@ public class DTDParser implements TokenConsumer {
                         } else {
                             currentEntity.externalID.systemId += extractString(data);
                         }
+                        // Transition to AFTER_EXTERNAL_ID after system ID is read
+                        entityDeclState = EntityDeclState.AFTER_EXTERNAL_ID;
                         break;
                     case GT:
                         // End of entity declaration (external parsed entity)
                         saveCurrentEntity();
                         state = savedState;
-                        break;
-                    case NDATA:
-                        // Unparsed entity
-                        entityDeclState = EntityDeclState.EXPECT_NDATA_NAME;
                         break;
                     default:
                         throw new SAXParseException("Expected quoted system ID after SYSTEM in <!ENTITY, got: " + token, locator);
@@ -1910,6 +2116,8 @@ public class DTDParser implements TokenConsumer {
                         } else {
                             currentEntity.externalID.publicId += extractString(data);
                         }
+                        // Validate public ID when complete (on transition to AFTER_PUBLIC_ID)
+                        validatePublicId(currentEntity.externalID.publicId);
                         entityDeclState = EntityDeclState.AFTER_PUBLIC_ID;
                         break;
                     default:
@@ -1921,15 +2129,23 @@ public class DTDParser implements TokenConsumer {
                 // After public ID, expecting system ID
                 switch (token) {
                     case S:
-                        // Skip whitespace
+                        // Whitespace after public ID - required before system ID
+                        sawWhitespaceAfterEntityPublicId = true;
                         break;
                     case QUOT:
                     case APOS:
-                        // Opening or closing quote - skip
+                        // Quote - must have whitespace first
+                        if (!sawWhitespaceAfterEntityPublicId) {
+                            throw new SAXParseException("Expected whitespace between public ID and system ID in <!ENTITY", locator);
+                        }
+                        // Opening quote for system ID - skip
                         break;
                     case CDATA:
                     case NAME:
-                        // System ID following public ID
+                        // System ID following public ID - must have whitespace first
+                        if (!sawWhitespaceAfterEntityPublicId) {
+                            throw new SAXParseException("Expected whitespace between public ID and system ID in <!ENTITY", locator);
+                        }
                         if (currentEntity.externalID.systemId == null) {
                             currentEntity.externalID.systemId = extractString(data);
                         } else {
@@ -1946,7 +2162,8 @@ public class DTDParser implements TokenConsumer {
                 // After external ID, expecting NDATA or >
                 switch (token) {
                     case S:
-                        // Skip whitespace
+                        // Whitespace after external ID - required before NDATA
+                        sawWhitespaceAfterSystemId = true;
                         break;
                     case QUOT:
                     case APOS:
@@ -1963,7 +2180,14 @@ public class DTDParser implements TokenConsumer {
                         state = savedState;
                         break;
                     case NDATA:
-                        // Unparsed entity
+                        // Unparsed entity - must have whitespace first
+                        if (!sawWhitespaceAfterSystemId) {
+                            throw new SAXParseException("Expected whitespace before NDATA in <!ENTITY", locator);
+                        }
+                        // Parameter entities cannot have NDATA (they are always parsed)
+                        if (currentEntity.isParameter) {
+                            throw new SAXParseException("Parameter entities cannot have NDATA annotation", locator);
+                        }
                         entityDeclState = EntityDeclState.EXPECT_NDATA_NAME;
                         break;
                     default:
