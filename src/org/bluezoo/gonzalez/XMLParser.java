@@ -34,6 +34,7 @@ import org.xml.sax.ErrorHandler;
 import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -468,7 +469,7 @@ public class XMLParser implements TokenConsumer {
         }
         
         if (entityResolutionStack.contains(resolvedSystemId)) {
-            throw new SAXException("Recursive entity reference detected: " + resolvedSystemId);
+            throw new SAXParseException("Recursive entity reference detected: " + resolvedSystemId, locator);
         }
         
         // Add to stack
@@ -486,7 +487,7 @@ public class XMLParser implements TokenConsumer {
             InputStream inputStream = source.getByteStream();
             if (inputStream == null) {
                 // TODO: Handle Reader (character stream)
-                throw new SAXException("Entity InputSource must have a byte stream");
+                throw new SAXParseException("Entity InputSource must have a byte stream", locator);
             }
             
             // Feed entity data to tokenizer (same logic as Parser.parse())
@@ -687,7 +688,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Unexpected token in prolog: " + token);
+                throw new SAXParseException("Unexpected token in prolog: " + token, locator);
         }
     }
     
@@ -700,7 +701,7 @@ public class XMLParser implements TokenConsumer {
             elementDepth++;
             state = State.ELEMENT_NAME;
         } else {
-            throw new SAXException("Expected element name after '<', got: " + token);
+            throw new SAXParseException("Expected element name after '<', got: " + token, locator);
         }
     }
     
@@ -762,7 +763,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Unexpected token after element name: " + token);
+                throw new SAXParseException("Unexpected token after element name: " + token, locator);
         }
     }
     
@@ -811,7 +812,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Unexpected token in element attributes: " + token);
+                throw new SAXParseException("Unexpected token in element attributes: " + token, locator);
         }
     }
     
@@ -830,7 +831,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Expected '=' after attribute name, got: " + token);
+                throw new SAXParseException("Expected '=' after attribute name, got: " + token, locator);
         }
     }
     
@@ -852,7 +853,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Expected quote after '=', got: " + token);
+                throw new SAXParseException("Expected quote after '=', got: " + token, locator);
         }
     }
     
@@ -884,15 +885,16 @@ public class XMLParser implements TokenConsumer {
             // Whitespace in attribute value
             currentAttributeValue.append(extractString(data));
         } else if (token == Token.ENTITYREF) {
-            // Entity reference in attribute value
+            // Predefined entity or character reference in attribute value (already expanded)
             currentAttributeValue.append(extractString(data));
-        } else if (token == Token.AMP) {
-            // General entity reference: &name; 
+        } else if (token == Token.GENERALENTITYREF) {
+            // General entity reference: &name;
+            String entityName = extractString(data);
             // TODO: Look up entity in DTD and resolve (may be external)
             // For now, this is an error
-            throw new SAXException("General entity references in attribute values not yet supported");
+            throw new SAXParseException("General entity reference '&" + entityName + ";' in attribute value not yet supported", locator);
         } else {
-            throw new SAXException("Unexpected token in attribute value: " + token);
+            throw new SAXParseException("Unexpected token in attribute value: " + token, locator);
         }
     }
     
@@ -910,12 +912,19 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             case ENTITYREF:
-                // Entity reference
+                // Predefined entity or character reference (already expanded)
                 if (contentHandler != null) {
                     String text = extractString(data);
                     contentHandler.characters(text.toCharArray(), 0, text.length());
                 }
                 break;
+                
+            case GENERALENTITYREF:
+                // General entity reference: &name;
+                String entityName = extractString(data);
+                // TODO: Look up entity in DTD and resolve (may be external)
+                // For now, this is an error
+                throw new SAXParseException("General entity reference '&" + entityName + ";' in content not yet supported", locator);
                 
             case LT:
                 // Start of nested element
@@ -957,7 +966,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Unexpected token in element content: " + token);
+                throw new SAXParseException("Unexpected token in element content: " + token, locator);
         }
     }
     
@@ -969,7 +978,7 @@ public class XMLParser implements TokenConsumer {
             currentElementName = extractString(data);
             state = State.END_ELEMENT_NAME;
         } else {
-            throw new SAXException("Expected element name after '</', got: " + token);
+            throw new SAXParseException("Expected element name after '</', got: " + token, locator);
         }
     }
     
@@ -999,7 +1008,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Expected '>' after end element name, got: " + token);
+                throw new SAXParseException("Expected '>' after end element name, got: " + token, locator);
         }
     }
     
@@ -1011,7 +1020,7 @@ public class XMLParser implements TokenConsumer {
             currentPITarget = extractString(data);
             state = State.PI_CONTENT;
         } else {
-            throw new SAXException("Expected PI target after '<?', got: " + token);
+            throw new SAXParseException("Expected PI target after '<?', got: " + token, locator);
         }
     }
     
@@ -1140,7 +1149,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXException("Unexpected content after root element: " + token);
+                throw new SAXParseException("Unexpected content after root element: " + token, locator);
         }
     }
     

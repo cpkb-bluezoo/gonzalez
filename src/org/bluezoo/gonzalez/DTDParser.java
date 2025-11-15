@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez;
 import java.io.IOException;
 import java.nio.CharBuffer;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
@@ -33,6 +34,7 @@ import org.xml.sax.DTDHandler;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -68,6 +70,8 @@ public class DTDParser implements TokenConsumer {
         AFTER_INTERNAL_SUBSET,  // Read ], expecting GT
         IN_ELEMENTDECL,         // Parsing &lt;!ELEMENT declaration
         IN_ATTLISTDECL,         // Parsing &lt;!ATTLIST declaration
+        IN_ENTITYDECL,          // Parsing &lt;!ENTITY declaration
+        IN_NOTATIONDECL,        // Parsing &lt;!NOTATION declaration
         IN_COMMENT,             // Parsing comment (<!-- ... -->)
         IN_PI,                  // Parsing processing instruction (<? ... ?>)
         DONE                    // Read final GT, done processing
@@ -112,6 +116,49 @@ public class DTDParser implements TokenConsumer {
     
     private AttListDeclState attListDeclState;
     
+    /**
+     * Sub-states for parsing &lt;!NOTATION declarations.
+     * Tracks position within the notation declaration to enforce well-formedness.
+     */
+    private enum NotationDeclState {
+        EXPECT_NAME,           // After &lt;!NOTATION, expecting notation name
+        AFTER_NAME,            // After notation name, expecting whitespace
+        EXPECT_EXTERNAL_ID,    // After whitespace, expecting SYSTEM or PUBLIC
+        EXPECT_SYSTEM_ID,      // After SYSTEM, expecting quoted system ID
+        EXPECT_PUBLIC_ID,      // After PUBLIC, expecting quoted public ID
+        AFTER_PUBLIC_ID,       // After public ID, expecting optional system ID or &gt;
+        EXPECT_GT              // Expecting &gt; to close declaration
+    }
+    
+    private NotationDeclState notationDeclState;
+    private String currentNotationName;
+    private ExternalID currentNotationExternalID;
+    private boolean sawPublicInNotation;
+    
+    /**
+     * Sub-states for parsing &lt;!ENTITY declarations.
+     */
+    private enum EntityDeclState {
+        EXPECT_PERCENT_OR_NAME,  // After &lt;!ENTITY, expecting optional % or entity name
+        EXPECT_NAME,             // After %, expecting parameter entity name
+        AFTER_NAME,              // After entity name, expecting whitespace
+        EXPECT_VALUE_OR_ID,      // After whitespace, expecting quoted value, SYSTEM, or PUBLIC
+        IN_ENTITY_VALUE,         // Accumulating entity value between quotes
+        AFTER_ENTITY_VALUE,      // After closing quote of entity value
+        EXPECT_SYSTEM_ID,        // After SYSTEM, expecting quoted system ID
+        EXPECT_PUBLIC_ID,        // After PUBLIC, expecting quoted public ID
+        AFTER_PUBLIC_ID,         // After public ID, expecting system ID
+        AFTER_EXTERNAL_ID,       // After external ID, expecting NDATA or &gt;
+        EXPECT_NDATA_NAME,       // After NDATA, expecting notation name
+        EXPECT_GT                // Expecting &gt; to close declaration
+    }
+    
+    private EntityDeclState entityDeclState;
+    private EntityDeclaration currentEntity;
+    private List<Object> entityValueBuilder;  // Accumulates String and GeneralEntityReference
+    private StringBuilder entityValueTextBuilder;  // Accumulates current text segment
+    private char entityValueQuote;           // The opening quote character (' or ")
+    
     private Locator locator;
     private ContentHandler contentHandler;
     private DTDHandler dtdHandler;
@@ -129,14 +176,9 @@ public class DTDParser implements TokenConsumer {
     private String doctypeName;
 
     /**
-     * The public identifier for the external DTD subset.
+     * External ID for the external DTD subset (if present).
      */
-    private String publicId;
-
-    /**
-     * The system identifier for the external DTD subset.
-     */
-    private String systemId;
+    private ExternalID doctypeExternalID;
     
     /**
      * Track whether we saw SYSTEM or PUBLIC keyword.
@@ -158,6 +200,26 @@ public class DTDParser implements TokenConsumer {
      * All keys are interned strings for fast comparison.
      */
     private Map<String, Map<String, AttributeDeclaration>> attributeDecls;
+    
+    /**
+     * Entity declarations: entity name → EntityDeclaration.
+     * Stores general entities (referenced as &amp;name;).
+     * Keys are interned strings.
+     */
+    private Map<String, EntityDeclaration> entities;
+    
+    /**
+     * Parameter entity declarations: entity name → EntityDeclaration.
+     * Stores parameter entities (referenced as %name; in DTD).
+     * Keys are interned strings.
+     */
+    private Map<String, EntityDeclaration> parameterEntities;
+    
+    /**
+     * Notation declarations: notation name → ExternalID.
+     * Keys are interned strings.
+     */
+    private Map<String, ExternalID> notations;
 
     /**
      * Depth tracking for nested structures (e.g., conditional sections).
@@ -202,6 +264,16 @@ public class DTDParser implements TokenConsumer {
      */
     private String piTarget;
     private StringBuilder piDataBuilder;
+    
+    /**
+     * Current notation declaration being parsed.
+     * 
+     * <p>currentNotationName: The notation name
+     * <p>currentNotationExternalID: The external ID being built (SYSTEM or PUBLIC)
+     * <p>sawPublicInNotation: Track if we saw PUBLIC keyword (vs SYSTEM)
+     * 
+     * <p>When GT is encountered, the notation is added to the notations map.
+     */
 
     /**
      * Constructs a new DTDParser.
@@ -304,6 +376,14 @@ public class DTDParser implements TokenConsumer {
                 handleInAttlistDecl(token, data);
                 break;
                 
+            case IN_ENTITYDECL:
+                handleInEntityDecl(token, data);
+                break;
+            
+            case IN_NOTATIONDECL:
+                handleInNotationDecl(token, data);
+                break;
+                
             case IN_COMMENT:
                 handleInComment(token, data);
                 break;
@@ -330,7 +410,7 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             default:
-                throw new SAXException("Expected name after &lt;!DOCTYPE, got: " + token);
+                throw new SAXParseException("Expected name after &lt;!DOCTYPE, got: " + token, locator);
         }
     }
 
@@ -367,6 +447,8 @@ public class DTDParser implements TokenConsumer {
                 nestingDepth = 1;
                 // Report start of DTD
                 if (lexicalHandler != null) {
+                    String publicId = doctypeExternalID != null ? doctypeExternalID.publicId : null;
+                    String systemId = doctypeExternalID != null ? doctypeExternalID.systemId : null;
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
                 }
                 break;
@@ -376,13 +458,15 @@ public class DTDParser implements TokenConsumer {
                 changeState(State.DONE);
                 // Report start and end of DTD
                 if (lexicalHandler != null) {
+                    String publicId = doctypeExternalID != null ? doctypeExternalID.publicId : null;
+                    String systemId = doctypeExternalID != null ? doctypeExternalID.systemId : null;
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
                     lexicalHandler.endDTD();
                 }
                 break;
 
             default:
-                throw new SAXException("Unexpected token after DOCTYPE name: " + token);
+                throw new SAXParseException("Unexpected token after DOCTYPE name: " + token, locator);
         }
     }
 
@@ -410,23 +494,29 @@ public class DTDParser implements TokenConsumer {
                 // This is the ID string
                 if (sawPublicKeyword) {
                     // PUBLIC keyword - first string is publicId, second is systemId
-                    if (publicId == null) {
-                        publicId = extractString(data);
+                    if (doctypeExternalID == null) {
+                        doctypeExternalID = new ExternalID();
+                    }
+                    if (doctypeExternalID.publicId == null) {
+                        doctypeExternalID.publicId = extractString(data);
                         changeState(State.AFTER_PUBLIC_ID);
                     } else {
                         // Second string after PUBLIC
-                        systemId = extractString(data);
+                        doctypeExternalID.systemId = extractString(data);
                         changeState(State.AFTER_EXTERNAL_ID);
                     }
                 } else {
                     // SYSTEM keyword - only one string, and it's the systemId
-                    systemId = extractString(data);
+                    if (doctypeExternalID == null) {
+                        doctypeExternalID = new ExternalID();
+                    }
+                    doctypeExternalID.systemId = extractString(data);
                     changeState(State.AFTER_EXTERNAL_ID);
                 }
                 break;
 
             default:
-                throw new SAXException("Expected quoted string for external ID, got: " + token);
+                throw new SAXParseException("Expected quoted string for external ID, got: " + token, locator);
         }
     }
 
@@ -452,12 +542,15 @@ public class DTDParser implements TokenConsumer {
 
             case CDATA:
                 // This is the system ID
-                systemId = extractString(data);
+                if (doctypeExternalID == null) {
+                    doctypeExternalID = new ExternalID();
+                }
+                doctypeExternalID.systemId = extractString(data);
                 changeState(State.AFTER_EXTERNAL_ID);
                 break;
 
             default:
-                throw new SAXException("Expected system ID after public ID, got: " + token);
+                throw new SAXParseException("Expected system ID after public ID, got: " + token, locator);
         }
     }
 
@@ -485,6 +578,8 @@ public class DTDParser implements TokenConsumer {
                 // Internal subset starts (after external ID)
                 // Report start of DTD
                 if (lexicalHandler != null) {
+                    String publicId = doctypeExternalID != null ? doctypeExternalID.publicId : null;
+                    String systemId = doctypeExternalID != null ? doctypeExternalID.systemId : null;
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
                 }
                 // Enter internal subset state FIRST (so external DTD tokens are processed correctly)
@@ -499,6 +594,8 @@ public class DTDParser implements TokenConsumer {
                 // End of DOCTYPE (external ID, no internal subset)
                 // Report start of DTD
                 if (lexicalHandler != null) {
+                    String publicId = doctypeExternalID != null ? doctypeExternalID.publicId : null;
+                    String systemId = doctypeExternalID != null ? doctypeExternalID.systemId : null;
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
                 }
                 // Enter internal subset state (even though there's no [ ... ])
@@ -516,7 +613,7 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             default:
-                throw new SAXException("Unexpected token after external ID: " + token);
+                throw new SAXParseException("Unexpected token after external ID: " + token, locator);
         }
     }
 
@@ -559,11 +656,24 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             case START_ENTITYDECL:
-                // TODO: Handle entity declarations
+                // Start parsing entity declaration - save current state
+                savedState = state;
+                state = State.IN_ENTITYDECL;
+                entityDeclState = EntityDeclState.EXPECT_PERCENT_OR_NAME;
+                currentEntity = new EntityDeclaration();
+                entityValueBuilder = null;
+                entityValueTextBuilder = null;
+                entityValueQuote = '\0';
                 break;
 
             case START_NOTATIONDECL:
-                // TODO: Handle notation declarations
+                // Start parsing notation declaration - save current state
+                savedState = state;
+                state = State.IN_NOTATIONDECL;
+                notationDeclState = NotationDeclState.EXPECT_NAME;
+                currentNotationName = null;
+                currentNotationExternalID = new ExternalID();
+                sawPublicInNotation = false;
                 break;
 
             case START_COMMENT:
@@ -614,7 +724,7 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             default:
-                throw new SAXException("Expected GT after internal subset, got: " + token);
+                throw new SAXParseException("Expected GT after internal subset, got: " + token, locator);
         }
     }
 
@@ -633,7 +743,7 @@ public class DTDParser implements TokenConsumer {
                 } else if (token == Token.S) {
                     // Skip whitespace before element name
                 } else {
-                    throw new SAXException("Expected element name after &lt;!ELEMENT, got: " + token);
+                    throw new SAXParseException("Expected element name after &lt;!ELEMENT, got: " + token, locator);
                 }
                 break;
                 
@@ -642,7 +752,7 @@ public class DTDParser implements TokenConsumer {
                 if (token == Token.S) {
                     elementDeclState = ElementDeclState.EXPECT_CONTENTSPEC;
                 } else {
-                    throw new SAXException("Expected whitespace after element name in &lt;!ELEMENT, got: " + token);
+                    throw new SAXParseException("Expected whitespace after element name in &lt;!ELEMENT, got: " + token, locator);
                 }
                 break;
                 
@@ -673,7 +783,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected content specification (EMPTY, ANY, or '(') in &lt;!ELEMENT, got: " + token);
+                        throw new SAXParseException("Expected content specification (EMPTY, ANY, or '(') in &lt;!ELEMENT, got: " + token, locator);
                 }
                 break;
                 
@@ -734,7 +844,7 @@ public class DTDParser implements TokenConsumer {
                             
                             elementDeclState = ElementDeclState.AFTER_CONTENTSPEC;
                         } else if (contentModelDepth < 0) {
-                            throw new SAXException("Unmatched closing parenthesis in &lt;!ELEMENT content model");
+                            throw new SAXParseException("Unmatched closing parenthesis in &lt;!ELEMENT content model", locator);
                         } else {
                             // Finished a nested group - pop it and add to parent
                             ElementDeclaration.ContentModel completed = contentModelStack.pop();
@@ -748,7 +858,7 @@ public class DTDParser implements TokenConsumer {
                         if (current.type == null) {
                             current.type = ElementDeclaration.ContentModel.NodeType.CHOICE;
                         } else if (current.type != ElementDeclaration.ContentModel.NodeType.CHOICE) {
-                            throw new SAXException("Cannot mix ',' and '|' at same level in content model");
+                            throw new SAXParseException("Cannot mix ',' and '|' at same level in content model", locator);
                         }
                         break;
                         
@@ -758,7 +868,7 @@ public class DTDParser implements TokenConsumer {
                         if (currentSeq.type == null) {
                             currentSeq.type = ElementDeclaration.ContentModel.NodeType.SEQUENCE;
                         } else if (currentSeq.type != ElementDeclaration.ContentModel.NodeType.SEQUENCE) {
-                            throw new SAXException("Cannot mix ',' and '|' at same level in content model");
+                            throw new SAXParseException("Cannot mix ',' and '|' at same level in content model", locator);
                         }
                         break;
                         
@@ -781,7 +891,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Unexpected token in &lt;!ELEMENT content model: " + token);
+                        throw new SAXParseException("Unexpected token in &lt;!ELEMENT content model: " + token, locator);
                 }
                 break;
                 
@@ -813,7 +923,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected '&gt;' to close &lt;!ELEMENT declaration, got: " + token);
+                        throw new SAXParseException("Expected '&gt;' to close &lt;!ELEMENT declaration, got: " + token, locator);
                 }
                 break;
                 
@@ -825,7 +935,7 @@ public class DTDParser implements TokenConsumer {
                 } else if (token == Token.S) {
                     // Allow extra whitespace
                 } else {
-                    throw new SAXException("Expected '&gt;' to close &lt;!ELEMENT declaration, got: " + token);
+                    throw new SAXParseException("Expected '&gt;' to close &lt;!ELEMENT declaration, got: " + token, locator);
                 }
                 break;
         }
@@ -854,11 +964,11 @@ public class DTDParser implements TokenConsumer {
      */
     private void saveElementDeclaration() throws SAXException {
         if (currentElementDecl.name == null) {
-            throw new SAXException("No element name in &lt;!ELEMENT declaration");
+            throw new SAXParseException("No element name in &lt;!ELEMENT declaration", locator);
         }
         
         if (currentElementDecl.contentType == null) {
-            throw new SAXException("No content specification in &lt;!ELEMENT declaration");
+            throw new SAXParseException("No content specification in &lt;!ELEMENT declaration", locator);
         }
         
         // Add to map with interned key
@@ -884,7 +994,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected element name after &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected element name after &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -896,7 +1006,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected whitespace after element name in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected whitespace after element name in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -921,7 +1031,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected attribute name or '&gt;' in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected attribute name or '&gt;' in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -933,7 +1043,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected whitespace after attribute name in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected whitespace after attribute name in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1003,7 +1113,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected attribute type in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected attribute type in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1026,7 +1136,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected whitespace after attribute type in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected whitespace after attribute type in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1078,7 +1188,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected default declaration (#REQUIRED, #IMPLIED, #FIXED, or value) in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected default declaration (#REQUIRED, #IMPLIED, #FIXED, or value) in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1124,12 +1234,12 @@ public class DTDParser implements TokenConsumer {
                                 break;
                                 
                             default:
-                                throw new SAXException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got NAME: " + nameStr);
+                                throw new SAXParseException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got NAME: " + nameStr, locator);
                         }
                         break;
                         
                     default:
-                        throw new SAXException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1141,7 +1251,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected whitespace after #FIXED in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected whitespace after #FIXED in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1168,7 +1278,7 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected quoted value after #FIXED in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected quoted value after #FIXED in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1190,12 +1300,192 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     default:
-                        throw new SAXException("Expected closing quote after default value in &lt;!ATTLIST, got: " + token);
+                        throw new SAXParseException("Expected closing quote after default value in &lt;!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
             default:
-                throw new SAXException("Invalid ATTLIST parser state: " + attListDeclState);
+                throw new SAXParseException("Invalid ATTLIST parser state: " + attListDeclState, locator);
+        }
+    }
+    
+    /**
+     * Handles tokens within a &lt;!NOTATION declaration.
+     * Parses notation name and external ID (SYSTEM or PUBLIC).
+     * 
+     * <p>Grammar: &lt;!NOTATION Name S (ExternalID | PublicID) S? &gt;
+     * <p>ExternalID: SYSTEM S SystemLiteral | PUBLIC S PubidLiteral S SystemLiteral
+     * <p>PublicID: PUBLIC S PubidLiteral
+     */
+    private void handleInNotationDecl(Token token, CharBuffer data) throws SAXException {
+        switch (notationDeclState) {
+            case EXPECT_NAME:
+                // After &lt;!NOTATION, expecting notation name
+                switch (token) {
+                    case S:
+                        // Skip whitespace before name
+                        break;
+                        
+                    case NAME:
+                        // Notation name
+                        currentNotationName = extractString(data);
+                        notationDeclState = NotationDeclState.AFTER_NAME;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected notation name after &lt;!NOTATION, got: " + token, locator);
+                }
+                break;
+                
+            case AFTER_NAME:
+                // After notation name, expecting whitespace
+                switch (token) {
+                    case S:
+                        // Whitespace between name and external ID
+                        notationDeclState = NotationDeclState.EXPECT_EXTERNAL_ID;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected whitespace after notation name, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_EXTERNAL_ID:
+                // After whitespace, expecting SYSTEM or PUBLIC
+                switch (token) {
+                    case S:
+                        // Skip additional whitespace
+                        break;
+                        
+                    case SYSTEM:
+                        // SYSTEM external ID
+                        sawPublicInNotation = false;
+                        notationDeclState = NotationDeclState.EXPECT_SYSTEM_ID;
+                        break;
+                        
+                    case PUBLIC:
+                        // PUBLIC external ID (or PublicID)
+                        sawPublicInNotation = true;
+                        notationDeclState = NotationDeclState.EXPECT_PUBLIC_ID;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected SYSTEM or PUBLIC after notation name, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_SYSTEM_ID:
+                // After SYSTEM, expecting quoted system ID
+                switch (token) {
+                    case S:
+                        // Whitespace between SYSTEM and quoted string
+                        break;
+                        
+                    case QUOT:
+                    case APOS:
+                        // Opening quote, ignore
+                        break;
+                        
+                    case CDATA:
+                    case NAME:
+                        // System ID (tokenizer may emit NAME or CDATA in DOCTYPE context)
+                        currentNotationExternalID.systemId = extractString(data);
+                        notationDeclState = NotationDeclState.EXPECT_GT;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected quoted system ID after SYSTEM, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_PUBLIC_ID:
+                // After PUBLIC, expecting quoted public ID
+                switch (token) {
+                    case S:
+                        // Whitespace between PUBLIC and quoted string
+                        break;
+                        
+                    case QUOT:
+                    case APOS:
+                        // Opening quote, ignore
+                        break;
+                        
+                    case CDATA:
+                    case NAME:
+                        // Public ID (tokenizer may emit NAME or CDATA in DOCTYPE context)
+                        currentNotationExternalID.publicId = extractString(data);
+                        notationDeclState = NotationDeclState.AFTER_PUBLIC_ID;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected quoted public ID after PUBLIC, got: " + token, locator);
+                }
+                break;
+                
+            case AFTER_PUBLIC_ID:
+                // After public ID, expecting optional system ID or &gt;
+                switch (token) {
+                    case S:
+                        // Whitespace, ignore
+                        break;
+                        
+                    case QUOT:
+                    case APOS:
+                        // Quote (closing previous or opening next)
+                        break;
+                        
+                    case CDATA:
+                    case NAME:
+                        // Optional system ID after PUBLIC (tokenizer may emit NAME or CDATA)
+                        currentNotationExternalID.systemId = extractString(data);
+                        notationDeclState = NotationDeclState.EXPECT_GT;
+                        break;
+                        
+                    case GT:
+                        // End of declaration (PUBLIC without system ID)
+                        saveCurrentNotation();
+                        state = savedState;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected system ID or &gt; after public ID, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_GT:
+                // Expecting &gt; to close declaration
+                switch (token) {
+                    case S:
+                        // Whitespace before &gt;, ignore
+                        break;
+                        
+                    case QUOT:
+                    case APOS:
+                        // Closing quote, ignore
+                        break;
+                        
+                    case CDATA:
+                    case NAME:
+                        // Additional text (e.g., continuation of system ID if split by tokenizer)
+                        // Append to existing system ID if present
+                        if (currentNotationExternalID.systemId != null) {
+                            currentNotationExternalID.systemId += extractString(data);
+                        }
+                        break;
+                        
+                    case GT:
+                        // End of declaration
+                        saveCurrentNotation();
+                        state = savedState;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected &gt; to close &lt;!NOTATION declaration, got: " + token, locator);
+                }
+                break;
+                
+            default:
+                throw new SAXParseException("Invalid NOTATION parser state: " + notationDeclState, locator);
         }
     }
     
@@ -1243,7 +1533,7 @@ public class DTDParser implements TokenConsumer {
                 if (piTarget == null) {
                     piTarget = extractString(data);
                 } else {
-                    throw new SAXException("Unexpected NAME token in PI data");
+                    throw new SAXParseException("Unexpected NAME token in PI data", locator);
                 }
                 break;
                 
@@ -1258,7 +1548,7 @@ public class DTDParser implements TokenConsumer {
             case END_PI:
                 // End of PI - emit event and return to saved state
                 if (piTarget == null) {
-                    throw new SAXException("Processing instruction missing target");
+                    throw new SAXParseException("Processing instruction missing target", locator);
                 }
                 if (contentHandler != null) {
                     contentHandler.processingInstruction(piTarget, piDataBuilder.toString());
@@ -1270,7 +1560,7 @@ public class DTDParser implements TokenConsumer {
                 
             default:
                 // Unexpected token in PI
-                throw new SAXException("Unexpected token in processing instruction: " + token);
+                throw new SAXParseException("Unexpected token in processing instruction: " + token, locator);
         }
     }
     
@@ -1288,6 +1578,368 @@ public class DTDParser implements TokenConsumer {
             // Add to current ATTLIST map keyed by attribute name
             currentAttlistMap.put(currentAttributeDecl.name.intern(), currentAttributeDecl);
             currentAttributeDecl = null;
+        }
+    }
+    
+    /**
+     * Helper method to save the current notation declaration.
+     * Adds the notation to the notations map keyed by notation name.
+     * Also reports to DTDHandler if present.
+     */
+    private void saveCurrentNotation() throws SAXException {
+        if (currentNotationName != null && currentNotationExternalID != null) {
+            // Ensure notations map exists (lazy initialization)
+            if (notations == null) {
+                notations = new HashMap<>();
+            }
+            
+            // Add to notations map keyed by notation name (interned)
+            notations.put(currentNotationName.intern(), currentNotationExternalID);
+            
+            // Report to DTDHandler if present
+            if (dtdHandler != null) {
+                String publicId = currentNotationExternalID.publicId;
+                String systemId = currentNotationExternalID.systemId;
+                dtdHandler.notationDecl(currentNotationName, publicId, systemId);
+            }
+            
+            // Clear current notation
+            currentNotationName = null;
+            currentNotationExternalID = null;
+        }
+    }
+    
+    /**
+     * Handles tokens while parsing an &lt;!ENTITY declaration.
+     * Uses a state machine to track position within the declaration.
+     */
+    private void handleInEntityDecl(Token token, CharBuffer data) throws SAXException {
+        switch (entityDeclState) {
+            case EXPECT_PERCENT_OR_NAME:
+                // After <!ENTITY, expecting optional % or entity name
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case PERCENT:
+                        // Parameter entity
+                        currentEntity.isParameter = true;
+                        entityDeclState = EntityDeclState.EXPECT_NAME;
+                        break;
+                    case NAME:
+                        // General entity name
+                        currentEntity.isParameter = false;
+                        currentEntity.name = extractString(data);
+                        entityDeclState = EntityDeclState.AFTER_NAME;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected entity name or '%' in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_NAME:
+                // After %, expecting parameter entity name
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case NAME:
+                        currentEntity.name = extractString(data);
+                        entityDeclState = EntityDeclState.AFTER_NAME;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected parameter entity name after '%' in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case AFTER_NAME:
+                // After entity name, expecting whitespace
+                if (token == Token.S) {
+                    entityDeclState = EntityDeclState.EXPECT_VALUE_OR_ID;
+                } else {
+                    throw new SAXParseException("Expected whitespace after entity name in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_VALUE_OR_ID:
+                // After whitespace, expecting quoted value, SYSTEM, or PUBLIC
+                switch (token) {
+                    case S:
+                        // Skip additional whitespace
+                        break;
+                    case QUOT:
+                    case APOS:
+                        // Start of entity value
+                        entityValueQuote = (token == Token.QUOT) ? '"' : '\'';
+                        entityValueBuilder = new ArrayList<>();
+                        entityValueTextBuilder = new StringBuilder();
+                        entityDeclState = EntityDeclState.IN_ENTITY_VALUE;
+                        break;
+                    case SYSTEM:
+                        // External entity with system ID
+                        currentEntity.externalID = new ExternalID();
+                        entityDeclState = EntityDeclState.EXPECT_SYSTEM_ID;
+                        break;
+                    case PUBLIC:
+                        // External entity with public ID
+                        currentEntity.externalID = new ExternalID();
+                        entityDeclState = EntityDeclState.EXPECT_PUBLIC_ID;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case IN_ENTITY_VALUE:
+                // Accumulating entity value between quotes
+                switch (token) {
+                    case CDATA:
+                    case S:
+                        // Accumulate text
+                        entityValueTextBuilder.append(extractString(data));
+                        break;
+                    case ENTITYREF:
+                        // Predefined entity or character reference (already expanded)
+                        entityValueTextBuilder.append(extractString(data));
+                        break;
+                    case GENERALENTITYREF:
+                        // General entity reference - flush text and add reference
+                        if (entityValueTextBuilder.length() > 0) {
+                            entityValueBuilder.add(entityValueTextBuilder.toString());
+                            entityValueTextBuilder.setLength(0);
+                        }
+                        String entityName = extractString(data);
+                        entityValueBuilder.add(new GeneralEntityReference(entityName));
+                        break;
+                    case PARAMETERENTITYREF:
+                        // Parameter entity reference in entity value
+                        // For now, treat as a reference (similar handling to general entities)
+                        if (entityValueTextBuilder.length() > 0) {
+                            entityValueBuilder.add(entityValueTextBuilder.toString());
+                            entityValueTextBuilder.setLength(0);
+                        }
+                        String paramName = extractString(data);
+                        // TODO: Handle parameter entity references in entity values
+                        throw new SAXParseException("Parameter entity reference in entity value not yet supported: %" + paramName + ";", locator);
+                    case QUOT:
+                    case APOS:
+                        // Check if this is the closing quote
+                        char quoteChar = (token == Token.QUOT) ? '"' : '\'';
+                        if (quoteChar == entityValueQuote) {
+                            // Flush final text segment
+                            if (entityValueTextBuilder.length() > 0) {
+                                entityValueBuilder.add(entityValueTextBuilder.toString());
+                            }
+                            // Set replacement text on entity
+                            currentEntity.replacementText = entityValueBuilder;
+                            entityDeclState = EntityDeclState.AFTER_ENTITY_VALUE;
+                        } else {
+                            // Wrong quote, treat as text
+                            entityValueTextBuilder.append(quoteChar);
+                        }
+                        break;
+                    default:
+                        throw new SAXParseException("Unexpected token in entity value: " + token, locator);
+                }
+                break;
+                
+            case AFTER_ENTITY_VALUE:
+                // After closing quote, expecting > or whitespace
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case GT:
+                        // End of entity declaration
+                        saveCurrentEntity();
+                        state = savedState;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected '>' after entity value in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_SYSTEM_ID:
+                // After SYSTEM, expecting quoted system ID
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case QUOT:
+                    case APOS:
+                        // Opening quote for system ID - next will be CDATA
+                        break;
+                    case CDATA:
+                    case NAME:
+                        // Workaround for tokenizer issues: accumulate system ID
+                        if (currentEntity.externalID.systemId == null) {
+                            currentEntity.externalID.systemId = extractString(data);
+                        } else {
+                            currentEntity.externalID.systemId += extractString(data);
+                        }
+                        break;
+                    case GT:
+                        // End of entity declaration (external parsed entity)
+                        saveCurrentEntity();
+                        state = savedState;
+                        break;
+                    case NDATA:
+                        // Unparsed entity
+                        entityDeclState = EntityDeclState.EXPECT_NDATA_NAME;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected quoted system ID after SYSTEM in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_PUBLIC_ID:
+                // After PUBLIC, expecting quoted public ID
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case QUOT:
+                    case APOS:
+                        // Opening quote for public ID - next will be CDATA
+                        break;
+                    case CDATA:
+                    case NAME:
+                        // Workaround for tokenizer issues
+                        if (currentEntity.externalID.publicId == null) {
+                            currentEntity.externalID.publicId = extractString(data);
+                        } else {
+                            currentEntity.externalID.publicId += extractString(data);
+                        }
+                        entityDeclState = EntityDeclState.AFTER_PUBLIC_ID;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected quoted public ID after PUBLIC in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case AFTER_PUBLIC_ID:
+                // After public ID, expecting system ID
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case QUOT:
+                    case APOS:
+                        // Opening or closing quote - skip
+                        break;
+                    case CDATA:
+                    case NAME:
+                        // System ID following public ID
+                        if (currentEntity.externalID.systemId == null) {
+                            currentEntity.externalID.systemId = extractString(data);
+                        } else {
+                            currentEntity.externalID.systemId += extractString(data);
+                        }
+                        entityDeclState = EntityDeclState.AFTER_EXTERNAL_ID;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected quoted system ID after public ID in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case AFTER_EXTERNAL_ID:
+                // After external ID, expecting NDATA or >
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case QUOT:
+                    case APOS:
+                        // Closing quote after system ID - skip
+                        break;
+                    case CDATA:
+                    case NAME:
+                        // Tokenizer splitting system ID, accumulate
+                        currentEntity.externalID.systemId += extractString(data);
+                        break;
+                    case GT:
+                        // End of entity declaration (external parsed entity)
+                        saveCurrentEntity();
+                        state = savedState;
+                        break;
+                    case NDATA:
+                        // Unparsed entity
+                        entityDeclState = EntityDeclState.EXPECT_NDATA_NAME;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected '>' or NDATA after external ID in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_NDATA_NAME:
+                // After NDATA, expecting notation name
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case NAME:
+                        currentEntity.notationName = extractString(data);
+                        entityDeclState = EntityDeclState.EXPECT_GT;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected notation name after NDATA in <!ENTITY, got: " + token, locator);
+                }
+                break;
+                
+            case EXPECT_GT:
+                // Expecting > to close declaration
+                switch (token) {
+                    case S:
+                        // Skip whitespace
+                        break;
+                    case GT:
+                        // End of entity declaration
+                        saveCurrentEntity();
+                        state = savedState;
+                        break;
+                    default:
+                        throw new SAXParseException("Expected '>' to close <!ENTITY declaration, got: " + token, locator);
+                }
+                break;
+        }
+    }
+    
+    /**
+     * Saves the current entity declaration to the appropriate map.
+     */
+    private void saveCurrentEntity() {
+        if (currentEntity != null && currentEntity.name != null) {
+            if (currentEntity.isParameter) {
+                // Parameter entity
+                if (parameterEntities == null) {
+                    parameterEntities = new HashMap<>();
+                }
+                parameterEntities.put(currentEntity.name.intern(), currentEntity);
+            } else {
+                // General entity
+                if (entities == null) {
+                    entities = new HashMap<>();
+                }
+                entities.put(currentEntity.name.intern(), currentEntity);
+                
+                // Report unparsed entity to DTDHandler if applicable
+                if (currentEntity.isUnparsed() && dtdHandler != null) {
+                    try {
+                        dtdHandler.unparsedEntityDecl(
+                            currentEntity.name,
+                            currentEntity.externalID.publicId,
+                            currentEntity.externalID.systemId,
+                            currentEntity.notationName
+                        );
+                    } catch (SAXException e) {
+                        // DTDHandler threw an exception
+                        // We can't throw from here, so log or ignore
+                    }
+                }
+            }
+            
+            // Clear current entity
+            currentEntity = null;
         }
     }
     
@@ -1351,11 +2003,19 @@ public class DTDParser implements TokenConsumer {
     }
 
     /**
+     * Gets the external ID for the external DTD subset.
+     * @return the ExternalID, or null if not specified
+     */
+    public ExternalID getDoctypeExternalID() {
+        return doctypeExternalID;
+    }
+
+    /**
      * Gets the public identifier for the external DTD subset.
      * @return the public ID, or null if not specified
      */
     public String getPublicId() {
-        return publicId;
+        return doctypeExternalID != null ? doctypeExternalID.publicId : null;
     }
 
     /**
@@ -1363,7 +2023,7 @@ public class DTDParser implements TokenConsumer {
      * @return the system ID, or null if not specified
      */
     public String getSystemId() {
-        return systemId;
+        return doctypeExternalID != null ? doctypeExternalID.systemId : null;
     }
 
     /**
@@ -1409,6 +2069,44 @@ public class DTDParser implements TokenConsumer {
         }
         return attributeDecls.get(elementName.intern());
     }
+    
+    /**
+     * Gets the external ID for a notation.
+     * @param notationName the notation name
+     * @return the ExternalID, or null if not declared
+     */
+    public ExternalID getNotation(String notationName) {
+        if (notations == null) {
+            return null;
+        }
+        return notations.get(notationName.intern());
+    }
+    
+    /**
+     * Retrieves a general entity declaration by name.
+     * 
+     * @param entityName the entity name
+     * @return the EntityDeclaration, or null if not found
+     */
+    public EntityDeclaration getGeneralEntity(String entityName) {
+        if (entities == null) {
+            return null;
+        }
+        return entities.get(entityName.intern());
+    }
+    
+    /**
+     * Retrieves a parameter entity declaration by name.
+     * 
+     * @param entityName the entity name
+     * @return the EntityDeclaration, or null if not found
+     */
+    public EntityDeclaration getParameterEntity(String entityName) {
+        if (parameterEntities == null) {
+            return null;
+        }
+        return parameterEntities.get(entityName.intern());
+    }
 
     /**
      * Stores an element declaration.
@@ -1450,7 +2148,15 @@ public class DTDParser implements TokenConsumer {
      * @throws SAXException if DTD processing fails
      */
     private void processExternalDTDSubset() throws SAXException {
-        // Only process if we have a systemId or publicId
+        // Only process if we have an external ID
+        if (doctypeExternalID == null) {
+            return;
+        }
+        
+        String publicId = doctypeExternalID.publicId;
+        String systemId = doctypeExternalID.systemId;
+        
+        // Must have at least one ID
         if (systemId == null && publicId == null) {
             return;
         }
@@ -1469,7 +2175,7 @@ public class DTDParser implements TokenConsumer {
                 errorHandler.fatalError(new org.xml.sax.SAXParseException(
                     "Failed to resolve external DTD subset: " + systemId, locator, e));
             }
-            throw new SAXException("Failed to resolve external DTD subset: " + systemId, e);
+            throw new SAXParseException("Failed to resolve external DTD subset: " + systemId, locator, e);
         }
     }
 

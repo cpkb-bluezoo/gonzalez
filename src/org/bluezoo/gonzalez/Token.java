@@ -30,19 +30,19 @@ public enum Token {
 
     LT, // '<'
     GT, // '>'
-    AMP, // '&'
     APOS, // "'"
     QUOT, // '"'
     S, // whitespace
     NAME, // name token
     CDATA, // character data
-    ENTITYREF, // entity reference replacement text (e.g., &amp; -> '&', &lt; -> '<')
+    ENTITYREF, // entity reference replacement text (e.g., &amp; -> '&', &lt; -> '<', &#65; -> 'A')
+    GENERALENTITYREF, // general entity reference &name; - CharBuffer contains entity name
+    PARAMETERENTITYREF, // parameter entity reference %name; - CharBuffer contains entity name
     COLON, // ':'
     BANG, // '!'
     QUERY, // '?'
     EQ, // '='
     PERCENT, // '%'
-    SEMICOLON, // ';'
     HASH, // '#'
     PIPE, // '|'
     START_END_ELEMENT, // "</"

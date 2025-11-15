@@ -430,7 +430,8 @@ public class XMLTokenizer implements Locator2 {
                 charBuffer.reset();
                 updateLocationFromChars(charBuffer);
                 saveCharUnderflow(charBuffer);
-                throw new SAXException("XML declaration too long (>512 characters)");
+                throw new org.xml.sax.SAXParseException(
+                    "XML declaration too long (>512 characters)", this);
             }
             // Need more data
             buffer.position(initialBytePos); // Rewind byte buffer
@@ -503,17 +504,17 @@ public class XMLTokenizer implements Locator2 {
             declaredCharset = Charset.forName(encodingName);
         } catch (Exception e) {
             // Unsupported or invalid charset name
-            throw new SAXException("Unsupported encoding in XML declaration: " + 
-                encodingName + " (reason: " + e.getMessage() + ")");
+            throw new org.xml.sax.SAXParseException("Unsupported encoding in XML declaration: " + 
+                encodingName + " (reason: " + e.getMessage() + ")", this, e);
         }
         
         // Case 1: BOM present + encoding differs = ERROR
         // Note: We need to check if charsets are compatible, not just equal
         // e.g., "UTF-16" is compatible with UTF-16LE/BE BOMs
         if (bomCharset != null && !isCharsetCompatible(bomCharset, declaredCharset)) {
-            throw new SAXException("Encoding mismatch: BOM indicates " + 
+            throw new org.xml.sax.SAXParseException("Encoding mismatch: BOM indicates " + 
                 bomCharset.name() + " but XML declaration specifies " + 
-                encodingName);
+                encodingName, this);
         }
         
         // Case 2: No BOM + encoding differs from current = SWITCH CHARSET
@@ -704,7 +705,7 @@ public class XMLTokenizer implements Locator2 {
                         ctx.nameStart = declBuffer.position() - 1;
                         ctx.state = XMLDeclState.IN_NAME;
                     } else {
-                        throw new SAXException("Expected attribute name in XML declaration");
+                        throw new org.xml.sax.SAXParseException("Expected attribute name in XML declaration", this);
                     }
                     break;
                     
@@ -723,7 +724,7 @@ public class XMLTokenizer implements Locator2 {
                             ctx.state = XMLDeclState.EXPECT_EQ;
                         }
                     } else {
-                        throw new SAXException("Invalid character in attribute name in XML declaration");
+                        throw new org.xml.sax.SAXParseException("Invalid character in attribute name in XML declaration", this);
                     }
                     break;
                     
@@ -733,7 +734,7 @@ public class XMLTokenizer implements Locator2 {
                     } else if (c == '=') {
                         ctx.state = XMLDeclState.EXPECT_QUOTE;
                     } else {
-                        throw new SAXException("Expected '=' after attribute name in XML declaration");
+                        throw new org.xml.sax.SAXParseException("Expected '=' after attribute name in XML declaration", this);
                     }
                     break;
                     
@@ -745,7 +746,7 @@ public class XMLTokenizer implements Locator2 {
                         ctx.valueStart = declBuffer.position();
                         ctx.state = XMLDeclState.IN_VALUE;
                     } else {
-                        throw new SAXException("Expected quote after '=' in XML declaration");
+                        throw new org.xml.sax.SAXParseException("Expected quote after '=' in XML declaration", this);
                     }
                     break;
                     
@@ -765,7 +766,7 @@ public class XMLTokenizer implements Locator2 {
         
         // Validate required attributes
         if ((ctx.seenAttributes & 1) == 0) {
-            throw new SAXException("XML declaration missing required 'version' attribute");
+            throw new org.xml.sax.SAXParseException("XML declaration missing required 'version' attribute", this);
         }
         
         // Now that the declaration is fully parsed, handle charset switching if needed
@@ -780,24 +781,24 @@ public class XMLTokenizer implements Locator2 {
     private void validateAndRegisterAttribute(XMLDeclContext ctx) throws SAXException {
         if ("version".equals(ctx.currentName)) {
             if (ctx.seenAttributes != 0) {
-                throw new SAXException("'version' must be the first attribute in XML declaration");
+                throw new org.xml.sax.SAXParseException("'version' must be the first attribute in XML declaration", this);
             }
             ctx.seenAttributes |= 1;
         } else if ("encoding".equals(ctx.currentName)) {
             if ((ctx.seenAttributes & 1) == 0) {
-                throw new SAXException("'version' must come before 'encoding' in XML declaration");
+                throw new org.xml.sax.SAXParseException("'version' must come before 'encoding' in XML declaration", this);
             }
             if ((ctx.seenAttributes & 4) != 0) {
-                throw new SAXException("'encoding' must come before 'standalone' in XML declaration");
+                throw new org.xml.sax.SAXParseException("'encoding' must come before 'standalone' in XML declaration", this);
             }
             ctx.seenAttributes |= 2;
         } else if ("standalone".equals(ctx.currentName)) {
             if ((ctx.seenAttributes & 1) == 0) {
-                throw new SAXException("'version' must come before 'standalone' in XML declaration");
+                throw new org.xml.sax.SAXParseException("'version' must come before 'standalone' in XML declaration", this);
             }
             ctx.seenAttributes |= 4;
         } else {
-            throw new SAXException("Unknown attribute in XML declaration: " + ctx.currentName);
+            throw new org.xml.sax.SAXParseException("Unknown attribute in XML declaration: " + ctx.currentName, this);
         }
     }
     
@@ -815,8 +816,8 @@ public class XMLTokenizer implements Locator2 {
             } else if ("no".equals(value)) {
                 standalone = false;
             } else {
-                throw new SAXException("Invalid value for 'standalone' attribute: " + value + 
-                                     " (must be 'yes' or 'no')");
+                throw new org.xml.sax.SAXParseException("Invalid value for 'standalone' attribute: " + value + 
+                                     " (must be 'yes' or 'no')", this);
             }
         }
     }
@@ -1008,11 +1009,22 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '%':
-                    emitToken(Token.PERCENT, null);
-                    break;
-                    
-                case ';':
-                    emitToken(Token.SEMICOLON, null);
+                    // In DOCTYPE context, % could be start of parameter entity reference
+                    if (context == TokenizerContext.DOCTYPE_INTERNAL || context == TokenizerContext.DOCTYPE) {
+                        if (!tryEmitParameterEntityRef()) {
+                            // Not enough data, rewind and save to underflow
+                            charBuffer.reset();
+                            return;
+                        }
+                    } else {
+                        // Outside DOCTYPE, % is just a regular character
+                        // Let it fall through to CDATA handling
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            charBuffer.reset();
+                            return;
+                        }
+                    }
                     break;
                     
                 case '#':
@@ -1270,7 +1282,7 @@ public class XMLTokenizer implements Locator2 {
                     emitToken(Token.START_COMMENT, null);
                     return true;
                 } else {
-                    throw new SAXException("Invalid sequence: <!-" + c);
+                    throw new org.xml.sax.SAXParseException("Invalid sequence: <!-" + c, this);
                 }
             } else if (c == '[') {
                 // <![ - could be <![CDATA[ or <![
@@ -1327,10 +1339,10 @@ public class XMLTokenizer implements Locator2 {
                         emitToken(Token.START_NOTATIONDECL, null);
                         return true;
                     default:
-                        throw new SAXException("Unknown declaration: <!" + name);
+                        throw new org.xml.sax.SAXParseException("Unknown declaration: <!" + name, this);
                 }
             } else {
-                throw new SAXException("Invalid character after '<!': " + c);
+                throw new org.xml.sax.SAXParseException("Invalid character after '<!': " + c, this);
             }
         } else {
             // Regular '<' followed by something else (probably a name)
@@ -1353,15 +1365,181 @@ public class XMLTokenizer implements Locator2 {
         charBuffer.mark();
         int refStart = charBuffer.position();
         
-        // Look for the semicolon
+        // Peek at first character to determine type
+        char firstChar = charBuffer.get();
+        boolean isCharRef = (firstChar == '#');
+        charBuffer.position(refStart); // Reset to start
+        
+        // Look for the semicolon (with reasonable length limit)
+        int charCount = 0;
+        final int MAX_ENTITY_REF_LENGTH = 1024;
+        
         while (charBuffer.hasRemaining()) {
             char c = charBuffer.get();
+            charCount++;
+            
+            if (charCount > MAX_ENTITY_REF_LENGTH) {
+                // Entity reference is too long - well-formedness error
+                throw new org.xml.sax.SAXParseException(
+                    "Entity reference exceeds maximum length of " + MAX_ENTITY_REF_LENGTH + " characters", this);
+            }
+            
             if (c == ';') {
                 // Found end of entity reference
                 int refEnd = charBuffer.position() - 1; // Before the ';'
                 int savedPos = charBuffer.position();
                 
-                // Extract the entity name
+                // Extract the entity reference content (after & and before ;)
+                charBuffer.position(refStart);
+                StringBuilder sb = new StringBuilder();
+                while (charBuffer.position() < refEnd) {
+                    sb.append(charBuffer.get());
+                }
+                String refContent = sb.toString();
+                
+                // Restore position
+                charBuffer.position(savedPos);
+                
+                // Update column for the entire entity reference (&...;)
+                updateColumn(); // for '&'
+                for (int i = 0; i < refContent.length(); i++) {
+                    updateColumn();
+                }
+                updateColumn(); // for ';'
+                
+                // Handle different types of references
+                if (isCharRef) {
+                    // Character reference: &#decimal; or &#xhex;
+                    String replacement = expandCharacterReference(refContent);
+                    if (replacement != null) {
+                        CharBuffer refBuffer = CharBuffer.wrap(replacement);
+                        emitToken(Token.ENTITYREF, refBuffer);
+                        return true;
+                    } else {
+                        // Invalid character reference
+                        throw new org.xml.sax.SAXParseException(
+                            "Invalid character reference: &" + refContent + ";", this);
+                    }
+                } else {
+                    // Named entity reference
+                    String replacement = getPredefinedEntity(refContent);
+                    if (replacement != null) {
+                        // Predefined entity - emit with replacement text
+                        CharBuffer refBuffer = CharBuffer.wrap(replacement);
+                        emitToken(Token.ENTITYREF, refBuffer);
+                        return true;
+                    } else {
+                        // General entity reference - emit entity name
+                        CharBuffer nameBuffer = CharBuffer.wrap(refContent);
+                        emitToken(Token.GENERALENTITYREF, nameBuffer);
+                        return true;
+                    }
+                }
+            } else if (!isNameChar(c) && c != '#' && c != 'x' && c != 'X') {
+                // Invalid entity reference character - well-formedness error
+                throw new org.xml.sax.SAXParseException(
+                    "Invalid character in entity reference: '&" + c + "'", this);
+            }
+        }
+        
+        // Didn't find ';' - need more data
+        charBuffer.reset();
+        return false;
+    }
+    
+    /**
+     * Expands a character reference.
+     * @param refContent the content after # (e.g., "38" or "x26")
+     * @return the replacement character, or null if invalid
+     */
+    private String expandCharacterReference(String refContent) {
+        if (refContent.length() < 2) {
+            return null; // Just "#" is invalid
+        }
+        
+        try {
+            String numPart = refContent.substring(1); // Skip the '#'
+            int codePoint;
+            
+            if (numPart.startsWith("x") || numPart.startsWith("X")) {
+                // Hexadecimal
+                codePoint = Integer.parseInt(numPart.substring(1), 16);
+            } else {
+                // Decimal
+                codePoint = Integer.parseInt(numPart);
+            }
+            
+            // Validate code point
+            if (codePoint < 0 || codePoint > 0x10FFFF) {
+                return null;
+            }
+            
+            return new String(Character.toChars(codePoint));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+    
+    /**
+     * Gets predefined entity replacement text.
+     * @param entityName the entity name
+     * @return replacement text, or null if not a predefined entity
+     */
+    private String getPredefinedEntity(String entityName) {
+        switch (entityName) {
+            case "amp": return "&";
+            case "lt": return "<";
+            case "gt": return ">";
+            case "apos": return "'";
+            case "quot": return "\"";
+            default: return null;
+        }
+    }
+    
+    /**
+     * Tries to emit a parameter entity reference (%name;).
+     * We've already consumed '%'.
+     * @return true if token was emitted, false if more data is needed
+     */
+    private boolean tryEmitParameterEntityRef() throws SAXException {
+        if (!charBuffer.hasRemaining()) {
+            return false; // Need more data
+        }
+        
+        charBuffer.mark();
+        int refStart = charBuffer.position();
+        
+        // Peek at first character - if it's not a NameStartChar, this is just a PERCENT token
+        char firstChar = charBuffer.get();
+        if (!isNameStartChar(firstChar)) {
+            // Not a parameter entity reference, just a PERCENT token
+            charBuffer.reset();
+            emitToken(Token.PERCENT, null);
+            return true;
+        }
+        
+        // Reset to start and look for the semicolon (with reasonable length limit)
+        charBuffer.position(refStart);
+        
+        int charCount = 0;
+        final int MAX_ENTITY_REF_LENGTH = 1024;
+        
+        while (charBuffer.hasRemaining()) {
+            char c = charBuffer.get();
+            charCount++;
+            
+            if (charCount > MAX_ENTITY_REF_LENGTH) {
+                // Parameter entity reference is too long - well-formedness error
+                throw new org.xml.sax.SAXParseException(
+                    "Parameter entity reference exceeds maximum length of " + MAX_ENTITY_REF_LENGTH + " characters", this);
+            }
+            
+            if (c == ';') {
+                // Found end of parameter entity reference
+                int refEnd = charBuffer.position() - 1; // Before the ';'
+                int savedPos = charBuffer.position();
+                
+                // Extract the entity name (between % and ;)
                 charBuffer.position(refStart);
                 StringBuilder sb = new StringBuilder();
                 while (charBuffer.position() < refEnd) {
@@ -1372,43 +1550,28 @@ public class XMLTokenizer implements Locator2 {
                 // Restore position
                 charBuffer.position(savedPos);
                 
-                // Update column for the entire entity reference
-                for (int i = 0; i < entityName.length() + 1; i++) { // +1 for ';'
+                // Entity name should already be valid (we checked first char)
+                // but double-check it's not empty
+                if (entityName.isEmpty()) {
+                    throw new org.xml.sax.SAXParseException(
+                        "Empty parameter entity reference", this);
+                }
+                
+                // Update column for the entire reference (%...;)
+                updateColumn(); // for '%'
+                for (int i = 0; i < entityName.length(); i++) {
                     updateColumn();
                 }
+                updateColumn(); // for ';'
                 
-                // Check for predefined entities
-                String replacement = null;
-                switch (entityName) {
-                    case "amp": replacement = "&"; break;
-                    case "lt": replacement = "<"; break;
-                    case "gt": replacement = ">"; break;
-                    case "apos": replacement = "'"; break;
-                    case "quot": replacement = "\""; break;
-                    case "#38": replacement = "&"; break;  // &#38;
-                    case "#60": replacement = "<"; break;  // &#60;
-                    case "#62": replacement = ">"; break;  // &#62;
-                    case "#39": replacement = "'"; break;  // &#39;
-                    case "#34": replacement = "\""; break; // &#34;
-                }
-                
-                if (replacement != null) {
-                    // Emit ENTITYREF with replacement text
-                    CharBuffer refBuffer = CharBuffer.wrap(replacement);
-                    emitToken(Token.ENTITYREF, refBuffer);
-                    return true;
-                } else {
-                    // For now, just emit AMP token for unknown entity refs
-                    // The parser will handle them
-                    charBuffer.reset();
-                    emitToken(Token.AMP, null);
-                    return true;
-                }
-            } else if (!isNameChar(c) && c != '#') {
-                // Invalid entity reference character
-                charBuffer.reset();
-                emitToken(Token.AMP, null);
+                // Emit parameter entity reference with entity name
+                CharBuffer nameBuffer = CharBuffer.wrap(entityName);
+                emitToken(Token.PARAMETERENTITYREF, nameBuffer);
                 return true;
+            } else if (!isNameChar(c)) {
+                // Invalid character in parameter entity name - well-formedness error
+                throw new org.xml.sax.SAXParseException(
+                    "Invalid character '" + c + "' in parameter entity reference", this);
             }
         }
         
@@ -1769,8 +1932,8 @@ public class XMLTokenizer implements Locator2 {
                     prevContext = context;
                     context = TokenizerContext.ATTR_VALUE;
                     attrQuoteChar = (token == Token.QUOT) ? '"' : '\'';
-                } else if (context == TokenizerContext.DOCTYPE) {
-                    // Starting quoted string in DOCTYPE (publicId/systemId)
+                } else if (context == TokenizerContext.DOCTYPE || context == TokenizerContext.DOCTYPE_INTERNAL) {
+                    // Starting quoted string in DOCTYPE (publicId/systemId/entity value)
                     prevContext = context;
                     context = TokenizerContext.ATTR_VALUE;
                     attrQuoteChar = (token == Token.QUOT) ? '"' : '\'';
@@ -1892,7 +2055,7 @@ public class XMLTokenizer implements Locator2 {
         // Any remaining characters in charBuffer indicate incomplete tokens
         // This is an error condition for well-formed XML
         if (charBuffer.hasRemaining()) {
-            throw new SAXException("Incomplete token at end of document");
+            throw new org.xml.sax.SAXParseException("Incomplete token at end of document", this);
         }
     }
 
