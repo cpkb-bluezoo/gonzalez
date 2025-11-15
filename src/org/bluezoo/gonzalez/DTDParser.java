@@ -248,7 +248,8 @@ public class DTDParser implements TokenConsumer {
     private String currentAttlistElement;
     private Map<String, AttributeDeclaration> currentAttlistMap;
     private AttributeDeclaration currentAttributeDecl;
-    private StringBuilder defaultValueBuilder;
+    private List<Object> defaultValueBuilder;  // List of String and GeneralEntityReference
+    private StringBuilder defaultValueTextBuilder;  // For accumulating text segments
     
     /**
      * Comment text accumulator.
@@ -1154,36 +1155,39 @@ public class DTDParser implements TokenConsumer {
                         
                     case REQUIRED:
                         // #REQUIRED without hash (tokenizer combined them)
-                        currentAttributeDecl.mode = "#REQUIRED";
+                        currentAttributeDecl.mode = Token.REQUIRED;
                         saveCurrentAttribute();
                         attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
                         break;
                         
                     case IMPLIED:
                         // #IMPLIED without hash (tokenizer combined them)
-                        currentAttributeDecl.mode = "#IMPLIED";
+                        currentAttributeDecl.mode = Token.IMPLIED;
                         saveCurrentAttribute();
                         attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
                         break;
                         
                     case FIXED:
                         // #FIXED without hash (tokenizer combined them)
-                        currentAttributeDecl.mode = "#FIXED";
+                        currentAttributeDecl.mode = Token.FIXED;
                         attListDeclState = AttListDeclState.AFTER_FIXED;
                         break;
                         
                     case QUOT:
                     case APOS:
-                        // Default value starting (no #FIXED) - initialize accumulator
-                        defaultValueBuilder = new StringBuilder();
+                        // Default value starting (no #FIXED) - initialize accumulators
+                        defaultValueBuilder = new ArrayList<>();
+                        defaultValueTextBuilder = new StringBuilder();
+                        attListDeclState = AttListDeclState.AFTER_DEFAULT_VALUE;
                         break;
                         
                     case CDATA:
                         // Default value chunk - accumulate (may receive multiple CDATA tokens)
                         if (defaultValueBuilder == null) {
-                            defaultValueBuilder = new StringBuilder();
+                            defaultValueBuilder = new ArrayList<>();
+                            defaultValueTextBuilder = new StringBuilder();
                         }
-                        defaultValueBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(extractString(data));
                         attListDeclState = AttListDeclState.AFTER_DEFAULT_VALUE;
                         break;
                         
@@ -1193,53 +1197,27 @@ public class DTDParser implements TokenConsumer {
                 break;
                 
             case AFTER_HASH:
-                // After #, must see REQUIRED | IMPLIED | FIXED keyword (or NAME workaround)
+                // After #, must see REQUIRED | IMPLIED | FIXED keyword
                 switch (token) {
                     case REQUIRED:
-                        currentAttributeDecl.mode = "#REQUIRED";
+                        currentAttributeDecl.mode = Token.REQUIRED;
                         saveCurrentAttribute();
                         attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
                         break;
                         
                     case IMPLIED:
-                        currentAttributeDecl.mode = "#IMPLIED";
+                        currentAttributeDecl.mode = Token.IMPLIED;
                         saveCurrentAttribute();
                         attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
                         break;
                         
                     case FIXED:
-                        currentAttributeDecl.mode = "#FIXED";
+                        currentAttributeDecl.mode = Token.FIXED;
                         attListDeclState = AttListDeclState.AFTER_FIXED;
                         break;
                         
-                    case NAME:
-                        // Workaround: Tokenizer may emit keywords as NAME in DOCTYPE context
-                        String nameStr = extractString(data);
-                        switch (nameStr) {
-                            case "REQUIRED":
-                                currentAttributeDecl.mode = "#REQUIRED";
-                                saveCurrentAttribute();
-                                attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
-                                break;
-                                
-                            case "IMPLIED":
-                                currentAttributeDecl.mode = "#IMPLIED";
-                                saveCurrentAttribute();
-                                attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
-                                break;
-                                
-                            case "FIXED":
-                                currentAttributeDecl.mode = "#FIXED";
-                                attListDeclState = AttListDeclState.AFTER_FIXED;
-                                break;
-                                
-                            default:
-                                throw new SAXParseException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got NAME: " + nameStr, locator);
-                        }
-                        break;
-                        
                     default:
-                        throw new SAXParseException("Expected REQUIRED, IMPLIED, or FIXED after # in &lt;!ATTLIST, got: " + token, locator);
+                        throw new SAXParseException("Expected REQUIRED, IMPLIED, or FIXED after # in <!ATTLIST, got: " + token, locator);
                 }
                 break;
                 
@@ -1264,16 +1242,19 @@ public class DTDParser implements TokenConsumer {
                         
                     case QUOT:
                     case APOS:
-                        // Quote starting value - initialize accumulator
-                        defaultValueBuilder = new StringBuilder();
+                        // Quote starting value - initialize accumulators
+                        defaultValueBuilder = new ArrayList<>();
+                        defaultValueTextBuilder = new StringBuilder();
+                        attListDeclState = AttListDeclState.AFTER_DEFAULT_VALUE;
                         break;
                         
                     case CDATA:
                         // Fixed default value chunk - accumulate (may receive multiple CDATA tokens)
                         if (defaultValueBuilder == null) {
-                            defaultValueBuilder = new StringBuilder();
+                            defaultValueBuilder = new ArrayList<>();
+                            defaultValueTextBuilder = new StringBuilder();
                         }
-                        defaultValueBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(extractString(data));
                         attListDeclState = AttListDeclState.AFTER_DEFAULT_VALUE;
                         break;
                         
@@ -1283,18 +1264,40 @@ public class DTDParser implements TokenConsumer {
                 break;
                 
             case AFTER_DEFAULT_VALUE:
-                // After default value CDATA, expecting more CDATA chunks or closing quote
+                // After default value CDATA, expecting more CDATA chunks, entity refs, or closing quote
                 switch (token) {
                     case CDATA:
+                    case S:
                         // Additional chunk of default value - accumulate
-                        defaultValueBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(extractString(data));
+                        break;
+                        
+                    case ENTITYREF:
+                        // Predefined entity or character reference (already expanded)
+                        defaultValueTextBuilder.append(extractString(data));
+                        break;
+                        
+                    case GENERALENTITYREF:
+                        // General entity reference - flush text and add reference
+                        if (defaultValueTextBuilder.length() > 0) {
+                            defaultValueBuilder.add(defaultValueTextBuilder.toString());
+                            defaultValueTextBuilder.setLength(0);
+                        }
+                        String entityName = extractString(data);
+                        defaultValueBuilder.add(new GeneralEntityReference(entityName));
                         break;
                         
                     case QUOT:
                     case APOS:
                         // Closing quote - finalize default value, save attribute, and return to expecting next attribute
-                        currentAttributeDecl.defaultValue = defaultValueBuilder.toString();
+                        // Flush final text segment
+                        if (defaultValueTextBuilder.length() > 0) {
+                            defaultValueBuilder.add(defaultValueTextBuilder.toString());
+                        }
+                        // Set default value on attribute
+                        currentAttributeDecl.defaultValue = defaultValueBuilder;
                         defaultValueBuilder = null;
+                        defaultValueTextBuilder = null;
                         saveCurrentAttribute();
                         attListDeclState = AttListDeclState.EXPECT_ATTR_OR_GT;
                         break;

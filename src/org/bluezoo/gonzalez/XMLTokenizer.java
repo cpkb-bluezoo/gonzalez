@@ -1793,6 +1793,11 @@ public class XMLTokenizer implements Locator2 {
             case "NMTOKENS": return Token.NMTOKENS;
             case "NOTATION": return Token.NOTATION;
             
+            // ATTLIST default value keywords (when not prefixed with #)
+            case "REQUIRED": return Token.REQUIRED;
+            case "IMPLIED": return Token.IMPLIED;
+            case "FIXED": return Token.FIXED;
+            
             // Conditional section keywords
             case "INCLUDE": return Token.INCLUDE;
             case "IGNORE": return Token.IGNORE;

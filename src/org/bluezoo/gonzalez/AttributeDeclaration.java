@@ -21,11 +21,18 @@
 
 package org.bluezoo.gonzalez;
 
+import java.util.List;
+
 /**
  * Represents an attribute declaration from the DTD.
  *
  * <p>Attribute declarations define the allowed attributes for an element,
  * their types, default values, and whether they are required, implied, or fixed.
+ *
+ * <p>For default values, the value is stored as a sequence of {@link String}
+ * (literal text) and {@link GeneralEntityReference} (entity references that must
+ * be expanded later). This allows entity references in default values to refer to
+ * entities not yet declared, similar to entity values.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -43,20 +50,22 @@ public class AttributeDeclaration {
     public String type;
 
     /**
-     * The default value mode: #REQUIRED, #IMPLIED, #FIXED, or null for default value.
+     * The default value mode: Token.REQUIRED, Token.IMPLIED, Token.FIXED, or null for default value.
      */
-    public String mode;
+    public Token mode;
 
     /**
      * The default value, or null if not specified or if mode is #REQUIRED or #IMPLIED.
+     * Each element is either a String (literal text) or a GeneralEntityReference
+     * (entity reference to be expanded when the attribute is used).
      */
-    public String defaultValue;
+    public List<Object> defaultValue;
 
     /**
      * Returns true if this attribute is required.
      */
     public boolean isRequired() {
-        return "#REQUIRED".equals(mode);
+        return mode == Token.REQUIRED;
     }
 
     /**
@@ -70,7 +79,7 @@ public class AttributeDeclaration {
      * Returns true if this attribute has a fixed value.
      */
     public boolean isFixed() {
-        return "#FIXED".equals(mode);
+        return mode == Token.FIXED;
     }
 
     @Override
@@ -78,10 +87,14 @@ public class AttributeDeclaration {
         StringBuilder sb = new StringBuilder();
         sb.append(name).append(" ").append(type);
         if (mode != null) {
-            sb.append(" ").append(mode);
+            sb.append(" #").append(mode);
         }
         if (defaultValue != null) {
-            sb.append(" \"").append(defaultValue).append("\"");
+            sb.append(" \"");
+            for (Object part : defaultValue) {
+                sb.append(part); // String.toString() or GeneralEntityReference.toString()
+            }
+            sb.append("\"");
         }
         return sb.toString();
     }

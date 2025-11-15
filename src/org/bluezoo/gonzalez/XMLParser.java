@@ -732,6 +732,8 @@ public class XMLParser implements TokenConsumer {
                     }
                     // Set DTD context for attribute type lookup
                     attributes.setDTDContext(currentElementName, dtdParser);
+                    // Apply default attribute values from DTD
+                    applyDefaultAttributeValues(currentElementName);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                 }
                 state = State.ELEMENT_CONTENT;
@@ -748,6 +750,8 @@ public class XMLParser implements TokenConsumer {
                     }
                     // Set DTD context for attribute type lookup
                     attributes.setDTDContext(currentElementName, dtdParser);
+                    // Apply default attribute values from DTD
+                    applyDefaultAttributeValues(currentElementName);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                     contentHandler.endElement("", currentElementName, currentElementName);
                 }
@@ -787,6 +791,8 @@ public class XMLParser implements TokenConsumer {
                 if (contentHandler != null) {
                     // Set DTD context for attribute type lookup
                     attributes.setDTDContext(currentElementName, dtdParser);
+                    // Apply default attribute values from DTD
+                    applyDefaultAttributeValues(currentElementName);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                 }
                 state = State.ELEMENT_CONTENT;
@@ -797,6 +803,8 @@ public class XMLParser implements TokenConsumer {
                 if (contentHandler != null) {
                     // Set DTD context for attribute type lookup
                     attributes.setDTDContext(currentElementName, dtdParser);
+                    // Apply default attribute values from DTD
+                    applyDefaultAttributeValues(currentElementName);
                     contentHandler.startElement("", currentElementName, currentElementName, attributes);
                     contentHandler.endElement("", currentElementName, currentElementName);
                 }
@@ -1208,6 +1216,76 @@ public class XMLParser implements TokenConsumer {
         // Internal entity - send expanded text to content handler
         if (contentHandler != null && !expandedValue.isEmpty()) {
             contentHandler.characters(expandedValue.toCharArray(), 0, expandedValue.length());
+        }
+    }
+    
+    /**
+     * Applies default attribute values from the DTD to the current element.
+     * Called before startElement() to ensure all defaults are applied.
+     * 
+     * <p>For each attribute declared in the DTD for this element:
+     * <ul>
+     * <li>If attribute has default value and wasn't specified: expand and add with specified=false
+     * <li>If attribute is #FIXED and was specified: verify value matches fixed value
+     * <li>If attribute is #FIXED and wasn't specified: expand and add with specified=false
+     * </ul>
+     * 
+     * @param elementName the name of the element
+     * @throws SAXException if entity expansion fails or fixed value doesn't match
+     */
+    private void applyDefaultAttributeValues(String elementName) throws SAXException {
+        // Only apply defaults if we have a DTD
+        if (dtdParser == null) {
+            return;
+        }
+        
+        // Get attribute declarations for this element
+        java.util.Map<String, AttributeDeclaration> attrDecls = dtdParser.getAttributeDeclarations(elementName);
+        if (attrDecls == null || attrDecls.isEmpty()) {
+            return;
+        }
+        
+        // Process each declared attribute
+        for (AttributeDeclaration decl : attrDecls.values()) {
+            // Check if attribute was specified in document
+            int index = attributes.getIndex(decl.name);
+            boolean specified = (index >= 0);
+            
+            if (decl.mode == Token.FIXED) {
+                // #FIXED attribute
+                if (decl.defaultValue != null) {
+                    // Expand the fixed value
+                    EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
+                    String fixedValue = helper.expandEntityValue(decl.defaultValue, EntityExpansionContext.ATTRIBUTE_VALUE);
+                    
+                    if (specified) {
+                        // Verify specified value matches fixed value
+                        String specifiedValue = attributes.getValue(index);
+                        if (!fixedValue.equals(specifiedValue)) {
+                            throw new SAXParseException(
+                                "Attribute '" + decl.name + "' has #FIXED value '" + fixedValue + 
+                                "' but document specifies '" + specifiedValue + "'",
+                                locator);
+                        }
+                    } else {
+                        // Apply fixed value
+                        String normalizedValue = normalizeAttributeValue(fixedValue, elementName, decl.name);
+                        attributes.addAttribute("", decl.name, decl.name, decl.type, normalizedValue, false);
+                    }
+                }
+            } else if (!specified && decl.defaultValue != null) {
+                // Attribute not specified and has default value (not #REQUIRED, not #IMPLIED)
+                // Expand entity references in default value
+                EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
+                String expandedValue = helper.expandEntityValue(decl.defaultValue, EntityExpansionContext.ATTRIBUTE_VALUE);
+                
+                // Apply normalization
+                String normalizedValue = normalizeAttributeValue(expandedValue, elementName, decl.name);
+                
+                // Add attribute with specified=false
+                attributes.addAttribute("", decl.name, decl.name, decl.type, normalizedValue, false);
+            }
+            // Note: #REQUIRED and #IMPLIED don't get default values applied
         }
     }
     

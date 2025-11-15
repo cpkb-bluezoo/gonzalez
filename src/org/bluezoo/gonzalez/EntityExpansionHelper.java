@@ -182,14 +182,18 @@ public class EntityExpansionHelper {
     }
     
     /**
-     * Recursively expands an entity value.
+     * Recursively expands an entity value, processing both literal strings
+     * and nested entity references.
+     * 
+     * <p>This public method allows expansion of entity values (e.g., default
+     * attribute values from DTD) without requiring an entity name lookup.
      * 
      * @param replacementText the entity value as list of String and GeneralEntityReference
      * @param context the expansion context
      * @return the fully expanded value
      * @throws SAXException if expansion fails
      */
-    private String expandEntityValue(List<Object> replacementText, EntityExpansionContext context) 
+    public String expandEntityValue(List<Object> replacementText, EntityExpansionContext context) 
             throws SAXException {
         if (replacementText == null || replacementText.isEmpty()) {
             return "";
