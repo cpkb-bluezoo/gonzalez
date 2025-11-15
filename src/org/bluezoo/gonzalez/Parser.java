@@ -519,6 +519,8 @@ public class Parser implements XMLReader {
      */
     public void close() throws SAXException {
         tokenizer.close();
+        // Validate that parsing is complete (no unclosed constructs)
+        xmlParser.close();
     }
 
     /**

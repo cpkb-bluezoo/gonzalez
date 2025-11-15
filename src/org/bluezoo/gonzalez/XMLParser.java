@@ -223,6 +223,57 @@ public class XMLParser implements TokenConsumer {
      * Sets the content handler for receiving document events.
      * @param handler the content handler
      */
+    /**
+     * Closes the parser and validates that parsing is complete with no unclosed constructs.
+     * Called after all input has been processed.
+     * 
+     * @throws SAXException if there are unclosed constructs
+     */
+    public void close() throws SAXException {
+        // Check for unclosed constructs
+        switch (state) {
+            case CDATA_SECTION:
+                throw new SAXParseException("Unclosed CDATA section at end of document", locator);
+                
+            case COMMENT:
+                throw new SAXParseException("Unclosed comment at end of document", locator);
+                
+            case PI_TARGET:
+            case PI_CONTENT:
+                throw new SAXParseException("Unclosed processing instruction at end of document", locator);
+                
+            case ELEMENT_START:
+            case ELEMENT_NAME:
+            case ELEMENT_ATTRS:
+            case ATTRIBUTE_NAME:
+            case ATTRIBUTE_EQ:
+            case ATTRIBUTE_VALUE_START:
+            case ATTRIBUTE_VALUE:
+            case END_ELEMENT_START:
+            case END_ELEMENT_NAME:
+                throw new SAXParseException("Unclosed element at end of document", locator);
+                
+            case ELEMENT_CONTENT:
+                // Check if we're still inside an element (elementDepth > 0)
+                if (elementDepth > 0) {
+                    throw new SAXParseException("Unclosed element at end of document (depth=" + elementDepth + ")", locator);
+                }
+                break;
+                
+            case AFTER_ROOT:
+                // This is fine - we've closed the root element
+                break;
+                
+            case INIT:
+            case PROLOG:
+                throw new SAXParseException("No root element found in document", locator);
+                
+            default:
+                // Other states might indicate incomplete parsing
+                break;
+        }
+    }
+    
     public void setContentHandler(ContentHandler handler) {
         this.contentHandler = handler;
     }
