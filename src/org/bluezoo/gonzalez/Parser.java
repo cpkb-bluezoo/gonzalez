@@ -368,6 +368,10 @@ public class Parser implements XMLReader {
         if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
             return xmlParser.getLexicalHandler();
         }
+        // Gonzalez-specific properties
+        if ("http://www.nongnu.org/gonzalez/properties/dtd-parser".equals(name)) {
+            return xmlParser.getDTDParser();
+        }
         throw new SAXNotRecognizedException("Property not recognized: " + name);
     }
 

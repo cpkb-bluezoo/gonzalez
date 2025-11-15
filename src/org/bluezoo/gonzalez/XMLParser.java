@@ -219,6 +219,15 @@ public class XMLParser implements TokenConsumer {
     }
 
     /**
+     * Gets the DTD parser used for processing DOCTYPE declarations.
+     * This is only available after a DOCTYPE has been encountered during parsing.
+     * @return the DTDParser, or null if no DOCTYPE has been processed
+     */
+    public DTDParser getDTDParser() {
+        return dtdParser;
+    }
+
+    /**
      * Sets the lexical handler for receiving lexical events.
      * @param handler the lexical handler
      */
@@ -565,12 +574,6 @@ public class XMLParser implements TokenConsumer {
         if (dtdParser != null && dtdParser.canReceive(token)) {
             dtdParser.receive(token, data);
             return;
-        }
-        
-        // If DTDParser was active and can no longer receive, clean up
-        if (dtdParser != null && !dtdParser.canReceive(token)) {
-            dtdParser = null; // Allow GC, DTD parsing complete
-            state = State.PROLOG; // Back to prolog after DOCTYPE
         }
         
         // Handle token based on current state

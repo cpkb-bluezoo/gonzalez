@@ -62,10 +62,13 @@ public class DTDParser implements TokenConsumer {
         AFTER_EXTERNAL_ID,      // Read external ID, expecting [/GT
         IN_INTERNAL_SUBSET,     // Inside [ ... ], processing declarations
         AFTER_INTERNAL_SUBSET,  // Read ], expecting GT
+        IN_ELEMENTDECL,         // Parsing <!ELEMENT declaration
+        IN_ATTLISTDECL,         // Parsing <!ATTLIST declaration
         DONE                    // Read final GT, done processing
     }
 
     private State state = State.INITIAL;
+    private State savedState = State.IN_INTERNAL_SUBSET; // For returning after declarations
     private Locator locator;
     private DTDHandler dtdHandler;
     private LexicalHandler lexicalHandler;
@@ -99,19 +102,38 @@ public class DTDParser implements TokenConsumer {
     /**
      * Element declarations: element name -> ElementDeclaration.
      * Uses HashMap for O(1) lookup during validation.
+     * Keys are interned strings.
      */
     private Map<String, ElementDeclaration> elementDecls;
 
     /**
-     * Attribute declarations: "elementName:attributeName" -> AttributeDeclaration.
-     * Composite key allows efficient lookup of specific attribute for element.
+     * Attribute declarations: element name -> (attribute name -> AttributeDeclaration).
+     * Two-level map structure for efficient lookup by element and attribute.
+     * Uses HashMap as DTDs are typically small (dozens to hundreds of declarations)
+     * and O(1) lookup is more important than sorted iteration.
+     * All keys are interned strings for fast comparison.
      */
-    private Map<String, AttributeDeclaration> attributeDecls;
+    private Map<String, Map<String, AttributeDeclaration>> attributeDecls;
 
     /**
      * Depth tracking for nested structures (e.g., conditional sections).
      */
     private int nestingDepth = 0;
+    
+    /**
+     * Current element declaration being parsed.
+     */
+    private String currentElementName;
+    private StringBuilder currentContentModel;
+    
+    /**
+     * Current attribute list declaration being parsed.
+     */
+    private String currentAttlistElement;
+    private String currentAttributeName;
+    private String currentAttributeType;
+    private String currentAttributeMode;
+    private String currentAttributeValue;
 
     /**
      * Constructs a new DTDParser.
@@ -200,6 +222,14 @@ public class DTDParser implements TokenConsumer {
 
             case AFTER_INTERNAL_SUBSET:
                 handleAfterInternalSubset(token, data);
+                break;
+                
+            case IN_ELEMENTDECL:
+                handleInElementDecl(token, data);
+                break;
+                
+            case IN_ATTLISTDECL:
+                handleInAttlistDecl(token, data);
                 break;
         }
     }
@@ -405,11 +435,22 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             case START_ELEMENTDECL:
-                // TODO: Handle element declarations
+                // Start parsing element declaration
+                savedState = state;
+                state = State.IN_ELEMENTDECL;
+                currentElementName = null;
+                currentContentModel = new StringBuilder();
                 break;
 
             case START_ATTLISTDECL:
-                // TODO: Handle attribute list declarations
+                // Start parsing attribute list declaration
+                savedState = state;
+                state = State.IN_ATTLISTDECL;
+                currentAttlistElement = null;
+                currentAttributeName = null;
+                currentAttributeType = null;
+                currentAttributeMode = null;
+                currentAttributeValue = null;
                 break;
 
             case START_ENTITYDECL:
@@ -458,6 +499,242 @@ public class DTDParser implements TokenConsumer {
 
             default:
                 throw new SAXException("Expected GT after internal subset, got: " + token);
+        }
+    }
+
+    /**
+     * Handles tokens within an <!ELEMENT declaration.
+     */
+    private void handleInElementDecl(Token token, CharBuffer data) throws SAXException {
+        switch (token) {
+            case S:
+                // Whitespace, ignore
+                break;
+                
+            case NAME:
+                if (currentElementName == null) {
+                    // This is the element name
+                    currentElementName = extractString(data);
+                } else {
+                    // This is part of the content model
+                    String nameStr = extractString(data);
+                    if (currentContentModel.length() > 0) {
+                        currentContentModel.append(' ');
+                    }
+                    // Check if this is PCDATA (tokenizer may emit as NAME in some contexts)
+                    if (nameStr.equals("PCDATA")) {
+                        currentContentModel.append("#PCDATA");
+                    } else {
+                        currentContentModel.append(nameStr);
+                    }
+                }
+                break;
+                
+            case OPEN_PAREN:
+            case CLOSE_PAREN:
+            case STAR:
+            case PLUS:
+            case QUERY:
+            case PIPE:
+            case COMMA:
+                // Content model punctuation (but not HASH - that's part of #PCDATA)
+                currentContentModel.append(token == Token.OPEN_PAREN ? '(' :
+                                          token == Token.CLOSE_PAREN ? ')' :
+                                          token == Token.STAR ? '*' :
+                                          token == Token.PLUS ? '+' :
+                                          token == Token.QUERY ? '?' :
+                                          token == Token.PIPE ? '|' :
+                                          ',');
+                break;
+                
+            case EMPTY:
+                currentContentModel.append("EMPTY");
+                break;
+                
+            case ANY:
+                currentContentModel.append("ANY");
+                break;
+                
+            case PCDATA:
+                currentContentModel.append("#PCDATA");
+                break;
+                
+            case GT:
+                // End of element declaration
+                if (currentElementName != null) {
+                    // Determine content type from model string
+                    String modelStr = currentContentModel.toString().trim();
+                    ElementDeclaration.ContentType contentType;
+                    
+                    if (modelStr.equals("EMPTY")) {
+                        contentType = ElementDeclaration.ContentType.EMPTY;
+                    } else if (modelStr.equals("ANY")) {
+                        contentType = ElementDeclaration.ContentType.ANY;
+                    } else if (modelStr.indexOf("#PCDATA") >= 0) {
+                        // Mixed content: contains #PCDATA anywhere
+                        contentType = ElementDeclaration.ContentType.MIXED;
+                    } else {
+                        // Element content: structured content model
+                        contentType = ElementDeclaration.ContentType.ELEMENT;
+                    }
+                    
+                    // For now, create simple declaration (no content model tree parsing)
+                    // TODO: Parse content model into tree structure
+                    ElementDeclaration decl = new ElementDeclaration(currentElementName, contentType);
+                    addElementDeclaration(decl);
+                }
+                // Return to saved state
+                state = savedState;
+                break;
+                
+            default:
+                // Other tokens, ignore
+                break;
+        }
+    }
+
+    /**
+     * Handles tokens within an <!ATTLIST declaration.
+     */
+    private void handleInAttlistDecl(Token token, CharBuffer data) throws SAXException {
+        switch (token) {
+            case S:
+                // Whitespace, ignore
+                break;
+                
+            case NAME:
+                String nameStr = extractString(data);
+                
+                if (currentAttlistElement == null) {
+                    // This is the element name
+                    currentAttlistElement = nameStr;
+                } else if (currentAttributeName == null) {
+                    // This is the first attribute name
+                    currentAttributeName = nameStr;
+                } else if (currentAttributeType == null) {
+                    // This is the attribute type
+                    // Check if this looks like a type keyword
+                    switch (nameStr) {
+                        case "CDATA":
+                        case "ID":
+                        case "IDREF":
+                        case "IDREFS":
+                        case "ENTITY":
+                        case "ENTITIES":
+                        case "NMTOKEN":
+                        case "NMTOKENS":
+                        case "NOTATION":
+                            currentAttributeType = nameStr;
+                            break;
+                        default:
+                            // Enumerated type or other
+                            currentAttributeType = nameStr;
+                            break;
+                    }
+                } else if (currentAttributeMode != null || currentAttributeValue != null) {
+                    // We have a complete attribute (name, type, and mode/value)
+                    // This NAME must be a new attribute
+                    saveCurrentAttribute();
+                    // Start new attribute
+                    currentAttributeName = nameStr;
+                    currentAttributeType = null;
+                    currentAttributeMode = null;
+                    currentAttributeValue = null;
+                }
+                // If we have name and type but no mode/value yet, wait for more tokens
+                break;
+                
+            case CDATA_TYPE:
+                currentAttributeType = "CDATA";
+                break;
+                
+            case ID:
+                currentAttributeType = "ID";
+                break;
+                
+            case IDREF:
+                currentAttributeType = "IDREF";
+                break;
+                
+            case IDREFS:
+                currentAttributeType = "IDREFS";
+                break;
+                
+            case ENTITY:
+                currentAttributeType = "ENTITY";
+                break;
+                
+            case ENTITIES:
+                currentAttributeType = "ENTITIES";
+                break;
+                
+            case NMTOKEN:
+                currentAttributeType = "NMTOKEN";
+                break;
+                
+            case NMTOKENS:
+                currentAttributeType = "NMTOKENS";
+                break;
+                
+            case NOTATION:
+                currentAttributeType = "NOTATION";
+                break;
+                
+            case REQUIRED:
+                currentAttributeMode = "#REQUIRED";
+                // After mode, next NAME is a new attribute
+                break;
+                
+            case IMPLIED:
+                currentAttributeMode = "#IMPLIED";
+                // After mode, next NAME is a new attribute
+                break;
+                
+            case FIXED:
+                currentAttributeMode = "#FIXED";
+                // After FIXED, we expect a default value
+                break;
+                
+            case QUOT:
+            case APOS:
+                // Quote, ignore (value will come in CDATA)
+                break;
+                
+            case CDATA:
+                // This is the default value
+                if (currentAttributeValue == null) {
+                    currentAttributeValue = extractString(data);
+                }
+                // After default value, next NAME is a new attribute
+                break;
+                
+            case GT:
+                // End of ATTLIST - save any pending attribute
+                saveCurrentAttribute();
+                // Return to saved state
+                state = savedState;
+                break;
+                
+            default:
+                // Other tokens, ignore
+                break;
+        }
+    }
+    
+    /**
+     * Helper method to save the current attribute being parsed.
+     * Called when we detect a new attribute starting or when GT is encountered.
+     */
+    private void saveCurrentAttribute() {
+        if (currentAttlistElement != null && currentAttributeName != null) {
+            // Create and store attribute declaration
+            AttributeDeclaration decl = new AttributeDeclaration(
+                currentAttributeName,
+                currentAttributeType != null ? currentAttributeType : "CDATA",
+                currentAttributeMode,
+                currentAttributeValue
+            );
+            addAttributeDeclaration(currentAttlistElement, decl);
         }
     }
 
@@ -522,8 +799,27 @@ public class DTDParser implements TokenConsumer {
         if (attributeDecls == null) {
             return null;
         }
-        String key = elementName + ":" + attributeName;
-        return attributeDecls.get(key);
+        // Intern keys for fast comparison
+        elementName = elementName.intern();
+        attributeName = attributeName.intern();
+        
+        Map<String, AttributeDeclaration> elementAttrs = attributeDecls.get(elementName);
+        if (elementAttrs == null) {
+            return null;
+        }
+        return elementAttrs.get(attributeName);
+    }
+    
+    /**
+     * Gets all attribute declarations for a specific element.
+     * @param elementName the element name
+     * @return Map of attribute name -> AttributeDeclaration, or null if no attributes declared
+     */
+    public Map<String, AttributeDeclaration> getAttributeDeclarations(String elementName) {
+        if (attributeDecls == null) {
+            return null;
+        }
+        return attributeDecls.get(elementName.intern());
     }
 
     /**
@@ -536,7 +832,8 @@ public class DTDParser implements TokenConsumer {
         if (elementDecls == null) {
             elementDecls = new HashMap<>();
         }
-        elementDecls.put(decl.name, decl);
+        // Intern element name for fast comparison
+        elementDecls.put(decl.name.intern(), decl);
     }
 
     /**
@@ -550,8 +847,19 @@ public class DTDParser implements TokenConsumer {
         if (attributeDecls == null) {
             attributeDecls = new HashMap<>();
         }
-        String key = elementName + ":" + decl.name;
-        attributeDecls.put(key, decl);
+        // Intern keys for fast comparison
+        elementName = elementName.intern();
+        String attrName = decl.name.intern();
+        
+        // Get or create the attribute map for this element
+        Map<String, AttributeDeclaration> elementAttrs = attributeDecls.get(elementName);
+        if (elementAttrs == null) {
+            elementAttrs = new HashMap<>();
+            attributeDecls.put(elementName, elementAttrs);
+        }
+        
+        // Store the attribute declaration
+        elementAttrs.put(attrName, decl);
     }
 
     /**
