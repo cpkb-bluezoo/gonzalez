@@ -890,9 +890,8 @@ public class XMLParser implements TokenConsumer {
         } else if (token == Token.GENERALENTITYREF) {
             // General entity reference: &name;
             String entityName = extractString(data);
-            // TODO: Look up entity in DTD and resolve (may be external)
-            // For now, this is an error
-            throw new SAXParseException("General entity reference '&" + entityName + ";' in attribute value not yet supported", locator);
+            String expandedValue = expandGeneralEntityInAttributeValue(entityName);
+            currentAttributeValue.append(expandedValue);
         } else {
             throw new SAXParseException("Unexpected token in attribute value: " + token, locator);
         }
@@ -922,9 +921,8 @@ public class XMLParser implements TokenConsumer {
             case GENERALENTITYREF:
                 // General entity reference: &name;
                 String entityName = extractString(data);
-                // TODO: Look up entity in DTD and resolve (may be external)
-                // For now, this is an error
-                throw new SAXParseException("General entity reference '&" + entityName + ";' in content not yet supported", locator);
+                expandGeneralEntityInContent(entityName);
+                break;
                 
             case LT:
                 // Start of nested element
@@ -1167,6 +1165,50 @@ public class XMLParser implements TokenConsumer {
             sb.append(buffer.get());
         }
         return sb.toString();
+    }
+    
+    /**
+     * Expands a general entity reference in an attribute value.
+     * Uses the context-aware EntityExpansionHelper.
+     * 
+     * @param entityName the name of the entity to expand
+     * @return the expanded entity value
+     * @throws SAXParseException if the entity is not found, is external,
+     *         or if circular references are detected
+     */
+    private String expandGeneralEntityInAttributeValue(String entityName) throws SAXException {
+        EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
+        return helper.expandGeneralEntity(entityName, EntityExpansionContext.ATTRIBUTE_VALUE);
+    }
+    
+    /**
+     * Expands a general entity reference in element content.
+     * Uses the context-aware EntityExpansionHelper.
+     * 
+     * <p>For internal entities, the expanded text is sent to the content handler
+     * as character data. For external entities, async resolution would be triggered
+     * (not yet implemented - currently throws an error).
+     * 
+     * @param entityName the name of the entity to expand
+     * @throws SAXException if the entity is not found, is unparsed,
+     *         or if circular references are detected
+     */
+    private void expandGeneralEntityInContent(String entityName) throws SAXException {
+        EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
+        String expandedValue = helper.expandGeneralEntity(entityName, EntityExpansionContext.CONTENT);
+        
+        if (expandedValue == null) {
+            // External entity - would require async resolution
+            // For now, report this as not yet implemented
+            throw new SAXParseException(
+                "External entity reference '&" + entityName + ";' in content requires async resolution (not yet implemented)",
+                locator);
+        }
+        
+        // Internal entity - send expanded text to content handler
+        if (contentHandler != null && !expandedValue.isEmpty()) {
+            contentHandler.characters(expandedValue.toCharArray(), 0, expandedValue.length());
+        }
     }
     
     /**

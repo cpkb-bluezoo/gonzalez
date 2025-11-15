@@ -1037,31 +1037,155 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '|':
-                    emitToken(Token.PIPE, null);
+                    // Only emit as special token outside of ATTR_VALUE
+                    if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.PI_DATA) {
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        emitToken(Token.PIPE, null);
+                    }
                     break;
                     
                 case '[':
-                    emitToken(Token.OPEN_BRACKET, null);
+                    // Only emit as special token outside of ATTR_VALUE
+                    if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.PI_DATA) {
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        emitToken(Token.OPEN_BRACKET, null);
+                    }
+                    break;
+                    
+                case ']':
+                    // In CDATA sections, ']' might be part of ']]>'
+                    if (context == TokenizerContext.CDATA_SECTION) {
+                        // Handle ]]> sequence in CDATA
+                        if (charBuffer.hasRemaining()) {
+                            charBuffer.mark();
+                            char next = charBuffer.get();
+                            if (next == ']' && charBuffer.hasRemaining()) {
+                                char next2 = charBuffer.get();
+                                if (next2 == '>') {
+                                    updateColumn();
+                                    updateColumn();
+                                    emitToken(Token.END_CDATA, null);
+                                    break;
+                                }
+                                charBuffer.reset();
+                            } else {
+                                charBuffer.reset();
+                            }
+                        }
+                        // Not ]]>, treat as CDATA
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else if (context == TokenizerContext.ATTR_VALUE || 
+                               context == TokenizerContext.CONTENT ||
+                               context == TokenizerContext.COMMENT ||
+                               context == TokenizerContext.PI_DATA) {
+                        // In these contexts, ']' is just regular text
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        // In DOCTYPE contexts, emit as token
+                        emitToken(Token.CLOSE_BRACKET, null);
+                    }
                     break;
                     
                 case '(':
-                    emitToken(Token.OPEN_PAREN, null);
+                    // Only emit as special token outside of ATTR_VALUE
+                    if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.PI_DATA) {
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        emitToken(Token.OPEN_PAREN, null);
+                    }
                     break;
                     
                 case ')':
-                    emitToken(Token.CLOSE_PAREN, null);
+                    // Only emit as special token outside of ATTR_VALUE
+                    if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.PI_DATA) {
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        emitToken(Token.CLOSE_PAREN, null);
+                    }
                     break;
                     
                 case '*':
-                    emitToken(Token.STAR, null);
+                    // Only emit as special token outside of ATTR_VALUE
+                    if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.PI_DATA) {
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        emitToken(Token.STAR, null);
+                    }
                     break;
                     
                 case '+':
-                    emitToken(Token.PLUS, null);
+                    // Only emit as special token outside of ATTR_VALUE
+                    if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.PI_DATA) {
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        emitToken(Token.PLUS, null);
+                    }
                     break;
                     
                 case ',':
-                    emitToken(Token.COMMA, null);
+                    // Only emit as special token outside of ATTR_VALUE
+                    if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.PI_DATA) {
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        emitToken(Token.COMMA, null);
+                    }
                     break;
                     
                 case '/':
@@ -1117,41 +1241,6 @@ public class XMLTokenizer implements Locator2 {
                             if (!tryEmitCDATA()) {
                                 return;
                             }
-                        }
-                    } else {
-                        // Need more data
-                        charBuffer.reset();
-                        return;
-                    }
-                    break;
-                    
-                case ']':
-                    // Could be ']', ']]>' (END_CDATA), or ']]>' (END_CONDITIONAL)
-                    if (charBuffer.hasRemaining()) {
-                        charBuffer.mark();
-                        char next = charBuffer.get();
-                        if (next == ']') {
-                            // ']]'
-                            if (charBuffer.hasRemaining()) {
-                                char next2 = charBuffer.get();
-                                if (next2 == '>') {
-                                    updateColumn(); updateColumn();
-                                    // Emit END_CDATA for ]]> (also used for conditional sections)
-                                    emitToken(Token.END_CDATA, null);
-                                } else {
-                                    charBuffer.reset();
-                                    // ']]' not followed by '>', emit CLOSE_BRACKET
-                                    emitToken(Token.CLOSE_BRACKET, null);
-                                }
-                            } else {
-                                // Need more data
-                                charBuffer.reset();
-                                return;
-                            }
-                        } else {
-                            charBuffer.reset();
-                            // Single ']', emit CLOSE_BRACKET
-                            emitToken(Token.CLOSE_BRACKET, null);
                         }
                     } else {
                         // Need more data
