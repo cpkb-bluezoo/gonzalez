@@ -125,6 +125,14 @@ public class XMLParser implements TokenConsumer {
     private Set<String> entityResolutionStack;
     
     /**
+     * Depth of external entity processing.
+     * 0 = main document
+     * >0 = inside external entity (DTD subset or general entity)
+     * Used to reject DOCTYPE declarations in external entities.
+     */
+    private int externalEntityDepth = 0;
+    
+    /**
      * Lazily-constructed DTD parser for processing DOCTYPE declarations.
      * Only allocated when a DOCTYPE is encountered.
      */
@@ -156,6 +164,12 @@ public class XMLParser implements TokenConsumer {
      * Current attribute name being processed.
      */
     private String currentAttributeName;
+    
+    /**
+     * Track if whitespace was seen after previous attribute value.
+     * Required for well-formedness: attributes must be separated by whitespace.
+     */
+    private boolean sawWhitespaceAfterAttributeValue;
     
     /**
      * Current attribute value being accumulated.
@@ -198,16 +212,11 @@ public class XMLParser implements TokenConsumer {
     private int elementDepth;
     
     /**
-     * Stack of content model validators for validation (only used when validationEnabled).
-     * Index corresponds to element depth.
+     * Stack of element validation contexts.
+     * Used for both well-formedness checking (end tag matching) and validation (content model).
+     * Each context contains the element name and its validator (if validation is enabled).
      */
-    private java.util.ArrayList<ContentModelValidator> validatorStack;
-    
-    /**
-     * Stack of element names for validation error reporting.
-     * Index corresponds to element depth.
-     */
-    private java.util.ArrayList<String> elementNameStack;
+    private java.util.Deque<ElementValidationContext> elementStack;
     
     /**
      * Attribute validator for validation mode (only used when validationEnabled).
@@ -562,12 +571,16 @@ public class XMLParser implements TokenConsumer {
         // Add to stack
         entityResolutionStack.add(resolvedSystemId);
         
+        // Increment external entity depth
+        externalEntityDepth++;
+        
         try {
             // Create nested tokenizer for entity
             XMLTokenizer entityTokenizer = new XMLTokenizer(
                 this,  // Send tokens back to this parser
                 source.getPublicId(),
-                resolvedSystemId
+                resolvedSystemId,
+                true  // This is an external entity
             );
             
             // Get input stream from source
@@ -597,6 +610,8 @@ public class XMLParser implements TokenConsumer {
             // Entity processing complete, continue with main stream
             
         } finally {
+            // Decrement external entity depth
+            externalEntityDepth--;
             // Remove from stack
             entityResolutionStack.remove(resolvedSystemId);
         }
@@ -656,11 +671,8 @@ public class XMLParser implements TokenConsumer {
         attributes = null;
         
         // Clear validation stacks
-        if (validatorStack != null) {
-            validatorStack.clear();
-        }
-        if (elementNameStack != null) {
-            elementNameStack.clear();
+        if (elementStack != null) {
+            elementStack.clear();
         }
         if (attributeValidator != null) {
             attributeValidator.reset();
@@ -674,6 +686,14 @@ public class XMLParser implements TokenConsumer {
 
     @Override
     public void receive(Token token, CharBuffer data) throws SAXException {
+        // DOCTYPE declarations are only allowed in the main document,
+        // not in external entities. Check before delegating to DTDParser.
+        if (token == Token.START_DOCTYPE && externalEntityDepth > 0) {
+            throw fatalError(
+                "DOCTYPE declaration not allowed in external entity " +
+                "(must appear only in main document)");
+        }
+        
         // Check if we should delegate to DTDParser
         if (dtdParser != null && dtdParser.canReceive(token)) {
             dtdParser.receive(token, data);
@@ -788,9 +808,9 @@ public class XMLParser implements TokenConsumer {
                     documentStarted = true;
                 }
                 
-                // Initialize element name stack for well-formedness checking
-                if (elementNameStack == null) {
-                    elementNameStack = new ArrayList<>();
+                // Initialize element stack for well-formedness and validation
+                if (elementStack == null) {
+                    elementStack = new java.util.ArrayDeque<>();
                 }
                 
                 state = State.ELEMENT_START;
@@ -809,11 +829,12 @@ public class XMLParser implements TokenConsumer {
             currentElementName = extractString(data);
             elementDepth++;
             
-            // Push element name onto stack for well-formedness checking
-            if (elementNameStack != null) {
-                elementNameStack.add(currentElementName);
+            // Push element onto stack for well-formedness and validation
+            // (validator will be null if validation is disabled)
+            if (elementStack != null) {
+                elementStack.addLast(new ElementValidationContext(currentElementName, null));
             }
-            
+
             // Record this element as a child of its parent (for validation)
             if (validationEnabled && dtdParser != null && elementDepth > 1) {
                 // We're inside another element, record this as a child
@@ -844,6 +865,7 @@ public class XMLParser implements TokenConsumer {
                     namespaceTracker.pushContext();
                     namespaceContextPushed = true;
                 }
+                sawWhitespaceAfterAttributeValue = true; // First attribute doesn't need whitespace
                 state = State.ELEMENT_ATTRS;
                 break;
                 
@@ -875,8 +897,8 @@ public class XMLParser implements TokenConsumer {
                 // Fire startElement and endElement (handles namespaces, defaults, etc.)
                 fireStartElement(currentElementName, true);
                 // Pop element name from stack (empty element closes immediately)
-                if (elementNameStack != null && !elementNameStack.isEmpty()) {
-                    elementNameStack.remove(elementNameStack.size() - 1);
+                if (elementStack != null && !elementStack.isEmpty()) {
+                    elementStack.removeLast();
                 }
                 elementDepth--;
                 if (elementDepth == 0) {
@@ -909,12 +931,27 @@ public class XMLParser implements TokenConsumer {
     private void handleElementAttrs(Token token, CharBuffer data) throws SAXException {
         switch (token) {
             case S:
-                // Whitespace, ignore
+                // Whitespace between attributes - mark it
+                sawWhitespaceAfterAttributeValue = true;
                 break;
                 
             case NAME:
-                // Attribute name
+                // Attribute name - must have whitespace before it (except for first attribute)
+                if (attributes.getLength() > 0 && !sawWhitespaceAfterAttributeValue) {
+                    throw fatalError("Whitespace required between attributes");
+                }
                 currentAttributeName = extractString(data);
+                sawWhitespaceAfterAttributeValue = false; // Reset for next attribute
+                state = State.ATTRIBUTE_NAME;
+                break;
+                
+            case COLON:
+                // Colon as attribute name (valid in XML 1.0, though discouraged by XML Namespaces)
+                if (attributes.getLength() > 0 && !sawWhitespaceAfterAttributeValue) {
+                    throw fatalError("Whitespace required between attributes");
+                }
+                currentAttributeName = ":";
+                sawWhitespaceAfterAttributeValue = false; // Reset for next attribute
                 state = State.ATTRIBUTE_NAME;
                 break;
                 
@@ -934,8 +971,8 @@ public class XMLParser implements TokenConsumer {
                 // Fire startElement and endElement (handles namespaces, defaults, etc.)
                 fireStartElement(currentElementName, true);
                 // Pop element name from stack (empty element closes immediately)
-                if (elementNameStack != null && !elementNameStack.isEmpty()) {
-                    elementNameStack.remove(elementNameStack.size() - 1);
+                if (elementStack != null && !elementStack.isEmpty()) {
+                    elementStack.removeLast();
                 }
                 elementDepth--;
                 if (elementDepth == 0) {
@@ -1187,16 +1224,16 @@ public class XMLParser implements TokenConsumer {
             case GT:
                 // End of end tag
                 // Validate end tag name matches start tag (well-formedness constraint)
-                // Note: element Name stack is maintained for well-formedness checking
-                if (elementNameStack != null && !elementNameStack.isEmpty()) {
-                    String expectedName = elementNameStack.get(elementNameStack.size() - 1);
+                // Note: element stack is maintained for well-formedness checking
+                if (elementStack != null && !elementStack.isEmpty()) {
+                    String expectedName = elementStack.peekLast().elementName;
                     if (!currentElementName.equals(expectedName)) {
- throw fatalError("End tag </" + currentElementName + "> does not match start tag <" + expectedName + ">");
+throw fatalError("End tag </" + currentElementName + "> does not match start tag <" + expectedName + ">");
                     }
-                    // Pop the element name from stack
-                    elementNameStack.remove(elementNameStack.size() - 1);
+                    // Pop the element from stack
+                    elementStack.removeLast();
                 }
-                
+
                 // Fire endElement (handles namespaces, etc.)
                 fireEndElement(currentElementName);
                 elementDepth--;
@@ -1767,10 +1804,8 @@ public class XMLParser implements TokenConsumer {
      * @throws SAXException if processing fails
      */
     private void pushElementValidator(String elementName) throws SAXException {
-        // Initialize stacks if needed
-        if (validatorStack == null) {
-            validatorStack = new ArrayList<>();
-            elementNameStack = new ArrayList<>();
+        if (elementStack == null || elementStack.isEmpty()) {
+            return; // Should not happen
         }
         
         // Get element declaration from DTD
@@ -1784,10 +1819,10 @@ public class XMLParser implements TokenConsumer {
             elementDecl.contentType = ElementDeclaration.ContentType.ANY;
         }
         
-        // Create validator for this element
+        // Create validator and replace the context on the stack
         ContentModelValidator validator = new ContentModelValidator(elementDecl);
-        validatorStack.add(validator);
-        elementNameStack.add(elementName);
+        elementStack.removeLast(); // Remove the context with null validator
+        elementStack.addLast(new ElementValidationContext(elementName, validator));
     }
     
     /**
@@ -1796,24 +1831,23 @@ public class XMLParser implements TokenConsumer {
      * @throws SAXException if processing fails
      */
     private void popElementValidator() throws SAXException {
-        if (validatorStack == null || validatorStack.isEmpty()) {
+        if (elementStack == null || elementStack.isEmpty()) {
             return;
         }
         
-        // Get current validator
-        int index = validatorStack.size() - 1;
-        ContentModelValidator validator = validatorStack.get(index);
-        String elementName = elementNameStack.get(index);
+        // Get current context (peek, don't pop yet)
+        ElementValidationContext context = elementStack.peekLast();
         
-        // Validate that content is complete
-        String error = validator.validate();
-        if (error != null) {
-            reportValidationError(error);
+        // Validate that content is complete (if validator exists)
+        if (context.validator != null) {
+            String error = context.validator.validate();
+            if (error != null) {
+                reportValidationError(error);
+            }
         }
         
-        // Pop from stacks
-        validatorStack.remove(index);
-        elementNameStack.remove(index);
+        // Pop from stack (this is done in the end tag handling already, so skip here)
+        // The elementStack.removeLast() is called in handleEndElementName
     }
     
     /**
@@ -1823,15 +1857,18 @@ public class XMLParser implements TokenConsumer {
      * @throws SAXException if processing fails
      */
     private void recordChildElement(String childElementName) throws SAXException {
-        if (validatorStack == null || validatorStack.isEmpty()) {
+        if (elementStack == null || elementStack.isEmpty()) {
             return;
         }
         
-        // Get parent validator (current element)
-        ContentModelValidator validator = validatorStack.get(validatorStack.size() - 1);
+        // Get parent context (current element)
+        ElementValidationContext context = elementStack.peekLast();
+        if (context.validator == null) {
+            return; // No validator (validation disabled or no DTD)
+        }
         
         // Record child
-        String error = validator.addChildElement(childElementName);
+        String error = context.validator.addChildElement(childElementName);
         if (error != null) {
             reportValidationError(error);
         }
@@ -1844,18 +1881,21 @@ public class XMLParser implements TokenConsumer {
      * @throws SAXException if processing fails
      */
     private void recordTextContent(String text) throws SAXException {
-        if (validatorStack == null || validatorStack.isEmpty()) {
+        if (elementStack == null || elementStack.isEmpty()) {
             return;
+        }
+        
+        // Get current context
+        ElementValidationContext context = elementStack.peekLast();
+        if (context.validator == null) {
+            return; // No validator (validation disabled or no DTD)
         }
         
         // Check if text is whitespace-only
         boolean isWhitespaceOnly = text.trim().isEmpty();
         
-        // Get current validator
-        ContentModelValidator validator = validatorStack.get(validatorStack.size() - 1);
-        
         // Record text
-        String error = validator.addTextContent(text, isWhitespaceOnly);
+        String error = context.validator.addTextContent(text, isWhitespaceOnly);
         if (error != null) {
             reportValidationError(error);
         }

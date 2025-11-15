@@ -241,8 +241,8 @@ public class JamesClarkXmlTestConformanceTest {
             
             parser.setErrorHandler(errorHandler);
             
-            // Enable validation for "invalid" type tests
-            if ("invalid".equals(testCase.type)) {
+            // Enable validation for "invalid" and "valid" type tests
+            if ("invalid".equals(testCase.type) || "valid".equals(testCase.type)) {
                 parser.setFeature("http://xml.org/sax/features/validation", true);
             }
             

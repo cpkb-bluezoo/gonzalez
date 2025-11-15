@@ -65,6 +65,13 @@ public class XMLTokenizer implements Locator2 {
      * Whether this document is standalone.
      */
     private boolean standalone;
+    
+    /**
+     * Whether this tokenizer is parsing an external entity (vs. the main document).
+     * External entities have text declarations instead of XML declarations,
+     * and text declarations MUST NOT have a "standalone" attribute.
+     */
+    private boolean isExternalEntity;
 
     /**
      * The internal byte underflow buffer.
@@ -190,7 +197,7 @@ public class XMLTokenizer implements Locator2 {
      * @param consumer the TokenConsumer that will receive tokens
      */
     public XMLTokenizer(TokenConsumer consumer) {
-        this(consumer, null, null);
+        this(consumer, null, null, false);
     }
 
     /**
@@ -203,9 +210,23 @@ public class XMLTokenizer implements Locator2 {
      * @param systemId the system identifier of the document
      */
     public XMLTokenizer(TokenConsumer consumer, String publicId, String systemId) {
+        this(consumer, publicId, systemId, false);
+    }
+    
+    /**
+     * Constructs a new XMLTokenizer for an external entity.
+     * External entities have text declarations instead of XML declarations,
+     * and text declarations MUST NOT have a "standalone" attribute.
+     * @param consumer the TokenConsumer that will receive tokens
+     * @param publicId the public identifier of the entity
+     * @param systemId the system identifier of the entity
+     * @param isExternalEntity true if this is an external entity, false for main document
+     */
+    public XMLTokenizer(TokenConsumer consumer, String publicId, String systemId, boolean isExternalEntity) {
         this.consumer = consumer;
         this.publicId = publicId;
         this.systemId = systemId;
+        this.isExternalEntity = isExternalEntity;
         this.consumer.setLocator(this);
     }
 
@@ -805,6 +826,11 @@ public class XMLTokenizer implements Locator2 {
             }
             ctx.seenAttributes |= 2;
         } else if ("standalone".equals(ctx.currentName)) {
+            // Text declarations (in external entities) MUST NOT have standalone attribute
+            if (isExternalEntity) {
+                throw consumer.fatalError(
+                    "Text declaration in external entity must not have 'standalone' attribute");
+            }
             if ((ctx.seenAttributes & 1) == 0) {
                 throw consumer.fatalError("'version' must come before 'standalone' in XML declaration");
             }

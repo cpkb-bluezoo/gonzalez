@@ -294,10 +294,9 @@ public class NamespaceScopeTracker {
             String prefix = qName.substring(0, colonIndex);
             String localName = qName.substring(colonIndex + 1);
             
-            // Validate local name not empty
-            if (localName.isEmpty()) {
-                throw new IllegalArgumentException("Local name must not be empty: " + qName);
-            }
+            // Special case: single colon ":" is valid XML 1.0 name
+            // Prefix and localName are both empty strings
+            // Don't validate localName.isEmpty() in this case
             
             // Look up prefix
             String namespaceURI = getURI(prefix);

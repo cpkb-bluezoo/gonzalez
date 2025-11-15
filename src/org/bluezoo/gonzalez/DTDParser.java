@@ -1168,6 +1168,12 @@ public class DTDParser implements TokenConsumer {
                         throw new SAXParseException(
                             "Nested groups not allowed in mixed content", locator);
                     }
+                    // Element names in mixed content cannot have occurrence indicators
+                    if (child.type == ElementDeclaration.ContentModel.NodeType.ELEMENT &&
+                        child.occurrence != ElementDeclaration.ContentModel.Occurrence.ONCE) {
+                        throw new SAXParseException(
+                            "Element names in mixed content cannot have occurrence indicators", locator);
+                    }
                 }
             }
             
@@ -1249,6 +1255,13 @@ public class DTDParser implements TokenConsumer {
                         // Start new attribute
                         currentAttributeDecl = new AttributeDeclaration();
                         currentAttributeDecl.name = extractString(data);
+                        attListDeclState = AttListDeclState.AFTER_ATTR_NAME;
+                        break;
+                        
+                    case COLON:
+                        // Colon is a valid XML 1.0 name (though discouraged by XML Namespaces)
+                        currentAttributeDecl = new AttributeDeclaration();
+                        currentAttributeDecl.name = ":";
                         attListDeclState = AttListDeclState.AFTER_ATTR_NAME;
                         break;
                         
@@ -1543,6 +1556,12 @@ public class DTDParser implements TokenConsumer {
                             defaultValueTextBuilder.setLength(0);
                         }
                         String entityName = extractString(data);
+                        // WFC: Entity Declared - entity must be declared before use in attribute default
+                        if (getGeneralEntity(entityName) == null) {
+                            throw new SAXParseException(
+                                "Entity '" + entityName + "' must be declared before use in attribute default value " +
+                                "(WFC: Entity Declared)", locator);
+                        }
                         defaultValueBuilder.add(new GeneralEntityReference(entityName));
                         break;
                         
@@ -2021,14 +2040,12 @@ public class DTDParser implements TokenConsumer {
                         break;
                     case PARAMETERENTITYREF:
                         // Parameter entity reference in entity value
-                        // Flush any accumulated text first
-                        if (entityValueTextBuilder.length() > 0) {
-                            entityValueBuilder.add(entityValueTextBuilder.toString());
-                            entityValueTextBuilder.setLength(0);
-                        }
-                        String paramName = extractString(data);
-                        entityValueBuilder.add(new ParameterEntityReference(paramName));
-                        break;
+                        // WFC: PEs in Internal Subset - parameter entity references are NOT allowed
+                        // within markup declarations in the internal subset (including entity values)
+                        throw new SAXParseException(
+                            "Parameter entity references are not allowed within entity values " +
+                            "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                        
                     case QUOT:
                     case APOS:
                         // Check if this is the closing quote
