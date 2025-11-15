@@ -25,7 +25,10 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
@@ -131,6 +134,18 @@ public class XMLParser implements TokenConsumer {
      * Attributes for the current element.
      */
     private SAXAttributes attributes;
+    
+    /**
+     * Namespace scope tracker for managing prefix-URI bindings.
+     * Only used when namespacesEnabled is true.
+     */
+    private NamespaceScopeTracker namespaceTracker;
+    
+    /**
+     * Flag tracking whether namespace context was pushed for current element.
+     * Used to avoid double-pushing when attributes are present.
+     */
+    private boolean namespaceContextPushed;
     
     /**
      * Current element name being processed.
@@ -288,6 +303,10 @@ public class XMLParser implements TokenConsumer {
 
     public void setNamespacesEnabled(boolean enabled) {
         this.namespacesEnabled = enabled;
+        // Initialize namespace tracker if enabling namespaces
+        if (enabled && namespaceTracker == null) {
+            namespaceTracker = new NamespaceScopeTracker();
+        }
     }
 
     public boolean getNamespacePrefixesEnabled() {
@@ -567,6 +586,11 @@ public class XMLParser implements TokenConsumer {
         currentCommentText = null;
         currentCDATAText = null;
         attributes = null;
+        
+        // Reset namespace tracker if namespaces enabled
+        if (namespacesEnabled && namespaceTracker != null) {
+            namespaceTracker.reset();
+        }
     }
 
     @Override
@@ -718,43 +742,41 @@ public class XMLParser implements TokenConsumer {
                 } else {
                     attributes.clear();
                 }
+                // Push namespace context for this element (before parsing attributes)
+                if (namespacesEnabled && namespaceTracker != null) {
+                    namespaceTracker.pushContext();
+                    namespaceContextPushed = true;
+                }
                 state = State.ELEMENT_ATTRS;
                 break;
                 
             case GT:
                 // End of start tag (no attributes)
-                if (contentHandler != null) {
-                    // Create empty attributes
-                    if (attributes == null) {
-                        attributes = new SAXAttributes();
-                    } else {
-                        attributes.clear();
-                    }
-                    // Set DTD context for attribute type lookup
-                    attributes.setDTDContext(currentElementName, dtdParser);
-                    // Apply default attribute values from DTD
-                    applyDefaultAttributeValues(currentElementName);
-                    contentHandler.startElement("", currentElementName, currentElementName, attributes);
+                // Create empty attributes
+                if (attributes == null) {
+                    attributes = new SAXAttributes();
+                } else {
+                    attributes.clear();
                 }
+                // Set DTD context for attribute type lookup
+                attributes.setDTDContext(currentElementName, dtdParser);
+                // Fire startElement (handles namespaces, defaults, etc.)
+                fireStartElement(currentElementName, false);
                 state = State.ELEMENT_CONTENT;
                 break;
                 
             case END_EMPTY_ELEMENT:
                 // Empty element (no attributes)
-                if (contentHandler != null) {
-                    // Create empty attributes
-                    if (attributes == null) {
-                        attributes = new SAXAttributes();
-                    } else {
-                        attributes.clear();
-                    }
-                    // Set DTD context for attribute type lookup
-                    attributes.setDTDContext(currentElementName, dtdParser);
-                    // Apply default attribute values from DTD
-                    applyDefaultAttributeValues(currentElementName);
-                    contentHandler.startElement("", currentElementName, currentElementName, attributes);
-                    contentHandler.endElement("", currentElementName, currentElementName);
+                // Create empty attributes
+                if (attributes == null) {
+                    attributes = new SAXAttributes();
+                } else {
+                    attributes.clear();
                 }
+                // Set DTD context for attribute type lookup
+                attributes.setDTDContext(currentElementName, dtdParser);
+                // Fire startElement and endElement (handles namespaces, defaults, etc.)
+                fireStartElement(currentElementName, true);
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
@@ -788,26 +810,19 @@ public class XMLParser implements TokenConsumer {
                 
             case GT:
                 // End of start tag
-                if (contentHandler != null) {
-                    // Set DTD context for attribute type lookup
-                    attributes.setDTDContext(currentElementName, dtdParser);
-                    // Apply default attribute values from DTD
-                    applyDefaultAttributeValues(currentElementName);
-                    contentHandler.startElement("", currentElementName, currentElementName, attributes);
-                }
+                // Set DTD context for attribute type lookup
+                attributes.setDTDContext(currentElementName, dtdParser);
+                // Fire startElement (handles namespaces, defaults, etc.)
+                fireStartElement(currentElementName, false);
                 state = State.ELEMENT_CONTENT;
                 break;
                 
             case END_EMPTY_ELEMENT:
                 // Empty element
-                if (contentHandler != null) {
-                    // Set DTD context for attribute type lookup
-                    attributes.setDTDContext(currentElementName, dtdParser);
-                    // Apply default attribute values from DTD
-                    applyDefaultAttributeValues(currentElementName);
-                    contentHandler.startElement("", currentElementName, currentElementName, attributes);
-                    contentHandler.endElement("", currentElementName, currentElementName);
-                }
+                // Set DTD context for attribute type lookup
+                attributes.setDTDContext(currentElementName, dtdParser);
+                // Fire startElement and endElement (handles namespaces, defaults, etc.)
+                fireStartElement(currentElementName, true);
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
@@ -881,9 +896,28 @@ public class XMLParser implements TokenConsumer {
             String rawValue = currentAttributeValue.toString();
             String normalizedValue = normalizeAttributeValue(rawValue, currentElementName, currentAttributeName);
             
-            // Add attribute to list
-            attributes.addAttribute("", currentAttributeName, currentAttributeName, 
-                                          "CDATA", normalizedValue, true);
+            // Check if this is a namespace declaration (xmlns or xmlns:prefix)
+            boolean isNamespaceDecl = false;
+            if (namespacesEnabled) {
+                isNamespaceDecl = processNamespaceAttribute(currentAttributeName, normalizedValue);
+            }
+            
+            // Add attribute to list (unless it's xmlns and namespace-prefixes is false)
+            if (!isNamespaceDecl || namespacePrefixesEnabled) {
+                // Process attribute name for namespace if enabled
+                String uri = "";
+                String localName = currentAttributeName;
+                
+                if (namespacesEnabled && namespaceTracker != null) {
+                    String[] attrParts = namespaceTracker.processName(currentAttributeName, true);
+                    uri = attrParts[0];
+                    localName = attrParts[1];
+                }
+                
+                attributes.addAttribute(uri, localName, currentAttributeName, 
+                                              "CDATA", normalizedValue, true);
+            }
+            
             currentAttributeValue.setLength(0); // Reset for next attribute
             state = State.ELEMENT_ATTRS;
         } else if (token == Token.CDATA) {
@@ -999,9 +1033,8 @@ public class XMLParser implements TokenConsumer {
                 
             case GT:
                 // End of end tag
-                if (contentHandler != null) {
-                    contentHandler.endElement("", currentElementName, currentElementName);
-                }
+                // Fire endElement (handles namespaces, etc.)
+                fireEndElement(currentElementName);
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
@@ -1236,6 +1269,121 @@ public class XMLParser implements TokenConsumer {
     }
     
     /**
+     * Fires startElement event to content handler, either namespace-aware or not.
+     * Handles namespace context push, prefix mappings, and name processing.
+     * 
+     * @param elementName the raw element name (qName)
+     * @param isEmpty true if this is an empty element (will fire endElement immediately)
+     * @throws SAXException if processing fails
+     */
+    private void fireStartElement(String elementName, boolean isEmpty) throws SAXException {
+        if (contentHandler == null) {
+            return;
+        }
+        
+        // Push namespace context if not already pushed (happens when element has attributes)
+        if (namespacesEnabled && namespaceTracker != null && !namespaceContextPushed) {
+            namespaceTracker.pushContext();
+        }
+        namespaceContextPushed = false; // Reset for next element
+        
+        // Apply default attribute values from DTD
+        applyDefaultAttributeValues(elementName);
+        
+        if (namespacesEnabled && namespaceTracker != null) {
+            // Namespace-aware mode
+            
+            // Fire startPrefixMapping for all namespace declarations at this level
+            Iterator<Map.Entry<String, String>> declarations = 
+                namespaceTracker.getCurrentScopeDeclarations();
+            while (declarations.hasNext()) {
+                Map.Entry<String, String> entry = declarations.next();
+                String prefix = entry.getKey();
+                String uri = entry.getValue();
+                contentHandler.startPrefixMapping(prefix, uri);
+            }
+            
+            // Process element name
+            String[] elementParts = namespaceTracker.processName(elementName, false);
+            String namespaceURI = elementParts[0];
+            String localName = elementParts[1];
+            String qName = elementParts[2];
+            
+            // Fire startElement with namespace info
+            contentHandler.startElement(namespaceURI, localName, qName, attributes);
+            
+            // If empty element, fire endElement immediately
+            if (isEmpty) {
+                contentHandler.endElement(namespaceURI, localName, qName);
+                
+                // Fire endPrefixMapping in reverse order
+                ArrayList<String> prefixes = new ArrayList<>();
+                Iterator<Map.Entry<String, String>> endDecl = 
+                    namespaceTracker.getCurrentScopeDeclarations();
+                while (endDecl.hasNext()) {
+                    prefixes.add(endDecl.next().getKey());
+                }
+                for (int i = prefixes.size() - 1; i >= 0; i--) {
+                    contentHandler.endPrefixMapping(prefixes.get(i));
+                }
+                
+                // Pop namespace context
+                namespaceTracker.popContext();
+            }
+        } else {
+            // Non-namespace-aware mode
+            contentHandler.startElement("", elementName, elementName, attributes);
+            
+            if (isEmpty) {
+                contentHandler.endElement("", elementName, elementName);
+            }
+        }
+    }
+    
+    /**
+     * Fires endElement event to content handler, either namespace-aware or not.
+     * Handles prefix unmappings and namespace context pop.
+     * 
+     * @param elementName the raw element name (qName)
+     * @throws SAXException if processing fails
+     */
+    private void fireEndElement(String elementName) throws SAXException {
+        if (contentHandler == null) {
+            return;
+        }
+        
+        if (namespacesEnabled && namespaceTracker != null) {
+            // Namespace-aware mode
+            
+            // Process element name
+            String[] elementParts = namespaceTracker.processName(elementName, false);
+            String namespaceURI = elementParts[0];
+            String localName = elementParts[1];
+            String qName = elementParts[2];
+            
+            // Fire endElement
+            contentHandler.endElement(namespaceURI, localName, qName);
+            
+            // Fire endPrefixMapping for all declarations at this level (in reverse order)
+            ArrayList<String> prefixes = new ArrayList<>();
+            Iterator<Map.Entry<String, String>> declarations = 
+                namespaceTracker.getCurrentScopeDeclarations();
+            while (declarations.hasNext()) {
+                prefixes.add(declarations.next().getKey());
+            }
+            for (int i = prefixes.size() - 1; i >= 0; i--) {
+                contentHandler.endPrefixMapping(prefixes.get(i));
+            }
+            
+            // Pop namespace context
+            namespaceTracker.popContext();
+        } else {
+            // Non-namespace-aware mode
+            contentHandler.endElement("", elementName, elementName);
+        }
+    }
+    
+    /**
      * Applies default attribute values from the DTD to the current element.
      * Called before startElement() to ensure all defaults are applied.
      * 
@@ -1303,6 +1451,66 @@ public class XMLParser implements TokenConsumer {
             }
             // Note: #REQUIRED and #IMPLIED don't get default values applied
         }
+    }
+    
+    /**
+     * Processes a namespace declaration attribute (xmlns or xmlns:prefix).
+     * 
+     * <p>Per XML Namespaces 1.0:
+     * <ul>
+     * <li>xmlns="uri" declares default namespace</li>
+     * <li>xmlns:prefix="uri" declares prefixed namespace</li>
+     * <li>xmlns="" undeclares default namespace</li>
+     * </ul>
+     * 
+     * @param attrName the attribute name (e.g., "xmlns" or "xmlns:foo")
+     * @param attrValue the namespace URI
+     * @return true if this is a namespace declaration attribute
+     * @throws SAXException if namespace declaration is invalid
+     */
+    private boolean processNamespaceAttribute(String attrName, String attrValue) throws SAXException {
+        if (attrName == null || attrValue == null || namespaceTracker == null) {
+            return false;
+        }
+        
+        if ("xmlns".equals(attrName)) {
+            // Default namespace declaration: xmlns="uri"
+            namespaceTracker.declarePrefix("", attrValue);
+            return true;
+        } else if (attrName.startsWith("xmlns:")) {
+            // Prefixed namespace declaration: xmlns:prefix="uri"
+            String prefix = attrName.substring(6); // Skip "xmlns:"
+            
+            // Validate prefix not empty
+            if (prefix.isEmpty()) {
+                throw new SAXParseException(
+                    "Namespace prefix must not be empty after xmlns:",
+                    locator);
+            }
+            
+            // Per spec: cannot bind/unbind xml or xmlns prefixes
+            if ("xml".equals(prefix) || "xmlns".equals(prefix)) {
+                // xml prefix must be bound to XML namespace
+                if ("xml".equals(prefix) && !NamespaceScopeTracker.XML_NAMESPACE_URI.equals(attrValue)) {
+                    throw new SAXParseException(
+                        "Cannot bind 'xml' prefix to namespace other than " + 
+                        NamespaceScopeTracker.XML_NAMESPACE_URI,
+                        locator);
+                }
+                // xmlns prefix cannot be declared
+                if ("xmlns".equals(prefix)) {
+                    throw new SAXParseException(
+                        "Cannot declare 'xmlns' prefix",
+                        locator);
+                }
+            }
+            
+            // Declare the prefix
+            namespaceTracker.declarePrefix(prefix, attrValue);
+            return true;
+        }
+        
+        return false;
     }
     
     /**
