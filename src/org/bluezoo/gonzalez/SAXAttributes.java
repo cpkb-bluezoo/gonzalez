@@ -102,6 +102,8 @@ public class SAXAttributes implements Attributes2 {
 
   /**
    * Adds an attribute to the list.
+   * Throws an IllegalArgumentException if an attribute with the same qName already exists
+   * (violates XML well-formedness constraint).
    *
    * @param uri the namespace URI (use "" for no namespace)
    * @param localName the local name
@@ -109,9 +111,15 @@ public class SAXAttributes implements Attributes2 {
    * @param type the attribute type
    * @param value the attribute value
    * @param specified whether the attribute was specified in the document
+   * @throws IllegalArgumentException if duplicate attribute detected
    */
   public void addAttribute(String uri, String localName, String qName,
       String type, String value, boolean specified) {
+    // Check for duplicate attribute (well-formedness constraint)
+    if (stringNameMap.containsKey(qName)) {
+      throw new IllegalArgumentException("Duplicate attribute: " + qName);
+    }
+    
     QName qnameKey = new QName(uri, localName, qName);
     Attribute attr = new Attribute(qnameKey, type, value, specified);
 

@@ -787,6 +787,12 @@ public class XMLParser implements TokenConsumer {
                     contentHandler.startDocument();
                     documentStarted = true;
                 }
+                
+                // Initialize element name stack for well-formedness checking
+                if (elementNameStack == null) {
+                    elementNameStack = new ArrayList<>();
+                }
+                
                 state = State.ELEMENT_START;
                 break;
                 
@@ -802,6 +808,11 @@ public class XMLParser implements TokenConsumer {
         if (token == Token.NAME) {
             currentElementName = extractString(data);
             elementDepth++;
+            
+            // Push element name onto stack for well-formedness checking
+            if (elementNameStack != null) {
+                elementNameStack.add(currentElementName);
+            }
             
             // Record this element as a child of its parent (for validation)
             if (validationEnabled && dtdParser != null && elementDepth > 1) {
@@ -863,6 +874,10 @@ public class XMLParser implements TokenConsumer {
                 attributes.setDTDContext(currentElementName, dtdParser);
                 // Fire startElement and endElement (handles namespaces, defaults, etc.)
                 fireStartElement(currentElementName, true);
+                // Pop element name from stack (empty element closes immediately)
+                if (elementNameStack != null && !elementNameStack.isEmpty()) {
+                    elementNameStack.remove(elementNameStack.size() - 1);
+                }
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
@@ -918,6 +933,10 @@ public class XMLParser implements TokenConsumer {
                 attributes.setDTDContext(currentElementName, dtdParser);
                 // Fire startElement and endElement (handles namespaces, defaults, etc.)
                 fireStartElement(currentElementName, true);
+                // Pop element name from stack (empty element closes immediately)
+                if (elementNameStack != null && !elementNameStack.isEmpty()) {
+                    elementNameStack.remove(elementNameStack.size() - 1);
+                }
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
@@ -1018,8 +1037,13 @@ public class XMLParser implements TokenConsumer {
                     localName = attrParts[1];
                 }
                 
-                attributes.addAttribute(uri, localName, currentAttributeName, 
-                                              "CDATA", normalizedValue, true);
+                try {
+                    attributes.addAttribute(uri, localName, currentAttributeName, 
+                                                  "CDATA", normalizedValue, true);
+                } catch (IllegalArgumentException e) {
+                    // Duplicate attribute - well-formedness error
+ throw fatalError(e.getMessage());
+                }
             }
             
             currentAttributeValue.setLength(0); // Reset for next attribute
@@ -1162,6 +1186,17 @@ public class XMLParser implements TokenConsumer {
                 
             case GT:
                 // End of end tag
+                // Validate end tag name matches start tag (well-formedness constraint)
+                // Note: element Name stack is maintained for well-formedness checking
+                if (elementNameStack != null && !elementNameStack.isEmpty()) {
+                    String expectedName = elementNameStack.get(elementNameStack.size() - 1);
+                    if (!currentElementName.equals(expectedName)) {
+ throw fatalError("End tag </" + currentElementName + "> does not match start tag <" + expectedName + ">");
+                    }
+                    // Pop the element name from stack
+                    elementNameStack.remove(elementNameStack.size() - 1);
+                }
+                
                 // Fire endElement (handles namespaces, etc.)
                 fireEndElement(currentElementName);
                 elementDepth--;

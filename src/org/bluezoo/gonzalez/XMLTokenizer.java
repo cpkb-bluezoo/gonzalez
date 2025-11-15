@@ -809,6 +809,10 @@ public class XMLTokenizer implements Locator2 {
      */
     private void storeAttributeValue(XMLDeclContext ctx, String value) throws SAXException {
         if ("version".equals(ctx.currentName)) {
+            // Validate version format: must be "1.0", "1.1", etc. (no spaces!)
+            if (!value.matches("1\\.[0-9]+")) {
+                throw consumer.fatalError("Invalid XML version number: '" + value + "' (must match 1.[0-9]+)");
+            }
             version = value;
         } else if ("encoding".equals(ctx.currentName)) {
             ctx.encoding = value;
