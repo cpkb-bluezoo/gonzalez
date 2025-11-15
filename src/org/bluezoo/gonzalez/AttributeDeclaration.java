@@ -48,6 +48,12 @@ public class AttributeDeclaration {
      * NMTOKEN, NMTOKENS, NOTATION, or an enumeration).
      */
     public String type;
+    
+    /**
+     * For enumeration and NOTATION types, the list of allowed values.
+     * Null for non-enumeration types.
+     */
+    public java.util.List<String> enumeration;
 
     /**
      * The default value mode: Token.REQUIRED, Token.IMPLIED, Token.FIXED, or null for default value.

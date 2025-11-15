@@ -111,7 +111,8 @@ public class DTDParser implements TokenConsumer {
         AFTER_HASH,             // After #, expecting REQUIRED|IMPLIED|FIXED keyword
         AFTER_FIXED,            // After #FIXED, expecting whitespace
         EXPECT_DEFAULT_VALUE,   // After whitespace following #FIXED, expecting quoted value
-        AFTER_DEFAULT_VALUE     // After CDATA value, expecting closing quote
+        AFTER_DEFAULT_VALUE,    // After CDATA value, expecting closing quote
+        IN_NOTATION_ENUM        // Inside NOTATION enumeration (name1|name2...)
     }
     
     private AttListDeclState attListDeclState;
@@ -250,6 +251,7 @@ public class DTDParser implements TokenConsumer {
     private AttributeDeclaration currentAttributeDecl;
     private List<Object> defaultValueBuilder;  // List of String and GeneralEntityReference
     private StringBuilder defaultValueTextBuilder;  // For accumulating text segments
+    private List<String> enumerationBuilder;  // For accumulating enumeration values
     
     /**
      * Comment text accumulator.
@@ -852,6 +854,13 @@ public class DTDParser implements TokenConsumer {
                         if (contentModelDepth == 0) {
                             // Exited the top-level content model
                             ElementDeclaration.ContentModel root = contentModelStack.pop();
+                            
+                            // Set default type if not already set (single element case like "(a)")
+                            if (root.type == null) {
+                                // Single child or no separator - treat as sequence
+                                root.type = ElementDeclaration.ContentModel.NodeType.SEQUENCE;
+                            }
+                            
                             currentElementDecl.contentModel = root;
                             
                             // Determine content type
@@ -867,6 +876,12 @@ public class DTDParser implements TokenConsumer {
                         } else {
                             // Finished a nested group - pop it and add to parent
                             ElementDeclaration.ContentModel completed = contentModelStack.pop();
+                            
+                            // Set default type if not already set (single element case)
+                            if (completed.type == null) {
+                                completed.type = ElementDeclaration.ContentModel.NodeType.SEQUENCE;
+                            }
+                            
                             contentModelStack.peek().addChild(completed);
                         }
                         break;
@@ -1115,6 +1130,7 @@ public class DTDParser implements TokenConsumer {
                         
                     case NOTATION:
                         currentAttributeDecl.type = "NOTATION";
+                        // NOTATION type may be followed by (name1|name2|...)
                         attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
                         break;
                         
@@ -1125,9 +1141,9 @@ public class DTDParser implements TokenConsumer {
                         break;
                         
                     case OPEN_PAREN:
-                        // Enumeration starting - for now, treat as enumeration type
+                        // Enumeration starting - collect values
                         currentAttributeDecl.type = "ENUMERATION";
-                        // TODO: Parse enumeration values
+                        enumerationBuilder = new ArrayList<>();
                         attListDeclState = AttListDeclState.AFTER_ATTR_TYPE;
                         break;
                         
@@ -1140,18 +1156,41 @@ public class DTDParser implements TokenConsumer {
                 // Must see whitespace after type (or part of enumeration)
                 switch (token) {
                     case S:
+                        // Whitespace after type means we're done with enumeration (if any)
+                        if (enumerationBuilder != null) {
+                            currentAttributeDecl.enumeration = enumerationBuilder;
+                            enumerationBuilder = null;
+                        }
                         attListDeclState = AttListDeclState.EXPECT_DEFAULT_DECL;
                         break;
                         
+                    case OPEN_PAREN:
+                        // Start of enumeration (for NOTATION or after OPEN_PAREN in EXPECT_ATTR_TYPE)
+                        if (enumerationBuilder == null) {
+                            enumerationBuilder = new ArrayList<>();
+                        }
+                        // Stay in AFTER_ATTR_TYPE to collect values
+                        break;
+                        
                     case CLOSE_PAREN:
-                        // End of enumeration - stay in AFTER_ATTR_TYPE
-                        // TODO: Properly handle enumeration parsing
+                        // End of enumeration
+                        if (enumerationBuilder != null) {
+                            currentAttributeDecl.enumeration = enumerationBuilder;
+                            enumerationBuilder = null;
+                        }
+                        // Stay in AFTER_ATTR_TYPE waiting for whitespace
                         break;
                         
                     case PIPE:
+                        // Separator in enumeration - stay in AFTER_ATTR_TYPE
+                        break;
+                        
                     case NAME:
-                        // Part of enumeration - stay in AFTER_ATTR_TYPE
-                        // TODO: Properly handle enumeration parsing
+                        // Part of enumeration - collect it
+                        if (enumerationBuilder != null) {
+                            enumerationBuilder.add(extractString(data));
+                        }
+                        // Stay in AFTER_ATTR_TYPE
                         break;
                         
                     default:
@@ -1161,9 +1200,16 @@ public class DTDParser implements TokenConsumer {
                 
             case EXPECT_DEFAULT_DECL:
                 // Expecting #REQUIRED | #IMPLIED | #FIXED | default value
+                // Or OPEN_PAREN for NOTATION enumeration
                 switch (token) {
                     case S:
                         // Skip extra whitespace
+                        break;
+                        
+                    case OPEN_PAREN:
+                        // Start of NOTATION enumeration
+                        enumerationBuilder = new ArrayList<>();
+                        attListDeclState = AttListDeclState.IN_NOTATION_ENUM;
                         break;
                         
                     case HASH:
@@ -1322,6 +1368,39 @@ public class DTDParser implements TokenConsumer {
                         
                     default:
                         throw new SAXParseException("Expected closing quote after default value in &lt;!ATTLIST, got: " + token, locator);
+                }
+                break;
+                
+            case IN_NOTATION_ENUM:
+                // Inside NOTATION enumeration: (name1|name2|name3)
+                switch (token) {
+                    case NAME:
+                        // Collect notation name
+                        if (enumerationBuilder != null) {
+                            enumerationBuilder.add(extractString(data));
+                        }
+                        break;
+                        
+                    case PIPE:
+                        // Separator between notation names
+                        break;
+                        
+                    case CLOSE_PAREN:
+                        // End of notation enumeration
+                        if (enumerationBuilder != null) {
+                            currentAttributeDecl.enumeration = enumerationBuilder;
+                            enumerationBuilder = null;
+                        }
+                        // Back to expecting default declaration
+                        attListDeclState = AttListDeclState.EXPECT_DEFAULT_DECL;
+                        break;
+                        
+                    case S:
+                        // Whitespace in enumeration, ignore
+                        break;
+                        
+                    default:
+                        throw new SAXParseException("Expected notation name, |, or ) in NOTATION enumeration, got: " + token, locator);
                 }
                 break;
                 
@@ -2101,6 +2180,18 @@ public class DTDParser implements TokenConsumer {
             return null;
         }
         return notations.get(notationName.intern());
+    }
+    
+    /**
+     * Returns the set of declared notation names.
+     * 
+     * @return set of notation names, or null if no notations declared
+     */
+    public java.util.Set<String> getNotationNames() {
+        if (notations == null) {
+            return null;
+        }
+        return notations.keySet();
     }
     
     /**

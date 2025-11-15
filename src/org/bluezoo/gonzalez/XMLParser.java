@@ -196,6 +196,23 @@ public class XMLParser implements TokenConsumer {
      * Element depth (0 = outside root, 1 = root element, 2+ = nested).
      */
     private int elementDepth;
+    
+    /**
+     * Stack of content model validators for validation (only used when validationEnabled).
+     * Index corresponds to element depth.
+     */
+    private java.util.ArrayList<ContentModelValidator> validatorStack;
+    
+    /**
+     * Stack of element names for validation error reporting.
+     * Index corresponds to element depth.
+     */
+    private java.util.ArrayList<String> elementNameStack;
+    
+    /**
+     * Attribute validator for validation mode (only used when validationEnabled).
+     */
+    private AttributeValidator attributeValidator;
 
     @Override
     public void setLocator(Locator locator) {
@@ -587,6 +604,17 @@ public class XMLParser implements TokenConsumer {
         currentCDATAText = null;
         attributes = null;
         
+        // Clear validation stacks
+        if (validatorStack != null) {
+            validatorStack.clear();
+        }
+        if (elementNameStack != null) {
+            elementNameStack.clear();
+        }
+        if (attributeValidator != null) {
+            attributeValidator.reset();
+        }
+        
         // Reset namespace tracker if namespaces enabled
         if (namespacesEnabled && namespaceTracker != null) {
             namespaceTracker.reset();
@@ -723,6 +751,13 @@ public class XMLParser implements TokenConsumer {
         if (token == Token.NAME) {
             currentElementName = extractString(data);
             elementDepth++;
+            
+            // Record this element as a child of its parent (for validation)
+            if (validationEnabled && dtdParser != null && elementDepth > 1) {
+                // We're inside another element, record this as a child
+                recordChildElement(currentElementName);
+            }
+            
             state = State.ELEMENT_NAME;
         } else {
             throw new SAXParseException("Expected element name after '<', got: " + token, locator);
@@ -780,6 +815,15 @@ public class XMLParser implements TokenConsumer {
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
+                    
+                    // Validate IDREFs if validation enabled
+                    if (validationEnabled && attributeValidator != null) {
+                        String error = attributeValidator.validateIdrefs();
+                        if (error != null) {
+                            reportValidationError(error);
+                        }
+                    }
+                    
                     if (contentHandler != null) {
                         contentHandler.endDocument();
                     }
@@ -826,6 +870,15 @@ public class XMLParser implements TokenConsumer {
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
+                    
+                    // Validate IDREFs if validation enabled
+                    if (validationEnabled && attributeValidator != null) {
+                        String error = attributeValidator.validateIdrefs();
+                        if (error != null) {
+                            reportValidationError(error);
+                        }
+                    }
+                    
                     if (contentHandler != null) {
                         contentHandler.endDocument();
                     }
@@ -946,17 +999,29 @@ public class XMLParser implements TokenConsumer {
         switch (token) {
             case CDATA:
                 // Character data
+                String text = extractString(data);
+                
+                // Record for validation
+                if (validationEnabled && dtdParser != null) {
+                    recordTextContent(text);
+                }
+                
                 if (contentHandler != null) {
-                    String text = extractString(data);
                     contentHandler.characters(text.toCharArray(), 0, text.length());
                 }
                 break;
                 
             case ENTITYREF:
                 // Predefined entity or character reference (already expanded)
+                String expandedText = extractString(data);
+                
+                // Record for validation
+                if (validationEnabled && dtdParser != null) {
+                    recordTextContent(expandedText);
+                }
+                
                 if (contentHandler != null) {
-                    String text = extractString(data);
-                    contentHandler.characters(text.toCharArray(), 0, text.length());
+                    contentHandler.characters(expandedText.toCharArray(), 0, expandedText.length());
                 }
                 break;
                 
@@ -968,6 +1033,8 @@ public class XMLParser implements TokenConsumer {
                 
             case LT:
                 // Start of nested element
+                // Record child for parent's validation (current element in stack)
+                // Note: child name will be determined in handleElementStart
                 state = State.ELEMENT_START;
                 break;
                 
@@ -999,9 +1066,15 @@ public class XMLParser implements TokenConsumer {
                 
             case S:
                 // Whitespace
+                String whitespace = extractString(data);
+                
+                // Record for validation (whitespace is treated specially)
+                if (validationEnabled && dtdParser != null) {
+                    recordTextContent(whitespace);
+                }
+                
                 if (contentHandler != null) {
-                    String text = extractString(data);
-                    contentHandler.characters(text.toCharArray(), 0, text.length());
+                    contentHandler.characters(whitespace.toCharArray(), 0, whitespace.length());
                 }
                 break;
                 
@@ -1038,6 +1111,15 @@ public class XMLParser implements TokenConsumer {
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
+                    
+                    // Validate IDREFs if validation enabled
+                    if (validationEnabled && attributeValidator != null) {
+                        String error = attributeValidator.validateIdrefs();
+                        if (error != null) {
+                            reportValidationError(error);
+                        }
+                    }
+                    
                     if (contentHandler != null) {
                         contentHandler.endDocument();
                     }
@@ -1290,6 +1372,23 @@ public class XMLParser implements TokenConsumer {
         // Apply default attribute values from DTD
         applyDefaultAttributeValues(elementName);
         
+        // Validate attributes if validation enabled
+        if (validationEnabled && dtdParser != null) {
+            if (attributeValidator == null) {
+                attributeValidator = new AttributeValidator(dtdParser);
+            }
+            String location = "line " + locator.getLineNumber() + ", col " + locator.getColumnNumber();
+            String error = attributeValidator.validateAttributes(elementName, attributes, location);
+            if (error != null) {
+                reportValidationError(error);
+            }
+        }
+        
+        // Push content model validator if validation enabled
+        if (validationEnabled && dtdParser != null) {
+            pushElementValidator(elementName);
+        }
+        
         if (namespacesEnabled && namespaceTracker != null) {
             // Namespace-aware mode
             
@@ -1314,6 +1413,11 @@ public class XMLParser implements TokenConsumer {
             
             // If empty element, fire endElement immediately
             if (isEmpty) {
+                // Validate empty element content
+                if (validationEnabled && dtdParser != null) {
+                    popElementValidator();
+                }
+                
                 contentHandler.endElement(namespaceURI, localName, qName);
                 
                 // Fire endPrefixMapping in reverse order
@@ -1335,6 +1439,11 @@ public class XMLParser implements TokenConsumer {
             contentHandler.startElement("", elementName, elementName, attributes);
             
             if (isEmpty) {
+                // Validate empty element content
+                if (validationEnabled && dtdParser != null) {
+                    popElementValidator();
+                }
+                
                 contentHandler.endElement("", elementName, elementName);
             }
         }
@@ -1348,6 +1457,11 @@ public class XMLParser implements TokenConsumer {
      * @throws SAXException if processing fails
      */
     private void fireEndElement(String elementName) throws SAXException {
+        // Validate content model before closing element
+        if (validationEnabled && dtdParser != null) {
+            popElementValidator();
+        }
+        
         if (contentHandler == null) {
             return;
         }
@@ -1564,6 +1678,120 @@ public class XMLParser implements TokenConsumer {
         }
         
         return normalized.toString();
+    }
+    
+    /**
+     * Pushes a content model validator for an element (validation mode).
+     * 
+     * @param elementName the element name
+     * @throws SAXException if processing fails
+     */
+    private void pushElementValidator(String elementName) throws SAXException {
+        // Initialize stacks if needed
+        if (validatorStack == null) {
+            validatorStack = new ArrayList<>();
+            elementNameStack = new ArrayList<>();
+        }
+        
+        // Get element declaration from DTD
+        ElementDeclaration elementDecl = dtdParser.getElementDeclaration(elementName);
+        if (elementDecl == null) {
+            // Element not declared in DTD - validation error (recoverable)
+            reportValidationError("Element '" + elementName + "' not declared in DTD");
+            // Create a dummy validator with ANY content model to continue processing
+            elementDecl = new ElementDeclaration();
+            elementDecl.name = elementName;
+            elementDecl.contentType = ElementDeclaration.ContentType.ANY;
+        }
+        
+        // Create validator for this element
+        ContentModelValidator validator = new ContentModelValidator(elementDecl);
+        validatorStack.add(validator);
+        elementNameStack.add(elementName);
+    }
+    
+    /**
+     * Pops and validates the content model validator for current element.
+     * 
+     * @throws SAXException if processing fails
+     */
+    private void popElementValidator() throws SAXException {
+        if (validatorStack == null || validatorStack.isEmpty()) {
+            return;
+        }
+        
+        // Get current validator
+        int index = validatorStack.size() - 1;
+        ContentModelValidator validator = validatorStack.get(index);
+        String elementName = elementNameStack.get(index);
+        
+        // Validate that content is complete
+        String error = validator.validate();
+        if (error != null) {
+            reportValidationError(error);
+        }
+        
+        // Pop from stacks
+        validatorStack.remove(index);
+        elementNameStack.remove(index);
+    }
+    
+    /**
+     * Records a child element for content model validation.
+     * 
+     * @param childElementName the name of the child element
+     * @throws SAXException if processing fails
+     */
+    private void recordChildElement(String childElementName) throws SAXException {
+        if (validatorStack == null || validatorStack.isEmpty()) {
+            return;
+        }
+        
+        // Get parent validator (current element)
+        ContentModelValidator validator = validatorStack.get(validatorStack.size() - 1);
+        
+        // Record child
+        String error = validator.addChildElement(childElementName);
+        if (error != null) {
+            reportValidationError(error);
+        }
+    }
+    
+    /**
+     * Records text content for content model validation.
+     * 
+     * @param text the text content
+     * @throws SAXException if processing fails
+     */
+    private void recordTextContent(String text) throws SAXException {
+        if (validatorStack == null || validatorStack.isEmpty()) {
+            return;
+        }
+        
+        // Check if text is whitespace-only
+        boolean isWhitespaceOnly = text.trim().isEmpty();
+        
+        // Get current validator
+        ContentModelValidator validator = validatorStack.get(validatorStack.size() - 1);
+        
+        // Record text
+        String error = validator.addTextContent(text, isWhitespaceOnly);
+        if (error != null) {
+            reportValidationError(error);
+        }
+    }
+    
+    /**
+     * Reports a validation error via the ErrorHandler (if set).
+     * Validation errors are recoverable and do not interrupt processing.
+     * 
+     * @param message the error message
+     * @throws SAXException if the error handler throws
+     */
+    private void reportValidationError(String message) throws SAXException {
+        if (errorHandler != null) {
+            errorHandler.error(new SAXParseException(message, locator));
+        }
     }
 
 }
