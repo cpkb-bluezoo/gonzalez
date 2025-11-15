@@ -971,37 +971,98 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '\'':
-                    emitToken(Token.APOS, null);
+                    // Apostrophe is only special in DOCTYPE, ATTR_VALUE, and ELEMENT_ATTRS contexts
+                    if (context == TokenizerContext.DOCTYPE || 
+                        context == TokenizerContext.DOCTYPE_INTERNAL ||
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
+                        context == TokenizerContext.ATTR_VALUE ||
+                        context == TokenizerContext.ELEMENT_NAME ||
+                        context == TokenizerContext.ELEMENT_ATTRS) {
+                        emitToken(Token.APOS, null);
+                    } else {
+                        // In element content, it's just CDATA - rewind to include this char
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    }
                     break;
                     
                 case '"':
-                    emitToken(Token.QUOT, null);
+                    // Quote is only special in DOCTYPE, ATTR_VALUE, and ELEMENT_ATTRS contexts
+                    if (context == TokenizerContext.DOCTYPE || 
+                        context == TokenizerContext.DOCTYPE_INTERNAL ||
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
+                        context == TokenizerContext.ATTR_VALUE ||
+                        context == TokenizerContext.ELEMENT_NAME ||
+                        context == TokenizerContext.ELEMENT_ATTRS) {
+                        emitToken(Token.QUOT, null);
+                    } else {
+                        // In element content, it's just CDATA - rewind to include this char
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    }
                     break;
                     
                 case ':':
-                    emitToken(Token.COLON, null);
+                    // Colon is only special in ELEMENT contexts (namespaces) and DOCTYPE
+                    if (context == TokenizerContext.ELEMENT_NAME ||
+                        context == TokenizerContext.ELEMENT_ATTRS ||
+                        context == TokenizerContext.DOCTYPE ||
+                        context == TokenizerContext.DOCTYPE_INTERNAL) {
+                        emitToken(Token.COLON, null);
+                    } else {
+                        // In element content, it's just CDATA
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    }
                     break;
                     
                 case '!':
-                    emitToken(Token.BANG, null);
+                    // Bang is only special after '<' (for comments, CDATA, DOCTYPE, etc.)
+                    // In plain content, it's just CDATA
+                    if (context == TokenizerContext.DOCTYPE ||
+                        context == TokenizerContext.DOCTYPE_INTERNAL) {
+                        emitToken(Token.BANG, null);
+                    } else {
+                        // In element content, it's just CDATA
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    }
                     break;
                     
                 case '?':
-                    // Could be '?' or '?>'
-                    if (charBuffer.hasRemaining()) {
-                        charBuffer.mark();
-                        char next = charBuffer.get();
-                        if (next == '>') {
-                            updateColumn();
-                            emitToken(Token.END_PI, null);
+                    // In PI_DATA context, check for '?>' (END_PI)
+                    // In CONTENT context, it's just CDATA
+                    if (context == TokenizerContext.PI_DATA) {
+                        // Could be '?' or '?>'
+                        if (charBuffer.hasRemaining()) {
+                            charBuffer.mark();
+                            char next = charBuffer.get();
+                            if (next == '>') {
+                                updateColumn();
+                                emitToken(Token.END_PI, null);
+                            } else {
+                                charBuffer.reset();
+                                emitToken(Token.QUERY, null);
+                            }
                         } else {
+                            // Need more data to decide
                             charBuffer.reset();
-                            emitToken(Token.QUERY, null);
+                            return;
+                        }
+                    } else if (context == TokenizerContext.CONTENT) {
+                        // In element content, it's just CDATA
+                        if (!tryEmitCDATA()) {
+                            return;
                         }
                     } else {
-                        // Need more data to decide
-                        charBuffer.reset();
-                        return;
+                        // Other contexts (DOCTYPE, etc.) emit QUERY
+                        emitToken(Token.QUERY, null);
                     }
                     break;
                     
@@ -1031,11 +1092,21 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '#':
-                    // Could be '#' or '#PCDATA', '#REQUIRED', '#IMPLIED', '#FIXED'
-                    if (!tryEmitHashKeyword()) {
-                        // Not enough data or not a keyword, rewind
-                        charBuffer.reset();
-                        return;
+                    // Hash is only special in DOCTYPE contexts (#PCDATA, #REQUIRED, #IMPLIED, #FIXED)
+                    if (context == TokenizerContext.DOCTYPE || 
+                        context == TokenizerContext.DOCTYPE_INTERNAL ||
+                        context == TokenizerContext.DOCTYPE_QUOTED) {
+                        // Could be '#' or '#PCDATA', '#REQUIRED', '#IMPLIED', '#FIXED'
+                        if (!tryEmitHashKeyword()) {
+                            // Not enough data or not a keyword, rewind
+                            charBuffer.reset();
+                            return;
+                        }
+                    } else {
+                        // In element content or attributes, it's just CDATA
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
                     }
                     break;
                     
@@ -1768,16 +1839,22 @@ public class XMLTokenizer implements Locator2 {
     
     /**
      * Recognizes XML keywords in a context-aware manner.
-     * Returns the keyword token if the name is a keyword, null otherwise.
+     * Returns the keyword token if the name is a keyword in the current context, null otherwise.
      * 
-     * Note: For now, we'll emit keywords whenever we see them.
-     * A more sophisticated approach would track parser state to determine
-     * when keywords are valid vs. when they're just names.
+     * Keywords are only recognized in DOCTYPE contexts (inside DOCTYPE declarations).
+     * In other contexts (element content, attributes), these are just regular names.
      * 
      * @param name the name to check
-     * @return the keyword token, or null if not a keyword
+     * @return the keyword token, or null if not a keyword in this context
      */
     private Token recognizeKeyword(String name) {
+        // Only recognize keywords in DOCTYPE contexts
+        if (context != TokenizerContext.DOCTYPE && 
+            context != TokenizerContext.DOCTYPE_INTERNAL &&
+            context != TokenizerContext.DOCTYPE_QUOTED) {
+            return null; // Not in DOCTYPE, these are just names
+        }
+        
         // DOCTYPE keywords
         switch (name) {
             case "SYSTEM": return Token.SYSTEM;
