@@ -21,10 +21,17 @@
 
 package org.bluezoo.gonzalez;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
+import java.util.HashSet;
+import java.util.Set;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
+import org.xml.sax.EntityResolver;
 import org.xml.sax.ErrorHandler;
+import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.ext.LexicalHandler;
@@ -61,6 +68,15 @@ public class XMLParser implements TokenConsumer {
 
     private State state = State.INIT;
     private Locator locator;
+
+    // Feature flags (set from Parser)
+    private boolean namespacesEnabled = true;              // SAX2 default
+    private boolean namespacePrefixesEnabled = false;      // SAX2 default
+    private boolean validationEnabled = false;             // Off by default
+    private boolean externalGeneralEntitiesEnabled = true; // On by default
+    private boolean externalParameterEntitiesEnabled = true; // On by default
+    private boolean resolveDTDURIsEnabled = true;          // On by default
+    private boolean stringInterning = true;                // On by default - intern strings passed to handlers
     
     /**
      * SAX content handler for receiving document events.
@@ -81,6 +97,28 @@ public class XMLParser implements TokenConsumer {
      * SAX error handler for error reporting.
      */
     private ErrorHandler errorHandler;
+    
+    /**
+     * SAX entity resolver for resolving external entities.
+     */
+    private EntityResolver entityResolver;
+    
+    /**
+     * Helper for entity resolution (created lazily when needed).
+     */
+    private EntityResolutionHelper entityResolutionHelper;
+    
+    /**
+     * Default entity resolver (created lazily when needed).
+     * Used when no user-specified resolver is set.
+     */
+    private DefaultEntityResolver defaultEntityResolver;
+    
+    /**
+     * Stack for tracking entity resolution to prevent infinite recursion.
+     * Contains system IDs of entities currently being resolved.
+     */
+    private Set<String> entityResolutionStack;
     
     /**
      * Lazily-constructed DTD parser for processing DOCTYPE declarations.
@@ -157,11 +195,27 @@ public class XMLParser implements TokenConsumer {
     }
 
     /**
+     * Gets the content handler.
+     * @return the content handler, or null if not set
+     */
+    public ContentHandler getContentHandler() {
+        return contentHandler;
+    }
+
+    /**
      * Sets the DTD handler for receiving DTD events.
      * @param handler the DTD handler
      */
     public void setDTDHandler(DTDHandler handler) {
         this.dtdHandler = handler;
+    }
+
+    /**
+     * Gets the DTD handler.
+     * @return the DTD handler, or null if not set
+     */
+    public DTDHandler getDTDHandler() {
+        return dtdHandler;
     }
 
     /**
@@ -173,11 +227,336 @@ public class XMLParser implements TokenConsumer {
     }
 
     /**
+     * Gets the lexical handler.
+     * @return the lexical handler, or null if not set
+     */
+    public LexicalHandler getLexicalHandler() {
+        return lexicalHandler;
+    }
+
+    /**
      * Sets the error handler for error reporting.
      * @param handler the error handler
      */
     public void setErrorHandler(ErrorHandler handler) {
         this.errorHandler = handler;
+    }
+
+    /**
+     * Gets the error handler.
+     * @return the error handler, or null if not set
+     */
+    public ErrorHandler getErrorHandler() {
+        return errorHandler;
+    }
+
+    /**
+     * Sets the entity resolver for resolving external entities.
+     * @param resolver the entity resolver
+     */
+    public void setEntityResolver(EntityResolver resolver) {
+        this.entityResolver = resolver;
+        // Clear the helper so it will be recreated with new resolver
+        this.entityResolutionHelper = null;
+    }
+
+    /**
+     * Gets the entity resolver.
+     * @return the entity resolver, or null if not set
+     */
+    public EntityResolver getEntityResolver() {
+        return entityResolver;
+    }
+
+    // ========================================================================
+    // Feature Flag Getters/Setters (simple booleans, no URIs)
+    // ========================================================================
+
+    public boolean getNamespacesEnabled() {
+        return namespacesEnabled;
+    }
+
+    public void setNamespacesEnabled(boolean enabled) {
+        this.namespacesEnabled = enabled;
+    }
+
+    public boolean getNamespacePrefixesEnabled() {
+        return namespacePrefixesEnabled;
+    }
+
+    public void setNamespacePrefixesEnabled(boolean enabled) {
+        this.namespacePrefixesEnabled = enabled;
+    }
+
+    public boolean getValidationEnabled() {
+        return validationEnabled;
+    }
+
+    public void setValidationEnabled(boolean enabled) {
+        this.validationEnabled = enabled;
+    }
+
+    public boolean getExternalGeneralEntitiesEnabled() {
+        return externalGeneralEntitiesEnabled;
+    }
+
+    public void setExternalGeneralEntitiesEnabled(boolean enabled) {
+        this.externalGeneralEntitiesEnabled = enabled;
+    }
+
+    public boolean getExternalParameterEntitiesEnabled() {
+        return externalParameterEntitiesEnabled;
+    }
+
+    public void setExternalParameterEntitiesEnabled(boolean enabled) {
+        this.externalParameterEntitiesEnabled = enabled;
+    }
+
+    public boolean getResolveDTDURIsEnabled() {
+        return resolveDTDURIsEnabled;
+    }
+
+    public void setResolveDTDURIsEnabled(boolean enabled) {
+        this.resolveDTDURIsEnabled = enabled;
+        // Clear entity resolution helper so it will be recreated with new setting
+        if (entityResolutionHelper != null) {
+            entityResolutionHelper = null;
+        }
+    }
+
+    public boolean getStringInterning() {
+        return stringInterning;
+    }
+
+    public void setStringInterning(boolean enabled) {
+        this.stringInterning = enabled;
+    }
+
+    // ========================================================================
+    // State Management
+    // ========================================================================
+
+    /**
+     * Gets the default entity resolver, creating it lazily if needed.
+     *
+     * <p>The default resolver uses the systemId from the main document
+     * as the base URL for resolving relative entity references. If the
+     * main document has no systemId, the current directory is used.
+     *
+     * @return the default entity resolver
+     */
+    private DefaultEntityResolver getDefaultEntityResolver() {
+        if (defaultEntityResolver == null) {
+            // Get base URL from locator (main document's systemId)
+            String baseSystemId = (locator != null) ? locator.getSystemId() : null;
+            
+            if (baseSystemId != null) {
+                try {
+                    java.net.URL baseURL = new java.net.URL(baseSystemId);
+                    defaultEntityResolver = new DefaultEntityResolver(baseURL);
+                } catch (java.net.MalformedURLException e) {
+                    // Not a valid URL, use default (current directory)
+                    defaultEntityResolver = new DefaultEntityResolver();
+                }
+            } else {
+                // No base systemId, use current directory
+                defaultEntityResolver = new DefaultEntityResolver();
+            }
+        }
+        return defaultEntityResolver;
+    }
+
+    /**
+     * Gets the entity resolution helper, creating it lazily if needed.
+     *
+     * <p>If a user-specified EntityResolver is set, it is used.
+     * Otherwise, the default entity resolver is used.
+     *
+     * @return the entity resolution helper
+     */
+    private EntityResolutionHelper getEntityResolutionHelper() {
+        if (entityResolutionHelper == null) {
+            // Use user resolver if set, otherwise use default
+            EntityResolver resolver = (entityResolver != null) 
+                ? entityResolver 
+                : getDefaultEntityResolver();
+            
+            entityResolutionHelper = new EntityResolutionHelper(
+                resolver, locator, resolveDTDURIsEnabled);
+        }
+        return entityResolutionHelper;
+    }
+
+    /**
+     * Processes an external entity by resolving it and parsing its content.
+     *
+     * <p>This method:
+     * <ol>
+     *   <li>Checks if external entities are enabled (general or parameter)</li>
+     *   <li>Resolves the entity using EntityResolver/EntityResolver2</li>
+     *   <li>Creates a nested XMLTokenizer for the entity stream</li>
+     *   <li>Feeds the entity's InputStream to the tokenizer</li>
+     *   <li>Returns control when entity is exhausted</li>
+     * </ol>
+     *
+     * <p>The nested tokenizer sends tokens back to this parser's receive() method,
+     * but with the entity's systemId and line/column positions in the Locator.
+     *
+     * <p>Includes recursion protection to prevent infinite entity loops.
+     *
+     * <p>This method is package-private to allow DTDParser to process external
+     * DTD subsets.
+     *
+     * <p>Note: For DTD external subsets, this checks externalParameterEntitiesEnabled.
+     * For general entity references in content, it checks externalGeneralEntitiesEnabled.
+     *
+     * @param name the entity name (for EntityResolver2), or null for DTD external subset
+     * @param publicId the public identifier (may be null)
+     * @param systemId the system identifier (may be null)
+     * @throws SAXException if entity resolution or parsing fails
+     * @throws IOException if an I/O error occurs reading the entity
+     */
+    void processExternalEntity(String name, String publicId, String systemId)
+            throws SAXException, IOException {
+        
+        // Determine if this is a DTD external subset (name matches DOCTYPE name)
+        // or a general entity reference (name is entity name)
+        boolean isDTDSubset = (dtdParser != null && name != null && 
+                               name.equals(dtdParser.getDoctypeName()));
+        
+        // Check appropriate feature flag
+        if (isDTDSubset) {
+            if (!externalParameterEntitiesEnabled) {
+                // Skip DTD external subset
+                return;
+            }
+        } else {
+            if (!externalGeneralEntitiesEnabled) {
+                // Skip general entity reference
+                return;
+            }
+        }
+        
+        // Get entity resolution helper (always available, uses default if needed)
+        EntityResolutionHelper helper = getEntityResolutionHelper();
+        
+        // Resolve entity
+        InputSource source = helper.resolveEntity(name, publicId, systemId);
+        if (source == null) {
+            // Resolver returned null, use default resolution (skip for now)
+            return;
+        }
+        
+        // Get resolved system ID for recursion check
+        String resolvedSystemId = source.getSystemId();
+        if (resolvedSystemId == null) {
+            resolvedSystemId = systemId; // Fallback to original
+        }
+        
+        // Check for recursive entity reference
+        if (entityResolutionStack == null) {
+            entityResolutionStack = new HashSet<>();
+        }
+        
+        if (entityResolutionStack.contains(resolvedSystemId)) {
+            throw new SAXException("Recursive entity reference detected: " + resolvedSystemId);
+        }
+        
+        // Add to stack
+        entityResolutionStack.add(resolvedSystemId);
+        
+        try {
+            // Create nested tokenizer for entity
+            XMLTokenizer entityTokenizer = new XMLTokenizer(
+                this,  // Send tokens back to this parser
+                source.getPublicId(),
+                resolvedSystemId
+            );
+            
+            // Get input stream from source
+            InputStream inputStream = source.getByteStream();
+            if (inputStream == null) {
+                // TODO: Handle Reader (character stream)
+                throw new SAXException("Entity InputSource must have a byte stream");
+            }
+            
+            // Feed entity data to tokenizer (same logic as Parser.parse())
+            try {
+                byte[] buffer = new byte[4096];
+                int bytesRead;
+                
+                while ((bytesRead = inputStream.read(buffer)) != -1) {
+                    ByteBuffer byteBuffer = ByteBuffer.wrap(buffer, 0, bytesRead);
+                    entityTokenizer.receive(byteBuffer);
+                }
+                
+                // Signal end of entity
+                entityTokenizer.close();
+                
+            } finally {
+                inputStream.close();
+            }
+            
+            // Entity processing complete, continue with main stream
+            
+        } finally {
+            // Remove from stack
+            entityResolutionStack.remove(resolvedSystemId);
+        }
+    }
+
+    /**
+     * Resets the parser state to allow reuse for parsing another document.
+     *
+     * <p>This method clears all parsing state, allowing the same XMLParser
+     * instance to be reused for multiple documents. Handler references
+     * (ContentHandler, DTDHandler, etc.) are preserved.
+     *
+     * <p>This method resets:
+     * <ul>
+     *   <li>Parser state (back to INIT)</li>
+     *   <li>Element depth (back to 0)</li>
+     *   <li>Document started flag</li>
+     *   <li>Current element/attribute/PI/comment/CDATA buffers</li>
+     *   <li>DTD parser (null, allowing GC)</li>
+     *   <li>Attributes (null, allowing GC)</li>
+     *   <li>Entity resolution helper (null, will be recreated)</li>
+     *   <li>Default entity resolver (null, will be recreated)</li>
+     *   <li>Entity resolution stack (cleared)</li>
+     * </ul>
+     *
+     * @throws SAXException if reset fails
+     */
+    public void reset() throws SAXException {
+        // Reset state machine
+        state = State.INIT;
+        documentStarted = false;
+        elementDepth = 0;
+        
+        // Clear DTD parser (allow GC)
+        dtdParser = null;
+        
+        // Clear entity resolution helper (will be recreated if needed)
+        entityResolutionHelper = null;
+        
+        // Clear default entity resolver (will be recreated with new base URL)
+        defaultEntityResolver = null;
+        
+        // Clear entity resolution stack
+        if (entityResolutionStack != null) {
+            entityResolutionStack.clear();
+        }
+        
+        // Clear working state
+        currentElementName = null;
+        currentAttributeName = null;
+        currentAttributeValue = null;
+        currentAttributeQuote = null;
+        currentPITarget = null;
+        currentPIData = null;
+        currentCommentText = null;
+        currentCDATAText = null;
+        attributes = null;
     }
 
     @Override
@@ -274,7 +653,7 @@ public class XMLParser implements TokenConsumer {
                 
             case START_DOCTYPE:
                 // Lazily construct DTDParser
-                dtdParser = new DTDParser();
+                dtdParser = new DTDParser(this);
                 dtdParser.setLocator(locator);
                 dtdParser.setDTDHandler(dtdHandler);
                 dtdParser.setLexicalHandler(lexicalHandler);

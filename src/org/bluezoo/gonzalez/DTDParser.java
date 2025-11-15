@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez;
 
+import java.io.IOException;
 import java.nio.CharBuffer;
 import java.util.HashMap;
 import java.util.Map;
@@ -69,6 +70,11 @@ public class DTDParser implements TokenConsumer {
     private DTDHandler dtdHandler;
     private LexicalHandler lexicalHandler;
     private ErrorHandler errorHandler;
+    
+    /**
+     * Reference to the parent XMLParser for processing external entities.
+     */
+    private final XMLParser xmlParser;
 
     /**
      * The DOCTYPE name (root element name).
@@ -84,6 +90,11 @@ public class DTDParser implements TokenConsumer {
      * The system identifier for the external DTD subset.
      */
     private String systemId;
+    
+    /**
+     * Track whether we saw SYSTEM or PUBLIC keyword.
+     */
+    private boolean sawPublicKeyword;
 
     /**
      * Element declarations: element name -> ElementDeclaration.
@@ -104,8 +115,10 @@ public class DTDParser implements TokenConsumer {
 
     /**
      * Constructs a new DTDParser.
+     * @param xmlParser the parent XMLParser for processing external entities
      */
-    public DTDParser() {
+    public DTDParser(XMLParser xmlParser) {
+        this.xmlParser = xmlParser;
     }
 
     @Override
@@ -222,11 +235,13 @@ public class DTDParser implements TokenConsumer {
 
             case SYSTEM:
                 // SYSTEM external ID
+                sawPublicKeyword = false;
                 state = State.AFTER_SYSTEM_PUBLIC;
                 break;
 
             case PUBLIC:
                 // PUBLIC external ID
+                sawPublicKeyword = true;
                 state = State.AFTER_SYSTEM_PUBLIC;
                 break;
 
@@ -271,12 +286,18 @@ public class DTDParser implements TokenConsumer {
 
             case CDATA:
                 // This is the ID string
-                if (publicId == null) {
-                    // First string after PUBLIC is the public ID
-                    publicId = extractString(data);
-                    state = State.AFTER_PUBLIC_ID;
+                if (sawPublicKeyword) {
+                    // PUBLIC keyword - first string is publicId, second is systemId
+                    if (publicId == null) {
+                        publicId = extractString(data);
+                        state = State.AFTER_PUBLIC_ID;
+                    } else {
+                        // Second string after PUBLIC
+                        systemId = extractString(data);
+                        state = State.AFTER_EXTERNAL_ID;
+                    }
                 } else {
-                    // Second string is the system ID
+                    // SYSTEM keyword - only one string, and it's the systemId
                     systemId = extractString(data);
                     state = State.AFTER_EXTERNAL_ID;
                 }
@@ -327,21 +348,35 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             case OPEN_BRACKET:
-                // Internal subset starts
-                state = State.IN_INTERNAL_SUBSET;
-                nestingDepth = 1;
+                // Internal subset starts (after external ID)
                 // Report start of DTD
                 if (lexicalHandler != null) {
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
                 }
+                // Enter internal subset state FIRST (so external DTD tokens are processed correctly)
+                state = State.IN_INTERNAL_SUBSET;
+                nestingDepth = 1;
+                // Now process external DTD subset (tokens processed as internal subset)
+                processExternalDTDSubset();
+                // State remains IN_INTERNAL_SUBSET to process actual [ ... ] content
                 break;
 
             case GT:
                 // End of DOCTYPE (external ID, no internal subset)
-                state = State.DONE;
-                // Report start and end of DTD
+                // Report start of DTD
                 if (lexicalHandler != null) {
                     lexicalHandler.startDTD(doctypeName, publicId, systemId);
+                }
+                // Enter internal subset state (even though there's no [ ... ])
+                // This allows external DTD tokens to be processed as internal subset
+                state = State.IN_INTERNAL_SUBSET;
+                nestingDepth = 0; // No bracket nesting
+                // Process external DTD subset (tokens processed as internal subset)
+                processExternalDTDSubset();
+                // External DTD processing complete, now we're done
+                state = State.DONE;
+                // Report end of DTD
+                if (lexicalHandler != null) {
                     lexicalHandler.endDTD();
                 }
                 break;
@@ -517,6 +552,55 @@ public class DTDParser implements TokenConsumer {
         }
         String key = elementName + ":" + decl.name;
         attributeDecls.put(key, decl);
+    }
+
+    /**
+     * Processes the external DTD subset by resolving and parsing it.
+     *
+     * <p>This method is called when an external ID (SYSTEM or PUBLIC) is
+     * present in the DOCTYPE declaration. It uses the parent XMLParser's
+     * processExternalEntity method to resolve and parse the external DTD.
+     *
+     * <p>The external DTD subset is processed **as if it were an internal subset**.
+     * The tokens from the external DTD are fed back through the XMLParser to this
+     * DTDParser, which processes them as markup declarations. The only difference
+     * from a true internal subset is that there are no surrounding [ and ] brackets.
+     *
+     * <p>Processing order:
+     * <ul>
+     *   <li>If no internal subset (<!DOCTYPE root SYSTEM "file.dtd">):
+     *       External DTD processed, then DOCTYPE ends (GT)</li>
+     *   <li>If internal subset present (<!DOCTYPE root SYSTEM "file.dtd" [ ... ]>):
+     *       External DTD processed first, then internal subset [ ... ]</li>
+     * </ul>
+     *
+     * <p>If external parameter entities are disabled or if resolution fails,
+     * this method returns silently without error.
+     *
+     * @throws SAXException if DTD processing fails
+     */
+    private void processExternalDTDSubset() throws SAXException {
+        // Only process if we have a systemId or publicId
+        if (systemId == null && publicId == null) {
+            return;
+        }
+        
+        try {
+            // Use XMLParser's processExternalEntity to resolve and parse
+            // the external DTD subset. This will create a nested XMLTokenizer
+            // that sends tokens back through XMLParser to this DTDParser.
+            // The DTDParser is in IN_INTERNAL_SUBSET state, so it processes
+            // the tokens as markup declarations.
+            xmlParser.processExternalEntity(doctypeName, publicId, systemId);
+        } catch (IOException e) {
+            // I/O error resolving external DTD
+            // Report as SAX error if we have an error handler
+            if (errorHandler != null) {
+                errorHandler.fatalError(new org.xml.sax.SAXParseException(
+                    "Failed to resolve external DTD subset: " + systemId, locator, e));
+            }
+            throw new SAXException("Failed to resolve external DTD subset: " + systemId, e);
+        }
     }
 
 }

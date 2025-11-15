@@ -120,12 +120,12 @@ public class XMLTokenizer implements Locator2 {
     /**
      * Public ID of the document.
      */
-    private final String publicId;
+    private String publicId;
 
     /**
      * System ID of the document.
      */
-    private final String systemId;
+    private String systemId;
 
     static enum State {
         INIT,           // Initial state, detecting BOM
@@ -147,12 +147,14 @@ public class XMLTokenizer implements Locator2 {
         CDATA_SECTION,      // Inside CDATA section - emit CDATA for text
         PI_TARGET,          // After '<?' - emit NAME for PI target
         PI_DATA,            // Inside PI data - emit CDATA for text
+        DOCTYPE,            // Inside DOCTYPE declaration - emit NAME for keywords, handle quoted strings
         DOCTYPE_INTERNAL    // Inside DOCTYPE internal subset - emit NAME for keywords/names
     }
 
     private State state = State.INIT;
     private boolean closed;
     private TokenizerContext context = TokenizerContext.CONTENT;
+    private TokenizerContext prevContext = TokenizerContext.CONTENT; // Track previous context for returning from ATTR_VALUE
     private char attrQuoteChar = '\0'; // Current attribute quote character (for tracking attr values)
     
     /**
@@ -1178,6 +1180,7 @@ public class XMLTokenizer implements Locator2 {
                         case ELEMENT_NAME:
                         case ELEMENT_ATTRS:
                         case PI_TARGET:
+                        case DOCTYPE:
                         case DOCTYPE_INTERNAL:
                             // In these contexts, try NAME first (identifiers)
                             if (isNameStartChar(c)) {
@@ -1597,7 +1600,6 @@ public class XMLTokenizer implements Locator2 {
         }
         
         // Not a keyword, just emit HASH
-        charBuffer.reset();
         charBuffer.position(nameStart); // Back to after '#'
         emitToken(Token.HASH, null);
         return true;
@@ -1751,23 +1753,37 @@ public class XMLTokenizer implements Locator2 {
                 // In other contexts, NAME doesn't change context
                 break;
                 
-            // Quotes in attribute context
+            // Quotes - handle both attribute values and DOCTYPE quoted strings
             case QUOT:
             case APOS:
                 if (context == TokenizerContext.ELEMENT_ATTRS) {
-                    // Starting attribute value
+                    // Starting attribute value in element
+                    prevContext = context;
+                    context = TokenizerContext.ATTR_VALUE;
+                    attrQuoteChar = (token == Token.QUOT) ? '"' : '\'';
+                } else if (context == TokenizerContext.DOCTYPE) {
+                    // Starting quoted string in DOCTYPE (publicId/systemId)
+                    prevContext = context;
                     context = TokenizerContext.ATTR_VALUE;
                     attrQuoteChar = (token == Token.QUOT) ? '"' : '\'';
                 } else if (context == TokenizerContext.ATTR_VALUE) {
-                    // Ending attribute value
-                    context = TokenizerContext.ELEMENT_ATTRS;
-                    attrQuoteChar = '\0';
+                    // Check if this is the closing quote
+                    char currentChar = (token == Token.QUOT) ? '"' : '\'';
+                    if (currentChar == attrQuoteChar) {
+                        // Closing the quoted string - return to previous context
+                        context = prevContext;
+                        prevContext = TokenizerContext.CONTENT; // Reset
+                        attrQuoteChar = '\0';
+                    }
+                    // If it's not the matching quote, stay in ATTR_VALUE
                 }
                 break;
                 
             // End of element tag
             case GT:
                 if (context == TokenizerContext.ELEMENT_ATTRS || context == TokenizerContext.ELEMENT_NAME) {
+                    context = TokenizerContext.CONTENT;
+                } else if (context == TokenizerContext.DOCTYPE) {
                     context = TokenizerContext.CONTENT;
                 }
                 break;
@@ -1801,12 +1817,16 @@ public class XMLTokenizer implements Locator2 {
                 
             // DOCTYPE
             case START_DOCTYPE:
+                context = TokenizerContext.DOCTYPE;
+                break;
             case OPEN_BRACKET: // Internal subset
-                context = TokenizerContext.DOCTYPE_INTERNAL;
+                if (context == TokenizerContext.DOCTYPE) {
+                    context = TokenizerContext.DOCTYPE_INTERNAL;
+                }
                 break;
             case CLOSE_BRACKET:
                 if (context == TokenizerContext.DOCTYPE_INTERNAL) {
-                    context = TokenizerContext.ELEMENT_ATTRS; // Back to DOCTYPE declaration attrs
+                    context = TokenizerContext.DOCTYPE; // Back to DOCTYPE declaration
                 }
                 break;
                 
@@ -1864,6 +1884,94 @@ public class XMLTokenizer implements Locator2 {
         if (charBuffer.hasRemaining()) {
             throw new SAXException("Incomplete token at end of document");
         }
+    }
+
+    /**
+     * Resets the tokenizer state to allow reuse for parsing another document.
+     *
+     * <p>This method clears all parsing state, allowing the same XMLTokenizer
+     * instance to be reused for multiple documents. The consumer reference
+     * is preserved, as are the publicId and systemId unless explicitly changed
+     * via {@link #setPublicId(String)} or {@link #setSystemId(String)}.
+     *
+     * <p>This method resets:
+     * <ul>
+     *   <li>All buffer state (byte and character buffers)</li>
+     *   <li>Parsing state (back to INIT)</li>
+     *   <li>Line and column numbers (back to 1 and 0)</li>
+     *   <li>Charset detection state</li>
+     *   <li>Context tracking (back to CONTENT)</li>
+     *   <li>Closed flag</li>
+     * </ul>
+     *
+     * @throws SAXException if reset fails
+     */
+    public void reset() throws SAXException {
+        // Reset state machine
+        state = State.INIT;
+        closed = false;
+        context = TokenizerContext.CONTENT;
+        prevContext = TokenizerContext.CONTENT;
+        attrQuoteChar = '\0';
+        
+        // Reset position tracking
+        lineNumber = 1;
+        columnNumber = 0;
+        lastCharSeen = '\0';
+        
+        // Reset charset detection
+        charset = StandardCharsets.UTF_8;
+        version = null;
+        bomCharset = null;
+        decoder = null;
+        postXMLDeclBytePosition = 0;
+        
+        // Clear buffers
+        byteUnderflow = null;
+        charUnderflow = null;
+        charBuffer = null;
+    }
+
+    /**
+     * Sets the public identifier for the document.
+     *
+     * <p>The public identifier is used for error reporting and may be used
+     * by entity resolvers. This should be set before parsing begins or
+     * immediately after {@link #reset()}.
+     *
+     * @param publicId the public identifier, or null if not available
+     */
+    public void setPublicId(String publicId) {
+        this.publicId = publicId;
+    }
+
+    /**
+     * Sets the system identifier for the document.
+     *
+     * <p>The system identifier (typically a URL) is used for resolving
+     * relative URIs and for error reporting. This should be set before
+     * parsing begins or immediately after {@link #reset()}.
+     *
+     * @param systemId the system identifier, or null if not available
+     */
+    public void setSystemId(String systemId) {
+        this.systemId = systemId;
+    }
+
+    /**
+     * Reports whether the document declares itself as standalone.
+     *
+     * <p>This returns true if the XML declaration includes standalone="yes",
+     * false if it includes standalone="no", and false if there is no
+     * standalone declaration.
+     *
+     * <p>This corresponds to the SAX2 feature
+     * {@code http://xml.org/sax/features/is-standalone}.
+     *
+     * @return true if standalone="yes", false otherwise
+     */
+    public boolean isStandalone() {
+        return standalone;
     }
 
     // Locator2 interface implementation
