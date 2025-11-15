@@ -868,18 +868,29 @@ public class XMLParser implements TokenConsumer {
      */
     private void handleAttributeValue(Token token, CharBuffer data) throws SAXException {
         if (token == currentAttributeQuote) {
-            // End of attribute value
+            // End of attribute value - apply normalization
+            String rawValue = currentAttributeValue.toString();
+            String normalizedValue = normalizeAttributeValue(rawValue, currentElementName, currentAttributeName);
+            
             // Add attribute to list
             attributes.addAttribute("", currentAttributeName, currentAttributeName, 
-                                          "CDATA", currentAttributeValue.toString(), true);
+                                          "CDATA", normalizedValue, true);
             currentAttributeValue.setLength(0); // Reset for next attribute
             state = State.ELEMENT_ATTRS;
         } else if (token == Token.CDATA) {
             // Attribute value text
             currentAttributeValue.append(extractString(data));
+        } else if (token == Token.S) {
+            // Whitespace in attribute value
+            currentAttributeValue.append(extractString(data));
         } else if (token == Token.ENTITYREF) {
             // Entity reference in attribute value
             currentAttributeValue.append(extractString(data));
+        } else if (token == Token.AMP) {
+            // General entity reference: &name; 
+            // TODO: Look up entity in DTD and resolve (may be external)
+            // For now, this is an error
+            throw new SAXException("General entity references in attribute values not yet supported");
         } else {
             throw new SAXException("Unexpected token in attribute value: " + token);
         }
@@ -1147,6 +1158,59 @@ public class XMLParser implements TokenConsumer {
             sb.append(buffer.get());
         }
         return sb.toString();
+    }
+    
+    /**
+     * Normalizes an attribute value according to XML specification section 3.3.3.
+     * 
+     * <p>Normalization process:
+     * <ol>
+     * <li>Line breaks have already been normalized to #xA (handled by XMLTokenizer)</li>
+     * <li>Replace whitespace characters (#x20, #xA, #x9) with single space (#x20)</li>
+     * <li>Entity and character references have already been expanded (handled during accumulation)</li>
+     * <li>If attribute type is not CDATA: trim leading/trailing spaces and collapse space sequences</li>
+     * </ol>
+     * 
+     * @param value the raw attribute value (after entity/char ref expansion)
+     * @param elementName the name of the element containing this attribute
+     * @param attributeName the name of the attribute
+     * @return the normalized attribute value
+     */
+    private String normalizeAttributeValue(String value, String elementName, String attributeName) throws SAXException {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        
+        // Step 1: Replace whitespace characters with space (#x20)
+        StringBuilder normalized = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\n' || c == '\t' || c == '\r') {
+                // Replace #xA, #x9, #xD with space
+                normalized.append(' ');
+            } else {
+                normalized.append(c);
+            }
+        }
+        
+        // Step 2: Query DTD for attribute type
+        String attributeType = "CDATA"; // Default if no DTD
+        if (dtdParser != null) {
+            AttributeDeclaration attrDecl = dtdParser.getAttributeDeclaration(elementName, attributeName);
+            if (attrDecl != null && attrDecl.type != null) {
+                attributeType = attrDecl.type;
+            }
+        }
+        
+        // Step 3: If not CDATA, trim and collapse spaces
+        if (!"CDATA".equals(attributeType)) {
+            String result = normalized.toString().trim();
+            // Replace sequences of spaces with single space
+            result = result.replaceAll(" +", " ");
+            return result;
+        }
+        
+        return normalized.toString();
     }
 
 }

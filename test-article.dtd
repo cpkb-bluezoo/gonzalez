@@ -1,0 +1,6 @@
+<!ELEMENT article (title, author, body)>
+<!ELEMENT title (#PCDATA)>
+<!ELEMENT author (#PCDATA)>
+<!ELEMENT body (#PCDATA)>
+<!ATTLIST article lang NMTOKEN #IMPLIED>
+<!ATTLIST article status CDATA "draft">
