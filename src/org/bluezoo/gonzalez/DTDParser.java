@@ -698,6 +698,18 @@ public class DTDParser implements TokenConsumer {
                 // TODO: Handle conditional sections
                 break;
 
+            case PARAMETERENTITYREF:
+                // TODO: Parameter entity expansion in DTD markup
+                // Direct parameter entity references in DTD declarations (not in entity values)
+                // Example: <!ATTLIST root attr %common; "default">
+                // This requires inline expansion during DTD parsing, not post-processing.
+                // For now, throw an error to indicate this feature is not yet implemented.
+                String refName = extractString(data);
+                throw new SAXParseException(
+                    "Parameter entity reference in DTD markup not yet supported: %" + refName + ";" +
+                    " (only parameter entities in entity values are currently supported)",
+                    locator);
+
             default:
                 // Other tokens within declarations, ignore for now
                 break;

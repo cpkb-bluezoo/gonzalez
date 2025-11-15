@@ -1206,11 +1206,27 @@ public class XMLParser implements TokenConsumer {
         String expandedValue = helper.expandGeneralEntity(entityName, EntityExpansionContext.CONTENT);
         
         if (expandedValue == null) {
-            // External entity - would require async resolution
-            // For now, report this as not yet implemented
-            throw new SAXParseException(
-                "External entity reference '&" + entityName + ";' in content requires async resolution (not yet implemented)",
-                locator);
+            // External entity - use blocking I/O to resolve and parse it
+            // Same mechanism as external DTD subset
+            EntityDeclaration entity = dtdParser.getGeneralEntity(entityName);
+            if (entity != null && entity.isExternal() && entity.externalID != null) {
+                try {
+                    processExternalEntity(
+                        entityName,
+                        entity.externalID.publicId,
+                        entity.externalID.systemId
+                    );
+                } catch (IOException e) {
+                    throw new SAXParseException(
+                        "Failed to resolve external entity '&" + entityName + ";': " + e.getMessage(),
+                        locator,
+                        e
+                    );
+                }
+            }
+            // If entity was resolved, processExternalEntity() will have sent tokens
+            // and triggered content handler callbacks. Nothing more to do here.
+            return;
         }
         
         // Internal entity - send expanded text to content handler
