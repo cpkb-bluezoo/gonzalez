@@ -63,6 +63,23 @@ public interface TokenConsumer {
      * @throws SAXException if an error occurs processing the token
      */
     void receive(Token token, CharBuffer data) throws SAXException;
+    
+    /**
+     * Reports a fatal tokenizer-level error.
+     * <p>
+     * This method is called by the tokenizer when it encounters a fatal error
+     * that prevents further processing, such as illegal XML characters or
+     * encoding errors. The consumer should report this error through the
+     * appropriate error handling mechanism (e.g., SAX ErrorHandler).
+     * <p>
+     * The method returns the exception so callers can throw it:
+     * <pre>throw consumer.fatalError("message");</pre>
+     * 
+     * @param message the error message
+     * @return the SAXException to throw
+     * @throws SAXException if the ErrorHandler itself throws
+     */
+    SAXException fatalError(String message) throws SAXException;
 
 }
 

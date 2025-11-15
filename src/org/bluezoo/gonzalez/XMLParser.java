@@ -233,14 +233,14 @@ public class XMLParser implements TokenConsumer {
         // Check for unclosed constructs
         switch (state) {
             case CDATA_SECTION:
-                throw new SAXParseException("Unclosed CDATA section at end of document", locator);
+ throw fatalError("Unclosed CDATA section at end of document");
                 
             case COMMENT:
-                throw new SAXParseException("Unclosed comment at end of document", locator);
+ throw fatalError("Unclosed comment at end of document");
                 
             case PI_TARGET:
             case PI_CONTENT:
-                throw new SAXParseException("Unclosed processing instruction at end of document", locator);
+ throw fatalError("Unclosed processing instruction at end of document");
                 
             case ELEMENT_START:
             case ELEMENT_NAME:
@@ -251,12 +251,12 @@ public class XMLParser implements TokenConsumer {
             case ATTRIBUTE_VALUE:
             case END_ELEMENT_START:
             case END_ELEMENT_NAME:
-                throw new SAXParseException("Unclosed element at end of document", locator);
+ throw fatalError("Unclosed element at end of document");
                 
             case ELEMENT_CONTENT:
                 // Check if we're still inside an element (elementDepth > 0)
                 if (elementDepth > 0) {
-                    throw new SAXParseException("Unclosed element at end of document (depth=" + elementDepth + ")", locator);
+ throw fatalError("Unclosed element at end of document (depth=" + elementDepth + ")");
                 }
                 break;
                 
@@ -266,7 +266,7 @@ public class XMLParser implements TokenConsumer {
                 
             case INIT:
             case PROLOG:
-                throw new SAXParseException("No root element found in document", locator);
+ throw fatalError("No root element found in document");
                 
             default:
                 // Other states might indicate incomplete parsing
@@ -556,7 +556,7 @@ public class XMLParser implements TokenConsumer {
         }
         
         if (entityResolutionStack.contains(resolvedSystemId)) {
-            throw new SAXParseException("Recursive entity reference detected: " + resolvedSystemId, locator);
+ throw fatalError("Recursive entity reference detected: " + resolvedSystemId);
         }
         
         // Add to stack
@@ -574,7 +574,7 @@ public class XMLParser implements TokenConsumer {
             InputStream inputStream = source.getByteStream();
             if (inputStream == null) {
                 // TODO: Handle Reader (character stream)
-                throw new SAXParseException("Entity InputSource must have a byte stream", locator);
+ throw fatalError("Entity InputSource must have a byte stream");
             }
             
             // Feed entity data to tokenizer (same logic as Parser.parse())
@@ -791,7 +791,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Unexpected token in prolog: " + token, locator);
+ throw fatalError("Unexpected token in prolog: " + token);
         }
     }
     
@@ -811,7 +811,7 @@ public class XMLParser implements TokenConsumer {
             
             state = State.ELEMENT_NAME;
         } else {
-            throw new SAXParseException("Expected element name after '<', got: " + token, locator);
+ throw fatalError("Expected element name after '<', got: " + token);
         }
     }
     
@@ -884,7 +884,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Unexpected token after element name: " + token, locator);
+ throw fatalError("Unexpected token after element name: " + token);
         }
     }
     
@@ -939,7 +939,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Unexpected token in element attributes: " + token, locator);
+ throw fatalError("Unexpected token in element attributes: " + token);
         }
     }
     
@@ -958,7 +958,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Expected '=' after attribute name, got: " + token, locator);
+ throw fatalError("Expected '=' after attribute name, got: " + token);
         }
     }
     
@@ -980,7 +980,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Expected quote after '=', got: " + token, locator);
+ throw fatalError("Expected quote after '=', got: " + token);
         }
     }
     
@@ -1039,7 +1039,7 @@ public class XMLParser implements TokenConsumer {
             String expandedValue = expandGeneralEntityInAttributeValue(entityName);
             currentAttributeValue.append(expandedValue);
         } else {
-            throw new SAXParseException("Unexpected token in attribute value: " + token, locator);
+ throw fatalError("Unexpected token in attribute value: " + token);
         }
     }
     
@@ -1051,6 +1051,11 @@ public class XMLParser implements TokenConsumer {
             case CDATA:
                 // Character data
                 String text = extractString(data);
+                
+                // Check for forbidden ]]> sequence
+                if (text.contains("]]>")) {
+ throw fatalError("The character sequence ']]>' must not appear in content");
+                }
                 
                 // Record for validation
                 if (validationEnabled && dtdParser != null) {
@@ -1130,7 +1135,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Unexpected token in element content: " + token, locator);
+ throw fatalError("Unexpected token in element content: " + token);
         }
     }
     
@@ -1142,7 +1147,7 @@ public class XMLParser implements TokenConsumer {
             currentElementName = extractString(data);
             state = State.END_ELEMENT_NAME;
         } else {
-            throw new SAXParseException("Expected element name after '</', got: " + token, locator);
+ throw fatalError("Expected element name after '</', got: " + token);
         }
     }
     
@@ -1180,7 +1185,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Expected '>' after end element name, got: " + token, locator);
+ throw fatalError("Expected '>' after end element name, got: " + token);
         }
     }
     
@@ -1192,7 +1197,7 @@ public class XMLParser implements TokenConsumer {
             currentPITarget = extractString(data);
             state = State.PI_CONTENT;
         } else {
-            throw new SAXParseException("Expected PI target after '<?', got: " + token, locator);
+ throw fatalError("Expected PI target after '<?', got: " + token);
         }
     }
     
@@ -1203,7 +1208,7 @@ public class XMLParser implements TokenConsumer {
         switch (token) {
             case S:
             case CDATA:
-                // PI data
+                // PI data (including whitespace)
                 if (data != null) {
                     currentPIData.append(extractString(data));
                 }
@@ -1225,11 +1230,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                // Other tokens are part of PI data
-                if (data != null) {
-                    currentPIData.append(extractString(data));
-                }
-                break;
+ throw fatalError("Unexpected token in processing instruction: " + token);
         }
     }
     
@@ -1263,8 +1264,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                // Other tokens might be part of comment (e.g., hyphens)
-                break;
+ throw fatalError("Unexpected token in comment: " + token);
         }
     }
     
@@ -1294,8 +1294,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                // Other tokens might appear in CDATA (they're literal)
-                break;
+ throw fatalError("Unexpected token in CDATA section: " + token);
         }
     }
     
@@ -1321,7 +1320,7 @@ public class XMLParser implements TokenConsumer {
                 break;
                 
             default:
-                throw new SAXParseException("Unexpected content after root element: " + token, locator);
+ throw fatalError("Unexpected content after root element: " + token);
         }
     }
     
@@ -1383,9 +1382,8 @@ public class XMLParser implements TokenConsumer {
                         entity.externalID.systemId
                     );
                 } catch (IOException e) {
-                    throw new SAXParseException(
+ throw fatalError(
                         "Failed to resolve external entity '&" + entityName + ";': " + e.getMessage(),
-                        locator,
                         e
                     );
                 }
@@ -1591,10 +1589,9 @@ public class XMLParser implements TokenConsumer {
                         // Verify specified value matches fixed value
                         String specifiedValue = attributes.getValue(index);
                         if (!fixedValue.equals(specifiedValue)) {
-                            throw new SAXParseException(
+ throw fatalError(
                                 "Attribute '" + decl.name + "' has #FIXED value '" + fixedValue + 
-                                "' but document specifies '" + specifiedValue + "'",
-                                locator);
+                                "' but document specifies '" + specifiedValue + "'");
                         }
                     } else {
                         // Apply fixed value
@@ -1648,25 +1645,22 @@ public class XMLParser implements TokenConsumer {
             
             // Validate prefix not empty
             if (prefix.isEmpty()) {
-                throw new SAXParseException(
-                    "Namespace prefix must not be empty after xmlns:",
-                    locator);
+ throw fatalError(
+                    "Namespace prefix must not be empty after xmlns:");
             }
             
             // Per spec: cannot bind/unbind xml or xmlns prefixes
             if ("xml".equals(prefix) || "xmlns".equals(prefix)) {
                 // xml prefix must be bound to XML namespace
                 if ("xml".equals(prefix) && !NamespaceScopeTracker.XML_NAMESPACE_URI.equals(attrValue)) {
-                    throw new SAXParseException(
+ throw fatalError(
                         "Cannot bind 'xml' prefix to namespace other than " + 
-                        NamespaceScopeTracker.XML_NAMESPACE_URI,
-                        locator);
+                        NamespaceScopeTracker.XML_NAMESPACE_URI);
                 }
                 // xmlns prefix cannot be declared
                 if ("xmlns".equals(prefix)) {
-                    throw new SAXParseException(
-                        "Cannot declare 'xmlns' prefix",
-                        locator);
+ throw fatalError(
+                        "Cannot declare 'xmlns' prefix");
                 }
             }
             
@@ -1843,6 +1837,43 @@ public class XMLParser implements TokenConsumer {
         if (errorHandler != null) {
             errorHandler.error(new SAXParseException(message, locator));
         }
+    }
+    
+    /**
+     * Reports a fatal well-formedness error.
+     * Calls the ErrorHandler's fatalError method if set, then returns the exception
+     * for the caller to throw.
+     * This implements the TokenConsumer interface to allow the tokenizer to report
+     * tokenizer-level fatal errors.
+     * 
+     * @param message the error message
+     * @return the SAXException to throw
+     * @throws SAXException if the ErrorHandler itself throws
+     */
+    public SAXException fatalError(String message) throws SAXException {
+        SAXParseException exception = new SAXParseException(message, locator);
+        if (errorHandler != null) {
+            errorHandler.fatalError(exception);
+        }
+        return exception;
+    }
+    
+    /**
+     * Reports a fatal well-formedness error with a cause.
+     * Calls the ErrorHandler's fatalError method if set, then returns the exception
+     * for the caller to throw.
+     * 
+     * @param message the error message
+     * @param cause the underlying exception that caused this error
+     * @return the SAXException to throw
+     * @throws SAXException if the ErrorHandler itself throws
+     */
+    private SAXException fatalError(String message, Exception cause) throws SAXException {
+        SAXParseException exception = new SAXParseException(message, locator, cause);
+        if (errorHandler != null) {
+            errorHandler.fatalError(exception);
+        }
+        return exception;
     }
 
 }

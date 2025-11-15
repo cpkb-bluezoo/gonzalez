@@ -110,6 +110,18 @@ public class MockTokenConsumer implements TokenConsumer {
             System.out.println(event);
         }
     }
+    
+    @Override
+    public SAXException fatalError(String message) throws SAXException {
+        int line = locator != null ? locator.getLineNumber() : -1;
+        int column = locator != null ? locator.getColumnNumber() : -1;
+        
+        if (printToConsole) {
+            System.err.println("FATAL ERROR at [" + line + ":" + column + "]: " + message);
+        }
+        
+        return new org.xml.sax.SAXParseException(message, locator);
+    }
 
     /**
      * Returns all token events received.
