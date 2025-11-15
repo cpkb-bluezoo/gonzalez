@@ -457,6 +457,8 @@ public class DTDParser implements TokenConsumer {
             case GT:
                 // End of DOCTYPE (no external ID, no internal subset)
                 changeState(State.DONE);
+                // Expand parameter entities in entity values (post-processing)
+                expandParameterEntitiesInEntityValues();
                 // Report start and end of DTD
                 if (lexicalHandler != null) {
                     String publicId = doctypeExternalID != null ? doctypeExternalID.publicId : null;
@@ -593,6 +595,8 @@ public class DTDParser implements TokenConsumer {
 
             case GT:
                 // End of DOCTYPE (external ID, no internal subset)
+                // Expand parameter entities in entity values (post-processing)
+                expandParameterEntitiesInEntityValues();
                 // Report start of DTD
                 if (lexicalHandler != null) {
                     String publicId = doctypeExternalID != null ? doctypeExternalID.publicId : null;
@@ -718,6 +722,8 @@ public class DTDParser implements TokenConsumer {
             case GT:
                 // End of DOCTYPE
                 changeState(State.DONE);
+                // Expand parameter entities in entity values (post-processing)
+                expandParameterEntitiesInEntityValues();
                 // Report end of DTD
                 if (lexicalHandler != null) {
                     lexicalHandler.endDTD();
@@ -1716,14 +1722,14 @@ public class DTDParser implements TokenConsumer {
                         break;
                     case PARAMETERENTITYREF:
                         // Parameter entity reference in entity value
-                        // For now, treat as a reference (similar handling to general entities)
+                        // Flush any accumulated text first
                         if (entityValueTextBuilder.length() > 0) {
                             entityValueBuilder.add(entityValueTextBuilder.toString());
                             entityValueTextBuilder.setLength(0);
                         }
                         String paramName = extractString(data);
-                        // TODO: Handle parameter entity references in entity values
-                        throw new SAXParseException("Parameter entity reference in entity value not yet supported: %" + paramName + ";", locator);
+                        entityValueBuilder.add(new ParameterEntityReference(paramName));
+                        break;
                     case QUOT:
                     case APOS:
                         // Check if this is the closing quote
@@ -2180,6 +2186,105 @@ public class DTDParser implements TokenConsumer {
             }
             throw new SAXParseException("Failed to resolve external DTD subset: " + systemId, locator, e);
         }
+    }
+    
+    /**
+     * Post-processes all entity declarations to expand parameter entity references.
+     * This must be called after the DOCTYPE declaration is complete, because
+     * parameter entities can have forward references (an entity can reference
+     * a parameter entity declared later in the DTD).
+     * 
+     * <p>This method iterates through all general and parameter entity declarations
+     * and expands any ParameterEntityReference objects in their replacementText.
+     * 
+     * @throws SAXException if parameter entity expansion fails (undefined entity,
+     *         circular reference, etc.)
+     */
+    private void expandParameterEntitiesInEntityValues() throws SAXException {
+        // Expand parameter entities in general entity values
+        if (entities != null) {
+            for (EntityDeclaration entity : entities.values()) {
+                if (entity.replacementText != null && !entity.isExternal()) {
+                    entity.replacementText = expandParameterReferencesInList(entity.replacementText);
+                }
+            }
+        }
+        
+        // Expand parameter entities in parameter entity values
+        if (parameterEntities != null) {
+            for (EntityDeclaration entity : parameterEntities.values()) {
+                if (entity.replacementText != null && !entity.isExternal()) {
+                    entity.replacementText = expandParameterReferencesInList(entity.replacementText);
+                }
+            }
+        }
+        
+        // Note: We also need to expand parameter entities in attribute default values
+        if (attributeDecls != null) {
+            for (Map<String, AttributeDeclaration> elementAttrs : attributeDecls.values()) {
+                for (AttributeDeclaration attr : elementAttrs.values()) {
+                    if (attr.defaultValue != null) {
+                        attr.defaultValue = expandParameterReferencesInList(attr.defaultValue);
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Expands all ParameterEntityReference objects in a list to their expanded values.
+     * 
+     * @param list the list containing String and ParameterEntityReference/GeneralEntityReference objects
+     * @return a new list with ParameterEntityReference objects replaced by their expanded content
+     * @throws SAXException if parameter entity expansion fails
+     */
+    private List<Object> expandParameterReferencesInList(List<Object> list) throws SAXException {
+        if (list == null || list.isEmpty()) {
+            return list;
+        }
+        
+        // Check if there are any parameter entity references
+        boolean hasParamRefs = false;
+        for (Object part : list) {
+            if (part instanceof ParameterEntityReference) {
+                hasParamRefs = true;
+                break;
+            }
+        }
+        
+        if (!hasParamRefs) {
+            return list; // No parameter entities to expand
+        }
+        
+        // Expand parameter entity references
+        List<Object> result = new ArrayList<>();
+        EntityExpansionHelper helper = new EntityExpansionHelper(this, locator);
+        
+        for (Object part : list) {
+            if (part instanceof ParameterEntityReference) {
+                // Expand the parameter entity reference
+                ParameterEntityReference ref = (ParameterEntityReference) part;
+                String expanded = helper.expandParameterEntity(ref.name, EntityExpansionContext.ENTITY_VALUE);
+                
+                if (expanded == null) {
+                    throw new SAXParseException(
+                        "External parameter entity reference in entity value requires async resolution: %" + ref.name + ";",
+                        locator);
+                }
+                
+                // The expanded value is a string - add it to the result
+                // Note: The expanded value might itself contain general entity references,
+                // which will remain as GeneralEntityReference objects for deferred expansion
+                if (!expanded.isEmpty()) {
+                    result.add(expanded);
+                }
+            } else {
+                // Keep strings and general entity references as-is
+                result.add(part);
+            }
+        }
+        
+        return result;
     }
 
 }

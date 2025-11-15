@@ -148,7 +148,8 @@ public class XMLTokenizer implements Locator2 {
         PI_TARGET,          // After '<?' - emit NAME for PI target
         PI_DATA,            // Inside PI data - emit CDATA for text
         DOCTYPE,            // Inside DOCTYPE declaration - emit NAME for keywords, handle quoted strings
-        DOCTYPE_INTERNAL    // Inside DOCTYPE internal subset - emit NAME for keywords/names
+        DOCTYPE_INTERNAL,   // Inside DOCTYPE internal subset - emit NAME for keywords/names
+        DOCTYPE_QUOTED      // Inside quoted string in DOCTYPE (entity values, public/system IDs) - like ATTR_VALUE but stops at %
     }
 
     private State state = State.INIT;
@@ -1009,8 +1010,10 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '%':
-                    // In DOCTYPE context, % could be start of parameter entity reference
-                    if (context == TokenizerContext.DOCTYPE_INTERNAL || context == TokenizerContext.DOCTYPE) {
+                    // In DOCTYPE contexts (including quoted strings), % could be start of parameter entity reference
+                    if (context == TokenizerContext.DOCTYPE_INTERNAL || 
+                        context == TokenizerContext.DOCTYPE ||
+                        context == TokenizerContext.DOCTYPE_QUOTED) {
                         if (!tryEmitParameterEntityRef()) {
                             // Not enough data, rewind and save to underflow
                             charBuffer.reset();
@@ -1055,6 +1058,7 @@ public class XMLTokenizer implements Locator2 {
                 case '[':
                     // Only emit as special token outside of ATTR_VALUE
                     if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
                         context == TokenizerContext.CONTENT ||
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION ||
@@ -1094,6 +1098,7 @@ public class XMLTokenizer implements Locator2 {
                             return;
                         }
                     } else if (context == TokenizerContext.ATTR_VALUE || 
+                               context == TokenizerContext.DOCTYPE_QUOTED ||
                                context == TokenizerContext.CONTENT ||
                                context == TokenizerContext.COMMENT ||
                                context == TokenizerContext.PI_DATA) {
@@ -1269,6 +1274,7 @@ public class XMLTokenizer implements Locator2 {
                     switch (context) {
                         case CONTENT:
                         case ATTR_VALUE:
+                        case DOCTYPE_QUOTED:
                         case COMMENT:
                         case CDATA_SECTION:
                         case PI_DATA:
@@ -1916,6 +1922,13 @@ public class XMLTokenizer implements Locator2 {
                                (attrQuoteChar != '\0' && c == attrQuoteChar));
                     break;
                     
+                case DOCTYPE_QUOTED:
+                    // In DOCTYPE quoted strings (entity values), stop at: < & % and the matching quote
+                    // The % is important for parameter entity references in entity values
+                    stopHere = (c == '<' || c == '&' || c == '%' ||
+                               (attrQuoteChar != '\0' && c == attrQuoteChar));
+                    break;
+                    
                 case COMMENT:
                     // In comments, stop at: - (for -->)
                     stopHere = (c == '-');
@@ -2029,9 +2042,9 @@ public class XMLTokenizer implements Locator2 {
                 } else if (context == TokenizerContext.DOCTYPE || context == TokenizerContext.DOCTYPE_INTERNAL) {
                     // Starting quoted string in DOCTYPE (publicId/systemId/entity value)
                     prevContext = context;
-                    context = TokenizerContext.ATTR_VALUE;
+                    context = TokenizerContext.DOCTYPE_QUOTED;
                     attrQuoteChar = (token == Token.QUOT) ? '"' : '\'';
-                } else if (context == TokenizerContext.ATTR_VALUE) {
+                } else if (context == TokenizerContext.ATTR_VALUE || context == TokenizerContext.DOCTYPE_QUOTED) {
                     // Check if this is the closing quote
                     char currentChar = (token == Token.QUOT) ? '"' : '\'';
                     if (currentChar == attrQuoteChar) {

@@ -182,6 +182,78 @@ public class EntityExpansionHelper {
     }
     
     /**
+     * Expands a parameter entity reference in the given context.
+     * 
+     * <p>Parameter entities can only be expanded in DTD and ENTITY_VALUE contexts.
+     * They are forbidden in element content and attribute values.
+     * 
+     * @param entityName the parameter entity name (without % and ;)
+     * @param context the expansion context
+     * @return the expanded value (for internal entities) or null (for external entities requiring async resolution)
+     * @throws SAXException if expansion fails or entity reference is invalid in context
+     */
+    public String expandParameterEntity(String entityName, EntityExpansionContext context)
+            throws SAXException {
+        // Check for DTD
+        if (dtdParser == null) {
+            throw new SAXParseException(
+                "Parameter entity reference '%" + entityName + ";' used but no DTD present",
+                locator);
+        }
+        
+        // Parameter entities only allowed in DTD and ENTITY_VALUE contexts
+        if (context != EntityExpansionContext.DTD && context != EntityExpansionContext.ENTITY_VALUE) {
+            throw new SAXParseException(
+                "Parameter entity reference '%" + entityName + ";' is forbidden in context: " + context,
+                locator);
+        }
+        
+        // Look up entity
+        EntityDeclaration entity = dtdParser.getParameterEntity(entityName);
+        if (entity == null) {
+            throw new SAXParseException(
+                "Undefined parameter entity: %" + entityName + ";",
+                locator);
+        }
+        
+        // Check circular reference (use % prefix to distinguish from general entities)
+        String paramEntityKey = "%" + entityName;
+        if (visitedEntityNames.contains(paramEntityKey)) {
+            throw new SAXParseException(
+                "Circular parameter entity reference detected: %" + entityName + ";",
+                locator);
+        }
+        
+        // External entities in DTD context require async resolution
+        if (entity.isExternal() && context == EntityExpansionContext.DTD) {
+            // Check for external ID circular reference
+            if (entity.externalID != null) {
+                String externalKey = entity.externalID.toString();
+                if (visitedExternalIDs.contains(externalKey)) {
+                    throw new SAXParseException(
+                        "Circular external parameter entity reference detected: " + externalKey,
+                        locator);
+                }
+            }
+            // Return null to signal async resolution needed
+            return null;
+        }
+        
+        // In ENTITY_VALUE context, external parameter entities are forbidden
+        if (entity.isExternal() && context == EntityExpansionContext.ENTITY_VALUE) {
+            throw new SAXParseException(
+                "External parameter entity reference in entity value is forbidden: %" + entityName + ";",
+                locator);
+        }
+        
+        // Expand internal entity
+        EntityExpansionHelper childHelper = new EntityExpansionHelper(this);
+        childHelper.visitedEntityNames.add(paramEntityKey);
+        // When expanding a parameter entity's value, we're still in ENTITY_VALUE context
+        return childHelper.expandEntityValue(entity.replacementText, EntityExpansionContext.ENTITY_VALUE);
+    }
+    
+    /**
      * Recursively expands an entity value, processing both literal strings
      * and nested entity references.
      * 
@@ -206,13 +278,24 @@ public class EntityExpansionHelper {
                 // Literal text
                 result.append((String) part);
             } else if (part instanceof GeneralEntityReference) {
-                // Nested entity reference
+                // Nested general entity reference
                 GeneralEntityReference ref = (GeneralEntityReference) part;
                 String expanded = expandGeneralEntity(ref.name, context);
                 if (expanded == null) {
                     // External entity requiring async resolution
                     throw new SAXParseException(
                         "External entity reference in entity value requires async resolution",
+                        locator);
+                }
+                result.append(expanded);
+            } else if (part instanceof ParameterEntityReference) {
+                // Nested parameter entity reference
+                ParameterEntityReference ref = (ParameterEntityReference) part;
+                String expanded = expandParameterEntity(ref.name, EntityExpansionContext.ENTITY_VALUE);
+                if (expanded == null) {
+                    // External parameter entity requiring async resolution
+                    throw new SAXParseException(
+                        "External parameter entity reference in entity value requires async resolution",
                         locator);
                 }
                 result.append(expanded);
