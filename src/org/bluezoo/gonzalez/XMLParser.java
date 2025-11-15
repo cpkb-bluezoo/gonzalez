@@ -942,7 +942,7 @@ public class XMLParser implements TokenConsumer {
     }
     
     /**
-     * Handles tokens after START_END_ELEMENT (</). 
+     * Handles tokens after START_END_ELEMENT (&lt;/). 
      */
     private void handleEndElementStart(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {

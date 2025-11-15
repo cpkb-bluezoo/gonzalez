@@ -62,8 +62,8 @@ public class DTDParser implements TokenConsumer {
         AFTER_EXTERNAL_ID,      // Read external ID, expecting [/GT
         IN_INTERNAL_SUBSET,     // Inside [ ... ], processing declarations
         AFTER_INTERNAL_SUBSET,  // Read ], expecting GT
-        IN_ELEMENTDECL,         // Parsing <!ELEMENT declaration
-        IN_ATTLISTDECL,         // Parsing <!ATTLIST declaration
+        IN_ELEMENTDECL,         // Parsing &lt;!ELEMENT declaration
+        IN_ATTLISTDECL,         // Parsing &lt;!ATTLIST declaration
         DONE                    // Read final GT, done processing
     }
 
@@ -100,14 +100,14 @@ public class DTDParser implements TokenConsumer {
     private boolean sawPublicKeyword;
 
     /**
-     * Element declarations: element name -> ElementDeclaration.
+     * Element declarations: element name → ElementDeclaration.
      * Uses HashMap for O(1) lookup during validation.
      * Keys are interned strings.
      */
     private Map<String, ElementDeclaration> elementDecls;
 
     /**
-     * Attribute declarations: element name -> (attribute name -> AttributeDeclaration).
+     * Attribute declarations: element name → (attribute name → AttributeDeclaration).
      * Two-level map structure for efficient lookup by element and attribute.
      * Uses HashMap as DTDs are typically small (dozens to hundreds of declarations)
      * and O(1) lookup is more important than sorted iteration.
@@ -250,7 +250,7 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             default:
-                throw new SAXException("Expected name after <!DOCTYPE, got: " + token);
+                throw new SAXException("Expected name after &lt;!DOCTYPE, got: " + token);
         }
     }
 
@@ -503,7 +503,7 @@ public class DTDParser implements TokenConsumer {
     }
 
     /**
-     * Handles tokens within an <!ELEMENT declaration.
+     * Handles tokens within an &lt;!ELEMENT declaration.
      */
     private void handleInElementDecl(Token token, CharBuffer data) throws SAXException {
         switch (token) {
@@ -594,7 +594,7 @@ public class DTDParser implements TokenConsumer {
     }
 
     /**
-     * Handles tokens within an <!ATTLIST declaration.
+     * Handles tokens within an &lt;!ATTLIST declaration.
      */
     private void handleInAttlistDecl(Token token, CharBuffer data) throws SAXException {
         switch (token) {
@@ -813,7 +813,7 @@ public class DTDParser implements TokenConsumer {
     /**
      * Gets all attribute declarations for a specific element.
      * @param elementName the element name
-     * @return Map of attribute name -> AttributeDeclaration, or null if no attributes declared
+     * @return Map of attribute name → AttributeDeclaration, or null if no attributes declared
      */
     public Map<String, AttributeDeclaration> getAttributeDeclarations(String elementName) {
         if (attributeDecls == null) {
@@ -824,7 +824,7 @@ public class DTDParser implements TokenConsumer {
 
     /**
      * Stores an element declaration.
-     * Called internally when parsing <!ELEMENT declarations.
+     * Called internally when parsing &lt;!ELEMENT declarations.
      *
      * @param decl the element declaration to store
      */
@@ -838,7 +838,7 @@ public class DTDParser implements TokenConsumer {
 
     /**
      * Stores an attribute declaration.
-     * Called internally when parsing <!ATTLIST declarations.
+     * Called internally when parsing &lt;!ATTLIST declarations.
      *
      * @param elementName the element this attribute belongs to
      * @param decl the attribute declaration to store
@@ -876,9 +876,9 @@ public class DTDParser implements TokenConsumer {
      *
      * <p>Processing order:
      * <ul>
-     *   <li>If no internal subset (<!DOCTYPE root SYSTEM "file.dtd">):
+     *   <li>If no internal subset (&lt;!DOCTYPE root SYSTEM "file.dtd"&gt;):
      *       External DTD processed, then DOCTYPE ends (GT)</li>
-     *   <li>If internal subset present (<!DOCTYPE root SYSTEM "file.dtd" [ ... ]>):
+     *   <li>If internal subset present (&lt;!DOCTYPE root SYSTEM "file.dtd" [ ... ]&gt;):
      *       External DTD processed first, then internal subset [ ... ]</li>
      * </ul>
      *

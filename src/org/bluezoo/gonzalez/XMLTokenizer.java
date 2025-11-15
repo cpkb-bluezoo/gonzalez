@@ -597,7 +597,7 @@ public class XMLTokenizer implements Locator2 {
 
     /**
      * Normalizes line endings in the character buffer.
-     * Converts CRLF -> LF and CR -> LF as per XML spec section 2.11.
+     * Converts CRLF → LF and CR → LF as per XML spec section 2.11.
      * Modifies the buffer in-place and adjusts its limit.
      * 
      * This method handles the case where a CRLF straddles buffer boundaries:
@@ -1201,8 +1201,8 @@ public class XMLTokenizer implements Locator2 {
     }
     
     /**
-     * Tries to emit a token that starts with '<'.
-     * Handles: </, <?, <!, <!--, <![CDATA[, <!DOCTYPE, <!ELEMENT, <!ATTLIST, <!ENTITY, <!NOTATION, <![
+     * Tries to emit a token that starts with '&lt;'.
+     * Handles: &lt;/, &lt;?, &lt;!, &lt;!--, &lt;![CDATA[, &lt;!DOCTYPE, &lt;!ELEMENT, &lt;!ATTLIST, &lt;!ENTITY, &lt;!NOTATION, &lt;![
      * @return true if token was emitted, false if more data is needed
      */
     private boolean tryEmitLtSequence() throws SAXException {
@@ -1341,7 +1341,7 @@ public class XMLTokenizer implements Locator2 {
     }
     
     /**
-     * Tries to emit an entity reference or the special sequences ]] or />.
+     * Tries to emit an entity reference or the special sequences ]]&gt; or /&gt;.
      * @return true if token was emitted, false if more data is needed
      */
     private boolean tryEmitEntityRef() throws SAXException {
