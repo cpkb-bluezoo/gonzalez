@@ -88,6 +88,13 @@ public class XMLTokenizer implements Locator2 {
      * operations.
      */
     private ByteBuffer byteUnderflow;
+    
+    /**
+     * Working buffer for combining underflow with incoming data.
+     * Reused across calls to avoid allocation on every receive() call.
+     * Allocated lazily when first needed.
+     */
+    private ByteBuffer byteWorkingBuffer;
 
     /**
      * The internal character underflow buffer.
@@ -192,6 +199,20 @@ public class XMLTokenizer implements Locator2 {
      * we skip the LF.
      */
     private char lastCharSeen = '\0';
+    
+    /**
+     * Saved line number for mark/reset operations.
+     * When we mark a position in the buffer, we also save the current line number
+     * so we can restore it if we need to backtrack due to insufficient data.
+     */
+    private long markedLineNumber;
+    
+    /**
+     * Saved column number for mark/reset operations.
+     * When we mark a position in the buffer, we also save the current column number
+     * so we can restore it if we need to backtrack due to insufficient data.
+     */
+    private long markedColumnNumber;
 
     /**
      * Checks if the current context is a "text context" where special characters
@@ -225,6 +246,28 @@ public class XMLTokenizer implements Locator2 {
             return tryEmitCDATA(); // Returns false if needs more data
         }
         return true; // Not a text context, caller should continue processing
+    }
+    
+    /**
+     * Marks the current position in the character buffer AND saves line/column tracking.
+     * This must be called instead of charBuffer.mark() directly to ensure position
+     * tracking can be restored if we need to backtrack.
+     */
+    private void markPosition() {
+        charBuffer.mark();
+        markedLineNumber = lineNumber;
+        markedColumnNumber = columnNumber;
+    }
+    
+    /**
+     * Resets to the marked position in the character buffer AND restores line/column tracking.
+     * This must be called instead of charBuffer.reset() directly to ensure position
+     * tracking is correctly restored when backtracking due to insufficient data.
+     */
+    private void resetPosition() {
+        charBuffer.reset();
+        lineNumber = markedLineNumber;
+        columnNumber = markedColumnNumber;
     }
 
     /**
@@ -370,19 +413,34 @@ public class XMLTokenizer implements Locator2 {
 
     /**
      * Prepends the byte underflow to the incoming data.
+     * Uses a reusable working buffer to avoid allocation on every call.
+     * 
      * @param data the new data buffer
      * @return a combined buffer with underflow prepended to data
      */
     private ByteBuffer prependByteUnderflow(ByteBuffer data) {
         int totalSize = byteUnderflow.remaining() + data.remaining();
-        ByteBuffer combined = ByteBuffer.allocate(totalSize);
-        combined.put(byteUnderflow);
-        combined.put(data);
-        combined.flip(); // Ready for reading
+        
+        // Allocate or reuse working buffer
+        if (byteWorkingBuffer == null || byteWorkingBuffer.capacity() < totalSize) {
+            // Allocate with some extra space to reduce future reallocations
+            int newCapacity = Math.max(totalSize, 4096);
+            byteWorkingBuffer = ByteBuffer.allocate(newCapacity);
+        } else {
+            // Reuse existing buffer
+            byteWorkingBuffer.clear();
+        }
+        
+        // Copy underflow and incoming data into working buffer
+        byteWorkingBuffer.put(byteUnderflow);
+        byteWorkingBuffer.put(data);
+        byteWorkingBuffer.flip(); // Ready for reading
+        
         // Clear the underflow
         byteUnderflow.clear();
         byteUnderflow.limit(0);
-        return combined;
+        
+        return byteWorkingBuffer;
     }
 
     /**
@@ -1062,7 +1120,7 @@ public class XMLTokenizer implements Locator2 {
      */
     private void tokenize() throws SAXException {
         while (charBuffer.hasRemaining()) {
-            charBuffer.mark(); // Save position in case we need to backtrack
+            markPosition(); // Save position AND line/column in case we need to backtrack
             char c = charBuffer.get();
             
             // Validate character is legal XML
@@ -1072,7 +1130,7 @@ public class XMLTokenizer implements Locator2 {
                 );
             }
             
-            // Update line/column tracking
+            // Update line/column tracking AFTER getting the character
             if (c == '\n') {
                 lineNumber++;
                 columnNumber = 0;
@@ -1087,7 +1145,7 @@ public class XMLTokenizer implements Locator2 {
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.PI_DATA) {
                         // In these contexts, '<' is just CDATA - rewind to include this char
-                        charBuffer.reset();
+                        resetPosition();
                         if (!tryEmitCDATA()) {
                             return;
                         }
@@ -1095,7 +1153,7 @@ public class XMLTokenizer implements Locator2 {
                         // In other contexts, '<' starts a tag/directive
                         if (!tryEmitLtSequence()) {
                             // Not enough data, rewind and save to underflow
-                            charBuffer.reset();
+                            resetPosition();
                             return;
                         }
                     }
@@ -1108,7 +1166,7 @@ public class XMLTokenizer implements Locator2 {
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION) {
                         // In these contexts, '>' is just CDATA - rewind to include this char
-                        charBuffer.reset();
+                        resetPosition();
                         if (!tryEmitCDATA()) {
                             return;
                         }
@@ -1121,7 +1179,7 @@ public class XMLTokenizer implements Locator2 {
                 case '&':
                     if (!tryEmitEntityRef()) {
                         // Not enough data, rewind and save to underflow
-                        charBuffer.reset();
+                        resetPosition();
                         return;
                     }
                     break;
@@ -1137,7 +1195,7 @@ public class XMLTokenizer implements Locator2 {
                         emitToken(Token.APOS, null);
                     } else {
                         // In element content, it's just CDATA - rewind to include this char
-                        charBuffer.reset();
+                        resetPosition();
                         if (!tryEmitCDATA()) {
                             return;
                         }
@@ -1155,7 +1213,7 @@ public class XMLTokenizer implements Locator2 {
                         emitToken(Token.QUOT, null);
                     } else {
                         // In element content, it's just CDATA - rewind to include this char
-                        charBuffer.reset();
+                        resetPosition();
                         if (!tryEmitCDATA()) {
                             return;
                         }
@@ -1215,7 +1273,7 @@ public class XMLTokenizer implements Locator2 {
                             }
                         } else {
                             // Need more data to decide
-                            charBuffer.reset();
+                            resetPosition();
                             return;
                         }
                     } else if (context == TokenizerContext.CONTENT) {
@@ -1340,7 +1398,7 @@ public class XMLTokenizer implements Locator2 {
                             }
                         } else {
                             // Not enough data to check for ]]>, need more input
-                            charBuffer.reset();
+                            resetPosition();
                             return;
                         }
                         // Not ]]>, emit as CLOSE_BRACKET token
@@ -1422,14 +1480,14 @@ public class XMLTokenizer implements Locator2 {
                         } else {
                             charBuffer.reset();
                             // '/' is not a valid standalone token in XML, treat as CDATA
-                            charBuffer.reset(); // Go back before '/'
+                            resetPosition(); // Go back before '/' AND restore line/column
                             if (!tryEmitCDATA()) {
                                 return;
                             }
                         }
                     } else {
                         // Need more data to decide
-                        charBuffer.reset();
+                        resetPosition();
                         return;
                     }
                     break;
@@ -1455,7 +1513,7 @@ public class XMLTokenizer implements Locator2 {
                                 }
                             } else {
                                 // Need more data
-                                charBuffer.reset();
+                                resetPosition();
                                 return;
                             }
                         } else {
@@ -1467,7 +1525,7 @@ public class XMLTokenizer implements Locator2 {
                         }
                     } else {
                         // Need more data
-                        charBuffer.reset();
+                        resetPosition();
                         return;
                     }
                     break;
@@ -1477,7 +1535,7 @@ public class XMLTokenizer implements Locator2 {
                 case '\n':
                 case '\r': // Should already be normalized, but handle for safety
                     // Whitespace - collect all consecutive whitespace
-                    charBuffer.reset(); // Go back to start of whitespace
+                    resetPosition(); // Go back to start of whitespace AND restore line/column
                     if (!tryEmitWhitespace()) {
                         // Not enough data (shouldn't happen for whitespace, but be safe)
                         return;
@@ -1486,7 +1544,7 @@ public class XMLTokenizer implements Locator2 {
                     
                 default:
                     // Context-aware token emission: NAME for identifiers, CDATA for text content
-                    charBuffer.reset(); // Go back to start of content
+                    resetPosition(); // Go back to start of content AND restore line/column
                     
                     // Determine what to emit based on context
                     switch (context) {
@@ -1528,11 +1586,22 @@ public class XMLTokenizer implements Locator2 {
     /**
      * Tries to emit a token that starts with '&lt;'.
      * Handles: &lt;/, &lt;?, &lt;!, &lt;!--, &lt;![CDATA[, &lt;!DOCTYPE, &lt;!ELEMENT, &lt;!ATTLIST, &lt;!ENTITY, &lt;!NOTATION, &lt;![
+     * 
+     * NOTE: This method manages its own position tracking. When it returns false (needs more data),
+     * it restores the buffer position and line/column tracking to the state before the method was called.
+     * 
      * @return true if token was emitted, false if more data is needed
      */
     private boolean tryEmitLtSequence() throws SAXException {
+        // Save position at entry - if we need more data, we'll restore to here
+        long savedLine = lineNumber;
+        long savedColumn = columnNumber;
+        
         // We've already consumed '<'
         if (!charBuffer.hasRemaining()) {
+            // Restore position before returning
+            lineNumber = savedLine;
+            columnNumber = savedColumn;
             return false; // Need more data
         }
         
@@ -1547,6 +1616,9 @@ public class XMLTokenizer implements Locator2 {
         } else if (c == '?') {
             // <? - could be <?xml or other PI
             if (!charBuffer.hasRemaining()) {
+                // Restore position before returning
+                lineNumber = savedLine;
+                columnNumber = savedColumn;
                 return false; // Need more data
             }
             // Peek ahead for "xml"
@@ -1570,6 +1642,9 @@ public class XMLTokenizer implements Locator2 {
                             return true;
                         }
                     } else {
+                        // Restore position before returning
+                        lineNumber = savedLine;
+                        columnNumber = savedColumn;
                         return false; // Need more data
                     }
                 }
@@ -1583,6 +1658,9 @@ public class XMLTokenizer implements Locator2 {
                 
                 charBuffer.reset(); // Back to after '?'
             } else {
+                // Restore position before returning
+                lineNumber = savedLine;
+                columnNumber = savedColumn;
                 return false; // Need more data
             }
             // It's a regular PI
@@ -1591,6 +1669,9 @@ public class XMLTokenizer implements Locator2 {
         } else if (c == '!') {
             // <! - could be <!--, <![CDATA[, <!DOCTYPE, etc.
             if (!charBuffer.hasRemaining()) {
+                // Restore position before returning
+                lineNumber = savedLine;
+                columnNumber = savedColumn;
                 return false; // Need more data
             }
             charBuffer.mark();
@@ -1600,6 +1681,9 @@ public class XMLTokenizer implements Locator2 {
             if (c == '-') {
                 // <!- - check for <!--
                 if (!charBuffer.hasRemaining()) {
+                    // Restore position before returning
+                    lineNumber = savedLine;
+                    columnNumber = savedColumn;
                     return false;
                 }
                 c = charBuffer.get();
@@ -1624,6 +1708,9 @@ public class XMLTokenizer implements Locator2 {
                     }
                     charBuffer.reset(); // Back to after '['
                 } else {
+                    // Restore position before returning
+                    lineNumber = savedLine;
+                    columnNumber = savedColumn;
                     return false; // Need more data
                 }
                 emitToken(Token.START_CONDITIONAL, null);
@@ -1634,6 +1721,9 @@ public class XMLTokenizer implements Locator2 {
                 int nameStart = charBuffer.position();
                 // Collect the name
                 if (!tryConsumeNameChars()) {
+                    // Restore position before returning
+                    lineNumber = savedLine;
+                    columnNumber = savedColumn;
                     return false; // Need more data
                 }
                 int nameEnd = charBuffer.position();
@@ -1968,9 +2058,17 @@ public class XMLTokenizer implements Locator2 {
     /**
      * Tries to emit a NAME token or a keyword token.
      * This method performs context-aware keyword recognition.
+     * 
+     * NOTE: This method manages its own position tracking. When it returns false (needs more data),
+     * it restores the buffer position and line/column tracking to the state before the method was called.
+     * 
      * @return true if token was emitted, false if more data is needed
      */
     private boolean tryEmitName() throws SAXException {
+        // Save position at entry
+        long savedLine = lineNumber;
+        long savedColumn = columnNumber;
+        
         int start = charBuffer.position();
         
         // Must start with NameStartChar
@@ -1987,6 +2085,9 @@ public class XMLTokenizer implements Locator2 {
         
         // Followed by NameChar*
         if (!tryConsumeNameChars()) {
+            // Restore position before returning
+            lineNumber = savedLine;
+            columnNumber = savedColumn;
             return false; // Need more data
         }
         
@@ -2472,6 +2573,7 @@ public class XMLTokenizer implements Locator2 {
         
         // Clear buffers
         byteUnderflow = null;
+        byteWorkingBuffer = null; // Clear working buffer to release memory
         charUnderflow = null;
         charBuffer = null;
     }
