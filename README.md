@@ -31,13 +31,32 @@ control to the caller, who can then feed more data when it arrives.  This makes
 Gonzalez ideal for integration with async I/O frameworks like the Gumdrop
 multiserver.
 
+### Tokenizer
+
+The tokenizer internally manages conversion of bytes to characters via an NIO
+decoder. It then processes the character buffer to produce token events using
+a state trie to predictably decide on token types and boundaries. The XML
+declaration, which is associated with the entity the tokenizer forms a part
+of, is transparently handled via the tokenizer which also acts as the
+locator for the system and performs line-end normalisation.
+
+When the tokenizer emits tokens, it passes them to a token consumer via
+the latters receiveToken interface, using an NIO CharBuffer for any character
+data..
+
+### Content Parser
+
+The content parser is a type of token consumer which handles the main XML
+content grammar: elements, attributes, PI, comments etc. It reports events
+to the configured SAX ContentHandler.
+
 ### DTD Parser
 
 Most XML documents in practice are standalone documents without DTDs. To
 minimize memory overhead for the common case, the DTD parser is a separate
 component that is loaded only when a DOCTYPE declaration is encountered.
 
-The DTD parser uses the same non-blocking architecture as the main parser. It
+The DTD parser uses the same token consumer interface as the content parser. It
 receives DTD content via `receive(ByteBuffer)` and reports declarations through
 the standard SAX interfaces: DTDHandler for notations and unparsed entities,
 DeclHandler for element and attribute declarations, and LexicalHandler for
