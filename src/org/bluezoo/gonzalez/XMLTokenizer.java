@@ -1021,8 +1021,20 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '>':
-                    // Could be '>' or part of '-->' or ']]>'
-                    emitToken(Token.GT, null);
+                    // Context-aware: in CDATA contexts, '>' is just text (unless part of ]]> or ?>)
+                    if (context == TokenizerContext.CONTENT ||
+                        context == TokenizerContext.PI_DATA ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.CDATA_SECTION) {
+                        // In these contexts, '>' is just CDATA - rewind to include this char
+                        charBuffer.reset();
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        // In other contexts (element tags, DOCTYPE, etc.), it's special
+                        emitToken(Token.GT, null);
+                    }
                     break;
                     
                 case '&':
@@ -1099,9 +1111,10 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '?':
-                    // In PI_DATA context, check for '?>' (END_PI)
+                    // In PI_DATA and PI_TARGET context, check for '?>' (END_PI)
                     // In CONTENT context, it's just CDATA
-                    if (context == TokenizerContext.PI_DATA) {
+                    if (context == TokenizerContext.PI_DATA ||
+                        context == TokenizerContext.PI_TARGET) {
                         // Could be '?' or '?>'
                         if (charBuffer.hasRemaining()) {
                             charBuffer.mark();
@@ -1110,8 +1123,14 @@ public class XMLTokenizer implements Locator2 {
                                 updateColumn();
                                 emitToken(Token.END_PI, null);
                             } else {
-                                charBuffer.reset();
-                                emitToken(Token.QUERY, null);
+                                // Not '?>', so the '?' is just CDATA
+                                // Reset to after the '?' (consume it), emit as single-char CDATA
+                                charBuffer.reset(); // Back to before peeked char
+                                CharBuffer cdataBuffer = CharBuffer.allocate(1);
+                                cdataBuffer.put('?');
+                                cdataBuffer.flip();
+                                updateColumn();
+                                emitToken(Token.CDATA, cdataBuffer);
                             }
                         } else {
                             // Need more data to decide
