@@ -583,6 +583,15 @@ public class XMLParser implements TokenConsumer {
                 true  // This is an external entity
             );
             
+            // If we're currently parsing a DTD (dtdParser is active), configure the tokenizer
+            // to start in DOCTYPE_INTERNAL context instead of CONTENT context.
+            // This ensures DTD markup tokens are emitted correctly.
+            if (dtdParser != null && dtdParser.getState() == DTDParser.State.IN_INTERNAL_SUBSET) {
+                entityTokenizer.setInitialContext(
+                    XMLTokenizer.TokenizerContext.DOCTYPE_INTERNAL,
+                    locator instanceof org.xml.sax.ext.Locator2 ? (org.xml.sax.ext.Locator2) locator : null);
+            }
+            
             // Get input stream from source
             InputStream inputStream = source.getByteStream();
             if (inputStream == null) {

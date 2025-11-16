@@ -60,7 +60,7 @@ public class DTDParser implements TokenConsumer {
     /**
      * Parsing states within the DOCTYPE declaration.
      */
-    private enum State {
+    enum State {
         INITIAL,                // Just started, expecting DOCTYPE name
         AFTER_NAME,             // Read name, expecting SYSTEM/PUBLIC/[/GT
         AFTER_SYSTEM_PUBLIC,    // Read SYSTEM/PUBLIC, expecting quoted string
@@ -78,6 +78,14 @@ public class DTDParser implements TokenConsumer {
     }
 
     private State state = State.INITIAL;
+    
+    /**
+     * Package-private accessor for the current DTD parser state.
+     * Used by XMLParser to determine if external entities should be tokenized as DTD content.
+     */
+    State getState() {
+        return state;
+    }
     private State savedState = State.IN_INTERNAL_SUBSET; // For returning after declarations/comments/PIs
     
     /**
@@ -766,16 +774,18 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             case PARAMETERENTITYREF:
-                // TODO: Parameter entity expansion in DTD markup
+                // XXX: This assumes parameter entities are declared BEFORE they are referenced.
+                // XXX: If the XML spec allows forward references (PE declared after use),
+                // XXX: this code will fail and we'll need a two-pass approach or deferred expansion.
+                // XXX: Mark this location if we encounter such a test case.
+                
+                // Parameter entity expansion in DTD markup
                 // Direct parameter entity references in DTD declarations (not in entity values)
-                // Example: <!ATTLIST root attr %common; "default">
-                // This requires inline expansion during DTD parsing, not post-processing.
-                // For now, throw an error to indicate this feature is not yet implemented.
+                // Example: <!ELEMENT doc %content-model;>
+                // This requires inline expansion during DTD parsing.
                 String refName = extractString(data);
-                throw new SAXParseException(
-                    "Parameter entity reference in DTD markup not yet supported: %" + refName + ";" +
-                    " (only parameter entities in entity values are currently supported)",
-                    locator);
+                expandParameterEntityInline(refName);
+                break;
                     
             case START_XMLDECL:
                 // XML declarations are not allowed in DTD
@@ -874,6 +884,21 @@ public class DTDParser implements TokenConsumer {
                         contentModelStack.push(group);
                         contentModelDepth = 1;
                         elementDeclState = ElementDeclState.IN_CONTENT_MODEL;
+                        break;
+                        
+                    case PARAMETERENTITYREF:
+                        // XXX: This assumes parameter entities are declared BEFORE they are referenced.
+                        // XXX: If the XML spec allows forward references (PE declared after use),
+                        // XXX: this code will fail and we'll need a two-pass approach or deferred expansion.
+                        // XXX: Mark this location if we encounter such a test case.
+                        
+                        // Parameter entity expansion in element content specification
+                        // Example: <!ELEMENT doc %content-model;>
+                        String refName = extractString(data);
+                        expandParameterEntityInline(refName);
+                        // After expansion, we expect to be in AFTER_CONTENTSPEC state
+                        // (the expanded content should complete the content specification)
+                        // For now, stay in EXPECT_CONTENTSPEC to process the expanded tokens
                         break;
                         
                     default:
@@ -2629,6 +2654,108 @@ public class DTDParser implements TokenConsumer {
         }
         
         return result;
+    }
+    
+    /**
+     * Expands a parameter entity reference inline in DTD markup.
+     * Creates a tokenizer for the entity's replacement text and feeds tokens
+     * back through this DTD parser.
+     * 
+     * XXX: Assumes parameter entity is already declared (no forward references).
+     * 
+     * @param entityName the parameter entity name (without % and ;)
+     * @throws SAXException if expansion fails
+     */
+    private void expandParameterEntityInline(String entityName) throws SAXException {
+        // Look up the parameter entity
+        EntityDeclaration entity = getParameterEntity(entityName);
+        
+        if (entity == null) {
+            throw new SAXParseException(
+                "Parameter entity %" + entityName + "; not declared " +
+                "(XXX: or declared after use - forward references not yet supported)",
+                locator);
+        }
+        
+        // Check if it's an external entity
+        if (entity.externalID != null) {
+            // External parameter entity - resolve and process it
+            // This works the same as external DTD subset processing
+            try {
+                xmlParser.processExternalEntity(
+                    entityName, 
+                    entity.externalID.publicId, 
+                    entity.externalID.systemId);
+            } catch (IOException e) {
+                throw new SAXParseException(
+                    "Failed to resolve external parameter entity %" + entityName + ";",
+                    locator, e);
+            }
+            return;
+        }
+        
+        // Internal parameter entity - expand its replacement text
+        if (entity.replacementText == null || entity.replacementText.isEmpty()) {
+            // Empty entity - nothing to expand
+            return;
+        }
+        
+        // Expand any nested parameter entities in the replacement text
+        EntityExpansionHelper helper = new EntityExpansionHelper(this, locator);
+        StringBuilder expanded = new StringBuilder();
+        
+        for (Object part : entity.replacementText) {
+            if (part instanceof String) {
+                expanded.append((String) part);
+            } else if (part instanceof ParameterEntityReference) {
+                ParameterEntityReference ref = (ParameterEntityReference) part;
+                String refExpanded = helper.expandParameterEntity(ref.name, EntityExpansionContext.DTD);
+                if (refExpanded != null) {
+                    expanded.append(refExpanded);
+                }
+            } else if (part instanceof GeneralEntityReference) {
+                // General entity references in parameter entity values stay as literal text
+                GeneralEntityReference ref = (GeneralEntityReference) part;
+                expanded.append("&").append(ref.name).append(";");
+            }
+        }
+        
+        String replacementText = expanded.toString();
+        if (replacementText.isEmpty()) {
+            return; // Nothing to tokenize
+        }
+        
+        // Create a tokenizer for the replacement text and feed tokens through DTD parser
+        // The tokenizer needs to be in DOCTYPE_INTERNAL context
+        try {
+            java.io.ByteArrayInputStream bais = 
+                new java.io.ByteArrayInputStream(replacementText.getBytes("UTF-8"));
+            
+            // Create a tokenizer in DOCTYPE_INTERNAL context
+            // Pass entity IDs for error reporting
+            XMLTokenizer tokenizer = new XMLTokenizer(
+                this, // DTDParser implements TokenConsumer
+                entity.externalID != null ? entity.externalID.publicId : null,
+                "%" + entityName + ";", // Use entity reference as systemId for error reporting
+                true); // isExternalEntity
+            
+            // Set the tokenizer to start in DOCTYPE_INTERNAL context
+            // This is critical so it emits the right tokens for DTD content
+            // Also copy locator information for better error reporting
+            tokenizer.setInitialContext(
+                XMLTokenizer.TokenizerContext.DOCTYPE_INTERNAL, 
+                locator instanceof org.xml.sax.ext.Locator2 ? (org.xml.sax.ext.Locator2) locator : null);
+            
+            // Feed the replacement text through the tokenizer
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(replacementText.getBytes("UTF-8"));
+            tokenizer.receive(buffer);
+            tokenizer.close();
+            
+        } catch (java.io.IOException e) {
+            throw new SAXParseException(
+                "Error expanding parameter entity %" + entityName + ";",
+                locator, e);
+        }
     }
 
 }

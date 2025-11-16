@@ -27,6 +27,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 import org.xml.sax.ext.Locator2;
@@ -228,6 +229,40 @@ public class XMLTokenizer implements Locator2 {
         this.systemId = systemId;
         this.isExternalEntity = isExternalEntity;
         this.consumer.setLocator(this);
+    }
+
+    /**
+     * Package-private method to set initial tokenizer context for entity expansion.
+     * Used when creating a tokenizer for parameter entity or general entity replacement text
+     * that should be tokenized in a specific context (e.g., DOCTYPE_INTERNAL for PE in DTD).
+     * 
+     * Also copies locator information from the parent locator for better error reporting.
+     * 
+     * This method skips BOM detection and XML declaration parsing, jumping straight to tokenization.
+     * 
+     * @param initialContext the context to start in
+     * @param parentLocator the parent locator to copy position info from (may be null)
+     */
+    void setInitialContext(TokenizerContext initialContext, Locator2 parentLocator) {
+        this.context = initialContext;
+        
+        // Skip initialization phases - go straight to CHARACTERS state
+        this.state = State.CHARACTERS;
+        
+        // Set up decoder for UTF-8 (entity replacement text is always UTF-8 internally)
+        if (decoder == null) {
+            decoder = StandardCharsets.UTF_8.newDecoder();
+            charBuffer = CharBuffer.allocate(4096);
+            charUnderflow = CharBuffer.allocate(4096);
+            charUnderflow.limit(0); // Empty, ready for reading
+        }
+        
+        // Copy locator information from parent if available
+        if (parentLocator != null) {
+            this.lineNumber = parentLocator.getLineNumber();
+            this.columnNumber = parentLocator.getColumnNumber();
+            // publicId and systemId are already set in constructor
+        }
     }
 
     /**
@@ -1013,10 +1048,22 @@ public class XMLTokenizer implements Locator2 {
             
             switch (c) {
                 case '<':
-                    if (!tryEmitLtSequence()) {
-                        // Not enough data, rewind and save to underflow
+                    // Context-aware: in CDATA contexts, '<' is just text
+                    if (context == TokenizerContext.CDATA_SECTION ||
+                        context == TokenizerContext.COMMENT ||
+                        context == TokenizerContext.PI_DATA) {
+                        // In these contexts, '<' is just CDATA - rewind to include this char
                         charBuffer.reset();
-                        return;
+                        if (!tryEmitCDATA()) {
+                            return;
+                        }
+                    } else {
+                        // In other contexts, '<' starts a tag/directive
+                        if (!tryEmitLtSequence()) {
+                            // Not enough data, rewind and save to underflow
+                            charBuffer.reset();
+                            return;
+                        }
                     }
                     break;
                     
@@ -1193,8 +1240,9 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '|':
-                    // Only emit as special token outside of ATTR_VALUE
+                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
                     if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
                         context == TokenizerContext.CONTENT ||
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION ||
@@ -1267,8 +1315,9 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '(':
-                    // Only emit as special token outside of ATTR_VALUE
+                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
                     if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
                         context == TokenizerContext.CONTENT ||
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION ||
@@ -1283,8 +1332,9 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case ')':
-                    // Only emit as special token outside of ATTR_VALUE
+                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
                     if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
                         context == TokenizerContext.CONTENT ||
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION ||
@@ -1299,8 +1349,9 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '*':
-                    // Only emit as special token outside of ATTR_VALUE
+                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
                     if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
                         context == TokenizerContext.CONTENT ||
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION ||
@@ -1315,8 +1366,9 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '+':
-                    // Only emit as special token outside of ATTR_VALUE
+                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
                     if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
                         context == TokenizerContext.CONTENT ||
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION ||
@@ -1331,8 +1383,9 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case ',':
-                    // Only emit as special token outside of ATTR_VALUE
+                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
                     if (context == TokenizerContext.ATTR_VALUE || 
+                        context == TokenizerContext.DOCTYPE_QUOTED ||
                         context == TokenizerContext.CONTENT ||
                         context == TokenizerContext.COMMENT ||
                         context == TokenizerContext.CDATA_SECTION ||
