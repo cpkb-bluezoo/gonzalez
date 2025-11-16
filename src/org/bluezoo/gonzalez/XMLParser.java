@@ -596,7 +596,7 @@ public class XMLParser implements TokenConsumer {
             // This ensures DTD markup tokens are emitted correctly.
             if (dtdParser != null && dtdParser.getState() == DTDParser.State.IN_INTERNAL_SUBSET) {
                 entityTokenizer.setInitialContext(
-                    XMLTokenizer.TokenizerContext.DOCTYPE_INTERNAL,
+                    TokenizerState.DOCTYPE_INTERNAL,
                     locator instanceof org.xml.sax.ext.Locator2 ? (org.xml.sax.ext.Locator2) locator : null);
             }
             

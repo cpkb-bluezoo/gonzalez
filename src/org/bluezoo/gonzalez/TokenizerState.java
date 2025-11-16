@@ -1,0 +1,121 @@
+/*
+ * State.java
+ * Copyright (C) 2025 Chris Burdess
+ *
+ * This file is part of Gonzalez, a streaming XML parser.
+ * For more information please visit https://www.nongnu.org/gonzalez/
+ *
+ * Gonzalez is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * Gonzalez is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Gonzalez.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+package org.bluezoo.gonzalez;
+
+/**
+ * High-level tokenizer state indicating the current parsing context.
+ * <p>
+ * The TokenizerState enum represents what kind of XML construct we are currently parsing.
+ * Each TokenizerState has an associated set of valid mini-state transitions that determine
+ * how individual characters are processed to recognize tokens.
+ * <p>
+ * The first three states (INIT, BOM_READ, XMLDECL) are special initialization
+ * states that use custom parsing logic rather than the mini-state trie system.
+ * 
+ * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
+ */
+enum TokenizerState {
+    
+    /**
+     * Initial state - detecting BOM (Byte Order Mark).
+     */
+    INIT,
+    
+    /**
+     * BOM has been read, ready to parse XML declaration or document content.
+     */
+    BOM_READ,
+    
+    /**
+     * Parsing XML declaration (<?xml version="1.0"?>).
+     * Uses special parsing logic, not the mini-state trie.
+     */
+    XMLDECL,
+    
+    /**
+     * Parsing element content (text, child elements, entity references, etc.).
+     */
+    CONTENT,
+    
+    /**
+     * Parsing element name after '<' or '</'.
+     */
+    ELEMENT_NAME,
+    
+    /**
+     * Parsing element attributes (between element name and '>' or '/>').
+     */
+    ELEMENT_ATTRS,
+    
+    /**
+     * Inside an attribute value delimited by apostrophe (').
+     */
+    ATTR_VALUE_APOS,
+    
+    /**
+     * Inside an attribute value delimited by quotation mark (").
+     */
+    ATTR_VALUE_QUOT,
+    
+    /**
+     * Inside DOCTYPE declaration, before internal subset.
+     */
+    DOCTYPE,
+    
+    /**
+     * Inside internal DTD subset (between '[' and ']' in DOCTYPE).
+     */
+    DOCTYPE_INTERNAL,
+    
+    /**
+     * Inside a quoted string in DTD, delimited by apostrophe (').
+     * Used for entity values, attribute default values, etc.
+     */
+    DOCTYPE_QUOTED_APOS,
+    
+    /**
+     * Inside a quoted string in DTD, delimited by quotation mark (").
+     * Used for entity values, attribute default values, etc.
+     */
+    DOCTYPE_QUOTED_QUOT,
+    
+    /**
+     * Inside an XML comment (<!-- ... -->).
+     */
+    COMMENT,
+    
+    /**
+     * Inside a CDATA section (<![CDATA[ ... ]]>).
+     */
+    CDATA_SECTION,
+    
+    /**
+     * Parsing processing instruction target (after <? and before whitespace or ?>).
+     */
+    PI_TARGET,
+    
+    /**
+     * Parsing processing instruction data (after target and before ?>).
+     */
+    PI_DATA
+}
+

@@ -2925,7 +2925,7 @@ public class DTDParser implements TokenConsumer {
             // This is critical so it emits the right tokens for DTD content
             // Also copy locator information for better error reporting
             tokenizer.setInitialContext(
-                XMLTokenizer.TokenizerContext.DOCTYPE_INTERNAL, 
+                TokenizerState.DOCTYPE_INTERNAL, 
                 locator instanceof org.xml.sax.ext.Locator2 ? (org.xml.sax.ext.Locator2) locator : null);
             
             // Feed the replacement text through the tokenizer
