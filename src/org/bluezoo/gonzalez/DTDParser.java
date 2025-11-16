@@ -74,6 +74,9 @@ public class DTDParser implements TokenConsumer {
         IN_NOTATIONDECL,        // Parsing &lt;!NOTATION declaration
         IN_COMMENT,             // Parsing comment (<!-- ... -->)
         IN_PI,                  // Parsing processing instruction (<? ... ?>)
+        IN_CONDITIONAL,         // Parsing conditional section (<![)
+        IN_CONDITIONAL_INCLUDE, // Inside INCLUDE conditional section
+        IN_CONDITIONAL_IGNORE,  // Inside IGNORE conditional section (skip content)
         DONE                    // Read final GT, done processing
     }
 
@@ -244,6 +247,19 @@ public class DTDParser implements TokenConsumer {
      * Depth tracking for nested structures (e.g., conditional sections).
      */
     private int nestingDepth = 0;
+    
+    /**
+     * Sub-states for parsing conditional sections.
+     */
+    private enum ConditionalSectionState {
+        EXPECT_KEYWORD,      // After <![, expecting INCLUDE/IGNORE or %
+        AFTER_KEYWORD,       // After keyword, expecting whitespace
+        EXPECT_OPEN_BRACKET, // After whitespace, expecting [
+    }
+    
+    private ConditionalSectionState conditionalState;
+    private int conditionalDepth = 0; // Track nesting depth of conditional sections
+    private boolean conditionalIsInclude; // true for INCLUDE, false for IGNORE
     
     /**
      * Current element declaration being parsed.
@@ -453,6 +469,18 @@ public class DTDParser implements TokenConsumer {
                 
             case IN_PI:
                 handleInPI(token, data);
+                break;
+                
+            case IN_CONDITIONAL:
+                handleInConditional(token, data);
+                break;
+                
+            case IN_CONDITIONAL_INCLUDE:
+                handleInConditionalInclude(token, data);
+                break;
+                
+            case IN_CONDITIONAL_IGNORE:
+                handleInConditionalIgnore(token, data);
                 break;
         }
     }
@@ -703,6 +731,13 @@ public class DTDParser implements TokenConsumer {
         switch (token) {
             case CLOSE_BRACKET:
                 // End of internal subset
+                // However, if we see CLOSE_BRACKET and conditionalDepth > 0, it means
+                // we have an improperly terminated conditional section (should be ]]> not ]>)
+                if (conditionalDepth > 0) {
+                    throw new SAXParseException(
+                        "Conditional section not properly terminated (expected ']]>' but got ']>')",
+                        locator);
+                }
                 nestingDepth--;
                 if (nestingDepth == 0) {
                     changeState(State.AFTER_INTERNAL_SUBSET);
@@ -770,7 +805,16 @@ public class DTDParser implements TokenConsumer {
                 break;
 
             case START_CONDITIONAL:
-                // TODO: Handle conditional sections
+                // Conditional sections are ONLY allowed in external DTD subset
+                // Check if we're processing an external entity
+                if (!xmlParser.isProcessingExternalEntity()) {
+                    throw new SAXParseException(
+                        "Conditional sections are not allowed in internal DTD subset", locator);
+                }
+                // Enter conditional section parsing
+                conditionalState = ConditionalSectionState.EXPECT_KEYWORD;
+                savedState = state; // Save current state to return to after conditional section
+                changeState(State.IN_CONDITIONAL);
                 break;
 
             case PARAMETERENTITYREF:
@@ -1906,6 +1950,144 @@ public class DTDParser implements TokenConsumer {
     }
     
     /**
+     * Handles tokens in the IN_CONDITIONAL state (after &lt;![, expecting keyword).
+     */
+    private void handleInConditional(Token token, CharBuffer data) throws SAXException {
+        switch (conditionalState) {
+            case EXPECT_KEYWORD:
+                switch (token) {
+                    case S:
+                        // Skip whitespace before keyword
+                        break;
+                        
+                    case INCLUDE:
+                        // INCLUDE section - will process markup normally
+                        conditionalIsInclude = true;
+                        conditionalState = ConditionalSectionState.AFTER_KEYWORD;
+                        break;
+                        
+                    case IGNORE:
+                        // IGNORE section - will skip all content
+                        conditionalIsInclude = false;
+                        conditionalState = ConditionalSectionState.AFTER_KEYWORD;
+                        break;
+                        
+                    case PARAMETERENTITYREF:
+                        // Parameter entity reference for keyword (e.g., <![ %draft; [...)
+                        // Expand inline to get INCLUDE or IGNORE
+                        String refName = extractString(data);
+                        expandParameterEntityInline(refName);
+                        // After expansion, we should receive INCLUDE or IGNORE token
+                        break;
+                        
+                    default:
+                        throw new SAXParseException(
+                            "Expected INCLUDE, IGNORE, or parameter entity reference in conditional section, got: " + token,
+                            locator);
+                }
+                break;
+                
+            case AFTER_KEYWORD:
+                switch (token) {
+                    case S:
+                        // Skip whitespace after keyword
+                        conditionalState = ConditionalSectionState.EXPECT_OPEN_BRACKET;
+                        break;
+                        
+                    default:
+                        throw new SAXParseException(
+                            "Expected whitespace after INCLUDE/IGNORE keyword, got: " + token,
+                            locator);
+                }
+                break;
+                
+            case EXPECT_OPEN_BRACKET:
+                switch (token) {
+                    case S:
+                        // Skip additional whitespace
+                        break;
+                        
+                    case OPEN_BRACKET:
+                        // Start of conditional section content
+                        conditionalDepth++;
+                        // Transition to INCLUDE or IGNORE mode based on keyword
+                        if (conditionalIsInclude) {
+                            changeState(State.IN_CONDITIONAL_INCLUDE);
+                        } else {
+                            changeState(State.IN_CONDITIONAL_IGNORE);
+                        }
+                        break;
+                        
+                    default:
+                        throw new SAXParseException(
+                            "Expected '[' after INCLUDE/IGNORE keyword, got: " + token,
+                            locator);
+                }
+                break;
+        }
+    }
+    
+    /**
+     * Handles tokens in the IN_CONDITIONAL_INCLUDE state (processing markup in INCLUDE section).
+     */
+    private void handleInConditionalInclude(Token token, CharBuffer data) throws SAXException {
+        switch (token) {
+            case START_CONDITIONAL:
+                // Nested conditional section
+                conditionalDepth++;
+                // Recursively handle this nested conditional section
+                conditionalState = ConditionalSectionState.EXPECT_KEYWORD;
+                savedState = State.IN_CONDITIONAL_INCLUDE; // Return here after nested section
+                changeState(State.IN_CONDITIONAL);
+                break;
+                
+            case END_CONDITIONAL:
+                // End of conditional section - ]]>
+                conditionalDepth--;
+                if (conditionalDepth == 0) {
+                    // End of outermost INCLUDE section, return to saved state
+                    state = savedState;
+                } else {
+                    // End of nested INCLUDE section, stay in INCLUDE mode
+                    // (no state change needed)
+                }
+                break;
+                
+            default:
+                // All other tokens are processed as normal DTD markup
+                // Delegate to handleInInternalSubset
+                handleInInternalSubset(token, data);
+                break;
+        }
+    }
+    
+    /**
+     * Handles tokens in the IN_CONDITIONAL_IGNORE state (skipping content in IGNORE section).
+     */
+    private void handleInConditionalIgnore(Token token, CharBuffer data) throws SAXException {
+        switch (token) {
+            case START_CONDITIONAL:
+                // Nested conditional section - increment depth but keep ignoring
+                conditionalDepth++;
+                break;
+                
+            case END_CONDITIONAL:
+                // End of conditional section - ]]>
+                conditionalDepth--;
+                if (conditionalDepth == 0) {
+                    // End of outermost IGNORE section, return to saved state
+                    state = savedState;
+                }
+                // Otherwise stay in IGNORE mode for nested sections
+                break;
+                
+            default:
+                // Ignore all other tokens (don't process them)
+                break;
+        }
+    }
+    
+    /**
      * Helper method to save the current attribute being parsed.
      * Called when we detect a new attribute starting or when GT is encountered.
      * Adds the attribute to currentAttlistMap keyed by attribute name.
@@ -2755,6 +2937,30 @@ public class DTDParser implements TokenConsumer {
             throw new SAXParseException(
                 "Error expanding parameter entity %" + entityName + ";",
                 locator, e);
+        }
+    }
+    
+    /**
+     * Validates that all structures (especially conditional sections) are properly closed
+     * when an external entity finishes processing.
+     * 
+     * Called by XMLParser after an external entity has been fully processed.
+     */
+    void validateExternalEntityClosed() throws SAXParseException {
+        // Check if we have unclosed conditional sections
+        if (conditionalDepth > 0) {
+            throw new SAXParseException(
+                "Conditional section not properly terminated (missing ']]>' at end of external entity)",
+                locator);
+        }
+        
+        // Check if we're in the middle of parsing a conditional section
+        if (state == State.IN_CONDITIONAL || 
+            state == State.IN_CONDITIONAL_INCLUDE || 
+            state == State.IN_CONDITIONAL_IGNORE) {
+            throw new SAXParseException(
+                "Conditional section not properly terminated (external entity ended mid-section)",
+                locator);
         }
     }
 

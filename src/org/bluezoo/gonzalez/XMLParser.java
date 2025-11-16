@@ -133,6 +133,14 @@ public class XMLParser implements TokenConsumer {
     private int externalEntityDepth = 0;
     
     /**
+     * Package-private accessor to check if we're currently processing an external entity.
+     * Used by DTDParser to enforce that conditional sections are only allowed in external DTD subsets.
+     */
+    boolean isProcessingExternalEntity() {
+        return externalEntityDepth > 0;
+    }
+    
+    /**
      * Lazily-constructed DTD parser for processing DOCTYPE declarations.
      * Only allocated when a DOCTYPE is encountered.
      */
@@ -611,6 +619,11 @@ public class XMLParser implements TokenConsumer {
                 
                 // Signal end of entity
                 entityTokenizer.close();
+                
+                // If we were processing a DTD external subset, validate that all structures are closed
+                if (dtdParser != null) {
+                    dtdParser.validateExternalEntityClosed();
+                }
                 
             } finally {
                 inputStream.close();

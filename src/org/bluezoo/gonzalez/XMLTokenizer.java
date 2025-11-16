@@ -1274,7 +1274,7 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case ']':
-                    // In CDATA sections, ']' might be part of ']]>'
+                    // In CDATA sections and DOCTYPE_INTERNAL, ']' might be part of ']]>'
                     if (context == TokenizerContext.CDATA_SECTION) {
                         // Handle ]]> sequence in CDATA
                         if (charBuffer.hasRemaining()) {
@@ -1298,6 +1298,33 @@ public class XMLTokenizer implements Locator2 {
                         if (!tryEmitCDATA()) {
                             return;
                         }
+                    } else if (context == TokenizerContext.DOCTYPE_INTERNAL) {
+                        // Handle ]]> sequence for conditional sections
+                        if (charBuffer.hasRemaining()) {
+                            charBuffer.mark();
+                            char next = charBuffer.get();
+                            if (next == ']' && charBuffer.hasRemaining()) {
+                                char next2 = charBuffer.get();
+                                if (next2 == '>') {
+                                    updateColumn();
+                                    updateColumn();
+                                    emitToken(Token.END_CONDITIONAL, null);
+                                    break;
+                                } else {
+                                    // ]] but not followed by >, reset and emit first ]
+                                    charBuffer.reset();
+                                }
+                            } else {
+                                // Not ]]>, reset and emit single ]
+                                charBuffer.reset();
+                            }
+                        } else {
+                            // Not enough data to check for ]]>, need more input
+                            charBuffer.reset();
+                            return;
+                        }
+                        // Not ]]>, emit as CLOSE_BRACKET token
+                        emitToken(Token.CLOSE_BRACKET, null);
                     } else if (context == TokenizerContext.ATTR_VALUE || 
                                context == TokenizerContext.DOCTYPE_QUOTED ||
                                context == TokenizerContext.CONTENT ||
