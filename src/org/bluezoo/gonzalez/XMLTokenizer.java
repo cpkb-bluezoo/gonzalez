@@ -420,6 +420,7 @@ public class XMLTokenizer implements Locator2 {
     public boolean isStandalone() {
         return standalone;
     }
+    
 
     /**
      * Checks if an entity name is a predefined entity and returns its index into PREDEFINED_ENTITY_TEXT.
@@ -458,6 +459,93 @@ public class XMLTokenizer implements Locator2 {
             }
         }
         return -1;
+    }
+    
+    /**
+     * Checks if a NAME token in DOCTYPE context is actually a keyword.
+     * Returns the keyword token type or null if it's just a name.
+     * 
+     * @param start start position of name in charBuffer
+     * @param length length of name
+     * @return Token.SYSTEM, Token.PUBLIC, or null if not a keyword
+     */
+    private Token checkDOCTYPEKeyword(int start, int length) {
+        if (length == 6) {
+            // Check for "SYSTEM"
+            if (charBuffer.get(start) == 'S' &&
+                charBuffer.get(start + 1) == 'Y' &&
+                charBuffer.get(start + 2) == 'S' &&
+                charBuffer.get(start + 3) == 'T' &&
+                charBuffer.get(start + 4) == 'E' &&
+                charBuffer.get(start + 5) == 'M') {
+                return Token.SYSTEM;
+            }
+            // Check for "PUBLIC"
+            if (charBuffer.get(start) == 'P' &&
+                charBuffer.get(start + 1) == 'U' &&
+                charBuffer.get(start + 2) == 'B' &&
+                charBuffer.get(start + 3) == 'L' &&
+                charBuffer.get(start + 4) == 'I' &&
+                charBuffer.get(start + 5) == 'C') {
+                return Token.PUBLIC;
+            }
+        }
+        return null;
+    }
+    
+    /**
+     * Checks if a NAME in DOCTYPE_INTERNAL is a markup declaration keyword.
+     * 
+     * @param start start position in charBuffer
+     * @param length length of the name
+     * @return START_ELEMENTDECL, START_ATTLISTDECL, START_ENTITYDECL, START_NOTATIONDECL, or null
+     */
+    private Token checkMarkupDeclaration(int start, int length) {
+        if (length == 7) {
+            // Check for "ELEMENT"
+            if (charBuffer.get(start) == 'E' &&
+                charBuffer.get(start + 1) == 'L' &&
+                charBuffer.get(start + 2) == 'E' &&
+                charBuffer.get(start + 3) == 'M' &&
+                charBuffer.get(start + 4) == 'E' &&
+                charBuffer.get(start + 5) == 'N' &&
+                charBuffer.get(start + 6) == 'T') {
+                return Token.START_ELEMENTDECL;
+            }
+            // Check for "ATTLIST"
+            if (charBuffer.get(start) == 'A' &&
+                charBuffer.get(start + 1) == 'T' &&
+                charBuffer.get(start + 2) == 'T' &&
+                charBuffer.get(start + 3) == 'L' &&
+                charBuffer.get(start + 4) == 'I' &&
+                charBuffer.get(start + 5) == 'S' &&
+                charBuffer.get(start + 6) == 'T') {
+                return Token.START_ATTLISTDECL;
+            }
+        } else if (length == 6) {
+            // Check for "ENTITY"
+            if (charBuffer.get(start) == 'E' &&
+                charBuffer.get(start + 1) == 'N' &&
+                charBuffer.get(start + 2) == 'T' &&
+                charBuffer.get(start + 3) == 'I' &&
+                charBuffer.get(start + 4) == 'T' &&
+                charBuffer.get(start + 5) == 'Y') {
+                return Token.START_ENTITYDECL;
+            }
+        } else if (length == 8) {
+            // Check for "NOTATION"
+            if (charBuffer.get(start) == 'N' &&
+                charBuffer.get(start + 1) == 'O' &&
+                charBuffer.get(start + 2) == 'T' &&
+                charBuffer.get(start + 3) == 'A' &&
+                charBuffer.get(start + 4) == 'T' &&
+                charBuffer.get(start + 5) == 'I' &&
+                charBuffer.get(start + 6) == 'O' &&
+                charBuffer.get(start + 7) == 'N') {
+                return Token.START_NOTATIONDECL;
+            }
+        }
+        return null;
     }
     
     /**
@@ -692,9 +780,6 @@ public class XMLTokenizer implements Locator2 {
                     int tokenLength = pos - tokenStartPos;
                     if (tokenLength > 0) {
                         Token tokenType = miniState.getTokenType();
-                        if (tokenType == null && miniState == MiniState.ACCUMULATING_NAME) {
-                            tokenType = Token.NAME;
-                        }
                         if (tokenType != null) {
                             emitTokenWindow(tokenType, tokenStartPos, tokenLength, tokenStartColumn);
                             columnNumber += tokenLength;
@@ -928,8 +1013,26 @@ public class XMLTokenizer implements Locator2 {
     
     /**
      * Emits a token with a window into the character buffer.
+     * For NAME tokens in DOCTYPE context, checks if they're keywords and converts them.
+     * For NAME tokens in DOCTYPE_INTERNAL with ACCUMULATING_MARKUP_NAME, converts to markup declaration tokens.
      */
     private void emitTokenWindow(Token token, int start, int length, int column) throws SAXException {
+        // Check if this is a NAME token in DOCTYPE that should be a keyword
+        if (token == Token.NAME && state == TokenizerState.DOCTYPE) {
+            Token keywordToken = checkDOCTYPEKeyword(start, length);
+            if (keywordToken != null) {
+                token = keywordToken;
+            }
+        }
+        
+        // Check if this is a markup declaration name in DOCTYPE_INTERNAL
+        if (token == Token.NAME && state == TokenizerState.DOCTYPE_INTERNAL && miniState == MiniState.ACCUMULATING_MARKUP_NAME) {
+            Token markupToken = checkMarkupDeclaration(start, length);
+            if (markupToken != null) {
+                token = markupToken;
+            }
+        }
+        
         CharBuffer window = charBuffer.duplicate();
         window.position(start);
         window.limit(start + length);

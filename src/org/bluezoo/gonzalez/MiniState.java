@@ -113,6 +113,12 @@ enum MiniState {
      */
     SEEN_LT_BANG_N,
     
+    /**
+     * Seen '&lt;!' followed by any NAME_START_CHAR in DOCTYPE_INTERNAL.
+     * Used to start accumulating markup declaration names.
+     */
+    SEEN_LT_BANG_LETTER,
+    
     // --- Entity reference sequences ---
     
     /**
@@ -193,6 +199,38 @@ enum MiniState {
      */
     ACCUMULATING_WHITESPACE(true, Token.S),
     
+    // --- DOCTYPE keyword detection states ---
+    
+    /** Seen 'S' in DOCTYPE - could be SYSTEM */
+    SEEN_KEYWORD_S,
+    
+    /** Seen 'SY' in DOCTYPE - checking for SYSTEM */
+    SEEN_KEYWORD_SY,
+    
+    /** Seen 'SYS' in DOCTYPE - checking for SYSTEM */
+    SEEN_KEYWORD_SYS,
+    
+    /** Seen 'SYST' in DOCTYPE - checking for SYSTEM */
+    SEEN_KEYWORD_SYST,
+    
+    /** Seen 'SYSTE' in DOCTYPE - checking for SYSTEM */
+    SEEN_KEYWORD_SYSTE,
+    
+    /** Seen 'P' in DOCTYPE - could be PUBLIC */
+    SEEN_KEYWORD_P,
+    
+    /** Seen 'PU' in DOCTYPE - checking for PUBLIC */
+    SEEN_KEYWORD_PU,
+    
+    /** Seen 'PUB' in DOCTYPE - checking for PUBLIC */
+    SEEN_KEYWORD_PUB,
+    
+    /** Seen 'PUBL' in DOCTYPE - checking for PUBLIC */
+    SEEN_KEYWORD_PUBL,
+    
+    /** Seen 'PUBLI' in DOCTYPE - checking for PUBLIC */
+    SEEN_KEYWORD_PUBLI,
+    
     // --- Delimited accumulation states (must see complete token) ---
     
     /**
@@ -200,6 +238,12 @@ enum MiniState {
      * Terminates on non-NameChar.
      */
     ACCUMULATING_NAME(false, Token.NAME),
+    
+    /**
+     * Accumulating a markup declaration name (after '<!X' in DOCTYPE_INTERNAL).
+     * Will be converted to START_ELEMENTDECL, START_ATTLISTDECL, etc.
+     */
+    ACCUMULATING_MARKUP_NAME(false, Token.NAME),
     
     /**
      * Accumulating general entity name (after '&amp;').
