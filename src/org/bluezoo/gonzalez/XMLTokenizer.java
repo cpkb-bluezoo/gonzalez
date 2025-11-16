@@ -216,6 +216,13 @@ public class XMLTokenizer implements Locator2 {
      */
     private boolean closed;
     
+    /**
+     * Whether XML 1.1 character rules are enabled.
+     * If true, allows extended character ranges per XML 1.1 specification.
+     * If false (default), uses XML 1.0 character rules.
+     */
+    private boolean xml11 = false;
+    
     // ===== Initialization State Data =====
     
     /**
@@ -460,6 +467,22 @@ public class XMLTokenizer implements Locator2 {
      */
     public boolean isStandalone() {
         return standalone;
+    }
+    
+    /**
+     * Sets whether XML 1.1 character rules should be used.
+     * @param xml11 true to enable XML 1.1 rules, false for XML 1.0 rules
+     */
+    public void setXML11(boolean xml11) {
+        this.xml11 = xml11;
+    }
+    
+    /**
+     * Returns whether XML 1.1 character rules are enabled.
+     * @return true if XML 1.1 rules are enabled, false if XML 1.0 rules are used
+     */
+    public boolean isXML11() {
+        return xml11;
     }
     
 

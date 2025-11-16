@@ -288,6 +288,18 @@ enum MiniState {
      */
     SEEN_QUERY,
     
+    // --- XML declaration quote sequences ---
+    
+    /**
+     * Seen opening apostrophe in XML declaration attribute value.
+     */
+    SEEN_APOS,
+    
+    /**
+     * Seen opening quote in XML declaration attribute value.
+     */
+    SEEN_QUOT,
+    
     // --- CDATA section end sequences ---
     
     /**

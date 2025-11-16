@@ -270,6 +270,9 @@ public class Parser implements XMLReader {
             case "http://xml.org/sax/features/string-interning":
                 return xmlParser.getStringInterning();
                 
+            case "http://xml.org/sax/features/xml-1.1":
+                return tokenizer.isXML11();
+                
             // Read-only features (report capabilities)
             case "http://xml.org/sax/features/lexical-handler":
                 return true; // LexicalHandler interface is supported
@@ -291,10 +294,7 @@ public class Parser implements XMLReader {
                 
             // Unsupported features
             case "http://xml.org/sax/features/unicode-normalization-checking":
-                return false; // Not supported (XML 1.1 feature)
-                
-            case "http://xml.org/sax/features/xml-1.1":
-                return false; // Not supported (XML 1.0 only)
+                return false; // Not supported
                 
             default:
                 throw new SAXNotRecognizedException("Feature not recognized: " + name);
@@ -337,6 +337,10 @@ public class Parser implements XMLReader {
                 xmlParser.setStringInterning(value);
                 break;
                 
+            case "http://xml.org/sax/features/xml-1.1":
+                tokenizer.setXML11(value);
+                break;
+                
             // Read-only features (throw exception if trying to change)
             case "http://xml.org/sax/features/is-standalone":
             case "http://xml.org/sax/features/lexical-handler":
@@ -350,7 +354,6 @@ public class Parser implements XMLReader {
                 
             // Unsupported features
             case "http://xml.org/sax/features/unicode-normalization-checking":
-            case "http://xml.org/sax/features/xml-1.1":
                 if (value) {
                     throw new SAXNotSupportedException("Feature not supported: " + name);
                 }

@@ -267,11 +267,41 @@ class MiniStateTransitionBuilder {
                     .to(MiniState.READY).done()
                 .on(CharClass.APOS)
                     .emit(Token.APOS)
-                    .to(MiniState.READY).done()
+                    .to(MiniState.SEEN_APOS).done()
                 .on(CharClass.QUOT)
                     .emit(Token.QUOT)
+                    .to(MiniState.SEEN_QUOT).done();
+        
+        // SEEN_APOS - After opening ' in attribute value
+        builder.state(TokenizerState.XMLDECL)
+            .miniState(MiniState.SEEN_APOS)
+                .on(CharClass.APOS)
+                    .emit(Token.CDATA)  // Empty value
+                    .emit(Token.APOS)
                     .to(MiniState.READY).done()
-                .onAny(CharClass.NAME_CHAR, CharClass.CHAR_DATA, CharClass.DIGIT)
+                .onAny(CharClass.WHITESPACE, CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA, 
+                       CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.DASH, CharClass.COLON,
+                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.BANG, CharClass.QUERY,
+                       CharClass.SLASH, CharClass.EQ, CharClass.SEMICOLON, CharClass.PERCENT,
+                       CharClass.HASH, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET,
+                       CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN, CharClass.PIPE,
+                       CharClass.COMMA, CharClass.STAR, CharClass.PLUS, CharClass.QUOT)
+                    .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // SEEN_QUOT - After opening " in attribute value
+        builder.state(TokenizerState.XMLDECL)
+            .miniState(MiniState.SEEN_QUOT)
+                .on(CharClass.QUOT)
+                    .emit(Token.CDATA)  // Empty value
+                    .emit(Token.QUOT)
+                    .to(MiniState.READY).done()
+                .onAny(CharClass.WHITESPACE, CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
+                       CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.DASH, CharClass.COLON,
+                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.BANG, CharClass.QUERY,
+                       CharClass.SLASH, CharClass.EQ, CharClass.SEMICOLON, CharClass.PERCENT,
+                       CharClass.HASH, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET,
+                       CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN, CharClass.PIPE,
+                       CharClass.COMMA, CharClass.STAR, CharClass.PLUS, CharClass.APOS)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // SEEN_QUERY - After '?' (checking for end of declaration)
