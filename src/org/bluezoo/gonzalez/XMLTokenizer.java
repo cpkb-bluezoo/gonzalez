@@ -57,12 +57,6 @@ import org.xml.sax.ext.Locator2;
  */
 public class XMLTokenizer implements Locator2 {
 
-    /**
-     * Pre-expanded text for predefined entity references.
-     * Indexed by entity name: amp=0, lt=1, gt=2, apos=3, quot=4
-     */
-    private static final CharBuffer PREDEFINED_ENTITY_TEXT = CharBuffer.wrap("&<>'\"").asReadOnlyBuffer();
-    
     // ===== Configuration and Document Metadata =====
     
     /**
@@ -131,6 +125,16 @@ public class XMLTokenizer implements Locator2 {
      * Byte buffer position after the XML declaration (for charset switching).
      */
     private int postXMLDeclBytePosition = 0;
+    
+    /**
+     * Reference to the current byte buffer being processed (for charset switching).
+     */
+    private ByteBuffer currentByteBuffer = null;
+    
+    /**
+     * Flag indicating that charset was switched and tokenization should restart.
+     */
+    private boolean charsetSwitched = false;
     
     /**
      * Current quote character in XML declaration attribute value (' or ").
@@ -235,13 +239,19 @@ public class XMLTokenizer implements Locator2 {
      */
     private char lastCharSeen = '\0';
     
-    // ===== Predefined Entity Replacement Buffers =====
+    // ===== Predefined Entity Replacement =====
     
-    private static final CharBuffer PREDEFINED_LT = CharBuffer.wrap("<").asReadOnlyBuffer();
-    private static final CharBuffer PREDEFINED_GT = CharBuffer.wrap(">").asReadOnlyBuffer();
-    private static final CharBuffer PREDEFINED_AMP = CharBuffer.wrap("&").asReadOnlyBuffer();
-    private static final CharBuffer PREDEFINED_APOS = CharBuffer.wrap("'").asReadOnlyBuffer();
-    private static final CharBuffer PREDEFINED_QUOT = CharBuffer.wrap("\"").asReadOnlyBuffer();
+    private static final int PREDEFINED_AMP = 0;
+    private static final int PREDEFINED_LT = 1;
+    private static final int PREDEFINED_GT = 2;
+    private static final int PREDEFINED_APOS = 3;
+    private static final int PREDEFINED_QUOT = 4;
+    
+    /**
+     * Pre-expanded text for predefined entity references.
+     * Indexed by entity name: amp=0, lt=1, gt=2, apos=3, quot=4
+     */
+    private static final CharBuffer PREDEFINED_ENTITY_TEXT = CharBuffer.wrap("&<>'\"").asReadOnlyBuffer();
     
     // ===== Constructors =====
 
@@ -459,7 +469,7 @@ public class XMLTokenizer implements Locator2 {
      * 
      * @param nameStart start of entity name in charBuffer
      * @param nameEnd end of entity name in charBuffer
-     * @return index into PREDEFINED_ENTITY_TEXT (0=&, 1=<, 2=>, 3=', 4=") or -1 if not predefined
+     * @return index into PREDEFINED_ENTITY_TEXT (0=&amp;, 1=&lt;, 2=>, 3=', 4=") or -1 if not predefined
      */
     private int getPredefinedEntityIndex(int nameStart, int nameEnd) {
         int nameLen = nameEnd - nameStart;
@@ -467,16 +477,16 @@ public class XMLTokenizer implements Locator2 {
             char c1 = charBuffer.get(nameStart);
             char c2 = charBuffer.get(nameStart + 1);
             if (c1 == 'l' && c2 == 't') {
-                return 1;  // &lt; -> '<'
+                return PREDEFINED_LT;  // &lt; -> '<'
             } else if (c1 == 'g' && c2 == 't') {
-                return 2;  // &gt; -> '>'
+                return PREDEFINED_GT;  // &gt; -> '>'
             }
         } else if (nameLen == 3) {
             char c1 = charBuffer.get(nameStart);
             char c2 = charBuffer.get(nameStart + 1);
             char c3 = charBuffer.get(nameStart + 2);
             if (c1 == 'a' && c2 == 'm' && c3 == 'p') {
-                return 0;  // &amp; -> '&'
+                return PREDEFINED_AMP;  // &amp; -> '&'
             }
         } else if (nameLen == 4) {
             char c1 = charBuffer.get(nameStart);
@@ -484,9 +494,9 @@ public class XMLTokenizer implements Locator2 {
             char c3 = charBuffer.get(nameStart + 2);
             char c4 = charBuffer.get(nameStart + 3);
             if (c1 == 'a' && c2 == 'p' && c3 == 'o' && c4 == 's') {
-                return 3;  // &apos; -> '\''
+                return PREDEFINED_APOS;  // &apos; -> '\''
             } else if (c1 == 'q' && c2 == 'u' && c3 == 'o' && c4 == 't') {
-                return 4;  // &quot; -> '"'
+                return PREDEFINED_QUOT;  // &quot; -> '"'
             }
         }
         return -1;
@@ -580,79 +590,172 @@ public class XMLTokenizer implements Locator2 {
     }
     
     /**
-     * Checks if an entity reference is a predefined entity.
-     * 
-     * @param nameStart start of entity name in charBuffer
-     * @param nameEnd end of entity name in charBuffer
-     * @return Token.ENTITYREF if predefined, Token.GENERALENTITYREF otherwise
+     * Checks if a NAME token is actually a DTD keyword and returns the appropriate token.
+     * This method recognizes DTD keywords like EMPTY, ANY, REQUIRED, IMPLIED, etc.
+     * Only called for NAME tokens in DOCTYPE contexts.
+     * Returns the keyword token, or Token.NAME if not a keyword.
      */
-    private Token resolvePredefinedEntity(int nameStart, int nameEnd) {
-        int nameLen = nameEnd - nameStart;
-        if (nameLen == 3) {
-            char c1 = charBuffer.get(nameStart);
-            char c2 = charBuffer.get(nameStart + 1);
-            char c3 = charBuffer.get(nameStart + 2);
-            if (c1 == 'a' && c2 == 'm' && c3 == 'p') {
-                return Token.ENTITYREF;  // &amp;
-            }
-        } else if (nameLen == 2) {
-            char c1 = charBuffer.get(nameStart);
-            char c2 = charBuffer.get(nameStart + 1);
-            if (c1 == 'l' && c2 == 't') {
-                return Token.ENTITYREF;  // &lt;
-            } else if (c1 == 'g' && c2 == 't') {
-                return Token.ENTITYREF;  // &gt;
-            }
-        } else if (nameLen == 4) {
-            char c1 = charBuffer.get(nameStart);
-            char c2 = charBuffer.get(nameStart + 1);
-            char c3 = charBuffer.get(nameStart + 2);
-            char c4 = charBuffer.get(nameStart + 3);
-            if (c1 == 'a' && c2 == 'p' && c3 == 'o' && c4 == 's') {
-                return Token.ENTITYREF;  // &apos;
-            } else if (c1 == 'q' && c2 == 'u' && c3 == 'o' && c4 == 't') {
-                return Token.ENTITYREF;  // &quot;
-            }
+    private Token checkDTDKeyword(int start, int length) {
+        // Check by length first for efficiency
+        switch (length) {
+            case 2:
+                // "ID"
+                if (charBuffer.get(start) == 'I' &&
+                    charBuffer.get(start + 1) == 'D') {
+                    return Token.ID;
+                }
+                break;
+                
+            case 3:
+                // "ANY"
+                if (charBuffer.get(start) == 'A' &&
+                    charBuffer.get(start + 1) == 'N' &&
+                    charBuffer.get(start + 2) == 'Y') {
+                    return Token.ANY;
+                }
+                break;
+                
+            case 5:
+                // "EMPTY", "IDREF", "CDATA", "FIXED", "NDATA"
+                char first = charBuffer.get(start);
+                if (first == 'E') {
+                    if (charBuffer.get(start + 1) == 'M' &&
+                        charBuffer.get(start + 2) == 'P' &&
+                        charBuffer.get(start + 3) == 'T' &&
+                        charBuffer.get(start + 4) == 'Y') {
+                        return Token.EMPTY;
+                    }
+                } else if (first == 'I') {
+                    if (charBuffer.get(start + 1) == 'D' &&
+                        charBuffer.get(start + 2) == 'R' &&
+                        charBuffer.get(start + 3) == 'E' &&
+                        charBuffer.get(start + 4) == 'F') {
+                        return Token.IDREF;
+                    }
+                } else if (first == 'C') {
+                    if (charBuffer.get(start + 1) == 'D' &&
+                        charBuffer.get(start + 2) == 'A' &&
+                        charBuffer.get(start + 3) == 'T' &&
+                        charBuffer.get(start + 4) == 'A') {
+                        return Token.CDATA_TYPE;
+                    }
+                } else if (first == 'F') {
+                    if (charBuffer.get(start + 1) == 'I' &&
+                        charBuffer.get(start + 2) == 'X' &&
+                        charBuffer.get(start + 3) == 'E' &&
+                        charBuffer.get(start + 4) == 'D') {
+                        return Token.FIXED;
+                    }
+                } else if (first == 'N') {
+                    if (charBuffer.get(start + 1) == 'D' &&
+                        charBuffer.get(start + 2) == 'A' &&
+                        charBuffer.get(start + 3) == 'T' &&
+                        charBuffer.get(start + 4) == 'A') {
+                        return Token.NDATA;
+                    }
+                }
+                break;
+                
+            case 6:
+                // "IDREFS", "ENTITY"
+                first = charBuffer.get(start);
+                if (first == 'I') {
+                    if (charBuffer.get(start + 1) == 'D' &&
+                        charBuffer.get(start + 2) == 'R' &&
+                        charBuffer.get(start + 3) == 'E' &&
+                        charBuffer.get(start + 4) == 'F' &&
+                        charBuffer.get(start + 5) == 'S') {
+                        return Token.IDREFS;
+                    }
+                } else if (first == 'E') {
+                    if (charBuffer.get(start + 1) == 'N' &&
+                        charBuffer.get(start + 2) == 'T' &&
+                        charBuffer.get(start + 3) == 'I' &&
+                        charBuffer.get(start + 4) == 'T' &&
+                        charBuffer.get(start + 5) == 'Y') {
+                        return Token.ENTITY;
+                    }
+                }
+                break;
+                
+            case 7:
+                // "NMTOKEN", "IMPLIED", "INCLUDE"
+                first = charBuffer.get(start);
+                if (first == 'N') {
+                    if (charBuffer.get(start + 1) == 'M' &&
+                        charBuffer.get(start + 2) == 'T' &&
+                        charBuffer.get(start + 3) == 'O' &&
+                        charBuffer.get(start + 4) == 'K' &&
+                        charBuffer.get(start + 5) == 'E' &&
+                        charBuffer.get(start + 6) == 'N') {
+                        return Token.NMTOKEN;
+                    }
+                } else if (first == 'I') {
+                    if (charBuffer.get(start + 1) == 'M' &&
+                        charBuffer.get(start + 2) == 'P' &&
+                        charBuffer.get(start + 3) == 'L' &&
+                        charBuffer.get(start + 4) == 'I' &&
+                        charBuffer.get(start + 5) == 'E' &&
+                        charBuffer.get(start + 6) == 'D') {
+                        return Token.IMPLIED;
+                    } else if (charBuffer.get(start + 1) == 'N' &&
+                               charBuffer.get(start + 2) == 'C' &&
+                               charBuffer.get(start + 3) == 'L' &&
+                               charBuffer.get(start + 4) == 'U' &&
+                               charBuffer.get(start + 5) == 'D' &&
+                               charBuffer.get(start + 6) == 'E') {
+                        return Token.INCLUDE;
+                    }
+                }
+                break;
+                
+            case 8:
+                // "NMTOKENS", "REQUIRED", "ENTITIES", "NOTATION"
+                first = charBuffer.get(start);
+                if (first == 'N') {
+                    if (charBuffer.get(start + 1) == 'M' &&
+                        charBuffer.get(start + 2) == 'T' &&
+                        charBuffer.get(start + 3) == 'O' &&
+                        charBuffer.get(start + 4) == 'K' &&
+                        charBuffer.get(start + 5) == 'E' &&
+                        charBuffer.get(start + 6) == 'N' &&
+                        charBuffer.get(start + 7) == 'S') {
+                        return Token.NMTOKENS;
+                    } else if (charBuffer.get(start + 1) == 'O' &&
+                               charBuffer.get(start + 2) == 'T' &&
+                               charBuffer.get(start + 3) == 'A' &&
+                               charBuffer.get(start + 4) == 'T' &&
+                               charBuffer.get(start + 5) == 'I' &&
+                               charBuffer.get(start + 6) == 'O' &&
+                               charBuffer.get(start + 7) == 'N') {
+                        return Token.NOTATION;
+                    }
+                } else if (first == 'R') {
+                    if (charBuffer.get(start + 1) == 'E' &&
+                        charBuffer.get(start + 2) == 'Q' &&
+                        charBuffer.get(start + 3) == 'U' &&
+                        charBuffer.get(start + 4) == 'I' &&
+                        charBuffer.get(start + 5) == 'R' &&
+                        charBuffer.get(start + 6) == 'E' &&
+                        charBuffer.get(start + 7) == 'D') {
+                        return Token.REQUIRED;
+                    }
+                } else if (first == 'E') {
+                    if (charBuffer.get(start + 1) == 'N' &&
+                        charBuffer.get(start + 2) == 'T' &&
+                        charBuffer.get(start + 3) == 'I' &&
+                        charBuffer.get(start + 4) == 'T' &&
+                        charBuffer.get(start + 5) == 'I' &&
+                        charBuffer.get(start + 6) == 'E' &&
+                        charBuffer.get(start + 7) == 'S') {
+                        return Token.ENTITIES;
+                    }
+                }
+                break;
         }
-        return Token.GENERALENTITYREF;
-    }
-    
-    /**
-     * Emits an ENTITYREF token with a window into the predefined entity text.
-     * 
-     * @param nameStart start of entity name in charBuffer
-     * @param nameEnd end of entity name in charBuffer
-     * @param columnAtStart column number at the start of the entity reference
-     */
-    private void emitResolvedEntityRef(int nameStart, int nameEnd, long columnAtStart) throws SAXException {
-        int nameLen = nameEnd - nameStart;
-        int predefinedIndex = -1;
         
-        if (nameLen == 3 && charBuffer.get(nameStart) == 'a') {
-            predefinedIndex = 0;  // &amp; -> '&'
-        } else if (nameLen == 2) {
-            char c1 = charBuffer.get(nameStart);
-            if (c1 == 'l') {
-                predefinedIndex = 1;  // &lt; -> '<'
-            } else if (c1 == 'g') {
-                predefinedIndex = 2;  // &gt; -> '>'
-            }
-        } else if (nameLen == 4) {
-            char c1 = charBuffer.get(nameStart);
-            if (c1 == 'a') {
-                predefinedIndex = 3;  // &apos; -> '\''
-            } else if (c1 == 'q') {
-                predefinedIndex = 4;  // &quot; -> '"'
-            }
-        }
-        
-        if (predefinedIndex >= 0) {
-            // Create a window into the predefined entity text
-            CharBuffer window = PREDEFINED_ENTITY_TEXT.duplicate();
-            window.position(predefinedIndex);
-            window.limit(predefinedIndex + 1);
-            consumer.receive(Token.ENTITYREF, window);
-        }
+        // Not a keyword
+        return Token.NAME;
     }
     
     /**
@@ -711,6 +814,9 @@ public class XMLTokenizer implements Locator2 {
      * Decodes bytes to characters and tokenizes them.
      */
     private void decodeAndTokenize(ByteBuffer buffer) throws SAXException {
+        // Save reference to current byte buffer for potential charset switching
+        currentByteBuffer = buffer;
+        
         // Ensure charBuffer is large enough
         int neededCapacity = (charUnderflow != null ? charUnderflow.remaining() : 0) + buffer.remaining() * 2;
         if (charBuffer == null || charBuffer.capacity() < neededCapacity) {
@@ -772,6 +878,14 @@ public class XMLTokenizer implements Locator2 {
         int limit = charBuffer.limit();
         
         while (pos < limit) {
+            // Check if charset was switched - if so, restart tokenization from beginning of buffer
+            if (charsetSwitched) {
+                charsetSwitched = false;
+                pos = 0;
+                tokenStartPos = 0;
+                limit = charBuffer.limit();
+            }
+            
             char c = charBuffer.get(pos);
             
             // Classify character
@@ -790,7 +904,8 @@ public class XMLTokenizer implements Locator2 {
                 // Check if this character continues the accumulation
                 boolean shouldContinue = false;
                 if (miniState == MiniState.ACCUMULATING_NAME) {
-                    shouldContinue = (cc == CharClass.NAME_START_CHAR || cc == CharClass.NAME_CHAR || cc == CharClass.DIGIT);
+                    shouldContinue = (cc == CharClass.NAME_START_CHAR || cc == CharClass.NAME_CHAR || 
+                                     cc == CharClass.DIGIT || cc == CharClass.DASH || cc == CharClass.COLON);
                 } else if (miniState.isGreedyAccumulation()) {
                     shouldContinue = !shouldStopAccumulating(cc, miniState);
                 }
@@ -926,7 +1041,8 @@ public class XMLTokenizer implements Locator2 {
                             }
                         }
                         tokenStartColumn = (int) columnNumber;
-                    } else if (i == 0) {
+                    }
+                    else if (i == 0) {
                         // First token
                         tokenStart = tokenStartPos;
                         tokenEnd = excludeTrigger ? pos : posAfterChar;
@@ -951,8 +1067,9 @@ public class XMLTokenizer implements Locator2 {
                 
                 // Set tokenStartPos for next token
                 // If transitioning to accumulating state, start at the trigger char (which will be accumulated)
+                // EXCEPT in XMLDECL where quotes are emitted as tokens, not accumulated
                 // Otherwise, start after everything we just emitted
-                if (excludeTrigger) {
+                if (excludeTrigger && !(state == TokenizerState.XMLDECL && !transition.tokensToEmit.isEmpty())) {
                     tokenStartPos = pos;  // Trigger char will be first char of accumulated token
                 } else {
                     tokenStartPos = posAfterChar;
@@ -967,9 +1084,10 @@ public class XMLTokenizer implements Locator2 {
                 TokenizerState newState = transition.stateToChangeTo;
                 
                 // Save return state when entering COMMENT, PI_TARGET, or PI_DATA
+                // But don't overwrite if transitioning from PI_TARGET to PI_DATA (preserve original)
                 if (newState == TokenizerState.COMMENT ||
                     newState == TokenizerState.PI_TARGET ||
-                    newState == TokenizerState.PI_DATA) {
+                    (newState == TokenizerState.PI_DATA && state != TokenizerState.PI_TARGET)) {
                     returnState = state;
                 }
                 // Restore return state when exiting COMMENT/PI back to CONTENT
@@ -1095,6 +1213,18 @@ public class XMLTokenizer implements Locator2 {
             }
         }
         
+        // Check if this is a NAME token in DOCTYPE_INTERNAL that should be a DTD keyword
+        // (except for markup declaration names which are handled separately below)
+        if (token == Token.NAME && 
+            (state == TokenizerState.DOCTYPE_INTERNAL ||
+             state == TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT ||
+             state == TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS) &&
+            miniState != MiniState.ACCUMULATING_MARKUP_NAME) {
+            Token keywordToken = checkDTDKeyword(start, length);
+            // checkDTDKeyword returns Token.NAME if not a keyword, so we don't need to check for null
+            token = keywordToken;
+        }
+        
         // Check if this is a markup declaration name in DOCTYPE_INTERNAL
         if (token == Token.NAME && state == TokenizerState.DOCTYPE_INTERNAL && miniState == MiniState.ACCUMULATING_MARKUP_NAME) {
             Token markupToken = checkMarkupDeclaration(start, length);
@@ -1108,8 +1238,8 @@ public class XMLTokenizer implements Locator2 {
         columnNumber = column + length;
         
         // Route tokens to appropriate consumer
-        if (state == TokenizerState.XMLDECL) {
-            // XML declaration tokens go to internal handler
+        if (state == TokenizerState.XMLDECL || token == Token.START_XMLDECL) {
+            // XML declaration tokens go to internal handler (including START_XMLDECL)
             if (token.hasAssociatedText()) {
                 CharBuffer window = charBuffer.duplicate();
                 window.position(start);
@@ -1149,6 +1279,14 @@ public class XMLTokenizer implements Locator2 {
      */
     private void receiveXMLDeclToken(Token token, CharBuffer data) throws SAXException {
         switch (token) {
+            case START_XMLDECL:
+                // Beginning of XML declaration - reset state
+                xmlDeclAttributeName = null;
+                xmlDeclSeenAttributes = 0;
+                xmlDeclEncoding = null;
+                xmlDeclQuoteChar = '\0';
+                break;
+                
             case S:
                 // Whitespace - ignore
                 break;
@@ -1166,11 +1304,13 @@ public class XMLTokenizer implements Locator2 {
                 break;
                 
             case APOS:
+                // Track which quote character for value extraction
+                xmlDeclQuoteChar = '\'';
+                break;
+                
             case QUOT:
-                // Quote character - track which one for value extraction
-                if (data != null && data.hasRemaining()) {
-                    xmlDeclQuoteChar = data.get(data.position());
-                }
+                // Track which quote character for value extraction  
+                xmlDeclQuoteChar = '"';
                 break;
                 
             case CDATA:
@@ -1179,6 +1319,7 @@ public class XMLTokenizer implements Locator2 {
                     String value = extractString(data);
                     storeXMLDeclAttributeValue(xmlDeclAttributeName, value);
                     xmlDeclAttributeName = null;
+                    xmlDeclQuoteChar = '\0';
                 }
                 break;
                 
@@ -1257,6 +1398,12 @@ public class XMLTokenizer implements Locator2 {
             throw fatalError("XML declaration missing required 'version' attribute");
         }
         
+        // Save the current character position (after ?>)
+        // Since XML declaration is 7-bit ASCII, char position = byte position + BOM length
+        int charPosition = charBuffer.position();
+        int bomLength = (bomCharset != null) ? getBOMLength(bomCharset) : 0;
+        postXMLDeclBytePosition = charPosition + bomLength;
+        
         // If encoding was specified, apply it
         if (xmlDeclEncoding != null) {
             setCharset(xmlDeclEncoding);
@@ -1270,10 +1417,23 @@ public class XMLTokenizer implements Locator2 {
     }
     
     /**
+     * Returns the byte length of a BOM for the given charset.
+     */
+    private int getBOMLength(Charset charset) {
+        String name = charset.name().toLowerCase();
+        if (name.equals("utf-8")) {
+            return 3;  // EF BB BF
+        } else if (name.equals("utf-16be") || name.equals("utf-16le")) {
+            return 2;  // FE FF or FF FE
+        }
+        return 0;
+    }
+    
+    /**
      * Sets the charset based on the encoding attribute in the XML declaration.
      * Handles three scenarios:
      * 1. BOM present + encoding differs = ERROR
-     * 2. No BOM + encoding differs = SWITCH CHARSET
+     * 2. No BOM + encoding differs = SWITCH CHARSET (re-decode from saved position)
      * 3. BOM present + encoding matches = SUCCESS (continue)
      */
     private void setCharset(String encodingName) throws SAXException {
@@ -1299,15 +1459,27 @@ public class XMLTokenizer implements Locator2 {
             charset = declaredCharset;
             decoder = charset.newDecoder();
             
-            // Clear buffers for re-decoding with new charset
+            // Clear character buffers - we'll re-decode
             charBuffer.clear();
             if (charUnderflow != null) {
                 charUnderflow.clear();
                 charUnderflow.limit(0);
             }
             
-            // The byte buffer will be re-decoded in the next iteration
-            // using postXMLDeclBytePosition saved earlier
+            // Reposition byte buffer to after the XML declaration and re-decode
+            if (currentByteBuffer != null) {
+                currentByteBuffer.position(postXMLDeclBytePosition);
+                
+                // Decode from the new position with the new charset
+                CoderResult result = decoder.decode(currentByteBuffer, charBuffer, false);
+                charBuffer.flip();
+                
+                // Normalize line endings
+                normalizeLineEndings(charBuffer);
+                
+                // Set flag to restart tokenization from the re-decoded buffer
+                charsetSwitched = true;
+            }
         }
         
         // Case 3: BOM present + encoding matches (or compatible) = SUCCESS

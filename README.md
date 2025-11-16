@@ -137,9 +137,7 @@ ant
 
 This produces a jar file in the `dist` directory.
 
-The core parser has no external dependencies. The HTTP entity resolver requires
-Gumdrop's HTTP client implementation and is built separately if Gumdrop is
-available.
+The parser has no external dependencies.
 
 ## Implementation Status
 

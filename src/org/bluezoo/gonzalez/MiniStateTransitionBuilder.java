@@ -267,9 +267,11 @@ class MiniStateTransitionBuilder {
                     .to(MiniState.READY).done()
                 .on(CharClass.APOS)
                     .emit(Token.APOS)
-                    .to(MiniState.ACCUMULATING_CDATA).done()
+                    .to(MiniState.READY).done()
                 .on(CharClass.QUOT)
                     .emit(Token.QUOT)
+                    .to(MiniState.READY).done()
+                .onAny(CharClass.NAME_CHAR, CharClass.CHAR_DATA, CharClass.DIGIT)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // SEEN_QUERY - After '?' (checking for end of declaration)
@@ -328,9 +330,10 @@ class MiniStateTransitionBuilder {
         // ACCUMULATING_NAME - Building element name
         builder.state(TokenizerState.ELEMENT_NAME)
             .miniState(MiniState.ACCUMULATING_NAME)
-                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT, CharClass.DASH)
                     .to(MiniState.ACCUMULATING_NAME).done()
                 .on(CharClass.COLON)
+                    .emit(Token.NAME)
                     .emit(Token.COLON)
                     .to(MiniState.READY).done()
                 .on(CharClass.WHITESPACE)
@@ -384,9 +387,10 @@ class MiniStateTransitionBuilder {
         // ACCUMULATING_NAME - Building attribute name
         builder.state(TokenizerState.ELEMENT_ATTRS)
             .miniState(MiniState.ACCUMULATING_NAME)
-                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT, CharClass.DASH)
                     .to(MiniState.ACCUMULATING_NAME).done()
                 .on(CharClass.COLON)
+                    .emit(Token.NAME)
                     .emit(Token.COLON)
                     .to(MiniState.READY).done()
                 .on(CharClass.WHITESPACE)
@@ -625,6 +629,7 @@ class MiniStateTransitionBuilder {
         builder.state(TokenizerState.PI_TARGET)
             .miniState(MiniState.READY)
                 .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.DASH).to(MiniState.ACCUMULATING_NAME).done()
                 .on(CharClass.WHITESPACE)
                     .changeState(TokenizerState.PI_DATA)
                     .to(MiniState.ACCUMULATING_WHITESPACE).done()
@@ -633,7 +638,7 @@ class MiniStateTransitionBuilder {
         // ACCUMULATING_NAME - Building PI target
         builder.state(TokenizerState.PI_TARGET)
             .miniState(MiniState.ACCUMULATING_NAME)
-                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT, CharClass.DASH, CharClass.COLON)
                     .to(MiniState.ACCUMULATING_NAME).done()
                 .on(CharClass.WHITESPACE)
                     .emit(Token.NAME)
@@ -939,11 +944,7 @@ class MiniStateTransitionBuilder {
         // DOCTYPE_INTERNAL:SEEN_LT_QUERY - After '<?' (PI in DTD)
         builder.state(TokenizerState.DOCTYPE_INTERNAL)
             .miniState(MiniState.SEEN_LT_QUERY)
-                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_LT_QUERY_X).done();
-        
-        builder.state(TokenizerState.DOCTYPE_INTERNAL)
-            .miniState(MiniState.SEEN_LT_QUERY_X)
-                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                .on(CharClass.NAME_START_CHAR)
                     .emit(Token.START_PI)
                     .changeState(TokenizerState.PI_TARGET)
                     .to(MiniState.ACCUMULATING_NAME).done();
