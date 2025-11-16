@@ -194,6 +194,40 @@ public class XMLTokenizer implements Locator2 {
     private char lastCharSeen = '\0';
 
     /**
+     * Checks if the current context is a "text context" where special characters
+     * should be treated as literal text (CDATA) rather than structural tokens.
+     * 
+     * Text contexts include: attribute values, DOCTYPE quoted strings, element content,
+     * comments, CDATA sections, and processing instruction data.
+     * 
+     * @return true if the current context treats characters as text
+     */
+    private boolean isTextContext() {
+        return context == TokenizerContext.ATTR_VALUE || 
+               context == TokenizerContext.DOCTYPE_QUOTED ||
+               context == TokenizerContext.CONTENT ||
+               context == TokenizerContext.COMMENT ||
+               context == TokenizerContext.CDATA_SECTION ||
+               context == TokenizerContext.PI_DATA;
+    }
+    
+    /**
+     * If in a text context, resets the buffer position and attempts to emit CDATA.
+     * This consolidates the common pattern of checking for text contexts and emitting
+     * characters as CDATA instead of structural tokens.
+     * 
+     * @return true if processing should continue, false if more data is needed
+     * @throws SAXException if token emission fails
+     */
+    private boolean handleAsTextIfTextContext() throws SAXException {
+        if (isTextContext()) {
+            charBuffer.reset();
+            return tryEmitCDATA(); // Returns false if needs more data
+        }
+        return true; // Not a text context, caller should continue processing
+    }
+
+    /**
      * Constructs a new XMLTokenizer with no publicId or systemId.
      * @param consumer the TokenConsumer that will receive tokens
      */
@@ -1240,35 +1274,21 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '|':
-                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
-                    if (context == TokenizerContext.ATTR_VALUE || 
-                        context == TokenizerContext.DOCTYPE_QUOTED ||
-                        context == TokenizerContext.CONTENT ||
-                        context == TokenizerContext.COMMENT ||
-                        context == TokenizerContext.CDATA_SECTION ||
-                        context == TokenizerContext.PI_DATA) {
-                        charBuffer.reset();
-                        if (!tryEmitCDATA()) {
-                            return;
-                        }
-                    } else {
+                    // Only emit as special token outside of text contexts
+                    if (!handleAsTextIfTextContext()) {
+                        return; // Need more data for CDATA
+                    }
+                    if (!isTextContext()) {
                         emitToken(Token.PIPE, null);
                     }
                     break;
                     
                 case '[':
-                    // Only emit as special token outside of ATTR_VALUE
-                    if (context == TokenizerContext.ATTR_VALUE || 
-                        context == TokenizerContext.DOCTYPE_QUOTED ||
-                        context == TokenizerContext.CONTENT ||
-                        context == TokenizerContext.COMMENT ||
-                        context == TokenizerContext.CDATA_SECTION ||
-                        context == TokenizerContext.PI_DATA) {
-                        charBuffer.reset();
-                        if (!tryEmitCDATA()) {
-                            return;
-                        }
-                    } else {
+                    // Only emit as special token outside of text contexts
+                    if (!handleAsTextIfTextContext()) {
+                        return; // Need more data for CDATA
+                    }
+                    if (!isTextContext()) {
                         emitToken(Token.OPEN_BRACKET, null);
                     }
                     break;
@@ -1342,86 +1362,51 @@ public class XMLTokenizer implements Locator2 {
                     break;
                     
                 case '(':
-                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
-                    if (context == TokenizerContext.ATTR_VALUE || 
-                        context == TokenizerContext.DOCTYPE_QUOTED ||
-                        context == TokenizerContext.CONTENT ||
-                        context == TokenizerContext.COMMENT ||
-                        context == TokenizerContext.CDATA_SECTION ||
-                        context == TokenizerContext.PI_DATA) {
-                        charBuffer.reset();
-                        if (!tryEmitCDATA()) {
-                            return;
-                        }
-                    } else {
+                    // Only emit as special token outside of text contexts
+                    if (!handleAsTextIfTextContext()) {
+                        return; // Need more data for CDATA
+                    }
+                    if (!isTextContext()) {
                         emitToken(Token.OPEN_PAREN, null);
                     }
                     break;
                     
                 case ')':
-                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
-                    if (context == TokenizerContext.ATTR_VALUE || 
-                        context == TokenizerContext.DOCTYPE_QUOTED ||
-                        context == TokenizerContext.CONTENT ||
-                        context == TokenizerContext.COMMENT ||
-                        context == TokenizerContext.CDATA_SECTION ||
-                        context == TokenizerContext.PI_DATA) {
-                        charBuffer.reset();
-                        if (!tryEmitCDATA()) {
-                            return;
-                        }
-                    } else {
+                    // Only emit as special token outside of text contexts
+                    if (!handleAsTextIfTextContext()) {
+                        return; // Need more data for CDATA
+                    }
+                    if (!isTextContext()) {
                         emitToken(Token.CLOSE_PAREN, null);
                     }
                     break;
                     
                 case '*':
-                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
-                    if (context == TokenizerContext.ATTR_VALUE || 
-                        context == TokenizerContext.DOCTYPE_QUOTED ||
-                        context == TokenizerContext.CONTENT ||
-                        context == TokenizerContext.COMMENT ||
-                        context == TokenizerContext.CDATA_SECTION ||
-                        context == TokenizerContext.PI_DATA) {
-                        charBuffer.reset();
-                        if (!tryEmitCDATA()) {
-                            return;
-                        }
-                    } else {
+                    // Only emit as special token outside of text contexts
+                    if (!handleAsTextIfTextContext()) {
+                        return; // Need more data for CDATA
+                    }
+                    if (!isTextContext()) {
                         emitToken(Token.STAR, null);
                     }
                     break;
                     
                 case '+':
-                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
-                    if (context == TokenizerContext.ATTR_VALUE || 
-                        context == TokenizerContext.DOCTYPE_QUOTED ||
-                        context == TokenizerContext.CONTENT ||
-                        context == TokenizerContext.COMMENT ||
-                        context == TokenizerContext.CDATA_SECTION ||
-                        context == TokenizerContext.PI_DATA) {
-                        charBuffer.reset();
-                        if (!tryEmitCDATA()) {
-                            return;
-                        }
-                    } else {
+                    // Only emit as special token outside of text contexts
+                    if (!handleAsTextIfTextContext()) {
+                        return; // Need more data for CDATA
+                    }
+                    if (!isTextContext()) {
                         emitToken(Token.PLUS, null);
                     }
                     break;
                     
                 case ',':
-                    // Only emit as special token outside of ATTR_VALUE and DOCTYPE_QUOTED
-                    if (context == TokenizerContext.ATTR_VALUE || 
-                        context == TokenizerContext.DOCTYPE_QUOTED ||
-                        context == TokenizerContext.CONTENT ||
-                        context == TokenizerContext.COMMENT ||
-                        context == TokenizerContext.CDATA_SECTION ||
-                        context == TokenizerContext.PI_DATA) {
-                        charBuffer.reset();
-                        if (!tryEmitCDATA()) {
-                            return;
-                        }
-                    } else {
+                    // Only emit as special token outside of text contexts
+                    if (!handleAsTextIfTextContext()) {
+                        return; // Need more data for CDATA
+                    }
+                    if (!isTextContext()) {
                         emitToken(Token.COMMA, null);
                     }
                     break;
