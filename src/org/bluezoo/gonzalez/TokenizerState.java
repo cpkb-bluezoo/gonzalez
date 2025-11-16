@@ -47,7 +47,7 @@ enum TokenizerState {
     
     /**
      * Parsing XML declaration (<?xml version="1.0"?>).
-     * Uses special parsing logic, not the mini-state trie.
+     * Uses the mini-state trie with tokens sent to internal handler.
      */
     XMLDECL,
     
@@ -97,6 +97,18 @@ enum TokenizerState {
      * Used for entity values, attribute default values, etc.
      */
     DOCTYPE_QUOTED_QUOT,
+    
+    /**
+     * Inside a quoted string in internal DTD subset, delimited by apostrophe (').
+     * Used for entity replacement text.
+     */
+    DOCTYPE_INTERNAL_QUOTED_APOS,
+    
+    /**
+     * Inside a quoted string in internal DTD subset, delimited by quotation mark (").
+     * Used for entity replacement text.
+     */
+    DOCTYPE_INTERNAL_QUOTED_QUOT,
     
     /**
      * Inside an XML comment (<!-- ... -->).

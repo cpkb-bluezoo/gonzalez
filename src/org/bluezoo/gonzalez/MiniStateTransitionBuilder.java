@@ -179,6 +179,134 @@ class MiniStateTransitionBuilder {
         // ACCUMULATING_WHITESPACE and ACCUMULATING_CDATA are greedy states
         // They don't need explicit transitions - handled specially in tokenize()
         
+        // ===== State.BOM_READ Transitions =====
+        // After BOM detection, check for XML declaration or go straight to content
+        
+        // READY - Start of document after BOM
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.READY)
+                .on(CharClass.LT).to(MiniState.SEEN_LT).done()
+                .on(CharClass.WHITESPACE).to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA, 
+                       CharClass.DIGIT, CharClass.HEX_DIGIT,
+                       CharClass.APOS, CharClass.QUOT, CharClass.EQ, CharClass.SEMICOLON,
+                       CharClass.HASH, CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
+                       CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
+                       CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET, CharClass.AMP)
+                    .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // SEEN_LT - After '<' at document start
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.SEEN_LT)
+                .on(CharClass.QUERY).to(MiniState.SEEN_LT_QUERY).done()
+                .on(CharClass.SLASH)
+                    .emit(Token.START_END_ELEMENT)
+                    .changeState(TokenizerState.ELEMENT_NAME)
+                    .to(MiniState.READY).done()
+                .on(CharClass.BANG).to(MiniState.SEEN_LT_BANG).done()
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.LT)
+                    .changeState(TokenizerState.ELEMENT_NAME)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        // SEEN_LT_QUERY - After '<?' - check for 'xml'
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.SEEN_LT_QUERY)
+                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_LT_QUERY_X).done();
+        
+        // SEEN_LT_QUERY_X - After '<?x' - consume 'ml' to detect '<?xml'
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.SEEN_LT_QUERY_X)
+                .on(CharClass.NAME_START_CHAR)
+                    .consumeSequence("ml")
+                    .emit(Token.START_XMLDECL)
+                    .changeState(TokenizerState.XMLDECL)
+                    .to(MiniState.READY).done()
+                .on(CharClass.NAME_CHAR)
+                    .consumeSequence("ml")
+                    .emit(Token.START_XMLDECL)
+                    .changeState(TokenizerState.XMLDECL)
+                    .to(MiniState.READY).done();
+        
+        // SEEN_LT_BANG - After '<!' at document start (comment or DOCTYPE)
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.SEEN_LT_BANG)
+                .on(CharClass.DASH).to(MiniState.SEEN_LT_BANG_DASH).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_LT_BANG_D).done();
+        
+        // SEEN_LT_BANG_DASH - After '<!-'
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.SEEN_LT_BANG_DASH)
+                .on(CharClass.DASH)
+                    .emit(Token.START_COMMENT)
+                    .changeState(TokenizerState.COMMENT)
+                    .to(MiniState.READY).done();
+        
+        // SEEN_LT_BANG_D - After '<!D' - check for DOCTYPE
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.SEEN_LT_BANG_D)
+                .on(CharClass.NAME_START_CHAR)
+                    .consumeSequence("OCTYPE")
+                    .emit(Token.START_DOCTYPE)
+                    .changeState(TokenizerState.DOCTYPE)
+                    .to(MiniState.READY).done();
+        
+        // ===== State.XMLDECL Transitions =====
+        // Tokenizes attribute-value pairs in the XML declaration
+        // Tokens are sent to receiveXMLDeclToken() instead of the main consumer
+        
+        // READY - Expecting whitespace, attribute name, or end of declaration
+        builder.state(TokenizerState.XMLDECL)
+            .miniState(MiniState.READY)
+                .on(CharClass.WHITESPACE).to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.QUERY).to(MiniState.SEEN_QUERY).done()
+                .on(CharClass.EQ)
+                    .emit(Token.EQ)
+                    .to(MiniState.READY).done()
+                .on(CharClass.APOS)
+                    .emit(Token.APOS)
+                    .to(MiniState.ACCUMULATING_CDATA).done()
+                .on(CharClass.QUOT)
+                    .emit(Token.QUOT)
+                    .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // SEEN_QUERY - After '?' (checking for end of declaration)
+        builder.state(TokenizerState.XMLDECL)
+            .miniState(MiniState.SEEN_QUERY)
+                .on(CharClass.GT)
+                    .emit(Token.END_PI)  // Reuse END_PI token for consistency
+                    .changeState(TokenizerState.CONTENT)
+                    .to(MiniState.READY).done();
+        
+        // ACCUMULATING_NAME - Collecting attribute name
+        builder.state(TokenizerState.XMLDECL)
+            .miniState(MiniState.ACCUMULATING_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.WHITESPACE)
+                    .emit(Token.NAME)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.EQ)
+                    .emit(Token.NAME)
+                    .emit(Token.EQ)
+                    .to(MiniState.READY).done();
+        
+        // ACCUMULATING_CDATA - Inside quoted value
+        // Greedy accumulation handled by shouldStopAccumulating() - stops at APOS or QUOT
+        // When quote is encountered, emit CDATA and the quote, return to READY
+        builder.state(TokenizerState.XMLDECL)
+            .miniState(MiniState.ACCUMULATING_CDATA)
+                .on(CharClass.APOS)
+                    .emit(Token.CDATA)
+                    .emit(Token.APOS)
+                    .to(MiniState.READY).done()
+                .on(CharClass.QUOT)
+                    .emit(Token.CDATA)
+                    .emit(Token.QUOT)
+                    .to(MiniState.READY).done();
+        
         // ===== State.ELEMENT_NAME Transitions =====
         
         // READY - After '<' or '</', expecting element name
@@ -560,6 +688,7 @@ class MiniStateTransitionBuilder {
         // DOCTYPE:READY - Waiting for name, keywords, or end
         builder.state(TokenizerState.DOCTYPE)
             .miniState(MiniState.READY)
+                .on(CharClass.LT).to(MiniState.SEEN_LT).done()
                 .on(CharClass.WHITESPACE).to(MiniState.ACCUMULATING_WHITESPACE).done()
                 .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_NAME).done()
                 .on(CharClass.GT)
@@ -578,6 +707,33 @@ class MiniStateTransitionBuilder {
                     .emit(Token.QUOT)
                     .changeState(TokenizerState.DOCTYPE_QUOTED_QUOT)
                     .to(MiniState.READY).done();
+        
+        // DOCTYPE:SEEN_LT - After '<' in DOCTYPE (comments/PIs)
+        builder.state(TokenizerState.DOCTYPE)
+            .miniState(MiniState.SEEN_LT)
+                .on(CharClass.BANG).to(MiniState.SEEN_LT_BANG).done()
+                .on(CharClass.QUERY).to(MiniState.SEEN_LT_QUERY).done();
+        
+        // DOCTYPE:SEEN_LT_BANG - After '<!' in DOCTYPE
+        builder.state(TokenizerState.DOCTYPE)
+            .miniState(MiniState.SEEN_LT_BANG)
+                .on(CharClass.DASH).to(MiniState.SEEN_LT_BANG_DASH).done();
+        
+        // DOCTYPE:SEEN_LT_BANG_DASH - After '<!-' in DOCTYPE
+        builder.state(TokenizerState.DOCTYPE)
+            .miniState(MiniState.SEEN_LT_BANG_DASH)
+                .on(CharClass.DASH)
+                    .emit(Token.START_COMMENT)
+                    .changeState(TokenizerState.COMMENT)
+                    .to(MiniState.READY).done();
+        
+        // DOCTYPE:SEEN_LT_QUERY - After '<?' in DOCTYPE
+        builder.state(TokenizerState.DOCTYPE)
+            .miniState(MiniState.SEEN_LT_QUERY)
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done();
         
         // DOCTYPE:ACCUMULATING_NAME - Collecting name tokens (may be keywords)
         builder.state(TokenizerState.DOCTYPE)
@@ -684,6 +840,82 @@ class MiniStateTransitionBuilder {
                        CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
+        // ===== TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT Transitions =====
+        // (Quoted strings in DOCTYPE_INTERNAL - entity replacement text)
+        
+        // DOCTYPE_INTERNAL_QUOTED_QUOT:READY - Inside "..." in DOCTYPE_INTERNAL
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.READY)
+                .on(CharClass.QUOT)
+                    .emit(Token.QUOT)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL)
+                    .to(MiniState.READY).done()
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
+                       CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
+                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.APOS,
+                       CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
+                       CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
+                       CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
+                       CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                    .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // DOCTYPE_INTERNAL_QUOTED_QUOT:ACCUMULATING_CDATA - Greedy CDATA accumulation
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.ACCUMULATING_CDATA)
+                .on(CharClass.QUOT)
+                    .emit(Token.CDATA)
+                    .emit(Token.QUOT)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL)
+                    .to(MiniState.READY).done()
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
+                       CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
+                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.APOS,
+                       CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
+                       CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
+                       CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
+                       CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                    .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // ===== TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS Transitions =====
+        // (Quoted strings in DOCTYPE_INTERNAL - entity replacement text)
+        
+        // DOCTYPE_INTERNAL_QUOTED_APOS:READY - Inside '...' in DOCTYPE_INTERNAL
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.READY)
+                .on(CharClass.APOS)
+                    .emit(Token.APOS)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL)
+                    .to(MiniState.READY).done()
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
+                       CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
+                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.QUOT,
+                       CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
+                       CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
+                       CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
+                       CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                    .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // DOCTYPE_INTERNAL_QUOTED_APOS:ACCUMULATING_CDATA - Greedy CDATA accumulation
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.ACCUMULATING_CDATA)
+                .on(CharClass.APOS)
+                    .emit(Token.CDATA)
+                    .emit(Token.APOS)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL)
+                    .to(MiniState.READY).done()
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
+                       CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
+                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.QUOT,
+                       CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
+                       CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
+                       CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
+                       CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                    .to(MiniState.ACCUMULATING_CDATA).done();
+        
         // ===== TokenizerState.DOCTYPE_INTERNAL Transitions =====
         // (Inside DOCTYPE internal subset: [ ... ])
         
@@ -772,12 +1004,12 @@ class MiniStateTransitionBuilder {
                 .on(CharClass.APOS)
                     .emit(Token.NAME)
                     .emit(Token.APOS)
-                    .changeState(TokenizerState.DOCTYPE_QUOTED_APOS)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
                     .to(MiniState.READY).done()
                 .on(CharClass.QUOT)
                     .emit(Token.NAME)
                     .emit(Token.QUOT)
-                    .changeState(TokenizerState.DOCTYPE_QUOTED_QUOT)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
                     .to(MiniState.READY).done()
                 .on(CharClass.OPEN_PAREN)
                     .emit(Token.NAME)
@@ -816,10 +1048,33 @@ class MiniStateTransitionBuilder {
                     .emit(Token.PERCENT)
                     .to(MiniState.READY).done();
         
-        // DOCTYPE_INTERNAL:SEEN_PERCENT - After '%' (parameter entity reference)
+        // DOCTYPE_INTERNAL:SEEN_PERCENT - After '%' (parameter entity reference or delimiter)
         builder.state(TokenizerState.DOCTYPE_INTERNAL)
             .miniState(MiniState.SEEN_PERCENT)
-                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done();
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done()
+                .on(CharClass.WHITESPACE)
+                    .emit(Token.PERCENT)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.NAME_CHAR)
+                    .emit(Token.PERCENT)
+                    .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.LT)
+                    .emit(Token.PERCENT)
+                    .to(MiniState.SEEN_LT).done()
+                .on(CharClass.GT)
+                    .emit(Token.PERCENT)
+                    .emit(Token.GT)
+                    .to(MiniState.READY).done()
+                .on(CharClass.APOS)
+                    .emit(Token.PERCENT)
+                    .emit(Token.APOS)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+                    .to(MiniState.READY).done()
+                .on(CharClass.QUOT)
+                    .emit(Token.PERCENT)
+                    .emit(Token.QUOT)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+                    .to(MiniState.READY).done();
         
         // DOCTYPE_INTERNAL:ACCUMULATING_PARAM_ENTITY_NAME
         builder.state(TokenizerState.DOCTYPE_INTERNAL)
@@ -862,11 +1117,11 @@ class MiniStateTransitionBuilder {
                     .to(MiniState.READY).done()
                 .on(CharClass.APOS)
                     .emit(Token.APOS)
-                    .changeState(TokenizerState.DOCTYPE_QUOTED_APOS)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
                     .to(MiniState.READY).done()
                 .on(CharClass.QUOT)
                     .emit(Token.QUOT)
-                    .changeState(TokenizerState.DOCTYPE_QUOTED_QUOT)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
                     .to(MiniState.READY).done()
                 .on(CharClass.NAME_START_CHAR)
                     .to(MiniState.ACCUMULATING_NAME).done();

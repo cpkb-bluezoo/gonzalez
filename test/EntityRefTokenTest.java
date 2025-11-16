@@ -77,9 +77,21 @@ public class EntityRefTokenTest {
         MockTokenConsumer mock = new MockTokenConsumer();
         XMLTokenizer tokenizer = new XMLTokenizer(mock);
         
-        ByteBuffer buf = ByteBuffer.wrap(xml.getBytes("UTF-8"));
-        tokenizer.receive(buf);
-        tokenizer.close();
+        try {
+            ByteBuffer buf = ByteBuffer.wrap(xml.getBytes("UTF-8"));
+            tokenizer.receive(buf);
+            tokenizer.close();
+        } catch (Exception e) {
+            System.out.println("  Error during tokenization: " + e.getMessage());
+            e.printStackTrace();
+            throw e;
+        }
+        
+        // Debug: print all tokens
+        System.out.println("  All tokens:");
+        for (int i = 0; i < mock.tokens.size(); i++) {
+            System.out.println("    " + mock.tokens.get(i) + ": " + mock.data.get(i));
+        }
         
         // Verify we received PARAMETERENTITYREF tokens
         int count = 0;
@@ -192,6 +204,12 @@ public class EntityRefTokenTest {
         
         @Override
         public void setLocator(Locator locator) {
+        }
+        
+        @Override
+        public SAXParseException fatalError(String message) throws SAXException {
+            SAXParseException ex = new SAXParseException(message, null);
+            throw ex;
         }
         
         @Override

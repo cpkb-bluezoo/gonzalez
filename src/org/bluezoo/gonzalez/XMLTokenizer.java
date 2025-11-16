@@ -94,6 +94,12 @@ public class XMLTokenizer implements Locator2 {
     private TokenizerState state = TokenizerState.INIT;
     
     /**
+     * State to return to after exiting COMMENT or PI_TARGET/PI_DATA states.
+     * Used to properly nest comments/PIs within DOCTYPE, DOCTYPE_INTERNAL, etc.
+     */
+    private TokenizerState returnState = null;
+    
+    /**
      * Current fine-grained token recognition state.
      */
     private MiniState miniState = MiniState.READY;
@@ -103,6 +109,33 @@ public class XMLTokenizer implements Locator2 {
      * This is a reference to the pre-built static table in MiniStateTransitionBuilder.
      */
     private final Map<TokenizerState, Map<MiniState, Map<CharClass, MiniStateTransitionBuilder.Transition>>> transitionTable;
+    
+    // ===== XML Declaration Parsing State =====
+    
+    /**
+     * Current attribute name being parsed in XML declaration.
+     */
+    private String xmlDeclAttributeName = null;
+    
+    /**
+     * Bit flags for seen attributes: 1=version, 2=encoding, 4=standalone
+     */
+    private short xmlDeclSeenAttributes = 0;
+    
+    /**
+     * Encoding value from XML declaration (to be applied after parsing complete).
+     */
+    private String xmlDeclEncoding = null;
+    
+    /**
+     * Byte buffer position after the XML declaration (for charset switching).
+     */
+    private int postXMLDeclBytePosition = 0;
+    
+    /**
+     * Current quote character in XML declaration attribute value (' or ").
+     */
+    private char xmlDeclQuoteChar = '\0';
     
     // ===== Buffers =====
     
@@ -301,17 +334,15 @@ public class XMLTokenizer implements Locator2 {
                     charUnderflow = CharBuffer.allocate(4096);
                     charUnderflow.limit(0);
                 }
-                initState = InitState.XMLDECL;
+                // Transition to BOM_READ tokenizer state for trie-based tokenization
+                // The trie will detect <?xml and transition to XMLDECL, or go straight to CONTENT
+                state = TokenizerState.BOM_READ;
+                initState = InitState.XMLDECL; // Keep for now but unused
                 // Fall through
                 
             case XMLDECL:
-                // Parse XML/text declaration
-                if (!parseXMLDeclaration(combined)) {
-                    saveByteUnderflow(combined);
-                    return;
-                }
-                state = TokenizerState.CONTENT;
-                // Fall through to decode and tokenize
+                // Obsolete - XML declaration is now handled by trie in BOM_READ -> XMLDECL states
+                // Just fall through to decodeAndTokenize
         }
         
         // Decode bytes to characters and tokenize
@@ -850,6 +881,22 @@ public class XMLTokenizer implements Locator2 {
                         columnNumber++;  // Simplified - may be 2 for supplementary chars
                         tokenStartColumn = (int) columnNumber;
                     }
+                    // Special handling for markup declarations (ELEMENT, ATTLIST, ENTITY, NOTATION)
+                    else if (token == Token.NAME && miniState == MiniState.ACCUMULATING_MARKUP_NAME) {
+                        tokenStart = tokenStartPos;
+                        tokenEnd = excludeTrigger ? pos : posAfterChar;
+                        int tokenLength = tokenEnd - tokenStart;
+                        if (tokenLength > 0) {
+                            // Skip the '<!' prefix (2 characters) to get just the keyword
+                            int keywordStart = tokenStart + 2;
+                            int keywordLength = tokenLength - 2;
+                            Token markupToken = checkMarkupDeclaration(keywordStart, keywordLength);
+                            // Emit the entire token (including <!) but with the correct token type
+                            emitTokenWindow(markupToken, tokenStart, tokenLength, tokenStartColumn);
+                            columnNumber += tokenLength;
+                        }
+                        tokenStartColumn = (int) columnNumber;
+                    }
                     // Special handling for general entity references
                     else if (token == Token.GENERALENTITYREF || token == Token.PARAMETERENTITYREF) {
                         // Extract just the entity name (without & and ; or % and ;)
@@ -917,7 +964,25 @@ public class XMLTokenizer implements Locator2 {
             
             // Change state if specified
             if (transition.stateToChangeTo != null) {
-                state = transition.stateToChangeTo;
+                TokenizerState newState = transition.stateToChangeTo;
+                
+                // Save return state when entering COMMENT, PI_TARGET, or PI_DATA
+                if (newState == TokenizerState.COMMENT ||
+                    newState == TokenizerState.PI_TARGET ||
+                    newState == TokenizerState.PI_DATA) {
+                    returnState = state;
+                }
+                // Restore return state when exiting COMMENT/PI back to CONTENT
+                else if (newState == TokenizerState.CONTENT &&
+                         (state == TokenizerState.COMMENT ||
+                          state == TokenizerState.PI_DATA)) {
+                    if (returnState != null) {
+                        newState = returnState;
+                        returnState = null;
+                    }
+                }
+                
+                state = newState;
             }
             
             // Move to next mini-state
@@ -966,6 +1031,9 @@ public class XMLTokenizer implements Locator2 {
         if (miniState == MiniState.ACCUMULATING_CDATA) {
             // Context-dependent stop characters
             switch (state) {
+                case XMLDECL:
+                    // In XML declaration, stop at quotes (they delimit attribute values)
+                    return cc == CharClass.APOS || cc == CharClass.QUOT;
                 case CONTENT:
                     return cc == CharClass.LT || cc == CharClass.AMP || cc == CharClass.WHITESPACE;
                 case ATTR_VALUE_APOS:
@@ -974,6 +1042,8 @@ public class XMLTokenizer implements Locator2 {
                            cc == CharClass.APOS || cc == CharClass.QUOT;
                 case DOCTYPE_QUOTED_APOS:
                 case DOCTYPE_QUOTED_QUOT:
+                case DOCTYPE_INTERNAL_QUOTED_APOS:
+                case DOCTYPE_INTERNAL_QUOTED_QUOT:
                     return cc == CharClass.LT || cc == CharClass.AMP || cc == CharClass.PERCENT ||
                            cc == CharClass.APOS || cc == CharClass.QUOT;
                 case COMMENT:
@@ -1033,15 +1103,32 @@ public class XMLTokenizer implements Locator2 {
             }
         }
         
-        CharBuffer window = charBuffer.duplicate();
-        window.position(start);
-        window.limit(start + length);
-        
         // Update column tracking before emit (Locator contract: position AFTER event)
         long savedColumn = columnNumber;
         columnNumber = column + length;
         
-        consumer.receive(token, window);
+        // Route tokens to appropriate consumer
+        if (state == TokenizerState.XMLDECL) {
+            // XML declaration tokens go to internal handler
+            if (token.hasAssociatedText()) {
+                CharBuffer window = charBuffer.duplicate();
+                window.position(start);
+                window.limit(start + length);
+                receiveXMLDeclToken(token, window);
+            } else {
+                receiveXMLDeclToken(token, null);
+            }
+        } else {
+            // Normal tokens go to main consumer
+            if (token.hasAssociatedText()) {
+                CharBuffer window = charBuffer.duplicate();
+                window.position(start);
+                window.limit(start + length);
+                consumer.receive(token, window);
+            } else {
+                consumer.receive(token, null);
+            }
+        }
         
         // Restore for continued processing
         columnNumber = savedColumn;
@@ -1052,6 +1139,216 @@ public class XMLTokenizer implements Locator2 {
      */
     private SAXException fatalError(String message) throws SAXException {
         return consumer.fatalError(message);
+    }
+    
+    // ===== XML Declaration Token Handler =====
+    
+    /**
+     * Receives tokens from the XML declaration state instead of sending them to the main consumer.
+     * Parses the attribute-value pairs (version, encoding, standalone) and validates them.
+     */
+    private void receiveXMLDeclToken(Token token, CharBuffer data) throws SAXException {
+        switch (token) {
+            case S:
+                // Whitespace - ignore
+                break;
+                
+            case NAME:
+                // Attribute name
+                if (data != null) {
+                    xmlDeclAttributeName = extractString(data);
+                    validateXMLDeclAttributeName(xmlDeclAttributeName);
+                }
+                break;
+                
+            case EQ:
+                // Equals sign - no action needed
+                break;
+                
+            case APOS:
+            case QUOT:
+                // Quote character - track which one for value extraction
+                if (data != null && data.hasRemaining()) {
+                    xmlDeclQuoteChar = data.get(data.position());
+                }
+                break;
+                
+            case CDATA:
+                // Attribute value
+                if (data != null && xmlDeclAttributeName != null) {
+                    String value = extractString(data);
+                    storeXMLDeclAttributeValue(xmlDeclAttributeName, value);
+                    xmlDeclAttributeName = null;
+                }
+                break;
+                
+            case END_PI:
+                // End of XML declaration - apply charset if needed
+                applyXMLDeclEncoding();
+                break;
+                
+            default:
+                throw fatalError("Unexpected token in XML declaration: " + token);
+        }
+    }
+    
+    /**
+     * Validates that the attribute name is allowed in XML declarations and in correct order.
+     */
+    private void validateXMLDeclAttributeName(String name) throws SAXException {
+        if ("version".equals(name)) {
+            if (xmlDeclSeenAttributes != 0) {
+                throw fatalError("'version' must be the first attribute in XML declaration");
+            }
+            xmlDeclSeenAttributes |= 1;
+        } else if ("encoding".equals(name)) {
+            if ((xmlDeclSeenAttributes & 1) == 0) {
+                throw fatalError("'version' must come before 'encoding' in XML declaration");
+            }
+            if ((xmlDeclSeenAttributes & 4) != 0) {
+                throw fatalError("'encoding' must come before 'standalone' in XML declaration");
+            }
+            xmlDeclSeenAttributes |= 2;
+        } else if ("standalone".equals(name)) {
+            // Text declarations (in external entities) MUST NOT have standalone attribute
+            if (isExternalEntity) {
+                throw fatalError(
+                    "Text declaration in external entity must not have 'standalone' attribute");
+            }
+            if ((xmlDeclSeenAttributes & 1) == 0) {
+                throw fatalError("'version' must come before 'standalone' in XML declaration");
+            }
+            xmlDeclSeenAttributes |= 4;
+        } else {
+            throw fatalError("Unknown attribute in XML declaration: " + name);
+        }
+    }
+    
+    /**
+     * Stores an attribute value from the XML declaration.
+     */
+    private void storeXMLDeclAttributeValue(String name, String value) throws SAXException {
+        if ("version".equals(name)) {
+            if (!"1.0".equals(value) && !"1.1".equals(value)) {
+                throw fatalError("Unsupported XML version: " + value);
+            }
+            // Store version if needed
+        } else if ("encoding".equals(name)) {
+            // Save encoding for later application (after declaration is complete)
+            xmlDeclEncoding = value;
+        } else if ("standalone".equals(name)) {
+            if ("yes".equals(value)) {
+                standalone = true;
+            } else if ("no".equals(value)) {
+                standalone = false;
+            } else {
+                throw fatalError("Invalid standalone value: " + value + " (must be 'yes' or 'no')");
+            }
+        }
+    }
+    
+    /**
+     * Applies the encoding from the XML declaration by validating against BOM
+     * and potentially switching the charset.
+     */
+    private void applyXMLDeclEncoding() throws SAXException {
+        // Validate required attributes
+        if ((xmlDeclSeenAttributes & 1) == 0) {
+            throw fatalError("XML declaration missing required 'version' attribute");
+        }
+        
+        // If encoding was specified, apply it
+        if (xmlDeclEncoding != null) {
+            setCharset(xmlDeclEncoding);
+        }
+        
+        // Reset XML decl parsing state
+        xmlDeclAttributeName = null;
+        xmlDeclSeenAttributes = 0;
+        xmlDeclEncoding = null;
+        xmlDeclQuoteChar = '\0';
+    }
+    
+    /**
+     * Sets the charset based on the encoding attribute in the XML declaration.
+     * Handles three scenarios:
+     * 1. BOM present + encoding differs = ERROR
+     * 2. No BOM + encoding differs = SWITCH CHARSET
+     * 3. BOM present + encoding matches = SUCCESS (continue)
+     */
+    private void setCharset(String encodingName) throws SAXException {
+        // Try to resolve the declared charset
+        Charset declaredCharset;
+        try {
+            declaredCharset = Charset.forName(encodingName);
+        } catch (Exception e) {
+            throw fatalError("Unsupported encoding in XML declaration: " + 
+                encodingName + " (reason: " + e.getMessage() + ")");
+        }
+        
+        // Case 1: BOM present + encoding differs = ERROR
+        if (bomCharset != null && !isCharsetCompatible(bomCharset, declaredCharset)) {
+            throw fatalError("Encoding mismatch: BOM indicates " + 
+                bomCharset.name() + " but XML declaration specifies " + 
+                encodingName);
+        }
+        
+        // Case 2: No BOM + encoding differs from current = SWITCH CHARSET
+        if (bomCharset == null && !charset.equals(declaredCharset)) {
+            // Switch to the declared charset
+            charset = declaredCharset;
+            decoder = charset.newDecoder();
+            
+            // Clear buffers for re-decoding with new charset
+            charBuffer.clear();
+            if (charUnderflow != null) {
+                charUnderflow.clear();
+                charUnderflow.limit(0);
+            }
+            
+            // The byte buffer will be re-decoded in the next iteration
+            // using postXMLDeclBytePosition saved earlier
+        }
+        
+        // Case 3: BOM present + encoding matches (or compatible) = SUCCESS
+        // No action needed, continue with current charset
+    }
+    
+    /**
+     * Checks if two charsets are compatible.
+     * This handles cases like UTF-16 being compatible with UTF-16LE/BE.
+     */
+    private boolean isCharsetCompatible(Charset bomCharset, Charset declaredCharset) {
+        // Exact match is always compatible
+        if (bomCharset.equals(declaredCharset)) {
+            return true;
+        }
+        
+        // Get normalized names for comparison
+        String bomName = bomCharset.name().toLowerCase();
+        String declName = declaredCharset.name().toLowerCase();
+        
+        // UTF-16 (generic) is compatible with UTF-16LE or UTF-16BE
+        // since the BOM determines which one to use
+        if (declName.equals("utf-16") || declName.equals("utf16")) {
+            return bomName.equals("utf-16le") || bomName.equals("utf-16be") ||
+                   bomName.equals("utf-16") || bomName.equals("utf16");
+        }
+        
+        // Check if they're aliases of each other
+        return bomCharset.aliases().contains(declName) ||
+               declaredCharset.aliases().contains(bomName);
+    }
+    
+    /**
+     * Extracts a string from a CharBuffer.
+     */
+    private String extractString(CharBuffer buffer) {
+        StringBuilder sb = new StringBuilder(buffer.remaining());
+        while (buffer.hasRemaining()) {
+            sb.append(buffer.get());
+        }
+        return sb.toString();
     }
     
     // ===== Buffer Management =====
@@ -1188,38 +1485,22 @@ public class XMLTokenizer implements Locator2 {
             return true;
         }
         
-        // Find the end "?>"
-        boolean foundEnd = false;
-        int searchLimit = Math.min(charBuffer.remaining(), 512);
-        for (int i = 0; i < searchLimit - 1; i++) {
-            if (charBuffer.get(charBuffer.position() + i) == '?' &&
-                charBuffer.get(charBuffer.position() + i + 1) == '>') {
-                foundEnd = true;
-                charBuffer.position(charBuffer.position() + i + 2);
-                break;
-            }
-        }
+        // We have "<?xml" - transition to XMLDECL state to let the trie tokenize it
+        // Save the byte position right after "<?xml" for potential charset switching
+        postXMLDeclBytePosition = buffer.position();
         
-        if (!foundEnd) {
-            if (charBuffer.remaining() >= 512) {
-                charBuffer.reset();
-                updateLocationFromChars(charBuffer);
-                saveCharUnderflow(charBuffer);
-                throw fatalError("XML declaration too long (>512 characters)");
-            }
-            buffer.position(initialBytePos);
-            return false;
-        }
+        // The buffer is currently positioned after the 'l' in "<?xml"
+        // Save everything from current position onwards (attributes and ?>)
+        // The trie will tokenize the attributes and detect the closing ?>
+        saveCharUnderflow(charBuffer);
         
-        // Process declaration content (simplified - just skip for now)
-        // Full implementation would parse version, encoding, standalone
-        charBuffer.reset();
-        updateLocationFromChars(charBuffer);
+        // Transition to XMLDECL state - the trie will tokenize the declaration
+        state = TokenizerState.XMLDECL;
+        miniState = MiniState.READY;
         
-        // Save any remaining characters
-        if (charBuffer.hasRemaining()) {
-            saveCharUnderflow(charBuffer);
-        }
+        // Update location for the "<?xml" we've consumed
+        lineNumber = 1;
+        columnNumber = 5;  // Consumed 5 characters: "<?xml"
         
         return true;
     }

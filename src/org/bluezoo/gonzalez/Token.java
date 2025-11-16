@@ -28,75 +28,88 @@ package org.bluezoo.gonzalez;
  */
 public enum Token {
 
-    LT, // '<'
-    GT, // '>'
-    APOS, // "'"
-    QUOT, // '"'
-    S, // whitespace
-    NAME, // name token
-    CDATA, // character data
-    ENTITYREF, // entity reference replacement text (e.g., &amp; -> '&', &lt; -> '<', &#65; -> 'A')
-    GENERALENTITYREF, // general entity reference &name; - CharBuffer contains entity name
-    PARAMETERENTITYREF, // parameter entity reference %name; - CharBuffer contains entity name
-    COLON, // ':'
-    BANG, // '!'
-    QUERY, // '?'
-    EQ, // '='
-    PERCENT, // '%'
-    HASH, // '#'
-    PIPE, // '|'
-    START_END_ELEMENT, // "</"
-    END_EMPTY_ELEMENT, // "/>"
-    START_COMMENT, // "<!--"
-    END_COMMENT, // "-->"
-    START_CDATA, // "<[CDATA["
-    END_CDATA, // "]]>"
-    START_XMLDECL, // "<?xml"
-    START_PI, // "<?"
-    END_PI, // "?>"
-    START_DOCTYPE, // "<!DOCTYPE"
-    START_ELEMENTDECL, // "<!ELEMENT"
-    START_ATTLISTDECL, // "<!ATTLIST"
-    START_ENTITYDECL, // "<!ENTITY"
-    START_NOTATIONDECL, // "<!NOTATION"
-    START_CONDITIONAL, // "<!["
-    OPEN_BRACKET, // '['
-    CLOSE_BRACKET, // ']'
-    OPEN_PAREN, // '('
-    CLOSE_PAREN, // ')'
-    STAR, // '*'
-    PLUS, // '+'
-    COMMA, // ','
+    LT(false), // '<'
+    GT(false), // '>'
+    APOS(false), // "'"
+    QUOT(false), // '"'
+    S(true), // whitespace
+    NAME(true), // name token
+    CDATA(true), // character data
+    ENTITYREF(true), // entity reference replacement text (e.g., &amp; -> '&', &lt; -> '<', &#65; -> 'A')
+    GENERALENTITYREF(true), // general entity reference &name; - CharBuffer contains entity name
+    PARAMETERENTITYREF(true), // parameter entity reference %name; - CharBuffer contains entity name
+    COLON(false), // ':'
+    BANG(false), // '!'
+    QUERY(false), // '?'
+    EQ(false), // '='
+    PERCENT(false), // '%'
+    HASH(false), // '#'
+    PIPE(false), // '|'
+    START_END_ELEMENT(false), // "</"
+    END_EMPTY_ELEMENT(false), // "/>"
+    START_COMMENT(false), // "<!--"
+    END_COMMENT(false), // "-->"
+    START_CDATA(false), // "<[CDATA["
+    END_CDATA(false), // "]]>"
+    START_XMLDECL(false), // "<?xml"
+    START_PI(false), // "<?"
+    END_PI(false), // "?>"
+    START_DOCTYPE(false), // "<!DOCTYPE"
+    START_ELEMENTDECL(false), // "<!ELEMENT"
+    START_ATTLISTDECL(false), // "<!ATTLIST"
+    START_ENTITYDECL(false), // "<!ENTITY"
+    START_NOTATIONDECL(false), // "<!NOTATION"
+    START_CONDITIONAL(false), // "<!["
+    OPEN_BRACKET(false), // '['
+    CLOSE_BRACKET(false), // ']'
+    OPEN_PAREN(false), // '('
+    CLOSE_PAREN(false), // ')'
+    STAR(false), // '*'
+    PLUS(false), // '+'
+    COMMA(false), // ','
     
     // DOCTYPE keywords
-    SYSTEM, // "SYSTEM"
-    PUBLIC, // "PUBLIC"
-    NDATA, // "NDATA"
+    SYSTEM(false), // "SYSTEM"
+    PUBLIC(false), // "PUBLIC"
+    NDATA(false), // "NDATA"
     
     // ELEMENT content model keywords
-    EMPTY, // "EMPTY"
-    ANY, // "ANY"
-    PCDATA, // "#PCDATA"
+    EMPTY(false), // "EMPTY"
+    ANY(false), // "ANY"
+    PCDATA(false), // "#PCDATA"
     
     // ATTLIST type keywords
-    CDATA_TYPE, // "CDATA" (attribute type, distinct from CDATA token for character data)
-    ID, // "ID"
-    IDREF, // "IDREF"
-    IDREFS, // "IDREFS"
-    ENTITY, // "ENTITY"
-    ENTITIES, // "ENTITIES"
-    NMTOKEN, // "NMTOKEN"
-    NMTOKENS, // "NMTOKENS"
-    NOTATION, // "NOTATION"
+    CDATA_TYPE(false), // "CDATA" (attribute type, distinct from CDATA token for character data)
+    ID(false), // "ID"
+    IDREF(false), // "IDREF"
+    IDREFS(false), // "IDREFS"
+    ENTITY(false), // "ENTITY"
+    ENTITIES(false), // "ENTITIES"
+    NMTOKEN(false), // "NMTOKEN"
+    NMTOKENS(false), // "NMTOKENS"
+    NOTATION(false), // "NOTATION"
     
     // ATTLIST default value keywords
-    REQUIRED, // "#REQUIRED"
-    IMPLIED, // "#IMPLIED"
-    FIXED, // "#FIXED"
+    REQUIRED(false), // "#REQUIRED"
+    IMPLIED(false), // "#IMPLIED"
+    FIXED(false), // "#FIXED"
     
     // Conditional section keywords
-    INCLUDE, // "INCLUDE"
-    IGNORE, // "IGNORE"
-    END_CONDITIONAL, // "]]>"
+    INCLUDE(false), // "INCLUDE"
+    IGNORE(false), // "IGNORE"
+    END_CONDITIONAL(false); // "]]>"
+
+    private final boolean hasAssociatedText;
+    
+    Token(boolean hasAssociatedText) {
+        this.hasAssociatedText = hasAssociatedText;
+    }
+    
+    /**
+     * Returns true if this token type should have associated text (CharBuffer) when emitted.
+     */
+    public boolean hasAssociatedText() {
+        return hasAssociatedText;
+    }
 
 }

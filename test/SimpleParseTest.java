@@ -14,7 +14,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
-import org.bluezoo.gonzalez.GonzalezParser;
+import org.bluezoo.gonzalez.Parser;
 import org.xml.sax.Attributes;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
@@ -44,7 +44,7 @@ public class SimpleParseTest {
         System.out.println("================================================");
         
         try {
-            GonzalezParser parser = new GonzalezParser();
+            Parser parser = new Parser();
             VerboseHandler handler = new VerboseHandler();
             
             parser.setContentHandler(handler);
