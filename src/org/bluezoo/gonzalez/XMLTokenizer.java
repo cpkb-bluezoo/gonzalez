@@ -828,6 +828,13 @@ public class XMLTokenizer implements Locator2 {
             }
         }
         
+        // Validate the character is legal in the current context
+        // Check for literal '<' in attribute values
+        if ((state == TokenizerState.ATTR_VALUE_APOS || state == TokenizerState.ATTR_VALUE_QUOT) &&
+            codePoint == '<') {
+            throw fatalError("Literal '<' character (from character reference) not allowed in attribute values");
+        }
+        
         // Allocate CharBuffer and encode the code point
         char[] chars;
         if (codePoint <= 0xFFFF) {
