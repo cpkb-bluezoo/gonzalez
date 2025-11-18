@@ -149,6 +149,11 @@ public class XMLTokenizer implements Locator2 {
      */
     private char xmlDeclQuoteChar = '\0';
     
+    /**
+     * Flag indicating whitespace was seen (required between attributes in XML declaration).
+     */
+    private boolean xmlDeclSeenWhitespace = false;
+    
     // ===== Buffers =====
     
     /**
@@ -1012,6 +1017,13 @@ public class XMLTokenizer implements Locator2 {
             }
             if (debug) System.err.println("\tminiState="+miniState+" transition="+transition);
             
+            // Special validation: hex character references must use lowercase 'x'
+            if (miniState == MiniState.SEEN_AMP_HASH && transition.nextMiniState == MiniState.SEEN_AMP_HASH_X) {
+                if (c != 'x') {
+                    throw fatalError("Hexadecimal character references must use lowercase 'x', not '" + c + "'");
+                }
+            }
+            
             // Handle sequence consumption or position advancement
             int posAfterChar = pos + 1;  // Position after consuming this character
             if (transition.sequenceToConsume != null) {
@@ -1287,6 +1299,18 @@ public class XMLTokenizer implements Locator2 {
             }
         }
         
+        // Check if this is a PI target name and validate it's not "xml" (case-insensitive)
+        if (token == Token.NAME && state == TokenizerState.PI_TARGET) {
+            if (length == 3) {
+                char c0 = charBuffer.get(start);
+                char c1 = charBuffer.get(start + 1);
+                char c2 = charBuffer.get(start + 2);
+                if ((c0 == 'x' || c0 == 'X') && (c1 == 'm' || c1 == 'M') && (c2 == 'l' || c2 == 'L')) {
+                    throw fatalError("Processing instruction target names cannot be 'xml' (case-insensitive)");
+                }
+            }
+        }
+        
         // Update column tracking before emit (Locator contract: position AFTER event)
         long savedColumn = columnNumber;
         columnNumber = column + length;
@@ -1344,14 +1368,22 @@ public class XMLTokenizer implements Locator2 {
                 xmlDeclSeenAttributes = 0;
                 xmlDeclEncoding = null;
                 xmlDeclQuoteChar = '\0';
+                xmlDeclSeenWhitespace = false;
                 break;
                 
             case S:
-                // Whitespace - ignore
+                // Whitespace - mark as seen
+                xmlDeclSeenWhitespace = true;
                 break;
                 
             case NAME:
-                // Attribute name
+                // Attribute name - check for required whitespace
+                if (xmlDeclSeenAttributes > 0 && !xmlDeclSeenWhitespace) {
+                    // After the first attribute, whitespace is required before next attribute
+                    throw fatalError("Whitespace is required between attributes in XML declaration");
+                }
+                xmlDeclSeenWhitespace = false;  // Reset for next attribute
+                
                 if (data != null) {
                     xmlDeclAttributeName = extractString(data);
                     validateXMLDeclAttributeName(xmlDeclAttributeName);
@@ -1364,12 +1396,30 @@ public class XMLTokenizer implements Locator2 {
                 
             case APOS:
                 // Track which quote character for value extraction
-                xmlDeclQuoteChar = '\'';
+                if (xmlDeclQuoteChar == '\0') {
+                    // Opening quote
+                    xmlDeclQuoteChar = '\'';
+                } else if (xmlDeclQuoteChar != '\'') {
+                    // Closing quote doesn't match opening quote
+                    throw fatalError("Mismatched quotes in XML declaration attribute value: expected " + xmlDeclQuoteChar + " but found '");
+                } else {
+                    // Matching closing quote - value will be in preceding CDATA
+                    xmlDeclQuoteChar = '\0';
+                }
                 break;
                 
             case QUOT:
                 // Track which quote character for value extraction  
-                xmlDeclQuoteChar = '"';
+                if (xmlDeclQuoteChar == '\0') {
+                    // Opening quote
+                    xmlDeclQuoteChar = '"';
+                } else if (xmlDeclQuoteChar != '"') {
+                    // Closing quote doesn't match opening quote
+                    throw fatalError("Mismatched quotes in XML declaration attribute value: expected " + xmlDeclQuoteChar + " but found \"");
+                } else {
+                    // Matching closing quote - value will be in preceding CDATA
+                    xmlDeclQuoteChar = '\0';
+                }
                 break;
                 
             case CDATA:
@@ -1378,7 +1428,6 @@ public class XMLTokenizer implements Locator2 {
                     String value = extractString(data);
                     storeXMLDeclAttributeValue(xmlDeclAttributeName, value);
                     xmlDeclAttributeName = null;
-                    xmlDeclQuoteChar = '\0';
                 }
                 break;
                 
@@ -1472,6 +1521,7 @@ public class XMLTokenizer implements Locator2 {
         xmlDeclSeenAttributes = 0;
         xmlDeclEncoding = null;
         xmlDeclQuoteChar = '\0';
+        xmlDeclSeenWhitespace = false;
         xmlDeclEndCharPosition = 0;
     }
     
