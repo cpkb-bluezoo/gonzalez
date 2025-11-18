@@ -86,15 +86,7 @@ class MiniStateTransitionBuilder {
         // SEEN_LT_QUERY - After '<?'
         builder.state(TokenizerState.CONTENT)
             .miniState(MiniState.SEEN_LT_QUERY)
-                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_LT_QUERY_X).done();
-        
-        // SEEN_LT_QUERY_X - After '<?x' (checking for 'xml')
-        // Note: This is a simplified check. Full implementation would need to verify
-        // the exact sequence 'xml' followed by whitespace or '?'
-        // For now, we'll emit START_PI for any PI target
-        builder.state(TokenizerState.CONTENT)
-            .miniState(MiniState.SEEN_LT_QUERY_X)
-                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                .on(CharClass.NAME_START_CHAR)
                     .emit(Token.START_PI)
                     .changeState(TokenizerState.PI_TARGET)
                     .to(MiniState.ACCUMULATING_NAME).done();
@@ -186,7 +178,9 @@ class MiniStateTransitionBuilder {
         builder.state(TokenizerState.BOM_READ)
             .miniState(MiniState.READY)
                 .on(CharClass.LT).to(MiniState.SEEN_LT).done()
-                .on(CharClass.WHITESPACE).to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.WHITESPACE)
+                    .changeState(TokenizerState.PROLOG_BEFORE_DOCTYPE)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA, 
                        CharClass.DIGIT, CharClass.HEX_DIGIT,
                        CharClass.APOS, CharClass.QUOT, CharClass.EQ, CharClass.SEMICOLON,
@@ -194,6 +188,7 @@ class MiniStateTransitionBuilder {
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
                        CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET, CharClass.AMP)
+                    .changeState(TokenizerState.PROLOG_BEFORE_DOCTYPE)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // SEEN_LT - After '<' at document start
@@ -330,7 +325,7 @@ class MiniStateTransitionBuilder {
             .miniState(MiniState.SEEN_QUERY)
                 .on(CharClass.GT)
                     .emit(Token.END_PI)  // Reuse END_PI token for consistency
-                    .changeState(TokenizerState.CONTENT)
+                    .changeState(TokenizerState.PROLOG_BEFORE_DOCTYPE)
                     .to(MiniState.READY).done();
         
         // ACCUMULATING_NAME - Collecting attribute name
@@ -360,6 +355,87 @@ class MiniStateTransitionBuilder {
                     .emit(Token.QUOT)
                     .to(MiniState.READY).done();
         
+        // ===== State.PROLOG_BEFORE_DOCTYPE Transitions =====
+        // In prolog before DOCTYPE: can have whitespace, comments, PIs, DOCTYPE, or root element
+        // Note: <?xml here is a PI (not XML declaration) and will be rejected by PI target validation
+        
+        builder.state(TokenizerState.PROLOG_BEFORE_DOCTYPE)
+            .miniState(MiniState.READY)
+                .on(CharClass.LT).to(MiniState.SEEN_LT).done()
+                .on(CharClass.WHITESPACE).to(MiniState.ACCUMULATING_WHITESPACE).done();
+        
+        builder.state(TokenizerState.PROLOG_BEFORE_DOCTYPE)
+            .miniState(MiniState.SEEN_LT)
+                .on(CharClass.QUERY).to(MiniState.SEEN_LT_QUERY).done()
+                .on(CharClass.BANG).to(MiniState.SEEN_LT_BANG).done()
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.LT)
+                    .changeState(TokenizerState.ELEMENT_NAME)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        builder.state(TokenizerState.PROLOG_BEFORE_DOCTYPE)
+            .miniState(MiniState.SEEN_LT_QUERY)
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        builder.state(TokenizerState.PROLOG_BEFORE_DOCTYPE)
+            .miniState(MiniState.SEEN_LT_BANG)
+                .on(CharClass.DASH).to(MiniState.SEEN_LT_BANG_DASH).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_LT_BANG_D).done();
+        
+        builder.state(TokenizerState.PROLOG_BEFORE_DOCTYPE)
+            .miniState(MiniState.SEEN_LT_BANG_DASH)
+                .on(CharClass.DASH)
+                    .emit(Token.START_COMMENT)
+                    .changeState(TokenizerState.COMMENT)
+                    .to(MiniState.READY).done();
+        
+        builder.state(TokenizerState.PROLOG_BEFORE_DOCTYPE)
+            .miniState(MiniState.SEEN_LT_BANG_D)
+                .on(CharClass.NAME_START_CHAR)
+                    .consumeSequence("OCTYPE")
+                    .emit(Token.START_DOCTYPE)
+                    .changeState(TokenizerState.DOCTYPE)
+                    .to(MiniState.READY).done();
+        
+        // ===== State.PROLOG_AFTER_DOCTYPE Transitions =====
+        // In prolog after DOCTYPE: can have whitespace, comments, PIs, or root element (but no DOCTYPE)
+        
+        builder.state(TokenizerState.PROLOG_AFTER_DOCTYPE)
+            .miniState(MiniState.READY)
+                .on(CharClass.LT).to(MiniState.SEEN_LT).done()
+                .on(CharClass.WHITESPACE).to(MiniState.ACCUMULATING_WHITESPACE).done();
+        
+        builder.state(TokenizerState.PROLOG_AFTER_DOCTYPE)
+            .miniState(MiniState.SEEN_LT)
+                .on(CharClass.QUERY).to(MiniState.SEEN_LT_QUERY).done()
+                .on(CharClass.BANG).to(MiniState.SEEN_LT_BANG).done()
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.LT)
+                    .changeState(TokenizerState.ELEMENT_NAME)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        builder.state(TokenizerState.PROLOG_AFTER_DOCTYPE)
+            .miniState(MiniState.SEEN_LT_QUERY)
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        builder.state(TokenizerState.PROLOG_AFTER_DOCTYPE)
+            .miniState(MiniState.SEEN_LT_BANG)
+                .on(CharClass.DASH).to(MiniState.SEEN_LT_BANG_DASH).done();
+                // Note: No DOCTYPE transition here - that would be a duplicate DOCTYPE error
+        
+        builder.state(TokenizerState.PROLOG_AFTER_DOCTYPE)
+            .miniState(MiniState.SEEN_LT_BANG_DASH)
+                .on(CharClass.DASH)
+                    .emit(Token.START_COMMENT)
+                    .changeState(TokenizerState.COMMENT)
+                    .to(MiniState.READY).done();
+
         // ===== State.ELEMENT_NAME Transitions =====
         
         // READY - After '<' or '</', expecting element name
@@ -749,7 +825,7 @@ class MiniStateTransitionBuilder {
                 .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_NAME).done()
                 .on(CharClass.GT)
                     .emit(Token.GT)
-                    .changeState(TokenizerState.CONTENT)
+                    .changeState(TokenizerState.PROLOG_AFTER_DOCTYPE)
                     .to(MiniState.READY).done()
                 .on(CharClass.OPEN_BRACKET)
                     .emit(Token.OPEN_BRACKET)
@@ -802,7 +878,7 @@ class MiniStateTransitionBuilder {
                 .on(CharClass.GT)
                     .emit(Token.NAME)
                     .emit(Token.GT)
-                    .changeState(TokenizerState.CONTENT)
+                    .changeState(TokenizerState.PROLOG_AFTER_DOCTYPE)
                     .to(MiniState.READY).done()
                 .on(CharClass.OPEN_BRACKET)
                     .emit(Token.NAME)

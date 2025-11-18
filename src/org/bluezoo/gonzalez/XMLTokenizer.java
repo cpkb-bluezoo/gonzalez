@@ -1300,13 +1300,14 @@ public class XMLTokenizer implements Locator2 {
         }
         
         // Check if this is a PI target name and validate it's not "xml" (case-insensitive)
+        // Per XML 1.0 spec rule 17: PITarget names matching [Xx][Mm][Ll] are reserved
         if (token == Token.NAME && state == TokenizerState.PI_TARGET) {
             if (length == 3) {
                 char c0 = charBuffer.get(start);
                 char c1 = charBuffer.get(start + 1);
                 char c2 = charBuffer.get(start + 2);
                 if ((c0 == 'x' || c0 == 'X') && (c1 == 'm' || c1 == 'M') && (c2 == 'l' || c2 == 'L')) {
-                    throw fatalError("Processing instruction target names cannot be 'xml' (case-insensitive)");
+                    throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
                 }
             }
         }

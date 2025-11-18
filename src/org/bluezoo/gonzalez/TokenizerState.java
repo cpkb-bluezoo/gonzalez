@@ -52,6 +52,18 @@ enum TokenizerState {
     XMLDECL,
     
     /**
+     * In document prolog, before DOCTYPE declaration.
+     * Can contain: comments, PIs, whitespace, DOCTYPE, or root element.
+     */
+    PROLOG_BEFORE_DOCTYPE,
+    
+    /**
+     * In document prolog, after DOCTYPE declaration.
+     * Can contain: comments, PIs, whitespace, or root element (but no more DOCTYPE).
+     */
+    PROLOG_AFTER_DOCTYPE,
+    
+    /**
      * Parsing element content (text, child elements, entity references, etc.).
      */
     CONTENT,
