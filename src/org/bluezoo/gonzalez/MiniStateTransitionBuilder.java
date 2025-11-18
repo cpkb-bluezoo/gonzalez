@@ -272,12 +272,12 @@ class MiniStateTransitionBuilder {
                     .emit(Token.QUOT)
                     .to(MiniState.SEEN_QUOT).done();
         
-        // SEEN_APOS - After opening ' in attribute value
+        // SEEN_APOS - After opening ' in attribute value, start accumulating value
+        // Accept any character except APOS (which closes the value)
         builder.state(TokenizerState.XMLDECL)
             .miniState(MiniState.SEEN_APOS)
                 .on(CharClass.APOS)
-                    .emit(Token.CDATA)  // Empty value
-                    .emit(Token.APOS)
+                    .emit(Token.APOS)  // Empty value - just close immediately
                     .to(MiniState.READY).done()
                 .onAny(CharClass.WHITESPACE, CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA, 
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.DASH, CharClass.COLON,
@@ -285,15 +285,19 @@ class MiniStateTransitionBuilder {
                        CharClass.SLASH, CharClass.EQ, CharClass.SEMICOLON, CharClass.PERCENT,
                        CharClass.HASH, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET,
                        CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN, CharClass.PIPE,
-                       CharClass.COMMA, CharClass.STAR, CharClass.PLUS, CharClass.QUOT)
+                       CharClass.COMMA, CharClass.STAR, CharClass.PLUS, CharClass.QUOT,
+                       CharClass.LETTER_A, CharClass.LETTER_L, CharClass.LETTER_G,
+                       CharClass.LETTER_M, CharClass.LETTER_P, CharClass.LETTER_O,
+                       CharClass.LETTER_S, CharClass.LETTER_T, CharClass.LETTER_Q,
+                       CharClass.LETTER_U, CharClass.LETTER_X)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
-        // SEEN_QUOT - After opening " in attribute value
+        // SEEN_QUOT - After opening " in attribute value, start accumulating value
+        // Accept any character except QUOT (which closes the value)
         builder.state(TokenizerState.XMLDECL)
             .miniState(MiniState.SEEN_QUOT)
                 .on(CharClass.QUOT)
-                    .emit(Token.CDATA)  // Empty value
-                    .emit(Token.QUOT)
+                    .emit(Token.QUOT)  // Empty value - just close immediately
                     .to(MiniState.READY).done()
                 .onAny(CharClass.WHITESPACE, CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.DASH, CharClass.COLON,
@@ -301,8 +305,25 @@ class MiniStateTransitionBuilder {
                        CharClass.SLASH, CharClass.EQ, CharClass.SEMICOLON, CharClass.PERCENT,
                        CharClass.HASH, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET,
                        CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN, CharClass.PIPE,
-                       CharClass.COMMA, CharClass.STAR, CharClass.PLUS, CharClass.APOS)
+                       CharClass.COMMA, CharClass.STAR, CharClass.PLUS, CharClass.APOS,
+                       CharClass.LETTER_A, CharClass.LETTER_L, CharClass.LETTER_G,
+                       CharClass.LETTER_M, CharClass.LETTER_P, CharClass.LETTER_O,
+                       CharClass.LETTER_S, CharClass.LETTER_T, CharClass.LETTER_Q,
+                       CharClass.LETTER_U, CharClass.LETTER_X)
                     .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // ACCUMULATING_CDATA - After starting to accumulate attribute value
+        // Stop at quotes (handled by shouldStopAccumulating), emit CDATA, then close with quote
+        builder.state(TokenizerState.XMLDECL)
+            .miniState(MiniState.ACCUMULATING_CDATA)
+                .on(CharClass.APOS)
+                    .emit(Token.CDATA)
+                    .emit(Token.APOS)
+                    .to(MiniState.READY).done()
+                .on(CharClass.QUOT)
+                    .emit(Token.CDATA)
+                    .emit(Token.QUOT)
+                    .to(MiniState.READY).done();
         
         // SEEN_QUERY - After '?' (checking for end of declaration)
         builder.state(TokenizerState.XMLDECL)
@@ -1353,6 +1374,28 @@ class MiniStateTransitionBuilder {
             this.stateToChangeTo = stateToChangeTo;
             this.sequenceToConsume = sequenceToConsume;
         }
+
+        @Override
+        public String toString() {
+            StringBuilder buf = new StringBuilder();
+            if (nextMiniState != null) {
+                buf.append("nextMiniState=").append(nextMiniState);
+            }
+            if (tokensToEmit != null) {
+                if (buf.length() > 0) {
+                    buf.append(',');
+                }
+                buf.append("tokensToEmit=").append(tokensToEmit);
+            }
+            if (stateToChangeTo != null) {
+                if (buf.length() > 0) {
+                    buf.append(',');
+                }
+                buf.append("stateToChangeTo=").append(stateToChangeTo);
+            }
+            return buf.toString();
+        }
+
     }
 }
 

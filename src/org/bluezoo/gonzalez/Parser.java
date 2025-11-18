@@ -543,5 +543,19 @@ public class Parser implements XMLReader {
     public String getSystemId() {
         return tokenizer.getSystemId();
     }
+
+    public static void main(String[] args) throws Exception {
+        Parser parser = new Parser();
+        parser.setContentHandler(new org.xml.sax.helpers.DefaultHandler());
+        for (String arg : args) {
+            java.io.File file = new java.io.File(arg);
+            try (java.io.InputStream in = new java.io.FileInputStream(file)) {
+                InputSource src = new InputSource(in);
+                src.setSystemId(file.toURI().toString());
+                parser.parse(src);
+            }
+        }
+    }
+
 }
 

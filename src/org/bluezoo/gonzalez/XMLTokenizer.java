@@ -57,6 +57,8 @@ import org.xml.sax.ext.Locator2;
  */
 public class XMLTokenizer implements Locator2 {
 
+    private static boolean debug = false;
+
     // ===== Configuration and Document Metadata =====
     
     /**
@@ -120,6 +122,12 @@ public class XMLTokenizer implements Locator2 {
      * Encoding value from XML declaration (to be applied after parsing complete).
      */
     private String xmlDeclEncoding = null;
+    
+    /**
+     * Character position at the end of the XML declaration (after ?>).
+     * Used to calculate byte position for charset switching.
+     */
+    private int xmlDeclEndCharPosition = 0;
     
     /**
      * Byte buffer position after the XML declaration (for charset switching).
@@ -913,6 +921,7 @@ public class XMLTokenizer implements Locator2 {
             
             // Classify character
             CharClass cc = CharClass.classify(c, state, miniState);
+            if (debug) System.err.println("tokenize: c="+c+" cc="+cc);
             
             // Check for illegal characters
             if (cc == CharClass.ILLEGAL) {
@@ -945,23 +954,44 @@ public class XMLTokenizer implements Locator2 {
                     continue;
                 } else {
                     // Stop accumulating - emit the accumulated token
-                    // Then fall through to let the trie handle the delimiter
-                    int tokenLength = pos - tokenStartPos;
-                    if (tokenLength > 0) {
-                        Token tokenType = miniState.getTokenType();
-                        if (tokenType != null) {
-                            emitTokenWindow(tokenType, tokenStartPos, tokenLength, tokenStartColumn);
+                    // Special handling for XMLDECL: emit the closing quote too
+                    if (state == TokenizerState.XMLDECL && miniState == MiniState.ACCUMULATING_CDATA &&
+                        (cc == CharClass.APOS || cc == CharClass.QUOT)) {
+                        // Emit the accumulated CDATA
+                        int tokenLength = pos - tokenStartPos;
+                        if (tokenLength > 0) {
+                            emitTokenWindow(Token.CDATA, tokenStartPos, tokenLength, tokenStartColumn);
                             columnNumber += tokenLength;
                         }
+                        // Emit the closing quote
+                        Token quoteToken = (cc == CharClass.APOS) ? Token.APOS : Token.QUOT;
+                        emitTokenWindow(quoteToken, pos, 1, (int) columnNumber);
+                        columnNumber++;
+                        // Advance past the quote and go to READY
+                        pos++;
+                        tokenStartPos = pos;
+                        tokenStartColumn = (int) columnNumber;
+                        miniState = MiniState.READY;
+                        continue;
+                    } else {
+                        // Normal case: emit accumulated token, then let trie handle delimiter
+                        int tokenLength = pos - tokenStartPos;
+                        if (tokenLength > 0) {
+                            Token tokenType = miniState.getTokenType();
+                            if (tokenType != null) {
+                                emitTokenWindow(tokenType, tokenStartPos, tokenLength, tokenStartColumn);
+                                columnNumber += tokenLength;
+                            }
+                        }
+                        
+                        // Update tokenStartPos to start of delimiter, and reset miniState to READY
+                        // The trie will then process the delimiter from READY state
+                        tokenStartColumn = (int) columnNumber;
+                        tokenStartPos = pos;
+                        miniState = MiniState.READY;
+                        // Don't advance pos - reprocess delimiter through the trie from READY
+                        continue;
                     }
-                    
-                    // Update tokenStartPos to start of delimiter, and reset miniState to READY
-                    // The trie will then process the delimiter from READY state
-                    tokenStartColumn = (int) columnNumber;
-                    tokenStartPos = pos;
-                    miniState = MiniState.READY;
-                    // Don't advance pos - reprocess delimiter through the trie from READY
-                    continue;
                 }
             }
             
@@ -980,6 +1010,7 @@ public class XMLTokenizer implements Locator2 {
             if (transition == null) {
                 throw fatalError("Unexpected character '" + c + "' (" + cc + ") in " + state + ":" + miniState);
             }
+            if (debug) System.err.println("\tminiState="+miniState+" transition="+transition);
             
             // Handle sequence consumption or position advancement
             int posAfterChar = pos + 1;  // Position after consuming this character
@@ -1263,6 +1294,11 @@ public class XMLTokenizer implements Locator2 {
         // Route tokens to appropriate consumer
         if (state == TokenizerState.XMLDECL || token == Token.START_XMLDECL) {
             // XML declaration tokens go to internal handler (including START_XMLDECL)
+            // Save position if this is END_PI (end of XML declaration)
+            if (token == Token.END_PI) {
+                xmlDeclEndCharPosition = start + length;
+            }
+            
             if (token.hasAssociatedText()) {
                 CharBuffer window = charBuffer.duplicate();
                 window.position(start);
@@ -1421,11 +1457,10 @@ public class XMLTokenizer implements Locator2 {
             throw fatalError("XML declaration missing required 'version' attribute");
         }
         
-        // Save the current character position (after ?>)
+        // Calculate byte position after XML declaration
         // Since XML declaration is 7-bit ASCII, char position = byte position + BOM length
-        int charPosition = charBuffer.position();
         int bomLength = (bomCharset != null) ? getBOMLength(bomCharset) : 0;
-        postXMLDeclBytePosition = charPosition + bomLength;
+        postXMLDeclBytePosition = xmlDeclEndCharPosition + bomLength;
         
         // If encoding was specified, apply it
         if (xmlDeclEncoding != null) {
@@ -1437,6 +1472,7 @@ public class XMLTokenizer implements Locator2 {
         xmlDeclSeenAttributes = 0;
         xmlDeclEncoding = null;
         xmlDeclQuoteChar = '\0';
+        xmlDeclEndCharPosition = 0;
     }
     
     /**
