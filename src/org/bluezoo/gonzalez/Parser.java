@@ -40,7 +40,7 @@ import org.xml.sax.ext.LexicalHandler;
  *
  * <p>This class provides a standard SAX2 interface to the Gonzalez parser,
  * allowing it to be used with existing SAX2 frameworks and applications.
- * Internally, it uses an {@link XMLTokenizer} and {@link XMLParser} pipeline
+ * Internally, it uses an {@link Tokenizer} and {@link ContentParser} pipeline
  * to perform the parsing.
  *
  * <p>This class is a pure proxy - it maintains no parsing state itself,
@@ -100,25 +100,32 @@ import org.xml.sax.ext.LexicalHandler;
 public class Parser implements XMLReader {
 
     /**
-     * The tokenizer that converts bytes to tokens.
+     * The tokenizer that converts characters to tokens.
      * Created once and reused for all parses.
      */
-    private final XMLTokenizer tokenizer;
+    private final Tokenizer tokenizer;
+    
+    /**
+     * The external entity decoder that converts bytes to characters.
+     * Created once and reused for all parses.
+     */
+    private final ExternalEntityDecoder decoder;
     
     /**
      * The parser that converts tokens to SAX events.
      * Created once and reused for all parses.
      */
-    private final XMLParser xmlParser;
+    private final ContentParser xmlParser;
 
     /**
      * Creates a new Parser instance.
-     * The internal tokenizer and parser are created and can be reused
+     * The internal decoder, tokenizer and parser are created and can be reused
      * for multiple documents via {@link #reset()}.
      */
     public Parser() {
-        this.xmlParser = new XMLParser();
-        this.tokenizer = new XMLTokenizer(xmlParser, null, null);
+        this.xmlParser = new ContentParser();
+        this.tokenizer = new Tokenizer(xmlParser);
+        this.decoder = new ExternalEntityDecoder(tokenizer, null, null);
     }
 
     // ========================================================================
@@ -244,11 +251,11 @@ public class Parser implements XMLReader {
         }
         
         switch (name) {
-            // Delegate is-standalone to tokenizer (it owns XML declaration info)
+            // Delegate is-standalone to decoder (it owns XML declaration info)
             case "http://xml.org/sax/features/is-standalone":
-                return tokenizer.isStandalone();
+                return decoder.isStandalone();
                 
-            // Mutable features (delegate to XMLParser)
+            // Mutable features (delegate to ContentParser)
             case "http://xml.org/sax/features/namespaces":
                 return xmlParser.getNamespacesEnabled();
                 
@@ -284,7 +291,7 @@ public class Parser implements XMLReader {
                 return true; // SAXAttributes implements Attributes2
                 
             case "http://xml.org/sax/features/use-locator2":
-                return true; // XMLTokenizer implements Locator2
+                return true; // Tokenizer implements Locator2
                 
             case "http://xml.org/sax/features/use-entity-resolver2":
                 return true; // EntityResolver2 is supported
@@ -308,7 +315,7 @@ public class Parser implements XMLReader {
         }
         
         switch (name) {
-            // Mutable features (delegate to XMLParser)
+            // Mutable features (delegate to ContentParser)
             case "http://xml.org/sax/features/namespaces":
                 xmlParser.setNamespacesEnabled(value);
                 break;
@@ -338,7 +345,7 @@ public class Parser implements XMLReader {
                 break;
                 
             case "http://xml.org/sax/features/xml-1.1":
-                tokenizer.setXML11(value);
+                tokenizer.setXML11(value);  // Tokenizer needs this for character class rules
                 break;
                 
             // Read-only features (throw exception if trying to change)
@@ -425,6 +432,7 @@ public class Parser implements XMLReader {
      * @throws SAXException if reset fails
      */
     public void reset() throws SAXException {
+        decoder.reset();
         tokenizer.reset();
         xmlParser.reset();
     }
@@ -437,7 +445,8 @@ public class Parser implements XMLReader {
      * Sets the public identifier for the document.
      *
      * <p>The public identifier is used for error reporting and may be used
-     * by entity resolvers. This delegates directly to the underlying tokenizer.
+     * by entity resolvers. This delegates to the external entity decoder
+     * which provides location information.
      *
      * <p>If parsing via {@link #parse(InputSource)}, the public ID from the
      * InputSource takes precedence over this setting.
@@ -445,15 +454,15 @@ public class Parser implements XMLReader {
      * @param publicId the public identifier, or null if not available
      */
     public void setPublicId(String publicId) {
-        tokenizer.setPublicId(publicId);
+        decoder.setPublicId(publicId);
     }
 
     /**
      * Sets the system identifier for the document.
      *
      * <p>The system identifier (typically a URL) is used for resolving
-     * relative URIs and for error reporting. This delegates directly to
-     * the underlying tokenizer.
+     * relative URIs and for error reporting. This delegates to the external
+     * entity decoder which provides location information.
      *
      * <p>If parsing via {@link #parse(InputSource)}, the system ID from the
      * InputSource takes precedence over this setting.
@@ -461,7 +470,7 @@ public class Parser implements XMLReader {
      * @param systemId the system identifier, or null if not available
      */
     public void setSystemId(String systemId) {
-        tokenizer.setSystemId(systemId);
+        decoder.setSystemId(systemId);
     }
 
     /**
@@ -500,7 +509,7 @@ public class Parser implements XMLReader {
      * @throws IllegalStateException if called after {@link #close()}
      */
     public void receive(ByteBuffer data) throws SAXException {
-        tokenizer.receive(data);
+        decoder.receive(data);
     }
 
     /**
@@ -509,7 +518,8 @@ public class Parser implements XMLReader {
      * <p>This method must be called after the last {@link #receive} call
      * to signal the end of the document. The parser will process any
      * remaining buffered data and generate final SAX events (such as
-     * endDocument). This delegates directly to the underlying tokenizer.
+     * endDocument). This delegates to the decoder which will flush to
+     * the tokenizer.
      *
      * <p>After this method is called, you can call {@link #reset()} to
      * prepare the parser for reuse with another document.
@@ -521,27 +531,27 @@ public class Parser implements XMLReader {
      * @throws IllegalStateException if called without prior {@link #receive}
      */
     public void close() throws SAXException {
-        tokenizer.close();
+        decoder.close();
         // Validate that parsing is complete (no unclosed constructs)
         xmlParser.close();
     }
 
     /**
-     * Gets the public identifier from the tokenizer.
+     * Gets the public identifier from the decoder.
      *
      * @return the public identifier, or null if not set
      */
     public String getPublicId() {
-        return tokenizer.getPublicId();
+        return decoder.getPublicId();
     }
 
     /**
-     * Gets the system identifier from the tokenizer.
+     * Gets the system identifier from the decoder.
      *
      * @return the system identifier, or null if not set
      */
     public String getSystemId() {
-        return tokenizer.getSystemId();
+        return decoder.getSystemId();
     }
 
     public static void main(String[] args) throws Exception {

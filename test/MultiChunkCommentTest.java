@@ -21,8 +21,8 @@ public class MultiChunkCommentTest {
                         "<root/>";
             
             TestHandler handler = new TestHandler();
-            XMLParser xmlParser = new XMLParser();
-            XMLTokenizer tokenizer = new XMLTokenizer(xmlParser);
+            ContentParser xmlParser = new ContentParser();
+            Tokenizer tokenizer = new Tokenizer(xmlParser);
             xmlParser.setContentHandler(handler);
             xmlParser.setLexicalHandler(handler);
             

@@ -1,11 +1,11 @@
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import org.bluezoo.gonzalez.XMLTokenizer;
+import org.bluezoo.gonzalez.Tokenizer;
 import org.bluezoo.gonzalez.MockTokenConsumer;
 import org.xml.sax.SAXException;
 
 /**
- * Simple manual test for XMLTokenizer using MockTokenConsumer.
+ * Simple manual test for Tokenizer using MockTokenConsumer.
  * This tests the tokenizer in isolation without the parser.
  */
 public class SimpleTokenizerTest {
@@ -35,7 +35,7 @@ public class SimpleTokenizerTest {
         System.out.println("Test 1: Simple document - <?xml version=\"1.0\"?><root/>");
         
         MockTokenConsumer consumer = new MockTokenConsumer();
-        XMLTokenizer tokenizer = new XMLTokenizer(consumer, null, "test1.xml");
+        Tokenizer tokenizer = new Tokenizer(consumer, null, "test1.xml");
         
         String xml = "<?xml version=\"1.0\"?><root/>";
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));
@@ -55,7 +55,7 @@ public class SimpleTokenizerTest {
         System.out.println("Test 2: Document with attributes - <root id=\"123\" name=\"test\"/>");
         
         MockTokenConsumer consumer = new MockTokenConsumer();
-        XMLTokenizer tokenizer = new XMLTokenizer(consumer, null, "test2.xml");
+        Tokenizer tokenizer = new Tokenizer(consumer, null, "test2.xml");
         
         String xml = "<?xml version=\"1.0\"?><root id=\"123\" name=\"test\"/>";
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));
@@ -75,7 +75,7 @@ public class SimpleTokenizerTest {
         System.out.println("Test 3: Document with character data - <root>Hello</root>");
         
         MockTokenConsumer consumer = new MockTokenConsumer();
-        XMLTokenizer tokenizer = new XMLTokenizer(consumer, null, "test3.xml");
+        Tokenizer tokenizer = new Tokenizer(consumer, null, "test3.xml");
         
         String xml = "<?xml version=\"1.0\"?><root>Hello, World!</root>";
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));

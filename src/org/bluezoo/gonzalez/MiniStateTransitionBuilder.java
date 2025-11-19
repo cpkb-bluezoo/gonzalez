@@ -36,7 +36,7 @@ import java.util.Map;
  * and any special processing required.
  * <p>
  * The complete transition table is built once in a static initializer block
- * and exposed as a package-private constant for use by all XMLTokenizer instances.
+ * and exposed as a package-private constant for use by all Tokenizer instances.
  * 
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */

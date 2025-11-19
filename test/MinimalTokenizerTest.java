@@ -1,6 +1,6 @@
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import org.bluezoo.gonzalez.XMLTokenizer;
+import org.bluezoo.gonzalez.Tokenizer;
 import org.bluezoo.gonzalez.MockTokenConsumer;
 import org.xml.sax.SAXException;
 
@@ -14,7 +14,7 @@ public class MinimalTokenizerTest {
 
         try {
             MockTokenConsumer consumer = new MockTokenConsumer();
-            XMLTokenizer tokenizer = new XMLTokenizer(consumer, null, "test.xml");
+            Tokenizer tokenizer = new Tokenizer(consumer, null, "test.xml");
             
             // Just send the simplest possible XML - no declaration
             String xml = "<root/>";

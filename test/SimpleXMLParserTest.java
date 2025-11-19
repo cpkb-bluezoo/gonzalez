@@ -1,16 +1,16 @@
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import org.bluezoo.gonzalez.XMLTokenizer;
-import org.bluezoo.gonzalez.XMLParser;
+import org.bluezoo.gonzalez.Tokenizer;
+import org.bluezoo.gonzalez.ContentParser;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.Attributes;
 
 /**
- * Simple manual test for XMLTokenizer and XMLParser integration.
+ * Simple manual test for Tokenizer and ContentParser integration.
  */
-public class SimpleXMLParserTest {
+public class SimpleContentParserTest {
 
     public static void main(String[] args) {
         System.out.println("=== Starting Simple XML Parser Test ===\n");
@@ -44,11 +44,11 @@ public class SimpleXMLParserTest {
         String xml = "<?xml version=\"1.0\"?><root/>";
         
         TestContentHandler handler = new TestContentHandler();
-        XMLParser parser = new XMLParser();
+        ContentParser parser = new ContentParser();
         parser.setContentHandler(handler);
         
         System.out.println("  Creating tokenizer and sending data...");
-        XMLTokenizer tokenizer = new XMLTokenizer(parser, null, "test1.xml");
+        Tokenizer tokenizer = new Tokenizer(parser, null, "test1.xml");
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));
         System.out.println("  Closing tokenizer...");
         tokenizer.close();
@@ -62,10 +62,10 @@ public class SimpleXMLParserTest {
         String xml = "<?xml version=\"1.0\"?><root id=\"123\" name=\"test\"/>";
         
         TestContentHandler handler = new TestContentHandler();
-        XMLParser parser = new XMLParser();
+        ContentParser parser = new ContentParser();
         parser.setContentHandler(handler);
         
-        XMLTokenizer tokenizer = new XMLTokenizer(parser, null, "test2.xml");
+        Tokenizer tokenizer = new Tokenizer(parser, null, "test2.xml");
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));
         tokenizer.close();
         
@@ -78,10 +78,10 @@ public class SimpleXMLParserTest {
         String xml = "<?xml version=\"1.0\"?><root>Hello, World!</root>";
         
         TestContentHandler handler = new TestContentHandler();
-        XMLParser parser = new XMLParser();
+        ContentParser parser = new ContentParser();
         parser.setContentHandler(handler);
         
-        XMLTokenizer tokenizer = new XMLTokenizer(parser, null, "test3.xml");
+        Tokenizer tokenizer = new Tokenizer(parser, null, "test3.xml");
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));
         tokenizer.close();
         
@@ -94,10 +94,10 @@ public class SimpleXMLParserTest {
         String xml = "<?xml version=\"1.0\"?><root><![CDATA[<special>content</special>]]></root>";
         
         TestContentHandler handler = new TestContentHandler();
-        XMLParser parser = new XMLParser();
+        ContentParser parser = new ContentParser();
         parser.setContentHandler(handler);
         
-        XMLTokenizer tokenizer = new XMLTokenizer(parser, null, "test4.xml");
+        Tokenizer tokenizer = new Tokenizer(parser, null, "test4.xml");
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));
         tokenizer.close();
         
@@ -110,10 +110,10 @@ public class SimpleXMLParserTest {
         String xml = "<?xml version=\"1.0\"?><!-- Comment --><?target data?><root/>";
         
         TestContentHandler handler = new TestContentHandler();
-        XMLParser parser = new XMLParser();
+        ContentParser parser = new ContentParser();
         parser.setContentHandler(handler);
         
-        XMLTokenizer tokenizer = new XMLTokenizer(parser, null, "test5.xml");
+        Tokenizer tokenizer = new Tokenizer(parser, null, "test5.xml");
         tokenizer.receive(ByteBuffer.wrap(xml.getBytes(StandardCharsets.UTF_8)));
         tokenizer.close();
         

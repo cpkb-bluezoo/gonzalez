@@ -5,8 +5,8 @@
 import java.io.ByteArrayInputStream;
 import java.nio.ByteBuffer;
 import org.bluezoo.gonzalez.DTDParser;
-import org.bluezoo.gonzalez.XMLParser;
-import org.bluezoo.gonzalez.XMLTokenizer;
+import org.bluezoo.gonzalez.ContentParser;
+import org.bluezoo.gonzalez.Tokenizer;
 import org.bluezoo.gonzalez.EntityDeclaration;
 import org.bluezoo.gonzalez.EntityExpansionHelper;
 import org.bluezoo.gonzalez.EntityExpansionContext;
@@ -39,8 +39,8 @@ public class ParameterEntityExpansionTest {
                     "<root/>";
         
         // Parse the document
-        XMLParser xmlParser = new XMLParser();
-        XMLTokenizer tokenizer = new XMLTokenizer(xmlParser);
+        ContentParser xmlParser = new ContentParser();
+        Tokenizer tokenizer = new Tokenizer(xmlParser);
         
         ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
         byte[] buffer = new byte[1024];
@@ -88,8 +88,8 @@ public class ParameterEntityExpansionTest {
                     "]>\n" +
                     "<root/>";
         
-        XMLParser xmlParser = new XMLParser();
-        XMLTokenizer tokenizer = new XMLTokenizer(xmlParser);
+        ContentParser xmlParser = new ContentParser();
+        Tokenizer tokenizer = new Tokenizer(xmlParser);
         
         ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
         byte[] buffer = new byte[1024];
@@ -126,8 +126,8 @@ public class ParameterEntityExpansionTest {
                     "]>\n" +
                     "<root/>";
         
-        XMLParser xmlParser = new XMLParser();
-        XMLTokenizer tokenizer = new XMLTokenizer(xmlParser);
+        ContentParser xmlParser = new ContentParser();
+        Tokenizer tokenizer = new Tokenizer(xmlParser);
         
         try {
             ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
@@ -158,8 +158,8 @@ public class ParameterEntityExpansionTest {
                     "]>\n" +
                     "<root/>";
         
-        XMLParser xmlParser = new XMLParser();
-        XMLTokenizer tokenizer = new XMLTokenizer(xmlParser);
+        ContentParser xmlParser = new ContentParser();
+        Tokenizer tokenizer = new Tokenizer(xmlParser);
         
         try {
             ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
@@ -192,8 +192,8 @@ public class ParameterEntityExpansionTest {
                     "]>\n" +
                     "<root/>";
         
-        XMLParser xmlParser = new XMLParser();
-        XMLTokenizer tokenizer = new XMLTokenizer(xmlParser);
+        ContentParser xmlParser = new ContentParser();
+        Tokenizer tokenizer = new Tokenizer(xmlParser);
         
         ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
         byte[] buffer = new byte[1024];

@@ -6,14 +6,14 @@ import java.io.*;
 import java.util.*;
 
 /**
- * Comprehensive test for comment and PI parsing in XMLParser.
+ * Comprehensive test for comment and PI parsing in ContentParser.
  * Tests PIs and comments in prolog, element content, and epilog.
  */
-public class XMLParserCommentPITest {
+public class ContentParserCommentPITest {
     
     public static void main(String[] args) {
         try {
-            System.out.println("=== XMLParser Comment & PI Test ===\n");
+            System.out.println("=== ContentParser Comment & PI Test ===\n");
             
             String xml = "<?xml version='1.0'?>\n" +
                         "<!-- Prolog comment -->\n" +

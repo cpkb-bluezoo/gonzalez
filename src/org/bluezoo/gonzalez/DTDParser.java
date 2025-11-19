@@ -41,7 +41,7 @@ import org.xml.sax.ext.LexicalHandler;
  * DTD parser.
  * <p>
  * This is a consumer of tokens within a DOCTYPE declaration. It is lazily
- * constructed by the XMLParser when a DOCTYPE token is encountered, and
+ * constructed by the ContentParser when a DOCTYPE token is encountered, and
  * receives tokens until the final GT of the doctypedecl production is
  * detected.
  * <p>
@@ -84,7 +84,7 @@ public class DTDParser implements TokenConsumer {
     
     /**
      * Package-private accessor for the current DTD parser state.
-     * Used by XMLParser to determine if external entities should be tokenized as DTD content.
+     * Used by ContentParser to determine if external entities should be tokenized as DTD content.
      */
     State getState() {
         return state;
@@ -182,9 +182,9 @@ public class DTDParser implements TokenConsumer {
     private ErrorHandler errorHandler;
     
     /**
-     * Reference to the parent XMLParser for processing external entities.
+     * Reference to the parent ContentParser for processing external entities.
      */
-    private final XMLParser xmlParser;
+    private final ContentParser xmlParser;
 
     /**
      * The DOCTYPE name (root element name).
@@ -315,9 +315,9 @@ public class DTDParser implements TokenConsumer {
 
     /**
      * Constructs a new DTDParser.
-     * @param xmlParser the parent XMLParser for processing external entities
+     * @param xmlParser the parent ContentParser for processing external entities
      */
-    public DTDParser(XMLParser xmlParser) {
+    public DTDParser(ContentParser xmlParser) {
         this.xmlParser = xmlParser;
     }
 
@@ -374,11 +374,11 @@ public class DTDParser implements TokenConsumer {
     /**
      * Checks if this parser can receive more tokens.
      * <p>
-     * This method is called by the XMLParser before delegating each token.
+     * This method is called by the ContentParser before delegating each token.
      * It returns true while the DTDParser is still processing tokens inside
      * the doctypedecl production, and false when the final GT is detected.
      * <p>
-     * When this returns false, the XMLParser knows to stop delegating tokens
+     * When this returns false, the ContentParser knows to stop delegating tokens
      * to the DTDParser and resume normal parsing.
      *
      * @param token the token that would be received
@@ -2686,11 +2686,11 @@ public class DTDParser implements TokenConsumer {
      * Processes the external DTD subset by resolving and parsing it.
      *
      * <p>This method is called when an external ID (SYSTEM or PUBLIC) is
-     * present in the DOCTYPE declaration. It uses the parent XMLParser's
+     * present in the DOCTYPE declaration. It uses the parent ContentParser's
      * processExternalEntity method to resolve and parse the external DTD.
      *
      * <p>The external DTD subset is processed **as if it were an internal subset**.
-     * The tokens from the external DTD are fed back through the XMLParser to this
+     * The tokens from the external DTD are fed back through the ContentParser to this
      * DTDParser, which processes them as markup declarations. The only difference
      * from a true internal subset is that there are no surrounding [ and ] brackets.
      *
@@ -2722,9 +2722,9 @@ public class DTDParser implements TokenConsumer {
         }
         
         try {
-            // Use XMLParser's processExternalEntity to resolve and parse
-            // the external DTD subset. This will create a nested XMLTokenizer
-            // that sends tokens back through XMLParser to this DTDParser.
+            // Use ContentParser's processExternalEntity to resolve and parse
+            // the external DTD subset. This will create a nested Tokenizer
+            // that sends tokens back through ContentParser to this DTDParser.
             // The DTDParser is in IN_INTERNAL_SUBSET state, so it processes
             // the tokens as markup declarations.
             xmlParser.processExternalEntity(doctypeName, publicId, systemId);
@@ -2910,30 +2910,23 @@ public class DTDParser implements TokenConsumer {
         // Create a tokenizer for the replacement text and feed tokens through DTD parser
         // The tokenizer needs to be in DOCTYPE_INTERNAL context
         try {
-            java.io.ByteArrayInputStream bais = 
-                new java.io.ByteArrayInputStream(replacementText.getBytes("UTF-8"));
-            
             // Create a tokenizer in DOCTYPE_INTERNAL context
-            // Pass entity IDs for error reporting
-            XMLTokenizer tokenizer = new XMLTokenizer(
-                this, // DTDParser implements TokenConsumer
-                entity.externalID != null ? entity.externalID.publicId : null,
-                "%" + entityName + ";", // Use entity reference as systemId for error reporting
-                true); // isExternalEntity
+            Tokenizer tokenizer = new Tokenizer(this);
+            
+            // Set the locator for position information
+            tokenizer.setLocator(locator);
             
             // Set the tokenizer to start in DOCTYPE_INTERNAL context
             // This is critical so it emits the right tokens for DTD content
-            // Also copy locator information for better error reporting
-            tokenizer.setInitialContext(
-                TokenizerState.DOCTYPE_INTERNAL, 
-                locator instanceof org.xml.sax.ext.Locator2 ? (org.xml.sax.ext.Locator2) locator : null);
+            tokenizer.setInitialContext(TokenizerState.DOCTYPE_INTERNAL);
             
-            // Feed the replacement text through the tokenizer
-            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(replacementText.getBytes("UTF-8"));
+            // Feed the replacement text through the tokenizer as characters
+            // (internal entity values are already decoded strings)
+            java.nio.CharBuffer buffer = java.nio.CharBuffer.wrap(replacementText);
             tokenizer.receive(buffer);
             tokenizer.close();
             
-        } catch (java.io.IOException e) {
+        } catch (SAXException e) {
             throw new SAXParseException(
                 "Error expanding parameter entity %" + entityName + ";",
                 locator, e);
@@ -2944,7 +2937,7 @@ public class DTDParser implements TokenConsumer {
      * Validates that all structures (especially conditional sections) are properly closed
      * when an external entity finishes processing.
      * 
-     * Called by XMLParser after an external entity has been fully processed.
+     * Called by ContentParser after an external entity has been fully processed.
      */
     void validateExternalEntityClosed() throws SAXParseException {
         // Check if we have unclosed conditional sections

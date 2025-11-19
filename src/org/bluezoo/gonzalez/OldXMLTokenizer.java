@@ -1,5 +1,5 @@
 /*
- * XMLTokenizer.java
+ * Tokenizer.java
  * Copyright (C) 2025 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -49,7 +49,7 @@ import org.xml.sax.ext.Locator2;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class OldXMLTokenizer implements Locator2 {
+class OldTokenizer implements Locator2 {
 
     /**
      * The character set which will be used to decode incoming bytes
@@ -271,15 +271,15 @@ class OldXMLTokenizer implements Locator2 {
     }
 
     /**
-     * Constructs a new XMLTokenizer with no publicId or systemId.
+     * Constructs a new Tokenizer with no publicId or systemId.
      * @param consumer the TokenConsumer that will receive tokens
      */
-    OldXMLTokenizer(TokenConsumer consumer) {
+    OldTokenizer(TokenConsumer consumer) {
         this(consumer, null, null, false);
     }
 
     /**
-     * Constructs a new XMLTokenizer with the specified publicId
+     * Constructs a new Tokenizer with the specified publicId
      * and systemId.
      * These are metadata about the document that can describe how
      * it was resolved as an entity.
@@ -287,12 +287,12 @@ class OldXMLTokenizer implements Locator2 {
      * @param publicId the public identifier of the document
      * @param systemId the system identifier of the document
      */
-    OldXMLTokenizer(TokenConsumer consumer, String publicId, String systemId) {
+    OldTokenizer(TokenConsumer consumer, String publicId, String systemId) {
         this(consumer, publicId, systemId, false);
     }
     
     /**
-     * Constructs a new XMLTokenizer for an external entity.
+     * Constructs a new Tokenizer for an external entity.
      * External entities have text declarations instead of XML declarations,
      * and text declarations MUST NOT have a "standalone" attribute.
      * @param consumer the TokenConsumer that will receive tokens
@@ -300,7 +300,7 @@ class OldXMLTokenizer implements Locator2 {
      * @param systemId the system identifier of the entity
      * @param isExternalEntity true if this is an external entity, false for main document
      */
-    OldXMLTokenizer(TokenConsumer consumer, String publicId, String systemId, boolean isExternalEntity) {
+    OldTokenizer(TokenConsumer consumer, String publicId, String systemId, boolean isExternalEntity) {
         this.consumer = consumer;
         this.publicId = publicId;
         this.systemId = systemId;
@@ -2534,7 +2534,7 @@ class OldXMLTokenizer implements Locator2 {
     /**
      * Resets the tokenizer state to allow reuse for parsing another document.
      *
-     * <p>This method clears all parsing state, allowing the same XMLTokenizer
+     * <p>This method clears all parsing state, allowing the same Tokenizer
      * instance to be reused for multiple documents. The consumer reference
      * is preserved, as are the publicId and systemId unless explicitly changed
      * via {@link #setPublicId(String)} or {@link #setSystemId(String)}.

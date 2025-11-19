@@ -25,11 +25,11 @@ public class EntityDeclTest {
     }
     
     static DTDParser getDTDParser(Parser parser) {
-        // Access the XMLParser's DTDParser through reflection or direct access
+        // Access the ContentParser's DTDParser through reflection or direct access
         try {
             java.lang.reflect.Field xmlParserField = Parser.class.getDeclaredField("xmlParser");
             xmlParserField.setAccessible(true);
-            XMLParser xmlParser = (XMLParser) xmlParserField.get(parser);
+            ContentParser xmlParser = (ContentParser) xmlParserField.get(parser);
             return xmlParser.getDTDParser();
         } catch (Exception e) {
             throw new RuntimeException("Cannot access DTDParser", e);

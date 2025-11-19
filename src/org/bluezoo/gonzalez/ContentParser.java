@@ -1,5 +1,5 @@
 /*
- * XMLParser.java
+ * ContentParser.java
  * Copyright (C) 2025 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -48,7 +48,7 @@ import org.xml.sax.ext.LexicalHandler;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-public class XMLParser implements TokenConsumer {
+public class ContentParser implements TokenConsumer {
 
     enum State {
         INIT,                       // Initial state, expecting prolog or root element
@@ -508,7 +508,7 @@ public class XMLParser implements TokenConsumer {
      * <ol>
      *   <li>Checks if external entities are enabled (general or parameter)</li>
      *   <li>Resolves the entity using EntityResolver/EntityResolver2</li>
-     *   <li>Creates a nested XMLTokenizer for the entity stream</li>
+     *   <li>Creates a nested Tokenizer for the entity stream</li>
      *   <li>Feeds the entity's InputStream to the tokenizer</li>
      *   <li>Returns control when entity is exhausted</li>
      * </ol>
@@ -583,21 +583,19 @@ public class XMLParser implements TokenConsumer {
         externalEntityDepth++;
         
         try {
-            // Create nested tokenizer for entity
-            XMLTokenizer entityTokenizer = new XMLTokenizer(
-                this,  // Send tokens back to this parser
+            // Create nested tokenizer and decoder for external entity
+            Tokenizer entityTokenizer = new Tokenizer(this);
+            ExternalEntityDecoder entityDecoder = new ExternalEntityDecoder(
+                entityTokenizer,
                 source.getPublicId(),
-                resolvedSystemId,
-                true  // This is an external entity
+                resolvedSystemId
             );
             
             // If we're currently parsing a DTD (dtdParser is active), configure the tokenizer
             // to start in DOCTYPE_INTERNAL context instead of CONTENT context.
             // This ensures DTD markup tokens are emitted correctly.
             if (dtdParser != null && dtdParser.getState() == DTDParser.State.IN_INTERNAL_SUBSET) {
-                entityTokenizer.setInitialContext(
-                    TokenizerState.DOCTYPE_INTERNAL,
-                    locator instanceof org.xml.sax.ext.Locator2 ? (org.xml.sax.ext.Locator2) locator : null);
+                entityTokenizer.setInitialContext(TokenizerState.DOCTYPE_INTERNAL);
             }
             
             // Get input stream from source
@@ -607,18 +605,18 @@ public class XMLParser implements TokenConsumer {
  throw fatalError("Entity InputSource must have a byte stream");
             }
             
-            // Feed entity data to tokenizer (same logic as Parser.parse())
+            // Feed entity data to decoder (same logic as Parser.parse())
             try {
                 byte[] buffer = new byte[4096];
                 int bytesRead;
                 
                 while ((bytesRead = inputStream.read(buffer)) != -1) {
                     ByteBuffer byteBuffer = ByteBuffer.wrap(buffer, 0, bytesRead);
-                    entityTokenizer.receive(byteBuffer);
+                    entityDecoder.receive(byteBuffer);
                 }
                 
                 // Signal end of entity
-                entityTokenizer.close();
+                entityDecoder.close();
                 
                 // If we were processing a DTD external subset, validate that all structures are closed
                 if (dtdParser != null) {
@@ -642,7 +640,7 @@ public class XMLParser implements TokenConsumer {
     /**
      * Resets the parser state to allow reuse for parsing another document.
      *
-     * <p>This method clears all parsing state, allowing the same XMLParser
+     * <p>This method clears all parsing state, allowing the same ContentParser
      * instance to be reused for multiple documents. Handler references
      * (ContentHandler, DTDHandler, etc.) are preserved.
      *
@@ -1487,10 +1485,38 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             return;
         }
         
-        // Internal entity - send expanded text to content handler
-        if (contentHandler != null && !expandedValue.isEmpty()) {
-            contentHandler.characters(expandedValue.toCharArray(), 0, expandedValue.length());
+        // Internal entity - re-tokenize the expanded value as content
+        // This ensures markup in the entity value (like <?xml...?>) is properly recognized
+        if (!expandedValue.isEmpty()) {
+            retokenizeInternalEntity(entityName, expandedValue, TokenizerState.CONTENT);
         }
+    }
+    
+    /**
+     * Re-tokenizes an internal entity's expanded value.
+     * This is necessary to properly handle markup in entity values.
+     * 
+     * @param entityName the entity name (for error reporting)
+     * @param expandedValue the fully expanded entity value
+     * @param initialState the tokenizer state to start in (CONTENT for content, etc.)
+     * @throws SAXException if re-tokenization fails
+     */
+    private void retokenizeInternalEntity(String entityName, String expandedValue, TokenizerState initialState) 
+            throws SAXException {
+        // Create tokenizer for the expanded value
+        Tokenizer entityTokenizer = new Tokenizer(this);
+        
+        // Set the locator to provide position information
+        entityTokenizer.setLocator(locator);
+        
+        // Set the initial context based on where the entity is being expanded
+        entityTokenizer.setInitialContext(initialState);
+        
+        // Feed the expanded value through the tokenizer as characters
+        // (entity values are already decoded strings, no need for byte encoding)
+        java.nio.CharBuffer buffer = java.nio.CharBuffer.wrap(expandedValue);
+        entityTokenizer.receive(buffer);
+        entityTokenizer.close();
     }
     
     /**
@@ -1771,7 +1797,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      * 
      * <p>Normalization process:
      * <ol>
-     * <li>Line breaks have already been normalized to #xA (handled by XMLTokenizer)</li>
+     * <li>Line breaks have already been normalized to #xA (handled by Tokenizer)</li>
      * <li>Replace whitespace characters (#x20, #xA, #x9) with single space (#x20)</li>
      * <li>Entity and character references have already been expanded (handled during accumulation)</li>
      * <li>If attribute type is not CDATA: trim leading/trailing spaces and collapse space sequences</li>

@@ -1,4 +1,4 @@
-import org.bluezoo.gonzalez.XMLTokenizer;
+import org.bluezoo.gonzalez.Tokenizer;
 import org.bluezoo.gonzalez.Token;
 import org.bluezoo.gonzalez.TokenConsumer;
 import org.xml.sax.*;
@@ -39,7 +39,7 @@ public class EntityRefTokenTest {
         String xml = "<root attr='value &myent; more'>&another;</root>";
         
         MockTokenConsumer mock = new MockTokenConsumer();
-        XMLTokenizer tokenizer = new XMLTokenizer(mock);
+        Tokenizer tokenizer = new Tokenizer(mock);
         
         ByteBuffer buf = ByteBuffer.wrap(xml.getBytes("UTF-8"));
         tokenizer.receive(buf);
@@ -75,7 +75,7 @@ public class EntityRefTokenTest {
                      "<root/>";
         
         MockTokenConsumer mock = new MockTokenConsumer();
-        XMLTokenizer tokenizer = new XMLTokenizer(mock);
+        Tokenizer tokenizer = new Tokenizer(mock);
         
         try {
             ByteBuffer buf = ByteBuffer.wrap(xml.getBytes("UTF-8"));
@@ -119,7 +119,7 @@ public class EntityRefTokenTest {
         String xml = "<root>&#65; &#x42; &#x1F600;</root>";
         
         MockTokenConsumer mock = new MockTokenConsumer();
-        XMLTokenizer tokenizer = new XMLTokenizer(mock);
+        Tokenizer tokenizer = new Tokenizer(mock);
         
         ByteBuffer buf = ByteBuffer.wrap(xml.getBytes("UTF-8"));
         tokenizer.receive(buf);
@@ -157,7 +157,7 @@ public class EntityRefTokenTest {
         String xml = "<root>&amp; &lt; &gt; &apos; &quot;</root>";
         
         MockTokenConsumer mock = new MockTokenConsumer();
-        XMLTokenizer tokenizer = new XMLTokenizer(mock);
+        Tokenizer tokenizer = new Tokenizer(mock);
         
         ByteBuffer buf = ByteBuffer.wrap(xml.getBytes("UTF-8"));
         tokenizer.receive(buf);

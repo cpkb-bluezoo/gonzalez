@@ -4,7 +4,7 @@ import org.xml.sax.helpers.*;
 import java.io.*;
 
 /**
- * Tests namespace processing in the XMLParser.
+ * Tests namespace processing in the ContentParser.
  */
 public class NamespaceTest {
     
