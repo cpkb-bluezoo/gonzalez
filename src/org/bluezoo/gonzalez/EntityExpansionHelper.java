@@ -175,9 +175,12 @@ public class EntityExpansionHelper {
                     locator);
         }
         
-        // Expand internal entity
+        // Add entity to visited set before creating child helper
+        // This ensures the child inherits knowledge that we're expanding this entity
+        visitedEntityNames.add(entityName);
+        
+        // Expand internal entity with child helper that inherits visited set
         EntityExpansionHelper childHelper = new EntityExpansionHelper(this);
-        childHelper.visitedEntityNames.add(entityName);
         return childHelper.expandEntityValue(entity.replacementText, context);
     }
     
@@ -246,9 +249,12 @@ public class EntityExpansionHelper {
                 locator);
         }
         
-        // Expand internal entity
+        // Add entity to visited set before creating child helper
+        // This ensures the child inherits knowledge that we're expanding this entity
+        visitedEntityNames.add(paramEntityKey);
+        
+        // Expand internal entity with child helper that inherits visited set
         EntityExpansionHelper childHelper = new EntityExpansionHelper(this);
-        childHelper.visitedEntityNames.add(paramEntityKey);
         // When expanding a parameter entity's value, we're still in ENTITY_VALUE context
         return childHelper.expandEntityValue(entity.replacementText, EntityExpansionContext.ENTITY_VALUE);
     }

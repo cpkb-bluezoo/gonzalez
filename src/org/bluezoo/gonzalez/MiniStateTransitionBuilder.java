@@ -982,9 +982,10 @@ class MiniStateTransitionBuilder {
                     .emit(Token.QUOT)
                     .changeState(TokenizerState.DOCTYPE_INTERNAL)
                     .to(MiniState.READY).done()
+                .on(CharClass.AMP).to(MiniState.SEEN_AMP).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
-                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.APOS,
+                       CharClass.LT, CharClass.GT, CharClass.APOS,
                        CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
                        CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
@@ -1010,6 +1011,43 @@ class MiniStateTransitionBuilder {
                        CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
+        // Entity references in DOCTYPE_INTERNAL_QUOTED_QUOT (same pattern as ATTR_VALUE_QUOT)
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.SEEN_AMP)
+                .on(CharClass.HASH).to(MiniState.SEEN_AMP_HASH).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_ENTITY_NAME).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.SEEN_AMP_HASH)
+                .on(CharClass.DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_DEC).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_AMP_HASH_X).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.SEEN_AMP_HASH_X)
+                .on(CharClass.HEX_DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_HEX).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.ACCUMULATING_ENTITY_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_ENTITY_NAME).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.GENERALENTITYREF)
+                    .to(MiniState.READY).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.ACCUMULATING_CHAR_REF_DEC)
+                .on(CharClass.DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_DEC).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.CDATA)
+                    .to(MiniState.READY).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+            .miniState(MiniState.ACCUMULATING_CHAR_REF_HEX)
+                .on(CharClass.HEX_DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_HEX).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.CDATA)
+                    .to(MiniState.READY).done();
+        
         // ===== TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS Transitions =====
         // (Quoted strings in DOCTYPE_INTERNAL - entity replacement text)
         
@@ -1020,9 +1058,10 @@ class MiniStateTransitionBuilder {
                     .emit(Token.APOS)
                     .changeState(TokenizerState.DOCTYPE_INTERNAL)
                     .to(MiniState.READY).done()
+                .on(CharClass.AMP).to(MiniState.SEEN_AMP).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
-                       CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.QUOT,
+                       CharClass.LT, CharClass.GT, CharClass.QUOT,
                        CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
                        CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
@@ -1047,6 +1086,43 @@ class MiniStateTransitionBuilder {
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
                        CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
+        
+        // Entity references in DOCTYPE_INTERNAL_QUOTED_APOS (same pattern as ATTR_VALUE_APOS)
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.SEEN_AMP)
+                .on(CharClass.HASH).to(MiniState.SEEN_AMP_HASH).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_ENTITY_NAME).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.SEEN_AMP_HASH)
+                .on(CharClass.DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_DEC).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_AMP_HASH_X).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.SEEN_AMP_HASH_X)
+                .on(CharClass.HEX_DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_HEX).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.ACCUMULATING_ENTITY_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_ENTITY_NAME).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.GENERALENTITYREF)
+                    .to(MiniState.READY).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.ACCUMULATING_CHAR_REF_DEC)
+                .on(CharClass.DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_DEC).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.CDATA)
+                    .to(MiniState.READY).done();
+        
+        builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+            .miniState(MiniState.ACCUMULATING_CHAR_REF_HEX)
+                .on(CharClass.HEX_DIGIT).to(MiniState.ACCUMULATING_CHAR_REF_HEX).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.CDATA)
+                    .to(MiniState.READY).done();
         
         // ===== TokenizerState.DOCTYPE_INTERNAL Transitions =====
         // (Inside DOCTYPE internal subset: [ ... ])
