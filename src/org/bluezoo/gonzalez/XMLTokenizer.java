@@ -795,6 +795,20 @@ public class XMLTokenizer implements Locator2 {
     }
     
     /**
+     * Checks if a code point is a legal XML character.
+     * XML 1.0: Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+     * 
+     * @param codePoint the Unicode code point to check
+     * @return true if the code point is legal in XML 1.0
+     */
+    private boolean isLegalXMLChar(int codePoint) {
+        return (codePoint == 0x9 || codePoint == 0xA || codePoint == 0xD ||
+                (codePoint >= 0x20 && codePoint <= 0xD7FF) ||
+                (codePoint >= 0xE000 && codePoint <= 0xFFFD) ||
+                (codePoint >= 0x10000 && codePoint <= 0x10FFFF));
+    }
+    
+    /**
      * Emits an ENTITYREF token for a character reference (&#ddd; or &#xhhh;).
      * Resolves the code point and emits 1 or 2 characters (for supplementary code points).
      * 
@@ -826,6 +840,12 @@ public class XMLTokenizer implements Locator2 {
                 else throw fatalError("Invalid decimal character reference");
                 codePoint = codePoint * 10 + digit;
             }
+        }
+        
+        // Validate the code point is a legal XML character
+        // XML 1.0: Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+        if (!isLegalXMLChar(codePoint)) {
+            throw fatalError(String.format("Character reference &#x%X; refers to an illegal XML character", codePoint));
         }
         
         // Validate the character is legal in the current context

@@ -332,6 +332,7 @@ enum CharClass {
     
     /**
      * Checks if a character is an XML NameStartChar.
+     * Excludes CombiningChar ranges which are only valid in NameChar.
      */
     private static boolean isNameStartChar(char c) {
         if (c == ':' || c == '_' ||
@@ -350,7 +351,8 @@ enum CharClass {
                (c >= 0x200C && c <= 0x200D) ||
                (c >= 0x2070 && c <= 0x218F) ||
                (c >= 0x2C00 && c <= 0x2FEF) ||
-               (c >= 0x3001 && c <= 0xD7FF) ||
+               (c >= 0x3001 && c <= 0x3098) ||  // Exclude 0x3099-0x309A (CombiningChar)
+               (c >= 0x309B && c <= 0xD7FF) ||
                (c >= 0xF900 && c <= 0xFDCF) ||
                (c >= 0xFDF0 && c <= 0xFFFD);
     }
