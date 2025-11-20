@@ -1078,7 +1078,9 @@ public class Tokenizer {
                 case DOCTYPE_QUOTED_QUOT:
                 case DOCTYPE_INTERNAL_QUOTED_APOS:
                 case DOCTYPE_INTERNAL_QUOTED_QUOT:
-                    return cc == CharClass.LT || cc == CharClass.AMP || cc == CharClass.PERCENT ||
+                    // Stop on quotes (delimit the literal), AMP (entity ref), LT (illegal)
+                    // Note: PERCENT is NOT a stop character - it's literal data in quoted PUBLIC/SYSTEM IDs
+                    return cc == CharClass.LT || cc == CharClass.AMP ||
                            cc == CharClass.APOS || cc == CharClass.QUOT;
                 case COMMENT:
                     return cc == CharClass.DASH;

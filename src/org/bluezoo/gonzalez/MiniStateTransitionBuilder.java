@@ -1026,7 +1026,6 @@ class MiniStateTransitionBuilder {
                     .changeState(TokenizerState.DOCTYPE_INTERNAL)
                     .to(MiniState.READY).done()
                 .on(CharClass.AMP).to(MiniState.SEEN_AMP).done()
-                .on(CharClass.PERCENT).to(MiniState.SEEN_PERCENT).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
                        CharClass.LT, CharClass.GT, CharClass.APOS,
@@ -1034,7 +1033,7 @@ class MiniStateTransitionBuilder {
                        CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
-                       CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // DOCTYPE_INTERNAL_QUOTED_QUOT:ACCUMULATING_CDATA - Greedy CDATA accumulation
@@ -1116,7 +1115,6 @@ class MiniStateTransitionBuilder {
                     .changeState(TokenizerState.DOCTYPE_INTERNAL)
                     .to(MiniState.READY).done()
                 .on(CharClass.AMP).to(MiniState.SEEN_AMP).done()
-                .on(CharClass.PERCENT).to(MiniState.SEEN_PERCENT).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
                        CharClass.LT, CharClass.GT, CharClass.QUOT,
@@ -1124,7 +1122,7 @@ class MiniStateTransitionBuilder {
                        CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
-                       CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // DOCTYPE_INTERNAL_QUOTED_APOS:ACCUMULATING_CDATA - Greedy CDATA accumulation

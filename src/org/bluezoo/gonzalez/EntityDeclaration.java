@@ -59,6 +59,13 @@ public class EntityDeclaration {
      */
     public List<Object> replacementText;
     
+    /**
+     * True if the entity value contains character references (e.g., &#60; or &lt;).
+     * When true, markup delimiters in the expanded text came from character references
+     * and should be treated as literal data, not as markup (XML 1.0 § 4.4.8 bypass rule).
+     */
+    public boolean containsCharacterReferences = false;
+    
     /** External ID for external entities (null for internal) */
     public ExternalID externalID;
     

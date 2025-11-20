@@ -173,6 +173,7 @@ public class DTDParser implements TokenConsumer {
     private boolean sawWhitespaceAfterEntityPublicId; // Track whitespace requirement in entity decls
     private boolean sawWhitespaceAfterSystemId; // Track whitespace before NDATA
     private boolean sawWhitespaceAfterEntityKeyword;  // Track whitespace after <!ENTITY keyword
+    private boolean sawClosingQuoteOfPublicId; // Track if we've seen the closing quote of public ID
     private EntityDeclaration currentEntity;
     private List<Object> entityValueBuilder;  // Accumulates String and GeneralEntityReference
     private StringBuilder entityValueTextBuilder;  // Accumulates current text segment
@@ -2226,6 +2227,7 @@ public class DTDParser implements TokenConsumer {
                         // External entity with public ID
                         currentEntity.externalID = new ExternalID();
                         sawWhitespaceAfterEntityPublicId = false; // Reset for new external ID
+                        sawClosingQuoteOfPublicId = false; // Reset for new public ID
                         entityDeclState = EntityDeclState.EXPECT_PUBLIC_ID;
                         break;
                     default:
@@ -2243,6 +2245,9 @@ public class DTDParser implements TokenConsumer {
                         break;
                     case ENTITYREF:
                         // Predefined entity or character reference (already expanded)
+                        // Mark that this entity contains character/predefined references
+                        // Per XML 1.0 § 4.4.8, markup delimiters from references are bypassed
+                        currentEntity.containsCharacterReferences = true;
                         entityValueTextBuilder.append(extractString(data));
                         break;
                     case GENERALENTITYREF:
@@ -2376,23 +2381,27 @@ public class DTDParser implements TokenConsumer {
                 break;
                 
             case AFTER_PUBLIC_ID:
-                // After public ID, expecting system ID
+                // After public ID, expecting closing quote, then system ID
                 switch (token) {
                     case S:
-                        // Whitespace after public ID - required before system ID
+                        // Whitespace after public ID - required before system ID (after closing quote)
                         sawWhitespaceAfterEntityPublicId = true;
                         break;
                     case QUOT:
                     case APOS:
-                        // Quote - must have whitespace first
-                        if (!sawWhitespaceAfterEntityPublicId) {
-                            throw new SAXParseException("Expected whitespace between public ID and system ID in <!ENTITY", locator);
+                        if (!sawClosingQuoteOfPublicId) {
+                            // First quote is the closing quote of public ID - just skip it
+                            sawClosingQuoteOfPublicId = true;
+                        } else {
+                            // Second quote is opening quote of system ID - must have whitespace first
+                            if (!sawWhitespaceAfterEntityPublicId) {
+                                throw new SAXParseException("Expected whitespace between public ID and system ID in <!ENTITY", locator);
+                            }
                         }
-                        // Opening quote for system ID - skip
                         break;
                     case CDATA:
                     case NAME:
-                        // System ID following public ID - must have whitespace first
+                        // System ID following public ID - must have whitespace first (after closing quote)
                         if (!sawWhitespaceAfterEntityPublicId) {
                             throw new SAXParseException("Expected whitespace between public ID and system ID in <!ENTITY", locator);
                         }
