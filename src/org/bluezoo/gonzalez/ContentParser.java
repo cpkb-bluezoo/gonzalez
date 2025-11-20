@@ -1445,7 +1445,25 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      */
     private String expandGeneralEntityInAttributeValue(String entityName) throws SAXException {
         EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
-        return helper.expandGeneralEntity(entityName, EntityExpansionContext.ATTRIBUTE_VALUE);
+        String expandedValue = helper.expandGeneralEntity(entityName, EntityExpansionContext.ATTRIBUTE_VALUE);
+        
+        // WFC: No < in Attribute Values
+        // WFC: No External Entity References (handled by EntityExpansionHelper)
+        // Additionally, validate that the expanded text doesn't contain unescaped & or <
+        // This catches cases where character references like &#38; expand to literal & or <
+        if (expandedValue != null) {
+            for (int i = 0; i < expandedValue.length(); i++) {
+                char c = expandedValue.charAt(i);
+                if (c == '<') {
+                    throw fatalError("Entity '&" + entityName + ";' expands to text containing '<', which is forbidden in attribute values (WFC: No < in Attribute Values)");
+                }
+                if (c == '&') {
+                    throw fatalError("Entity '&" + entityName + ";' expands to text containing unescaped '&', which is forbidden in attribute values");
+                }
+            }
+        }
+        
+        return expandedValue;
     }
     
     /**
@@ -1476,7 +1494,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                         entity.externalID.systemId
                     );
                 } catch (IOException e) {
- throw fatalError(
+                    throw fatalError(
                         "Failed to resolve external entity '&" + entityName + ";': " + e.getMessage(),
                         e
                     );

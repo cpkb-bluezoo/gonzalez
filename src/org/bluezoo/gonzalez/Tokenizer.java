@@ -336,6 +336,19 @@ public class Tokenizer {
             int tokenLength = charBuffer.position() - tokenStartPos;
             emitTokenWindow(miniState.getTokenType(), tokenStartPos, tokenLength);
         }
+        
+        // Check for underflow - incomplete tokens waiting for more input
+        if (charUnderflow != null && charUnderflow.hasRemaining()) {
+            // There's unprocessed data in underflow - this means we have an incomplete token
+            throw fatalError("Incomplete token at end of input (underflow has " + charUnderflow.remaining() + " chars)");
+        }
+        
+        // Validate that we're in a valid end state
+        // If we're in the middle of parsing something (like an entity reference after '&'),
+        // that's a well-formedness error
+        if (miniState != MiniState.READY) {
+            throw fatalError("Incomplete token at end of input: " + miniState);
+        }
     }
     
     /**
@@ -1001,15 +1014,18 @@ public class Tokenizer {
         // Update charBuffer position to reflect how much we consumed
         charBuffer.position(pos);
         
-        // Buffer exhausted - flush greedy tokens
+        // Buffer exhausted - flush greedy tokens or handle incomplete tokens
         if (miniState.isGreedyAccumulation()) {
             int tokenLength = pos - tokenStartPos;
             if (tokenLength > 0) {
                 emitTokenWindow(miniState.getTokenType(), tokenStartPos, tokenLength);            }
             miniState = MiniState.READY;
-        } else {
-            // For non-greedy states, reset miniState for next receive()
-            // The unconsumed characters will be in underflow and reprocessed
+        } else if (miniState != MiniState.READY) {
+            // We're in a non-greedy, non-READY state (e.g., SEEN_AMP waiting for entity name)
+            // This means we have an incomplete token. Rewind the buffer to save it for next receive()
+            charBuffer.position(tokenStartPos);
+            // Reset miniState to READY so the incomplete token will be reprocessed from scratch
+            // when more data arrives (from underflow)
             miniState = MiniState.READY;
         }
     }
