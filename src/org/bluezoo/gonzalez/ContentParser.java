@@ -597,7 +597,8 @@ public class ContentParser implements TokenConsumer {
             ExternalEntityDecoder entityDecoder = new ExternalEntityDecoder(
                 entityTokenizer,
                 source.getPublicId(),
-                resolvedSystemId
+                resolvedSystemId,
+                true // External entity
             );
             
             // Get input stream from source
@@ -1299,6 +1300,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      * Handles PI content.
      */
     private void handlePIContent(Token token, CharBuffer data) throws SAXException {
+        System.err.println("DEBUG: handlePIContent received token=" + token + " data=" + (data != null ? extractString(data) : "null"));
         switch (token) {
             case S:
             case CDATA:

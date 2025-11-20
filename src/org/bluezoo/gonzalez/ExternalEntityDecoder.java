@@ -71,6 +71,13 @@ public class ExternalEntityDecoder implements Locator2 {
      */
     private final Tokenizer tokenizer;
     
+    /**
+     * Whether this decoder is for an external entity (vs. the document entity).
+     * External entities have text declarations (no standalone attribute allowed),
+     * while the document entity has an XML declaration (standalone attribute allowed).
+     */
+    private final boolean isExternalEntity;
+    
     // ===== Buffers =====
     
     /**
@@ -132,6 +139,17 @@ public class ExternalEntityDecoder implements Locator2 {
      */
     private ByteBuffer currentByteBuffer = null;
     
+    // ===== Accessors =====
+    
+    /**
+     * Returns whether this decoder is for an external parsed entity.
+     * 
+     * @return true if this is an external entity, false if it's the document entity
+     */
+    public boolean isExternalEntity() {
+        return isExternalEntity;
+    }
+    
     // ===== Constructor =====
     
     /**
@@ -140,11 +158,13 @@ public class ExternalEntityDecoder implements Locator2 {
      * @param tokenizer the tokenizer to receive decoded characters
      * @param publicId public identifier for this entity (may be null)
      * @param systemId system identifier for this entity (may be null)
+     * @param isExternalEntity true if this is an external parsed entity, false for document entity
      */
-    public ExternalEntityDecoder(Tokenizer tokenizer, String publicId, String systemId) {
+    public ExternalEntityDecoder(Tokenizer tokenizer, String publicId, String systemId, boolean isExternalEntity) {
         this.tokenizer = tokenizer;
         this.publicId = publicId;
         this.systemId = systemId;
+        this.isExternalEntity = isExternalEntity;
         // Wire the tokenizer to this decoder so it can call setCharset when XML decl is parsed
         this.tokenizer.setExternalEntityDecoder(this);
     }

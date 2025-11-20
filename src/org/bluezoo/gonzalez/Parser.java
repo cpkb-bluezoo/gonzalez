@@ -125,7 +125,7 @@ public class Parser implements XMLReader {
     public Parser() {
         this.xmlParser = new ContentParser();
         this.tokenizer = new Tokenizer(xmlParser);
-        this.decoder = new ExternalEntityDecoder(tokenizer, null, null);
+        this.decoder = new ExternalEntityDecoder(tokenizer, null, null, false); // Document entity
     }
 
     // ========================================================================

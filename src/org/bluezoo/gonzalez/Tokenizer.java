@@ -1284,7 +1284,7 @@ public class Tokenizer {
             xmlDeclSeenAttributes |= 2;
         } else if ("standalone".equals(name)) {
             // Text declarations (in external entities) MUST NOT have standalone attribute
-            if (externalEntityDecoder != null) {
+            if (externalEntityDecoder != null && externalEntityDecoder.isExternalEntity()) {
                 throw fatalError(
                     "Text declaration in external entity must not have 'standalone' attribute");
             }

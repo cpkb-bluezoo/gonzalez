@@ -252,10 +252,9 @@ enum CharClass {
             
             // Context-specific adjustments
             if (base == COLON) {
-                // ':' is only special in element/attribute name contexts
-                if (state != TokenizerState.ELEMENT_NAME && state != TokenizerState.ELEMENT_ATTRS) {
-                    return CHAR_DATA;
-                }
+                // Per XML 1.0 § 2.3, ':' is a NameStartChar
+                // It's used for namespaces but is valid in any name context
+                return NAME_START_CHAR;
             }
             
             return base;
