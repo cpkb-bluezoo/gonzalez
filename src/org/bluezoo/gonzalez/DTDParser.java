@@ -2488,13 +2488,21 @@ public class DTDParser implements TokenConsumer {
                 if (parameterEntities == null) {
                     parameterEntities = new HashMap<>();
                 }
-                parameterEntities.put(currentEntity.name.intern(), currentEntity);
+                // Per XML 1.0 § 4.2: first declaration is binding
+                String internedName = currentEntity.name.intern();
+                if (!parameterEntities.containsKey(internedName)) {
+                    parameterEntities.put(internedName, currentEntity);
+                }
             } else {
                 // General entity
                 if (entities == null) {
                     entities = new HashMap<>();
                 }
-                entities.put(currentEntity.name.intern(), currentEntity);
+                // Per XML 1.0 § 4.2: first declaration is binding
+                String internedName = currentEntity.name.intern();
+                if (!entities.containsKey(internedName)) {
+                    entities.put(internedName, currentEntity);
+                }
                 
                 // Report unparsed entity to DTDHandler if applicable
                 if (currentEntity.isUnparsed() && dtdHandler != null) {

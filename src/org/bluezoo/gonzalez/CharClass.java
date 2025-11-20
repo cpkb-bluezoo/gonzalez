@@ -244,22 +244,32 @@ enum CharClass {
             CharClass base = ASCII_LOOKUP[c];
             
             // Handle hex digits (A-F, a-f) in character reference context
-            if (base == NAME_START_CHAR && miniState == MiniState.ACCUMULATING_CHAR_REF_HEX) {
+            // Both SEEN_AMP_HASH_X (right after &#x) and ACCUMULATING_CHAR_REF_HEX (accumulating digits)
+            if (base == NAME_START_CHAR && 
+                (miniState == MiniState.ACCUMULATING_CHAR_REF_HEX || miniState == MiniState.SEEN_AMP_HASH_X)) {
                 if ((c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')) {
                     return HEX_DIGIT;
                 }
             }
             
+            // Digits (0-9) are also hex digits in hex character reference context
+            if (base == DIGIT && 
+                (miniState == MiniState.ACCUMULATING_CHAR_REF_HEX || miniState == MiniState.SEEN_AMP_HASH_X)) {
+                return HEX_DIGIT;
+            }
+            
             // Context-specific adjustments for special letter recognition
             // Used for detecting <?xml vs <?pi at document start
+            // Note: XML declarations MUST use lowercase "xml" per XML 1.0 § 2.8
+            // Case variants like <?XML or <?Xml are PIs with reserved targets (rejected later)
             if (base == NAME_START_CHAR && state == TokenizerState.BOM_READ) {
-                if (miniState == MiniState.SEEN_LT_QUERY && (c == 'x' || c == 'X')) {
+                if (miniState == MiniState.SEEN_LT_QUERY && c == 'x') {
                     return LETTER_X;
                 }
-                if (miniState == MiniState.SEEN_LT_QUERY_X && (c == 'm' || c == 'M')) {
+                if (miniState == MiniState.SEEN_LT_QUERY_X && c == 'm') {
                     return LETTER_M;
                 }
-                if (miniState == MiniState.SEEN_LT_QUERY_XM && (c == 'l' || c == 'L')) {
+                if (miniState == MiniState.SEEN_LT_QUERY_XM && c == 'l') {
                     return LETTER_L;
                 }
             }
@@ -335,10 +345,16 @@ enum CharClass {
     /**
      * Checks if a character is a legal XML character.
      * Legal chars: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+     * 
+     * Note: Characters in the range #x10000-#x10FFFF are represented as UTF-16 surrogate pairs.
+     * We accept surrogates (0xD800-0xDFFF) here because they're part of valid surrogate pairs.
+     * The actual character validation (ensuring proper pairing) is done elsewhere.
      */
     private static boolean isLegalXMLChar(char c) {
         return (c == 0x9 || c == 0xA || c == 0xD ||
                 (c >= 0x20 && c <= 0xD7FF) ||
+                (c >= 0xDC00 && c <= 0xDFFF) || // Low surrogates
+                (c >= 0xD800 && c <= 0xDBFF) || // High surrogates
                 (c >= 0xE000 && c <= 0xFFFD));
     }
     

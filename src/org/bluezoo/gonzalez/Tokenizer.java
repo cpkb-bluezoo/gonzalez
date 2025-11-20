@@ -871,6 +871,28 @@ public class Tokenizer {
                 }
             }
             
+            // Special validation: <?xm followed by non-'l' NAME_START_CHAR
+            // This catches cases like <?XML, <?xmL, <?xmFoo where the PI target will start with "xm"
+            // Check if it would form a case variant of "xml" (reserved PI target)
+            if (state == TokenizerState.BOM_READ) {
+                // After <?xm, if we see NAME_START_CHAR that's not 'l', check if it's 'L'
+                if (miniState == MiniState.SEEN_LT_QUERY_XM && cc == CharClass.NAME_START_CHAR) {
+                    if (c == 'L') {
+                        // This forms "xmL" which matches [Xx][Mm][Ll] - reserved PI target
+                        throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
+                    }
+                }
+                // After <?x, if we see NAME_START_CHAR that's not 'm', check if it forms reserved pattern
+                if (miniState == MiniState.SEEN_LT_QUERY_X && cc == CharClass.NAME_START_CHAR) {
+                    if (c == 'M') {
+                        // Could be <?xM followed by l/L - need to check next char
+                        // For now, we'll let it proceed and catch at SEEN_LT_QUERY_XM
+                    } else {
+                        // Not forming "xml" pattern, safe to continue as PI
+                    }
+                }
+            }
+            
             // Handle sequence consumption or position advancement
             int posAfterChar = pos + 1;  // Position after consuming this character
             if (transition.sequenceToConsume != null) {
