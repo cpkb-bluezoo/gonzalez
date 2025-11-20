@@ -75,6 +75,10 @@ public class ContentParser implements TokenConsumer {
     
     // Current tokenizer state (updated via tokenizerState callback)
     private TokenizerState currentTokenizerState = TokenizerState.CONTENT;
+    
+    // Entity expansion depth - tracks how deeply nested we are in entity expansions
+    // Used to enforce WFC: Parsed Entity (element nesting must respect entity boundaries)
+    private int entityExpansionDepth = 0;
 
     // Feature flags (set from Parser)
     private boolean namespacesEnabled = true;              // SAX2 default
@@ -850,7 +854,7 @@ public class ContentParser implements TokenConsumer {
             // Push element onto stack for well-formedness and validation
             // (validator will be null if validation is disabled)
             if (elementStack != null) {
-                elementStack.addLast(new ElementValidationContext(currentElementName, null));
+                elementStack.addLast(new ElementValidationContext(currentElementName, null, entityExpansionDepth));
             }
 
             // Record this element as a child of its parent (for validation)
@@ -1497,23 +1501,49 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      * Uses the current tokenizer state to ensure the entity is expanded in the
      * correct context (e.g., CONTENT vs DOCTYPE_INTERNAL).
      * 
+     * Enforces WFC: Parsed Entity - the entity replacement text must not cause
+     * unbalanced elements (element start/end tags must match within the entity).
+     * 
      * @param entityName the entity name (for error reporting)
      * @param expandedValue the fully expanded entity value
-     * @throws SAXException if re-tokenization fails
+     * @throws SAXException if re-tokenization fails or entity causes unbalanced markup
      */
     private void retokenizeInternalEntity(String entityName, String expandedValue) 
             throws SAXException {
-        // Create tokenizer for the expanded value with the current tokenizer state
-        Tokenizer entityTokenizer = new Tokenizer(this, currentTokenizerState);
+        // Increment entity expansion depth
+        // This marks any elements opened during expansion so we can verify they're closed
+        entityExpansionDepth++;
         
-        // Set the locator to provide position information
-        entityTokenizer.setLocator(locator);
-        
-        // Feed the expanded value through the tokenizer as characters
-        // (entity values are already decoded strings, no need for byte encoding)
-        java.nio.CharBuffer buffer = java.nio.CharBuffer.wrap(expandedValue);
-        entityTokenizer.receive(buffer);
-        entityTokenizer.close();
+        try {
+            // Create tokenizer for the expanded value with the current tokenizer state
+            Tokenizer entityTokenizer = new Tokenizer(this, currentTokenizerState);
+            
+            // Set the locator to provide position information
+            entityTokenizer.setLocator(locator);
+            
+            // Feed the expanded value through the tokenizer as characters
+            // (entity values are already decoded strings, no need for byte encoding)
+            java.nio.CharBuffer buffer = java.nio.CharBuffer.wrap(expandedValue);
+            entityTokenizer.receive(buffer);
+            entityTokenizer.close();
+            
+            // Verify no elements opened at this depth remain on the stack
+            // This enforces WFC: Parsed Entity - elements opened within entity must be closed within entity
+            if (elementStack != null) {
+                for (ElementValidationContext ctx : elementStack) {
+                    if (ctx.entityExpansionDepth >= entityExpansionDepth) {
+                        throw fatalError(
+                            "Entity '&" + entityName + ";' creates unbalanced markup: " +
+                            "element '" + ctx.elementName + "' opened within entity but not closed " +
+                            "(WFC: Parsed Entity)"
+                        );
+                    }
+                }
+            }
+        } finally {
+            // Always decrement depth, even if expansion failed
+            entityExpansionDepth--;
+        }
     }
     
     /**
@@ -1867,7 +1897,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         // Create validator and replace the context on the stack
         ContentModelValidator validator = new ContentModelValidator(elementDecl);
         elementStack.removeLast(); // Remove the context with null validator
-        elementStack.addLast(new ElementValidationContext(elementName, validator));
+        elementStack.addLast(new ElementValidationContext(elementName, validator, entityExpansionDepth));
     }
     
     /**

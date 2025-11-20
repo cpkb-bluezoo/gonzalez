@@ -35,14 +35,22 @@ class ElementValidationContext {
     final ContentModelValidator validator;
     
     /**
+     * The entity expansion depth at which this element was opened.
+     * Used to enforce WFC: Parsed Entity - elements opened within an entity must be closed within that entity.
+     */
+    final int entityExpansionDepth;
+    
+    /**
      * Creates a new element validation context.
      * 
      * @param elementName the element name
      * @param validator the content model validator (may be null)
+     * @param entityExpansionDepth the entity expansion depth when this element was opened
      */
-    ElementValidationContext(String elementName, ContentModelValidator validator) {
+    ElementValidationContext(String elementName, ContentModelValidator validator, int entityExpansionDepth) {
         this.elementName = elementName;
         this.validator = validator;
+        this.entityExpansionDepth = entityExpansionDepth;
     }
     
     @Override
