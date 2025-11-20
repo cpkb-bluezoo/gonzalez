@@ -801,13 +801,15 @@ class MiniStateTransitionBuilder {
                     .emit(Token.NAME)
                     .changeState(TokenizerState.PI_DATA)
                     .to(MiniState.READY).done()
-                .on(CharClass.QUERY).to(MiniState.SEEN_QUERY).done();
+                .on(CharClass.QUERY)
+                    .emit(Token.NAME)
+                    .to(MiniState.SEEN_QUERY).done();
         
-        // SEEN_QUERY - After '?' in PI (checking for end)
+        // SEEN_QUERY - After '?' in PI target (checking for end)
         builder.state(TokenizerState.PI_TARGET)
             .miniState(MiniState.SEEN_QUERY)
                 .on(CharClass.GT)
-                    .emit(Token.NAME)
+                    // NAME already emitted when we transitioned to SEEN_QUERY
                     .emit(Token.END_PI)
                     .changeState(TokenizerState.CONTENT)
                     .to(MiniState.READY).done();
@@ -828,13 +830,22 @@ class MiniStateTransitionBuilder {
                        CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
-        // SEEN_QUERY - After '?' in PI data
+        // Note: No explicit ACCUMULATING_CDATA transitions needed for PI_DATA
+        // Greedy accumulation automatically stops on '?' (per shouldStopAccumulating),
+        // emits accumulated CDATA, resets to READY, and reprocesses '?' from READY state
+        
+        // SEEN_QUERY - After '?' in PI data (checking for '>')
         builder.state(TokenizerState.PI_DATA)
             .miniState(MiniState.SEEN_QUERY)
                 .on(CharClass.GT)
+                    // Found '?>' - end of PI
                     .emit(Token.END_PI)
                     .changeState(TokenizerState.CONTENT)
                     .to(MiniState.READY).done()
+                .on(CharClass.QUERY)
+                    // Another '?' - stay in SEEN_QUERY, still looking for '>'
+                    // This handles sequences like '??' or '??>' correctly
+                    .to(MiniState.SEEN_QUERY).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
                        CharClass.LT, CharClass.AMP, CharClass.APOS,
@@ -842,7 +853,9 @@ class MiniStateTransitionBuilder {
                        CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.SLASH, CharClass.PERCENT,
-                       CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET, CharClass.QUERY)
+                       CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                    // Not '>' - this is regular data, go back to accumulating
+                    // The '?' will be included in the next accumulated CDATA chunk
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // ===== TokenizerState.DOCTYPE Transitions =====
@@ -1194,7 +1207,23 @@ class MiniStateTransitionBuilder {
                 .on(CharClass.CLOSE_BRACKET)
                     .emit(Token.CLOSE_BRACKET)
                     .changeState(TokenizerState.DOCTYPE)
-                    .to(MiniState.READY).done();
+                    .to(MiniState.READY).done()
+                .on(CharClass.OPEN_PAREN)
+                    .emit(Token.OPEN_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.CLOSE_PAREN)
+                    .emit(Token.CLOSE_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.PIPE)
+                    .emit(Token.PIPE)
+                    .to(MiniState.READY).done()
+                .on(CharClass.GT)
+                    .emit(Token.GT)
+                    .to(MiniState.READY).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_NAME).done()
+                .onAny(CharClass.DIGIT, CharClass.DASH, CharClass.COLON)
+                    // NMTOKEN can start with digit, dash, or colon (unlike NAME)
+                    .to(MiniState.ACCUMULATING_NAME).done();
         
         // DOCTYPE_INTERNAL:SEEN_LT - After '<'
         builder.state(TokenizerState.DOCTYPE_INTERNAL)
