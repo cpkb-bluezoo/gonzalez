@@ -2258,9 +2258,26 @@ public class DTDParser implements TokenConsumer {
                         // Parameter entity reference in entity value
                         // WFC: PEs in Internal Subset - parameter entity references are NOT allowed
                         // within markup declarations in the internal subset (including entity values)
-                        throw new SAXParseException(
-                            "Parameter entity references are not allowed within entity values " +
-                            "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                        // This restriction only applies to the internal subset, not external subset
+                        if (savedState == State.IN_INTERNAL_SUBSET) {
+                            throw new SAXParseException(
+                                "Parameter entity references are not allowed within entity values " +
+                                "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                        }
+                        
+                        // In external subset, parameter entities are allowed in entity values
+                        // Expand the parameter entity inline
+                        String paramEntityName = extractString(data);
+                        // XXX: For now, just store the reference - proper expansion would require
+                        // XXX: retokenizing the expanded value
+                        // XXX: This is a limitation that should be addressed when implementing
+                        // XXX: full parameter entity expansion in entity values
+                        if (entityValueTextBuilder.length() > 0) {
+                            entityValueBuilder.add(entityValueTextBuilder.toString());
+                            entityValueTextBuilder.setLength(0);
+                        }
+                        entityValueBuilder.add(new ParameterEntityReference(paramEntityName));
+                        break;
                         
                     case QUOT:
                     case APOS:
