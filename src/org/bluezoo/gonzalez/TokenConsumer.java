@@ -81,5 +81,17 @@ public interface TokenConsumer {
      */
     SAXException fatalError(String message) throws SAXException;
 
+    /**
+     * Notifies the consumer of the tokenizer's current top-level state.
+     * <p>
+     * This is called by the tokenizer whenever it transitions to a new top-level
+     * state. This allows consumers to track the tokenizer state for purposes such
+     * as creating nested tokenizers with the correct initial state when expanding
+     * internal entity references.
+     * 
+     * @param state the current tokenizer state
+     */
+    void tokenizerState(TokenizerState state);
+
 }
 

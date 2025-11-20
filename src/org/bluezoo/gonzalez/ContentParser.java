@@ -72,6 +72,9 @@ public class ContentParser implements TokenConsumer {
 
     private State state = State.INIT;
     private Locator locator;
+    
+    // Current tokenizer state (updated via tokenizerState callback)
+    private TokenizerState currentTokenizerState = TokenizerState.CONTENT;
 
     // Feature flags (set from Parser)
     private boolean namespacesEnabled = true;              // SAX2 default
@@ -584,19 +587,14 @@ public class ContentParser implements TokenConsumer {
         
         try {
             // Create nested tokenizer and decoder for external entity
-            Tokenizer entityTokenizer = new Tokenizer(this);
+            // Use the current tokenizer state to ensure proper context
+            // (e.g., DOCTYPE_INTERNAL if we're in DTD, CONTENT if we're in content)
+            Tokenizer entityTokenizer = new Tokenizer(this, currentTokenizerState);
             ExternalEntityDecoder entityDecoder = new ExternalEntityDecoder(
                 entityTokenizer,
                 source.getPublicId(),
                 resolvedSystemId
             );
-            
-            // If we're currently parsing a DTD (dtdParser is active), configure the tokenizer
-            // to start in DOCTYPE_INTERNAL context instead of CONTENT context.
-            // This ensures DTD markup tokens are emitted correctly.
-            if (dtdParser != null && dtdParser.getState() == DTDParser.State.IN_INTERNAL_SUBSET) {
-                entityTokenizer.setInitialContext(TokenizerState.DOCTYPE_INTERNAL);
-            }
             
             // Get input stream from source
             InputStream inputStream = source.getByteStream();
@@ -1485,32 +1483,31 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             return;
         }
         
-        // Internal entity - re-tokenize the expanded value as content
+        // Internal entity - re-tokenize the expanded value
         // This ensures markup in the entity value (like <?xml...?>) is properly recognized
+        // The tokenizer will start in the current tokenizer state (tracked via tokenizerState callback)
         if (!expandedValue.isEmpty()) {
-            retokenizeInternalEntity(entityName, expandedValue, TokenizerState.CONTENT);
+            retokenizeInternalEntity(entityName, expandedValue);
         }
     }
     
     /**
      * Re-tokenizes an internal entity's expanded value.
      * This is necessary to properly handle markup in entity values.
+     * Uses the current tokenizer state to ensure the entity is expanded in the
+     * correct context (e.g., CONTENT vs DOCTYPE_INTERNAL).
      * 
      * @param entityName the entity name (for error reporting)
      * @param expandedValue the fully expanded entity value
-     * @param initialState the tokenizer state to start in (CONTENT for content, etc.)
      * @throws SAXException if re-tokenization fails
      */
-    private void retokenizeInternalEntity(String entityName, String expandedValue, TokenizerState initialState) 
+    private void retokenizeInternalEntity(String entityName, String expandedValue) 
             throws SAXException {
-        // Create tokenizer for the expanded value
-        Tokenizer entityTokenizer = new Tokenizer(this);
+        // Create tokenizer for the expanded value with the current tokenizer state
+        Tokenizer entityTokenizer = new Tokenizer(this, currentTokenizerState);
         
         // Set the locator to provide position information
         entityTokenizer.setLocator(locator);
-        
-        // Set the initial context based on where the entity is being expanded
-        entityTokenizer.setInitialContext(initialState);
         
         // Feed the expanded value through the tokenizer as characters
         // (entity values are already decoded strings, no need for byte encoding)
@@ -1979,6 +1976,21 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             errorHandler.fatalError(exception);
         }
         return exception;
+    }
+    
+    @Override
+    public void tokenizerState(TokenizerState state) {
+        // Track the tokenizer's current state for entity expansion
+        this.currentTokenizerState = state;
+    }
+    
+    /**
+     * Called by DTDParser when DOCTYPE parsing is complete.
+     * Updates currentTokenizerState to CONTENT so that subsequent entity expansions
+     * use the correct context.
+     */
+    void dtdComplete() {
+        this.currentTokenizerState = TokenizerState.CONTENT;
     }
     
     /**

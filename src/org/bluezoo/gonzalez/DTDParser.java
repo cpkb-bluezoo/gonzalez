@@ -91,6 +91,9 @@ public class DTDParser implements TokenConsumer {
     }
     private State savedState = State.IN_INTERNAL_SUBSET; // For returning after declarations/comments/PIs
     
+    // Current tokenizer state (updated via tokenizerState callback)
+    private TokenizerState currentTokenizerState = TokenizerState.DOCTYPE_INTERNAL;
+    
     /**
      * Sub-states for parsing &lt;!ELEMENT declarations.
      * Tracks position within the element declaration to enforce well-formedness.
@@ -369,6 +372,12 @@ public class DTDParser implements TokenConsumer {
             errorHandler.fatalError(exception);
         }
         return exception;
+    }
+    
+    @Override
+    public void tokenizerState(TokenizerState state) {
+        // Track the tokenizer's current state for entity expansion
+        this.currentTokenizerState = state;
     }
 
     /**
@@ -2540,6 +2549,11 @@ public class DTDParser implements TokenConsumer {
      */
     private void changeState(State newState) {
         savedState = state = newState;
+        
+        // If DTD parsing is complete, notify ContentParser to switch to CONTENT state
+        if (newState == State.DONE && xmlParser != null) {
+            xmlParser.dtdComplete();
+        }
     }
 
     /**
@@ -2908,17 +2922,13 @@ public class DTDParser implements TokenConsumer {
         }
         
         // Create a tokenizer for the replacement text and feed tokens through DTD parser
-        // The tokenizer needs to be in DOCTYPE_INTERNAL context
+        // Use the current tokenizer state to ensure proper context
         try {
-            // Create a tokenizer in DOCTYPE_INTERNAL context
-            Tokenizer tokenizer = new Tokenizer(this);
+            // Create a tokenizer with the current tokenizer state
+            Tokenizer tokenizer = new Tokenizer(this, currentTokenizerState);
             
             // Set the locator for position information
             tokenizer.setLocator(locator);
-            
-            // Set the tokenizer to start in DOCTYPE_INTERNAL context
-            // This is critical so it emits the right tokens for DTD content
-            tokenizer.setInitialContext(TokenizerState.DOCTYPE_INTERNAL);
             
             // Feed the replacement text through the tokenizer as characters
             // (internal entity values are already decoded strings)

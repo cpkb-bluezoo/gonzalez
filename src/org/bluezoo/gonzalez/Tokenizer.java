@@ -186,6 +186,25 @@ public class Tokenizer {
         this.transitionTable = MiniStateTransitionBuilder.TRANSITION_TABLE;
         // Note: setLocator will be called by ExternalEntityDecoder or during initialization
     }
+    
+    /**
+     * Package-private constructor for creating tokenizers with a specific initial state.
+     * Used when expanding internal or external entity references to ensure the tokenizer starts
+     * in the correct context (e.g., CONTENT vs DOCTYPE_INTERNAL).
+     * 
+     * This constructor does NOT notify the consumer of the initial state because this is a
+     * nested tokenizer for entity expansion, not the main document tokenizer.
+     * 
+     * @param consumer the token consumer
+     * @param initialState the initial tokenizer state
+     */
+    Tokenizer(TokenConsumer consumer, TokenizerState initialState) {
+        this.consumer = consumer;
+        this.transitionTable = MiniStateTransitionBuilder.TRANSITION_TABLE;
+        this.state = initialState;
+        // Note: Do NOT call consumer.tokenizerState() - nested tokenizers don't update consumer state
+        // Note: setLocator will be called by the consumer or ExternalEntityDecoder
+    }
 
     // ===== Public API =====
     
@@ -225,6 +244,19 @@ public class Tokenizer {
     }
     
     /**
+     * Helper method to change state and notify the consumer.
+     * Used internally to ensure the consumer tracks the tokenizer state.
+     * 
+     * @param newState the new tokenizer state
+     */
+    private void changeState(TokenizerState newState) {
+        if (this.state != newState) {
+            this.state = newState;
+            consumer.tokenizerState(newState);
+        }
+    }
+    
+    /**
      * Receives and processes a buffer of characters (for internal entity expansion).
      * This method is used when the character data has already been decoded.
      * 
@@ -238,7 +270,7 @@ public class Tokenizer {
         
         // Initialize state on first receive
         if (state == TokenizerState.INIT) {
-            state = TokenizerState.BOM_READ;
+            changeState(TokenizerState.BOM_READ);
         }
         
         // For internal entity expansion, we skip BOM detection and decoding
@@ -951,7 +983,7 @@ public class Tokenizer {
                     }
                 }
                 
-                state = newState;
+                changeState(newState);
             }
             
             // Move to next mini-state
@@ -1051,8 +1083,9 @@ public class Tokenizer {
      * For NAME tokens in DOCTYPE_INTERNAL with ACCUMULATING_MARKUP_NAME, converts to markup declaration tokens.
      */
     private void emitTokenWindow(Token token, int start, int length) throws SAXException {
-        // Check if this is a NAME token in DOCTYPE that should be a keyword
-        if (token == Token.NAME && state == TokenizerState.DOCTYPE) {
+        // Check if this is a NAME token in DOCTYPE context that should be a keyword
+        // This applies to both DOCTYPE (<!DOCTYPE doc SYSTEM...>) and DOCTYPE_INTERNAL (inside [...])
+        if (token == Token.NAME && (state == TokenizerState.DOCTYPE || state == TokenizerState.DOCTYPE_INTERNAL)) {
             Token keywordToken = checkDOCTYPEKeyword(start, length);
             if (keywordToken != null) {
                 token = keywordToken;
