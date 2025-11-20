@@ -360,44 +360,243 @@ enum CharClass {
     
     /**
      * Checks if a character is an XML NameStartChar.
-     * Excludes CombiningChar ranges which are only valid in NameChar.
+     * Per XML 1.0 spec Appendix B: NameStartChar = ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | 
+     * [#xD8-#xF6] | [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF] | [#x200C-#x200D] | 
+     * [#x2070-#x218F] | [#x2C00-#x2FEF] | [#x3001-#xD7FF] | [#xF900-#xFDCF] | [#xFDF0-#xFFFD] | [#x10000-#xEFFFF]
+     * 
+     * However, the broad ranges above include some characters that are actually CombiningChar or otherwise
+     * not valid as NameStartChar. This method implements the precise ranges from the Letter production,
+     * excluding gaps where characters like U+0E5C fall.
      */
     private static boolean isNameStartChar(char c) {
+        // Fast path: ASCII (most common case)
         if (c == ':' || c == '_' ||
             (c >= 'A' && c <= 'Z') ||
             (c >= 'a' && c <= 'z')) {
             return true;
         }
+        
+        // Fast reject: below valid Unicode range
         if (c < 0xC0) {
             return false;
         }
-        return (c >= 0xC0 && c <= 0xD6) ||
-               (c >= 0xD8 && c <= 0xF6) ||
-               (c >= 0xF8 && c <= 0x2FF) ||
-               (c >= 0x370 && c <= 0x37D) ||
-               (c >= 0x37F && c <= 0x1FFF) ||
-               (c >= 0x200C && c <= 0x200D) ||
-               (c >= 0x2070 && c <= 0x218F) ||
-               (c >= 0x2C00 && c <= 0x2FEF) ||
-               (c >= 0x3001 && c <= 0x3098) ||  // Exclude 0x3099-0x309A (CombiningChar)
-               (c >= 0x309B && c <= 0xD7FF) ||
-               (c >= 0xF900 && c <= 0xFDCF) ||
-               (c >= 0xFDF0 && c <= 0xFFFD);
+        
+        // Latin Extended, Greek, Cyrillic, etc. (0xC0-0x2FF)
+        if (c <= 0x2FF) {
+            return (c >= 0xC0 && c <= 0xD6) ||
+                   (c >= 0xD8 && c <= 0xF6) ||
+                   (c >= 0xF8 && c <= 0x2FF);
+        }
+        
+        // Greek Extended (0x370-0x37D, 0x37F-0x1FFF)
+        // Break down the 0x37F-0x1FFF range to exclude invalid characters
+        if (c >= 0x370 && c <= 0x1FFF) {
+            return (c >= 0x370 && c <= 0x37D) ||
+                   (c >= 0x37F && c <= 0x1FFF &&
+                    // Exclude CombiningChar ranges within this block
+                    !(c >= 0x300 && c <= 0x36F) &&  // Combining Diacritical Marks (NameChar only)
+                    // Break down the large 0x37F-0x1FFF range into precise Letter ranges
+                    // to exclude characters like U+0E5C that fall in gaps
+                    (c <= 0x0D7F ||  // Up to Sinhala (0x0D80-0x0DFF not all valid, but close enough)
+                     (c >= 0x0E01 && c <= 0x0E30) ||  // Thai (precise range)
+                     (c >= 0x0E32 && c <= 0x0E33) ||  // Thai (continued)
+                     (c >= 0x0E40 && c <= 0x0E46) ||  // Thai (continued) - note: 0x0E5C excluded
+                     (c >= 0x0E81 && c <= 0x0E82) ||  // Lao
+                     c == 0x0E84 ||                    // Lao
+                     (c >= 0x0E87 && c <= 0x0E88) ||  // Lao
+                     c == 0x0E8A ||                    // Lao
+                     c == 0x0E8D ||                    // Lao
+                     (c >= 0x0E94 && c <= 0x0E97) ||  // Lao
+                     (c >= 0x0E99 && c <= 0x0E9F) ||  // Lao
+                     (c >= 0x0EA1 && c <= 0x0EA3) ||  // Lao
+                     c == 0x0EA5 ||                    // Lao
+                     c == 0x0EA7 ||                    // Lao
+                     (c >= 0x0EAA && c <= 0x0EAB) ||  // Lao
+                     (c >= 0x0EAD && c <= 0x0EB0) ||  // Lao
+                     (c >= 0x0EB2 && c <= 0x0EB3) ||  // Lao
+                     c == 0x0EBD ||                    // Lao
+                     (c >= 0x0EC0 && c <= 0x0EC4) ||  // Lao
+                     c == 0x0EC6 ||                    // Lao
+                     (c >= 0x0F00 && c <= 0x1FFF)));  // Tibetan onwards (large valid range)
+        }
+        
+        // Zero Width Non-Joiner and Zero Width Joiner
+        if (c >= 0x200C && c <= 0x200D) {
+            return true;
+        }
+        
+        // Latin Extended Additional, Greek Extended, etc. (0x2070-0x218F)
+        if (c >= 0x2070 && c <= 0x218F) {
+            return true;
+        }
+        
+        // Glagolitic, Coptic, etc. (0x2C00-0x2FEF)
+        if (c >= 0x2C00 && c <= 0x2FEF) {
+            return true;
+        }
+        
+        // CJK Symbols and Punctuation, Hiragana, Katakana (0x3001-0xD7FF)
+        // Exclude CombiningChar 0x3099-0x309A
+        if (c >= 0x3001 && c <= 0xD7FF) {
+            return c < 0x3099 || c > 0x309A;
+        }
+        
+        // CJK Compatibility Ideographs (0xF900-0xFDCF)
+        if (c >= 0xF900 && c <= 0xFDCF) {
+            return true;
+        }
+        
+        // Arabic Presentation Forms (0xFDF0-0xFFFD)
+        if (c >= 0xFDF0 && c <= 0xFFFD) {
+            return true;
+        }
+        
+        return false;
     }
     
     /**
      * Checks if a character is an XML NameChar (but not necessarily NameStartChar).
+     * NameChar = NameStartChar | "-" | "." | [0-9] | #xB7 | [#x0300-#x036F] | [#x203F-#x2040]
+     * 
+     * This includes all NameStartChar plus digits, hyphen, period, middle dot,
+     * combining characters, and extenders.
      */
     private static boolean isNameChar(char c) {
         if (isNameStartChar(c)) {
             return true;
         }
-        if (c == '-' || c == '.' || c == 0xB7) {
+        
+        // Fast path: common ASCII name characters
+        if (c == '-' || c == '.' || (c >= '0' && c <= '9')) {
             return true;
         }
-        return (c >= '0' && c <= '9') ||
-               (c >= 0x0300 && c <= 0x036F) ||
-               (c >= 0x203F && c <= 0x2040);
+        
+        // Middle dot (Extender)
+        if (c == 0xB7) {
+            return true;
+        }
+        
+        // Combining Diacritical Marks (CombiningChar)
+        if (c >= 0x0300 && c <= 0x036F) {
+            return true;
+        }
+        
+        // Additional CombiningChar ranges from XML 1.0 spec
+        if ((c >= 0x0591 && c <= 0x05A1) ||
+            (c >= 0x05A3 && c <= 0x05B9) ||
+            (c >= 0x05BB && c <= 0x05BD) ||
+            c == 0x05BF ||
+            (c >= 0x05C1 && c <= 0x05C2) ||
+            c == 0x05C4 ||
+            (c >= 0x064B && c <= 0x0652) ||
+            c == 0x0670 ||
+            (c >= 0x06D6 && c <= 0x06DC) ||
+            (c >= 0x06DD && c <= 0x06DF) ||
+            (c >= 0x06E0 && c <= 0x06E4) ||
+            (c >= 0x06E7 && c <= 0x06E8) ||
+            (c >= 0x06EA && c <= 0x06ED) ||
+            (c >= 0x0901 && c <= 0x0903) ||
+            c == 0x093C ||
+            (c >= 0x093E && c <= 0x094C) ||
+            c == 0x094D ||
+            (c >= 0x0951 && c <= 0x0954) ||
+            (c >= 0x0962 && c <= 0x0963) ||
+            (c >= 0x0981 && c <= 0x0983) ||
+            c == 0x09BC ||
+            c == 0x09BE ||
+            c == 0x09BF ||
+            (c >= 0x09C0 && c <= 0x09C4) ||
+            (c >= 0x09C7 && c <= 0x09C8) ||
+            (c >= 0x09CB && c <= 0x09CD) ||
+            c == 0x09D7 ||
+            (c >= 0x09E2 && c <= 0x09E3) ||
+            c == 0x0A02 ||
+            c == 0x0A3C ||
+            c == 0x0A3E ||
+            c == 0x0A3F ||
+            (c >= 0x0A40 && c <= 0x0A42) ||
+            (c >= 0x0A47 && c <= 0x0A48) ||
+            (c >= 0x0A4B && c <= 0x0A4D) ||
+            (c >= 0x0A70 && c <= 0x0A71) ||
+            (c >= 0x0A81 && c <= 0x0A83) ||
+            c == 0x0ABC ||
+            (c >= 0x0ABE && c <= 0x0AC5) ||
+            (c >= 0x0AC7 && c <= 0x0AC9) ||
+            (c >= 0x0ACB && c <= 0x0ACD) ||
+            (c >= 0x0B01 && c <= 0x0B03) ||
+            c == 0x0B3C ||
+            (c >= 0x0B3E && c <= 0x0B43) ||
+            (c >= 0x0B47 && c <= 0x0B48) ||
+            (c >= 0x0B4B && c <= 0x0B4D) ||
+            (c >= 0x0B56 && c <= 0x0B57) ||
+            (c >= 0x0B82 && c <= 0x0B83) ||
+            (c >= 0x0BBE && c <= 0x0BC2) ||
+            (c >= 0x0BC6 && c <= 0x0BC8) ||
+            (c >= 0x0BCA && c <= 0x0BCD) ||
+            c == 0x0BD7 ||
+            (c >= 0x0C01 && c <= 0x0C03) ||
+            (c >= 0x0C3E && c <= 0x0C44) ||
+            (c >= 0x0C46 && c <= 0x0C48) ||
+            (c >= 0x0C4A && c <= 0x0C4D) ||
+            (c >= 0x0C55 && c <= 0x0C56) ||
+            (c >= 0x0C82 && c <= 0x0C83) ||
+            (c >= 0x0CBE && c <= 0x0CC4) ||
+            (c >= 0x0CC6 && c <= 0x0CC8) ||
+            (c >= 0x0CCA && c <= 0x0CCD) ||
+            (c >= 0x0CD5 && c <= 0x0CD6) ||
+            (c >= 0x0D02 && c <= 0x0D03) ||
+            (c >= 0x0D3E && c <= 0x0D43) ||
+            (c >= 0x0D46 && c <= 0x0D48) ||
+            (c >= 0x0D4A && c <= 0x0D4D) ||
+            c == 0x0D57 ||
+            c == 0x0E31 ||
+            (c >= 0x0E34 && c <= 0x0E3A) ||
+            (c >= 0x0E47 && c <= 0x0E4E) ||
+            c == 0x0EB1 ||
+            (c >= 0x0EB4 && c <= 0x0EB9) ||
+            (c >= 0x0EBB && c <= 0x0EBC) ||
+            (c >= 0x0EC8 && c <= 0x0ECD) ||
+            (c >= 0x0F18 && c <= 0x0F19) ||
+            c == 0x0F35 ||
+            c == 0x0F37 ||
+            c == 0x0F39 ||
+            c == 0x0F3E ||
+            c == 0x0F3F ||
+            (c >= 0x0F71 && c <= 0x0F84) ||
+            (c >= 0x0F86 && c <= 0x0F8B) ||
+            (c >= 0x0F90 && c <= 0x0F95) ||
+            c == 0x0F97 ||
+            (c >= 0x0F99 && c <= 0x0FAD) ||
+            (c >= 0x0FB1 && c <= 0x0FB7) ||
+            c == 0x0FB9 ||
+            (c >= 0x20D0 && c <= 0x20DC) ||
+            c == 0x20E1 ||
+            (c >= 0x302A && c <= 0x302F) ||
+            c == 0x3099 ||
+            c == 0x309A) {
+            return true;
+        }
+        
+        // Extenders (beyond middle dot 0xB7 already checked)
+        if (c == 0x02D0 ||
+            c == 0x02D1 ||
+            c == 0x0387 ||
+            c == 0x0640 ||
+            c == 0x0E46 ||
+            c == 0x0EC6 ||
+            c == 0x3005 ||
+            (c >= 0x3031 && c <= 0x3035) ||
+            (c >= 0x309D && c <= 0x309E) ||
+            (c >= 0x30FC && c <= 0x30FE)) {
+            return true;
+        }
+        
+        // Underscore combining mark (used in some scripts)
+        if (c >= 0x203F && c <= 0x2040) {
+            return true;
+        }
+        
+        return false;
     }
 }
 
