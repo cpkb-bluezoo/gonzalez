@@ -205,24 +205,54 @@ class MiniStateTransitionBuilder {
                     .changeState(TokenizerState.ELEMENT_NAME)
                     .to(MiniState.ACCUMULATING_NAME).done();
         
-        // SEEN_LT_QUERY - After '<?' - check for 'xml'
+        // SEEN_LT_QUERY - After '<?' - check for 'xml' vs PI
+        // We need to distinguish <?xml (or <?XML etc.) from other PIs like <?pi
+        // 'x'/'X' followed by 'ml'/'ML' → XML declaration
+        // Anything else → Processing Instruction
         builder.state(TokenizerState.BOM_READ)
             .miniState(MiniState.SEEN_LT_QUERY)
-                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_LT_QUERY_X).done();
+                .on(CharClass.LETTER_X).to(MiniState.SEEN_LT_QUERY_X).done()
+                .on(CharClass.NAME_START_CHAR)
+                    // Not 'x' → definitely a PI
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done();
         
-        // SEEN_LT_QUERY_X - After '<?x' - consume 'ml' to detect '<?xml'
+        // SEEN_LT_QUERY_X - After '<?x' or '<?X'
+        // Check if followed by 'ml' (case-insensitive) for XML declaration
         builder.state(TokenizerState.BOM_READ)
             .miniState(MiniState.SEEN_LT_QUERY_X)
+                .on(CharClass.LETTER_M).to(MiniState.SEEN_LT_QUERY_XM).done()
                 .on(CharClass.NAME_START_CHAR)
-                    .consumeSequence("ml")
+                    // Not 'm'/'M' after 'x'/'X' → PI
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.NAME_CHAR)
+                    // NAME_CHAR (not letter) after 'x'/'X' → PI
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        // SEEN_LT_QUERY_XM - After '<?xm' or '<?XM' etc.
+        // Check if followed by 'l' for complete "xml" match
+        builder.state(TokenizerState.BOM_READ)
+            .miniState(MiniState.SEEN_LT_QUERY_XM)
+                .on(CharClass.LETTER_L)
+                    // Complete "xml" match → XML declaration
                     .emit(Token.START_XMLDECL)
                     .changeState(TokenizerState.XMLDECL)
                     .to(MiniState.READY).done()
+                .on(CharClass.NAME_START_CHAR)
+                    // Not 'l'/'L' after 'xm'/'XM' → PI
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done()
                 .on(CharClass.NAME_CHAR)
-                    .consumeSequence("ml")
-                    .emit(Token.START_XMLDECL)
-                    .changeState(TokenizerState.XMLDECL)
-                    .to(MiniState.READY).done();
+                    // NAME_CHAR (not letter) after 'xm'/'XM' → PI
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done();
         
         // SEEN_LT_BANG - After '<!' at document start (comment or DOCTYPE)
         builder.state(TokenizerState.BOM_READ)

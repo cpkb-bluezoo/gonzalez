@@ -250,7 +250,20 @@ enum CharClass {
                 }
             }
             
-            // Context-specific adjustments
+            // Context-specific adjustments for special letter recognition
+            // Used for detecting <?xml vs <?pi at document start
+            if (base == NAME_START_CHAR && state == TokenizerState.BOM_READ) {
+                if (miniState == MiniState.SEEN_LT_QUERY && (c == 'x' || c == 'X')) {
+                    return LETTER_X;
+                }
+                if (miniState == MiniState.SEEN_LT_QUERY_X && (c == 'm' || c == 'M')) {
+                    return LETTER_M;
+                }
+                if (miniState == MiniState.SEEN_LT_QUERY_XM && (c == 'l' || c == 'L')) {
+                    return LETTER_L;
+                }
+            }
+            
             if (base == COLON) {
                 // Per XML 1.0 § 2.3, ':' is a NameStartChar
                 // It's used for namespaces but is valid in any name context
