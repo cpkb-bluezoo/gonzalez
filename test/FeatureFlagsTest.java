@@ -110,6 +110,21 @@ public class FeatureFlagsTest {
         }
         System.out.println("  ✓ string-interning can be set to false");
         
+        // Test xml-1.1 (default: false, but can be enabled)
+        boolean xml11 = parser.getFeature("http://xml.org/sax/features/xml-1.1");
+        if (xml11) {
+            throw new Exception("xml-1.1 should default to false, got: " + xml11);
+        }
+        System.out.println("  ✓ xml-1.1 defaults to false");
+        
+        // Enable xml-1.1
+        parser.setFeature("http://xml.org/sax/features/xml-1.1", true);
+        xml11 = parser.getFeature("http://xml.org/sax/features/xml-1.1");
+        if (!xml11) {
+            throw new Exception("xml-1.1 should be true after setting, got: " + xml11);
+        }
+        System.out.println("  ✓ xml-1.1 can be enabled");
+        
         System.out.println("  ✓ Passed\n");
     }
 
@@ -195,20 +210,8 @@ public class FeatureFlagsTest {
         parser.setFeature("http://xml.org/sax/features/unicode-normalization-checking", false);
         System.out.println("  ✓ unicode-normalization-checking can be set to false (no-op)");
         
-        // Test xml-1.1 (not supported)
-        boolean xml11 = parser.getFeature("http://xml.org/sax/features/xml-1.1");
-        if (xml11) {
-            throw new Exception("xml-1.1 should be false, got: " + xml11);
-        }
-        System.out.println("  ✓ xml-1.1 is false");
-        
-        // Try to enable it (should throw exception)
-        try {
-            parser.setFeature("http://xml.org/sax/features/xml-1.1", true);
-            throw new Exception("Enabling xml-1.1 should throw SAXNotSupportedException");
-        } catch (SAXNotSupportedException e) {
-            System.out.println("  ✓ xml-1.1 cannot be enabled");
-        }
+        // Test xml-1.1 (now supported - moved to testMutableFeatures)
+        // This test now only checks unsupported features
         
         // Test unrecognized feature
         try {

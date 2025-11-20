@@ -127,10 +127,14 @@ public class DTDDeclarationsTest {
         System.out.println("  doc/@type: type=" + typeAttr.type + ", mode=" + typeAttr.mode);
         
         AttributeDeclaration versionAttr = dtdParser.getAttributeDeclaration("doc", "version");
-        if (versionAttr == null || !versionAttr.defaultValue.equals("1.0")) {
-            throw new Exception("version attribute declaration incorrect");
+        if (versionAttr == null || versionAttr.defaultValue == null || versionAttr.defaultValue.size() != 1) {
+            throw new Exception("version attribute declaration incorrect: missing or wrong size");
         }
-        System.out.println("  doc/@version: type=" + versionAttr.type + ", default=" + versionAttr.defaultValue);
+        String defaultValueStr = versionAttr.defaultValue.get(0).toString();
+        if (!defaultValueStr.equals("1.0")) {
+            throw new Exception("version attribute declaration incorrect: expected '1.0', got '" + defaultValueStr + "'");
+        }
+        System.out.println("  doc/@version: type=" + versionAttr.type + ", default=" + defaultValueStr);
         
         System.out.println("  ✓ Passed\n");
     }
