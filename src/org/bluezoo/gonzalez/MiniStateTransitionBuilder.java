@@ -1275,8 +1275,13 @@ class MiniStateTransitionBuilder {
         // DOCTYPE_INTERNAL:SEEN_LT_BANG_OPEN_BRACKET - After '<!['  (conditional section)
         builder.state(TokenizerState.DOCTYPE_INTERNAL)
             .miniState(MiniState.SEEN_LT_BANG_OPEN_BRACKET)
+                .on(CharClass.WHITESPACE)
+                    .emit(Token.START_CONDITIONAL)
+                    .changeState(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
                 .on(CharClass.NAME_START_CHAR)
                     .emit(Token.START_CONDITIONAL)
+                    .changeState(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
                     .to(MiniState.ACCUMULATING_NAME).done();
         
         // DOCTYPE_INTERNAL:SEEN_LT_BANG_LETTER - After '<!X' where X is a letter
@@ -1434,6 +1439,254 @@ class MiniStateTransitionBuilder {
                     .to(MiniState.READY).done()
                 .on(CharClass.NAME_START_CHAR)
                     .to(MiniState.ACCUMULATING_NAME).done();
+        
+        // ==================== CONDITIONAL SECTIONS ====================
+        
+        // CONDITIONAL_SECTION_KEYWORD:READY - Waiting for the first character of keyword or '['
+        builder.state(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+            .miniState(MiniState.READY)
+                .on(CharClass.WHITESPACE)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.OPEN_BRACKET)
+                    .emit(Token.OPEN_BRACKET)
+                    .to(MiniState.READY).done()
+                .on(CharClass.NAME_START_CHAR)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        // CONDITIONAL_SECTION_KEYWORD:ACCUMULATING_NAME - Collecting INCLUDE or IGNORE
+        builder.state(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+            .miniState(MiniState.ACCUMULATING_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.OPEN_BRACKET)
+                    .emit(Token.NAME)  // Will be converted to INCLUDE or IGNORE
+                    .emit(Token.OPEN_BRACKET)
+                    .to(MiniState.READY).done()
+                .on(CharClass.WHITESPACE)
+                    .emit(Token.NAME)  // Will be converted to INCLUDE or IGNORE
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done();
+        
+        // CONDITIONAL_SECTION_KEYWORD:ACCUMULATING_WHITESPACE - After keyword, before '['
+        builder.state(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+            .miniState(MiniState.ACCUMULATING_WHITESPACE)
+                .on(CharClass.WHITESPACE)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.S)
+                    .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.OPEN_BRACKET)
+                    .emit(Token.S)
+                    .emit(Token.OPEN_BRACKET)
+                    .to(MiniState.READY).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:READY - Processing content as DTD
+        // Same as DOCTYPE_INTERNAL, but looking for ]]> terminator
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.READY)
+                .on(CharClass.WHITESPACE).to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.LT).to(MiniState.SEEN_LT).done()
+                .on(CharClass.PERCENT).to(MiniState.SEEN_PERCENT).done()
+                .on(CharClass.CLOSE_BRACKET).to(MiniState.SEEN_CLOSE_BRACKET).done()
+                .on(CharClass.OPEN_PAREN)
+                    .emit(Token.OPEN_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.CLOSE_PAREN)
+                    .emit(Token.CLOSE_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.PIPE)
+                    .emit(Token.PIPE)
+                    .to(MiniState.READY).done()
+                .on(CharClass.GT)
+                    .emit(Token.GT)
+                    .to(MiniState.READY).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_NAME).done()
+                .onAny(CharClass.DIGIT, CharClass.DASH, CharClass.COLON)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_CLOSE_BRACKET - After ']'
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_CLOSE_BRACKET)
+                .on(CharClass.CLOSE_BRACKET).to(MiniState.SEEN_CLOSE_BRACKET_CLOSE_BRACKET).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_CLOSE_BRACKET_CLOSE_BRACKET - After ']]'
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_CLOSE_BRACKET_CLOSE_BRACKET)
+                .on(CharClass.GT)
+                    .emit(Token.END_CONDITIONAL)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL)
+                    .to(MiniState.READY).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_LT - After '<'
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_LT)
+                .on(CharClass.BANG).to(MiniState.SEEN_LT_BANG).done()
+                .on(CharClass.QUERY).to(MiniState.SEEN_LT_QUERY).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_LT_QUERY - After '<?' (PI in conditional)
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_LT_QUERY)
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.START_PI)
+                    .changeState(TokenizerState.PI_TARGET)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_LT_BANG - After '<!' (markup or comment)
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_LT_BANG)
+                .on(CharClass.DASH).to(MiniState.SEEN_LT_BANG_DASH).done()
+                .on(CharClass.OPEN_BRACKET).to(MiniState.SEEN_LT_BANG_OPEN_BRACKET).done()
+                .on(CharClass.NAME_START_CHAR).to(MiniState.SEEN_LT_BANG_LETTER).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_LT_BANG_DASH - After '<!-'
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_LT_BANG_DASH)
+                .on(CharClass.DASH)
+                    .emit(Token.START_COMMENT)
+                    .changeState(TokenizerState.COMMENT)
+                    .to(MiniState.READY).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_LT_BANG_OPEN_BRACKET - After '<!['  (nested conditional)
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_LT_BANG_OPEN_BRACKET)
+                .on(CharClass.WHITESPACE)
+                    .emit(Token.START_CONDITIONAL)
+                    .changeState(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.START_CONDITIONAL)
+                    .changeState(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+                    .to(MiniState.ACCUMULATING_NAME).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_LT_BANG_LETTER - After '<!X'
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_LT_BANG_LETTER)
+                .on(CharClass.NAME_START_CHAR)
+                    .to(MiniState.ACCUMULATING_MARKUP_NAME).done()
+                .on(CharClass.NAME_CHAR)
+                    .to(MiniState.ACCUMULATING_MARKUP_NAME).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:ACCUMULATING_MARKUP_NAME - Markup declaration name
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.ACCUMULATING_MARKUP_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_MARKUP_NAME).done()
+                .on(CharClass.WHITESPACE)
+                    .emit(Token.NAME)  // Will be converted to START_ELEMENTDECL etc
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:ACCUMULATING_NAME - Generic name
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.ACCUMULATING_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.WHITESPACE)
+                    .emit(Token.NAME)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.GT)
+                    .emit(Token.NAME)
+                    .emit(Token.GT)
+                    .to(MiniState.READY).done()
+                .on(CharClass.OPEN_PAREN)
+                    .emit(Token.NAME)
+                    .emit(Token.OPEN_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.CLOSE_PAREN)
+                    .emit(Token.NAME)
+                    .emit(Token.CLOSE_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.PIPE)
+                    .emit(Token.NAME)
+                    .emit(Token.PIPE)
+                    .to(MiniState.READY).done()
+                .on(CharClass.COMMA)
+                    .emit(Token.NAME)
+                    .emit(Token.COMMA)
+                    .to(MiniState.READY).done()
+                .on(CharClass.STAR)
+                    .emit(Token.NAME)
+                    .emit(Token.STAR)
+                    .to(MiniState.READY).done()
+                .on(CharClass.PLUS)
+                    .emit(Token.NAME)
+                    .emit(Token.PLUS)
+                    .to(MiniState.READY).done()
+                .on(CharClass.APOS)
+                    .emit(Token.NAME)
+                    .emit(Token.APOS)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
+                    .to(MiniState.READY).done()
+                .on(CharClass.QUOT)
+                    .emit(Token.NAME)
+                    .emit(Token.QUOT)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
+                    .to(MiniState.READY).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:ACCUMULATING_WHITESPACE
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.ACCUMULATING_WHITESPACE)
+                .on(CharClass.WHITESPACE)
+                    .to(MiniState.ACCUMULATING_WHITESPACE).done()
+                .on(CharClass.LT)
+                    .emit(Token.S)
+                    .to(MiniState.SEEN_LT).done()
+                .on(CharClass.GT)
+                    .emit(Token.S)
+                    .emit(Token.GT)
+                    .to(MiniState.READY).done()
+                .on(CharClass.NAME_START_CHAR)
+                    .emit(Token.S)
+                    .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.PERCENT)
+                    .emit(Token.S)
+                    .to(MiniState.SEEN_PERCENT).done()
+                .on(CharClass.CLOSE_BRACKET)
+                    .emit(Token.S)
+                    .to(MiniState.SEEN_CLOSE_BRACKET).done()
+                .on(CharClass.OPEN_PAREN)
+                    .emit(Token.S)
+                    .emit(Token.OPEN_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.CLOSE_PAREN)
+                    .emit(Token.S)
+                    .emit(Token.CLOSE_PAREN)
+                    .to(MiniState.READY).done()
+                .on(CharClass.PIPE)
+                    .emit(Token.S)
+                    .emit(Token.PIPE)
+                    .to(MiniState.READY).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:SEEN_PERCENT - After '%' (parameter entity ref)
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.SEEN_PERCENT)
+                .on(CharClass.NAME_START_CHAR)
+                    .to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done();
+        
+        // CONDITIONAL_SECTION_INCLUDE:ACCUMULATING_PARAM_ENTITY_NAME
+        builder.state(TokenizerState.CONDITIONAL_SECTION_INCLUDE)
+            .miniState(MiniState.ACCUMULATING_PARAM_ENTITY_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.PARAMETERENTITYREF)
+                    .to(MiniState.READY).done();
+        
+        // CONDITIONAL_SECTION_IGNORE:READY - Skipping content, looking for ]]>
+        builder.state(TokenizerState.CONDITIONAL_SECTION_IGNORE)
+            .miniState(MiniState.READY)
+                .on(CharClass.CLOSE_BRACKET).to(MiniState.SEEN_CLOSE_BRACKET).done();
+        
+        // CONDITIONAL_SECTION_IGNORE:SEEN_CLOSE_BRACKET - After ']'
+        builder.state(TokenizerState.CONDITIONAL_SECTION_IGNORE)
+            .miniState(MiniState.SEEN_CLOSE_BRACKET)
+                .on(CharClass.CLOSE_BRACKET).to(MiniState.SEEN_CLOSE_BRACKET_CLOSE_BRACKET).done();
+        
+        // CONDITIONAL_SECTION_IGNORE:SEEN_CLOSE_BRACKET_CLOSE_BRACKET - After ']]'
+        builder.state(TokenizerState.CONDITIONAL_SECTION_IGNORE)
+            .miniState(MiniState.SEEN_CLOSE_BRACKET_CLOSE_BRACKET)
+                .on(CharClass.GT)
+                    .emit(Token.END_CONDITIONAL)
+                    .changeState(TokenizerState.DOCTYPE_INTERNAL)
+                    .to(MiniState.READY).done();
         
         // ===== End of transitions =====
         

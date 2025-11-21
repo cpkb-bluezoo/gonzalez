@@ -123,6 +123,24 @@ enum TokenizerState {
     DOCTYPE_INTERNAL_QUOTED_QUOT,
     
     /**
+     * Parsing conditional section keyword (INCLUDE or IGNORE).
+     * After seeing <![, expecting INCLUDE or IGNORE keyword.
+     */
+    CONDITIONAL_SECTION_KEYWORD,
+    
+    /**
+     * Inside an INCLUDE conditional section (between <![INCLUDE[ and ]]>).
+     * Content is processed as DTD declarations.
+     */
+    CONDITIONAL_SECTION_INCLUDE,
+    
+    /**
+     * Inside an IGNORE conditional section (between <![IGNORE[ and ]]>).
+     * Content is skipped (not parsed).
+     */
+    CONDITIONAL_SECTION_IGNORE,
+    
+    /**
      * Inside an XML comment (<!-- ... -->).
      */
     COMMENT,

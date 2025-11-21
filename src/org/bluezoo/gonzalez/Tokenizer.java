@@ -113,6 +113,14 @@ public class Tokenizer {
      */
     private boolean xmlDeclSeenWhitespace = false;
     
+    // ===== Conditional Section State =====
+    
+    /**
+     * Pending conditional section type (INCLUDE or IGNORE) waiting for '[' to start the section.
+     * Null if no conditional section is pending.
+     */
+    private Token pendingConditionalType = null;
+    
     // ===== Buffers =====
 
     /**
@@ -1021,6 +1029,28 @@ public class Tokenizer {
                 changeState(newState);
             }
             
+            // Check if we just emitted OPEN_BRACKET after INCLUDE/IGNORE keyword
+            // If so, change to the appropriate conditional section state
+            if (state == TokenizerState.CONDITIONAL_SECTION_KEYWORD && 
+                pendingConditionalType != null &&
+                transition.tokensToEmit != null) {
+                // Check if OPEN_BRACKET was emitted
+                for (Token emittedToken : transition.tokensToEmit) {
+                    if (emittedToken == Token.OPEN_BRACKET) {
+                        // Change to the appropriate conditional section state
+                        TokenizerState newState;
+                        if (pendingConditionalType == Token.INCLUDE) {
+                            newState = TokenizerState.CONDITIONAL_SECTION_INCLUDE;
+                        } else {
+                            newState = TokenizerState.CONDITIONAL_SECTION_IGNORE;
+                        }
+                        changeState(newState);
+                        pendingConditionalType = null;
+                        break;
+                    }
+                }
+            }
+            
             // Move to next mini-state
             miniState = transition.nextMiniState;
             
@@ -1142,6 +1172,32 @@ public class Tokenizer {
             Token keywordToken = checkDTDKeyword(start, length);
             // checkDTDKeyword returns Token.NAME if not a keyword, so we don't need to check for null
             token = keywordToken;
+        }
+        
+        // Check if this is a conditional section keyword (INCLUDE or IGNORE)
+        if (token == Token.NAME && state == TokenizerState.CONDITIONAL_SECTION_KEYWORD) {
+            // Check for "INCLUDE" or "IGNORE"
+            if (length == 7 && 
+                charBuffer.get(start) == 'I' &&
+                charBuffer.get(start + 1) == 'N' &&
+                charBuffer.get(start + 2) == 'C' &&
+                charBuffer.get(start + 3) == 'L' &&
+                charBuffer.get(start + 4) == 'U' &&
+                charBuffer.get(start + 5) == 'D' &&
+                charBuffer.get(start + 6) == 'E') {
+                token = Token.INCLUDE;
+                pendingConditionalType = Token.INCLUDE;
+            } else if (length == 6 &&
+                charBuffer.get(start) == 'I' &&
+                charBuffer.get(start + 1) == 'G' &&
+                charBuffer.get(start + 2) == 'N' &&
+                charBuffer.get(start + 3) == 'O' &&
+                charBuffer.get(start + 4) == 'R' &&
+                charBuffer.get(start + 5) == 'E') {
+                token = Token.IGNORE;
+                pendingConditionalType = Token.IGNORE;
+            }
+            // If not INCLUDE or IGNORE, it's an error - but we'll let the parser handle that
         }
         
         // Check if this is a markup declaration name in DOCTYPE_INTERNAL

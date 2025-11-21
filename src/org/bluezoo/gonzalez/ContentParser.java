@@ -591,9 +591,14 @@ public class ContentParser implements TokenConsumer {
         
         try {
             // Create nested tokenizer and decoder for external entity
-            // Use the current tokenizer state to ensure proper context
-            // (e.g., DOCTYPE_INTERNAL if we're in DTD, CONTENT if we're in content)
-            Tokenizer entityTokenizer = new Tokenizer(this, currentTokenizerState);
+            // Determine the initial state for the entity:
+            // - External DTD subsets should start in DOCTYPE_INTERNAL (to parse DTD declarations)
+            // - General entities should start in CONTENT (to parse element content)
+            TokenizerState initialState = isDTDSubset ? TokenizerState.DOCTYPE_INTERNAL : TokenizerState.CONTENT;
+            
+            Tokenizer entityTokenizer = new Tokenizer(this);
+            entityTokenizer.setInitialContext(initialState);
+            
             ExternalEntityDecoder entityDecoder = new ExternalEntityDecoder(
                 entityTokenizer,
                 source.getPublicId(),
