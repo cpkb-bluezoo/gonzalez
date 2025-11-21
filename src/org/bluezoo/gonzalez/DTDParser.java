@@ -2015,9 +2015,21 @@ public class DTDParser implements TokenConsumer {
                         conditionalState = ConditionalSectionState.EXPECT_OPEN_BRACKET;
                         break;
                         
+                    case OPEN_BRACKET:
+                        // '[' directly after keyword (whitespace is optional per XML spec)
+                        // Start of conditional section content
+                        conditionalDepth++;
+                        // Transition to INCLUDE or IGNORE mode based on keyword
+                        if (conditionalIsInclude) {
+                            changeState(State.IN_CONDITIONAL_INCLUDE);
+                        } else {
+                            changeState(State.IN_CONDITIONAL_IGNORE);
+                        }
+                        break;
+                        
                     default:
                         throw new SAXParseException(
-                            "Expected whitespace after INCLUDE/IGNORE keyword, got: " + token,
+                            "Expected whitespace or '[' after INCLUDE/IGNORE keyword, got: " + token,
                             locator);
                 }
                 break;

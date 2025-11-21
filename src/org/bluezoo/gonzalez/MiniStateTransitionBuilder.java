@@ -1442,7 +1442,7 @@ class MiniStateTransitionBuilder {
         
         // ==================== CONDITIONAL SECTIONS ====================
         
-        // CONDITIONAL_SECTION_KEYWORD:READY - Waiting for the first character of keyword or '['
+        // CONDITIONAL_SECTION_KEYWORD:READY - Waiting for the first character of keyword, '%', or '['
         builder.state(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
             .miniState(MiniState.READY)
                 .on(CharClass.WHITESPACE)
@@ -1450,6 +1450,8 @@ class MiniStateTransitionBuilder {
                 .on(CharClass.OPEN_BRACKET)
                     .emit(Token.OPEN_BRACKET)
                     .to(MiniState.READY).done()
+                .on(CharClass.PERCENT)
+                    .to(MiniState.SEEN_PERCENT).done()
                 .on(CharClass.NAME_START_CHAR)
                     .to(MiniState.ACCUMULATING_NAME).done();
         
@@ -1474,9 +1476,27 @@ class MiniStateTransitionBuilder {
                 .on(CharClass.NAME_START_CHAR)
                     .emit(Token.S)
                     .to(MiniState.ACCUMULATING_NAME).done()
+                .on(CharClass.PERCENT)
+                    .emit(Token.S)
+                    .to(MiniState.SEEN_PERCENT).done()
                 .on(CharClass.OPEN_BRACKET)
                     .emit(Token.S)
                     .emit(Token.OPEN_BRACKET)
+                    .to(MiniState.READY).done();
+        
+        // CONDITIONAL_SECTION_KEYWORD:SEEN_PERCENT - After '%' (parameter entity ref)
+        builder.state(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+            .miniState(MiniState.SEEN_PERCENT)
+                .on(CharClass.NAME_START_CHAR)
+                    .to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done();
+        
+        // CONDITIONAL_SECTION_KEYWORD:ACCUMULATING_PARAM_ENTITY_NAME
+        builder.state(TokenizerState.CONDITIONAL_SECTION_KEYWORD)
+            .miniState(MiniState.ACCUMULATING_PARAM_ENTITY_NAME)
+                .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.DIGIT)
+                    .to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done()
+                .on(CharClass.SEMICOLON)
+                    .emit(Token.PARAMETERENTITYREF)
                     .to(MiniState.READY).done();
         
         // CONDITIONAL_SECTION_INCLUDE:READY - Processing content as DTD
