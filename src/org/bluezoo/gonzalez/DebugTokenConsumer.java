@@ -63,6 +63,12 @@ class DebugTokenConsumer implements TokenConsumer {
     }
     
     @Override
+    public void xmlVersion(boolean isXML11) {
+        System.out.println(prefix + " XML_VERSION -> " + (isXML11 ? "1.1" : "1.0"));
+        delegate.xmlVersion(isXML11);
+    }
+    
+    @Override
     public SAXException fatalError(String message) throws SAXException {
         System.out.println(prefix + " FATAL_ERROR: " + message);
         return delegate.fatalError(message);

@@ -93,5 +93,17 @@ public interface TokenConsumer {
      */
     void tokenizerState(TokenizerState state);
 
+    /**
+     * Notifies the consumer of the XML version detected from the XML declaration.
+     * <p>
+     * This is called by the tokenizer when it parses the XML declaration and
+     * determines the XML version (1.0 or 1.1). This allows consumers to track
+     * the version for creating nested tokenizers/decoders with the correct
+     * XML version when expanding entity references.
+     * 
+     * @param isXML11 true if XML 1.1, false if XML 1.0
+     */
+    void xmlVersion(boolean isXML11);
+
 }
 

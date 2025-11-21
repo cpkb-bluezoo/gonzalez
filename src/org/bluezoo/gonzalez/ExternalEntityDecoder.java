@@ -78,6 +78,13 @@ public class ExternalEntityDecoder implements Locator2 {
      */
     private final boolean isExternalEntity;
     
+    /**
+     * Whether this entity is being processed as XML 1.1 (vs. XML 1.0).
+     * Affects character validity rules and line normalization.
+     * Set when XML/text declaration specifies version="1.1".
+     */
+    private boolean isXML11 = false;
+    
     // ===== Buffers =====
     
     /**
@@ -208,6 +215,20 @@ public class ExternalEntityDecoder implements Locator2 {
      */
     public void setVersion(String version) {
         this.version = version;
+        // Set XML 1.1 flag based on version
+        if ("1.1".equals(version)) {
+            this.isXML11 = true;
+            // Notify tokenizer of XML 1.1 mode
+            if (tokenizer != null) {
+                tokenizer.setXML11(true);
+            }
+        } else {
+            // Explicitly set to false for XML 1.0 or any other version
+            this.isXML11 = false;
+            if (tokenizer != null) {
+                tokenizer.setXML11(false);
+            }
+        }
     }
     
     /**
@@ -319,6 +340,7 @@ public class ExternalEntityDecoder implements Locator2 {
         charset = StandardCharsets.UTF_8;
         bomCharset = null;
         version = "1.0";
+        isXML11 = false; // Reset to XML 1.0 mode
         standalone = false;
         encoding = null;
         lineNumber = 1;
@@ -549,7 +571,9 @@ public class ExternalEntityDecoder implements Locator2 {
     
     /**
      * Normalizes line endings in the character buffer according to XML spec.
-     * Converts CR, CR LF, and NEL (U+0085) to LF (U+000A).
+     * 
+     * XML 1.0: Converts CR and CR LF to LF (U+000A).
+     * XML 1.1: Also converts NEL (U+0085) and LS (U+2028) to LF.
      */
     private void normalizeLineEndings(CharBuffer buffer) {
         int pos = buffer.position();
@@ -559,7 +583,7 @@ public class ExternalEntityDecoder implements Locator2 {
             char c = buffer.get(i);
             
             if (c == '\r') {
-                // CR or CR LF -> LF
+                // CR or CR LF -> LF (both XML 1.0 and 1.1)
                 buffer.put(i, '\n');
                 if (i + 1 < limit && buffer.get(i + 1) == '\n') {
                     // CR LF: skip the LF by compacting
@@ -569,8 +593,11 @@ public class ExternalEntityDecoder implements Locator2 {
                     limit--;
                     buffer.limit(limit);
                 }
-            } else if (c == '\u0085') {
-                // NEL (Next Line) -> LF
+            } else if (isXML11 && c == '\u0085') {
+                // NEL (Next Line) -> LF (XML 1.1 only)
+                buffer.put(i, '\n');
+            } else if (isXML11 && c == '\u2028') {
+                // LS (Line Separator) -> LF (XML 1.1 only)
                 buffer.put(i, '\n');
             }
         }

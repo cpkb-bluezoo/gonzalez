@@ -236,9 +236,10 @@ enum CharClass {
      * @param c the character to classify
      * @param state the current tokenizer state
      * @param miniState the current tokenizer mini-state
+     * @param isXML11 whether processing as XML 1.1 (affects character validity)
      * @return the CharClass for this character in this context
      */
-    static CharClass classify(char c, TokenizerState state, MiniState miniState) {
+    static CharClass classify(char c, TokenizerState state, MiniState miniState, boolean isXML11) {
         // Fast path for ASCII
         if (c < 128) {
             CharClass base = ASCII_LOOKUP[c];
@@ -280,11 +281,21 @@ enum CharClass {
                 return NAME_START_CHAR;
             }
             
+            // Version-specific handling for DEL (0x7F)
+            // DEL is legal in XML 1.0 (in range [0x20-0xD7FF]) but illegal in XML 1.1
+            if (c == 0x7F) {
+                if (isXML11) {
+                    return ILLEGAL;
+                } else {
+                    return CHAR_DATA;
+                }
+            }
+            
             return base;
         }
         
         // Unicode path (slower)
-        return classifyUnicode(c);
+        return classifyUnicode(c, isXML11);
     }
     
     /**
@@ -320,21 +331,22 @@ enum CharClass {
      * Classifies a Unicode character (code point >= 128).
      * 
      * @param c the character to classify
+     * @param isXML11 whether processing as XML 1.1
      * @return the CharClass for this character
      */
-    private static CharClass classifyUnicode(char c) {
+    private static CharClass classifyUnicode(char c, boolean isXML11) {
         // Check if legal XML character first
-        if (!isLegalXMLChar(c)) {
+        if (!isLegalXMLChar(c, isXML11)) {
             return ILLEGAL;
         }
         
         // Check if NameStartChar
-        if (isNameStartChar(c)) {
+        if (isNameStartChar(c, isXML11)) {
             return NAME_START_CHAR;
         }
         
         // Check if NameChar (but not NameStartChar)
-        if (isNameChar(c)) {
+        if (isNameChar(c, isXML11)) {
             return NAME_CHAR;
         }
         
@@ -344,31 +356,63 @@ enum CharClass {
     
     /**
      * Checks if a character is a legal XML character.
-     * Legal chars: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+     * 
+     * XML 1.0: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+     * XML 1.1: [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+     *          but excluding [#x7F-#x84], [#x86-#x9F] (C0/C1 controls except tab/LF/CR)
      * 
      * Note: Characters in the range #x10000-#x10FFFF are represented as UTF-16 surrogate pairs.
      * We accept surrogates (0xD800-0xDFFF) here because they're part of valid surrogate pairs.
      * The actual character validation (ensuring proper pairing) is done elsewhere.
+     * 
+     * @param c the character to check
+     * @param isXML11 whether processing as XML 1.1
+     * @return true if the character is legal
      */
-    private static boolean isLegalXMLChar(char c) {
-        return (c == 0x9 || c == 0xA || c == 0xD ||
-                (c >= 0x20 && c <= 0xD7FF) ||
-                (c >= 0xDC00 && c <= 0xDFFF) || // Low surrogates
-                (c >= 0xD800 && c <= 0xDBFF) || // High surrogates
-                (c >= 0xE000 && c <= 0xFFFD));
+    private static boolean isLegalXMLChar(char c, boolean isXML11) {
+        if (isXML11) {
+            // XML 1.1 allows more characters but excludes C0/C1 controls except specific ones
+            // Allowed: [#x1-#xD7FF] | [#xE000-#xFFFD] except [#x7F-#x84], [#x86-#x9F]
+            // Note: NEL (0x85) and LS (0x2028) ARE legal in XML 1.1, but they are normalized
+            // to LF by the ExternalEntityDecoder, so by the time we classify them here they
+            // should already be 0x0A. If we see them here, treat as regular characters.
+            if (c >= 0x1 && c <= 0xD7FF) {
+                // Exclude C0/C1 control range: [#x7F-#x84], [#x86-#x9F]
+                // Excludes: DEL (0x7F), C1 controls (0x80-0x84, 0x86-0x9F)
+                // Does NOT exclude: NEL (0x85) - it's normalized by EED, not rejected here
+                if ((c >= 0x7F && c <= 0x84) || (c >= 0x86 && c <= 0x9F)) {
+                    return false;
+                }
+                return true;
+            }
+            return (c >= 0xDC00 && c <= 0xDFFF) || // Low surrogates
+                   (c >= 0xD800 && c <= 0xDBFF) || // High surrogates
+                   (c >= 0xE000 && c <= 0xFFFD);
+        } else {
+            // XML 1.0
+            return (c == 0x9 || c == 0xA || c == 0xD ||
+                    (c >= 0x20 && c <= 0xD7FF) ||
+                    (c >= 0xDC00 && c <= 0xDFFF) || // Low surrogates
+                    (c >= 0xD800 && c <= 0xDBFF) || // High surrogates
+                    (c >= 0xE000 && c <= 0xFFFD));
+        }
     }
     
     /**
      * Checks if a character is an XML NameStartChar.
-     * Per XML 1.0 spec Appendix B: NameStartChar = ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | 
+     * 
+     * XML 1.0/1.1 spec: NameStartChar = ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] | 
      * [#xD8-#xF6] | [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF] | [#x200C-#x200D] | 
      * [#x2070-#x218F] | [#x2C00-#x2FEF] | [#x3001-#xD7FF] | [#xF900-#xFDCF] | [#xFDF0-#xFFFD] | [#x10000-#xEFFFF]
      * 
-     * However, the broad ranges above include some characters that are actually CombiningChar or otherwise
-     * not valid as NameStartChar. This method implements the precise ranges from the Letter production,
-     * excluding gaps where characters like U+0E5C fall.
+     * Note: The NameStartChar production is the same in XML 1.0 and 1.1. The difference
+     * is in which characters are legal in the document (the Char production).
+     * 
+     * @param c the character to check
+     * @param isXML11 whether processing as XML 1.1 (currently unused, same rules for both versions)
+     * @return true if the character is a NameStartChar
      */
-    private static boolean isNameStartChar(char c) {
+    private static boolean isNameStartChar(char c, boolean isXML11) {
         // Fast path: ASCII (most common case)
         if (c == ':' || c == '_' ||
             (c >= 'A' && c <= 'Z') ||
@@ -436,9 +480,13 @@ enum CharClass {
      * 
      * This includes all NameStartChar plus digits, hyphen, period, middle dot,
      * combining characters, and extenders.
+     * 
+     * @param c the character to check
+     * @param isXML11 whether processing as XML 1.1 (currently unused, same rules for both versions)
+     * @return true if the character is a NameChar
      */
-    private static boolean isNameChar(char c) {
-        if (isNameStartChar(c)) {
+    private static boolean isNameChar(char c, boolean isXML11) {
+        if (isNameStartChar(c, isXML11)) {
             return true;
         }
         

@@ -94,6 +94,12 @@ public class DTDParser implements TokenConsumer {
     // Current tokenizer state (updated via tokenizerState callback)
     private TokenizerState currentTokenizerState = TokenizerState.DOCTYPE_INTERNAL;
     
+    // XML version stack - tracks XML version at each entity expansion level
+    // Initialize with XML 1.0 (false) as the default
+    private final java.util.ArrayDeque<Boolean> xmlVersionStack = new java.util.ArrayDeque<Boolean>() {{
+        push(false); // Default to XML 1.0
+    }};
+    
     /**
      * Sub-states for parsing &lt;!ELEMENT declarations.
      * Tracks position within the element declaration to enforce well-formedness.
@@ -379,6 +385,16 @@ public class DTDParser implements TokenConsumer {
     public void tokenizerState(TokenizerState state) {
         // Track the tokenizer's current state for entity expansion
         this.currentTokenizerState = state;
+    }
+    
+    @Override
+    public void xmlVersion(boolean isXML11) {
+        // Update the XML version at the current entity expansion level (top of stack)
+        // This is called when a tokenizer parses an XML/text declaration
+        if (!xmlVersionStack.isEmpty()) {
+            xmlVersionStack.pop();
+            xmlVersionStack.push(isXML11);
+        }
     }
 
     /**
@@ -2978,11 +2994,16 @@ public class DTDParser implements TokenConsumer {
             return; // Nothing to tokenize
         }
         
+        // Push current XML version to stack - entity inherits parent's version
+        // (unless it declares its own via XML/text declaration)
+        boolean currentVersion = xmlVersionStack.isEmpty() ? false : xmlVersionStack.peek();
+        xmlVersionStack.push(currentVersion);
+        
         // Create a tokenizer for the replacement text and feed tokens through DTD parser
         // Use the current tokenizer state to ensure proper context
         try {
-            // Create a tokenizer with the current tokenizer state
-            Tokenizer tokenizer = new Tokenizer(this, currentTokenizerState);
+            // Create a tokenizer with the current tokenizer state and XML version
+            Tokenizer tokenizer = new Tokenizer(this, currentTokenizerState, currentVersion);
             
             // Set the locator for position information
             tokenizer.setLocator(locator);
@@ -2997,6 +3018,11 @@ public class DTDParser implements TokenConsumer {
             throw new SAXParseException(
                 "Error expanding parameter entity %" + entityName + ";",
                 locator, e);
+        } finally {
+            // Pop XML version stack to restore parent's version
+            if (!xmlVersionStack.isEmpty()) {
+                xmlVersionStack.pop();
+            }
         }
     }
     

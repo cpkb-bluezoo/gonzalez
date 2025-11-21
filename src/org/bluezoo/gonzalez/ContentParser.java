@@ -76,6 +76,15 @@ public class ContentParser implements TokenConsumer {
     // Current tokenizer state (updated via tokenizerState callback)
     private TokenizerState currentTokenizerState = TokenizerState.CONTENT;
     
+    // XML version stack - tracks XML version at each entity expansion level
+    // The top of the stack represents the current XML version context.
+    // When creating a nested tokenizer/EED, push the current version.
+    // When finishing entity expansion, pop to restore parent's version.
+    // Initialize with XML 1.0 (false) as the default for the main document.
+    private final java.util.ArrayDeque<Boolean> xmlVersionStack = new java.util.ArrayDeque<Boolean>() {{
+        push(false); // Default to XML 1.0
+    }};
+    
     // Entity expansion depth - tracks how deeply nested we are in entity expansions
     // Used to enforce WFC: Parsed Entity (element nesting must respect entity boundaries)
     private int entityExpansionDepth = 0;
@@ -589,6 +598,11 @@ public class ContentParser implements TokenConsumer {
         // Increment external entity depth
         externalEntityDepth++;
         
+        // Push current XML version to stack - entity inherits parent's version
+        // (unless it declares its own via text declaration)
+        boolean currentVersion = xmlVersionStack.isEmpty() ? false : xmlVersionStack.peek();
+        xmlVersionStack.push(currentVersion);
+        
         try {
             // Create nested tokenizer and decoder for external entity
             // Determine the initial state for the entity:
@@ -598,6 +612,7 @@ public class ContentParser implements TokenConsumer {
             
             Tokenizer entityTokenizer = new Tokenizer(this);
             entityTokenizer.setInitialContext(initialState);
+            entityTokenizer.setXML11(currentVersion); // Inherit parent's XML version
             
             ExternalEntityDecoder entityDecoder = new ExternalEntityDecoder(
                 entityTokenizer,
@@ -605,6 +620,8 @@ public class ContentParser implements TokenConsumer {
                 resolvedSystemId,
                 true // External entity
             );
+            // Set XML version on decoder to match tokenizer
+            entityDecoder.setVersion(currentVersion ? "1.1" : "1.0");
             
             // Get input stream from source
             InputStream inputStream = source.getByteStream();
@@ -638,6 +655,10 @@ public class ContentParser implements TokenConsumer {
             // Entity processing complete, continue with main stream
             
         } finally {
+            // Pop XML version stack to restore parent's version
+            if (!xmlVersionStack.isEmpty()) {
+                xmlVersionStack.pop();
+            }
             // Decrement external entity depth
             externalEntityDepth--;
             // Remove from stack
@@ -1546,9 +1567,14 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         // This marks any elements opened during expansion so we can verify they're closed
         entityExpansionDepth++;
         
+        // Push current XML version to stack - entity inherits parent's version
+        // (unless it declares its own via XML/text declaration)
+        boolean currentVersion = xmlVersionStack.isEmpty() ? false : xmlVersionStack.peek();
+        xmlVersionStack.push(currentVersion);
+        
         try {
-            // Create tokenizer for the expanded value with the current tokenizer state
-            Tokenizer entityTokenizer = new Tokenizer(this, currentTokenizerState);
+            // Create tokenizer for the expanded value with the current tokenizer state and XML version
+            Tokenizer entityTokenizer = new Tokenizer(this, currentTokenizerState, currentVersion);
             
             // Set the locator to provide position information
             entityTokenizer.setLocator(locator);
@@ -1573,6 +1599,10 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 }
             }
         } finally {
+            // Pop XML version stack to restore parent's version
+            if (!xmlVersionStack.isEmpty()) {
+                xmlVersionStack.pop();
+            }
             // Always decrement depth, even if expansion failed
             entityExpansionDepth--;
         }
@@ -2044,6 +2074,16 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
     public void tokenizerState(TokenizerState state) {
         // Track the tokenizer's current state for entity expansion
         this.currentTokenizerState = state;
+    }
+    
+    @Override
+    public void xmlVersion(boolean isXML11) {
+        // Update the XML version at the current entity expansion level (top of stack)
+        // This is called when a tokenizer parses an XML/text declaration
+        if (!xmlVersionStack.isEmpty()) {
+            xmlVersionStack.pop();
+            xmlVersionStack.push(isXML11);
+        }
     }
     
     /**

@@ -61,6 +61,12 @@ public class Tokenizer {
      * Null for internal entities.
      */
     private ExternalEntityDecoder externalEntityDecoder;
+    
+    /**
+     * Whether this tokenizer is processing XML 1.1 (vs. XML 1.0).
+     * Affects character validity rules.
+     */
+    private boolean isXML11 = false;
 
     // ===== State Machine =====
     
@@ -213,6 +219,24 @@ public class Tokenizer {
         // Note: Do NOT call consumer.tokenizerState() - nested tokenizers don't update consumer state
         // Note: setLocator will be called by the consumer or ExternalEntityDecoder
     }
+    
+    /**
+     * Package-private constructor for creating tokenizers with a specific initial state and XML version.
+     * Used when expanding internal entity references to ensure the tokenizer starts
+     * in the correct context and inherits the parent's XML version.
+     * 
+     * @param consumer the token consumer
+     * @param initialState the initial tokenizer state
+     * @param isXML11 whether to use XML 1.1 character rules
+     */
+    Tokenizer(TokenConsumer consumer, TokenizerState initialState, boolean isXML11) {
+        this.consumer = consumer;
+        this.transitionTable = MiniStateTransitionBuilder.TRANSITION_TABLE;
+        this.state = initialState;
+        this.isXML11 = isXML11;
+        // Note: Do NOT call consumer.tokenizerState() - nested tokenizers don't update consumer state
+        // Note: setLocator will be called by the consumer or ExternalEntityDecoder
+    }
 
     // ===== Public API =====
     
@@ -249,6 +273,24 @@ public class Tokenizer {
      */
     void setInitialContext(TokenizerState initialState) {
         this.state = initialState;
+    }
+    
+    /**
+     * Sets whether this tokenizer should process XML 1.1 (vs. XML 1.0).
+     * Called by ExternalEntityDecoder when XML/text declaration specifies version="1.1".
+     * 
+     * @param isXML11 true for XML 1.1, false for XML 1.0
+     */
+    public void setXML11(boolean isXML11) {
+        this.isXML11 = isXML11;
+    }
+    
+    /**
+     * Returns whether XML 1.1 character rules are enabled.
+     * @return true if XML 1.1 rules are enabled, false if XML 1.0 rules are used
+     */
+    public boolean isXML11() {
+        return isXML11;
     }
     
     /**
@@ -367,6 +409,7 @@ public class Tokenizer {
     public void reset() throws SAXException {
         state = TokenizerState.INIT;
         miniState = MiniState.READY;
+        isXML11 = false; // Reset to XML 1.0 mode
         charUnderflow = null;
         charBuffer = null;
         closed = false;
@@ -379,23 +422,6 @@ public class Tokenizer {
 
     // ===== Additional Setter Methods =====
     
-    /**
-     * Sets whether XML 1.1 character rules should be used.
-     * @param xml11 true to enable XML 1.1 rules, false for XML 1.0 rules
-     */
-    public void setXML11(boolean xml11) {
-        this.xml11 = xml11;
-    }
-    
-    /**
-     * Returns whether XML 1.1 character rules are enabled.
-     * @return true if XML 1.1 rules are enabled, false if XML 1.0 rules are used
-     */
-    public boolean isXML11() {
-        return xml11;
-    }
-    
-
     /**
      * Checks if an entity name is a predefined entity and returns its index into PREDEFINED_ENTITY_TEXT.
      * Returns -1 if not a predefined entity.
@@ -692,17 +718,31 @@ public class Tokenizer {
     }
     
     /**
-     * Checks if a code point is a legal XML character.
+     * Checks if a code point is a legal XML character in a character reference.
+     * 
      * XML 1.0: Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+     * XML 1.1: Char ::= [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+     * 
+     * Note: In XML 1.1, character references can use the extended range including C0/C1 controls,
+     * but these characters are restricted when appearing directly in the document.
      * 
      * @param codePoint the Unicode code point to check
-     * @return true if the code point is legal in XML 1.0
+     * @return true if the code point is legal in this XML version
      */
     private boolean isLegalXMLChar(int codePoint) {
-        return (codePoint == 0x9 || codePoint == 0xA || codePoint == 0xD ||
-                (codePoint >= 0x20 && codePoint <= 0xD7FF) ||
-                (codePoint >= 0xE000 && codePoint <= 0xFFFD) ||
-                (codePoint >= 0x10000 && codePoint <= 0x10FFFF));
+        if (isXML11) {
+            // XML 1.1: [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+            // Allows C0/C1 controls in character references (0x01-0x1F, 0x7F-0x9F)
+            return (codePoint >= 0x1 && codePoint <= 0xD7FF) ||
+                   (codePoint >= 0xE000 && codePoint <= 0xFFFD) ||
+                   (codePoint >= 0x10000 && codePoint <= 0x10FFFF);
+        } else {
+            // XML 1.0: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+            return (codePoint == 0x9 || codePoint == 0xA || codePoint == 0xD ||
+                    (codePoint >= 0x20 && codePoint <= 0xD7FF) ||
+                    (codePoint >= 0xE000 && codePoint <= 0xFFFD) ||
+                    (codePoint >= 0x10000 && codePoint <= 0x10FFFF));
+        }
     }
     
     /**
@@ -786,7 +826,7 @@ public class Tokenizer {
             char c = charBuffer.get(pos);
             
             // Classify character
-            CharClass cc = CharClass.classify(c, state, miniState);
+            CharClass cc = CharClass.classify(c, state, miniState, isXML11);
             if (debug) System.err.println("tokenize: c="+c+" cc="+cc);
             
             // Check for illegal characters
@@ -1390,9 +1430,11 @@ public class Tokenizer {
                 externalEntityDecoder.setVersion(value);
             }
             // Update tokenizer's own XML 1.1 state for character validation
-            if ("1.1".equals(value)) {
-                setXML11(true);
-            }
+            boolean versionIsXML11 = "1.1".equals(value);
+            setXML11(versionIsXML11);
+            
+            // Notify consumer so it can track version for entity expansion
+            consumer.xmlVersion(versionIsXML11);
         } else if ("encoding".equals(name)) {
             // Save encoding for later application (after declaration is complete)
             xmlDeclEncoding = value;

@@ -91,6 +91,11 @@ public class MockTokenConsumer implements TokenConsumer {
     @Override
     public void tokenizerState(TokenizerState state) {
     }
+    
+    @Override
+    public void xmlVersion(boolean isXML11) {
+        // No-op for testing - tests don't need to track version
+    }
 
     @Override
     public void receive(Token token, CharBuffer data) throws SAXException {
