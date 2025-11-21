@@ -1529,36 +1529,9 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      */
     private void retokenizeInternalEntity(String entityName, String expandedValue) 
             throws SAXException {
-        // Check if entity contains character references
-        // If so, markup delimiters from those references should be bypassed (XML 1.0 § 4.4.7)
-        EntityDeclaration entity = dtdParser.getGeneralEntity(entityName);
-        boolean bypassMarkup = (entity != null && entity.containsCharacterReferences);
-        
-        if (bypassMarkup) {
-            // Entity contains character/predefined references (e.g., &lt;, &#60;)
-            // Check if the expanded value looks like pure content (no complex markup structure)
-            // If it's simple text-like content, bypass retokenization per XML 1.0 § 4.4.7
-            // Otherwise, retokenize to validate structure (e.g., < in attribute values)
-            
-            boolean looksLikeSimpleContent = !expandedValue.contains("='") && 
-                                             !expandedValue.contains("=\"") &&
-                                             !expandedValue.contains("</");
-            
-            if (looksLikeSimpleContent) {
-                // Simple content like "<foo>" - bypass and emit as character data
-                if (contentHandler != null) {
-                    char[] chars = expandedValue.toCharArray();
-                    contentHandler.characters(chars, 0, chars.length);
-                }
-                
-                // Record for validation (in mixed content models)
-                if (validationEnabled && dtdParser != null) {
-                    recordTextContent(expandedValue);
-                }
-                return;
-            }
-            // Complex structure detected - fall through to retokenization for validation
-        }
+        // TODO: Implement proper character reference bypass per XML 1.0 § 4.4.7
+        // For now, always retokenize to validate structure
+        // This causes test 088 to fail but makes tests 103, 116-120, 182 pass
         
         // Entity does NOT contain character references - any markup delimiters
         // are literal in the entity value and should be recognized as markup.
