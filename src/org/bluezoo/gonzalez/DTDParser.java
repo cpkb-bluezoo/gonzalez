@@ -1644,6 +1644,17 @@ public class DTDParser implements TokenConsumer {
                         defaultValueBuilder.add(new GeneralEntityReference(entityName));
                         break;
                         
+                    case PARAMETERENTITYREF:
+                        // Parameter entity reference in default value - flush text and add reference
+                        if (defaultValueTextBuilder.length() > 0) {
+                            defaultValueBuilder.add(defaultValueTextBuilder.toString());
+                            defaultValueTextBuilder.setLength(0);
+                        }
+                        String paramEntityName = extractString(data);
+                        // Parameter entities are allowed in default values
+                        defaultValueBuilder.add(new ParameterEntityReference(paramEntityName));
+                        break;
+                        
                     case QUOT:
                     case APOS:
                         // Closing quote - finalize default value, save attribute, and return to expecting next attribute

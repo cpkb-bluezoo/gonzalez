@@ -1026,6 +1026,7 @@ class MiniStateTransitionBuilder {
                     .changeState(TokenizerState.DOCTYPE_INTERNAL)
                     .to(MiniState.READY).done()
                 .on(CharClass.AMP).to(MiniState.SEEN_AMP).done()
+                .on(CharClass.PERCENT).to(MiniState.SEEN_PERCENT).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
                        CharClass.LT, CharClass.GT, CharClass.APOS,
@@ -1033,7 +1034,7 @@ class MiniStateTransitionBuilder {
                        CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
-                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                       CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // DOCTYPE_INTERNAL_QUOTED_QUOT:ACCUMULATING_CDATA - Greedy CDATA accumulation
@@ -1094,7 +1095,16 @@ class MiniStateTransitionBuilder {
         // Parameter entity references in DOCTYPE_INTERNAL_QUOTED_QUOT
         builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
             .miniState(MiniState.SEEN_PERCENT)
-                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done();
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done()
+                .onAny(CharClass.NAME_CHAR, CharClass.CHAR_DATA, CharClass.DIGIT, CharClass.HEX_DIGIT,
+                       CharClass.WHITESPACE, CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.APOS,
+                       CharClass.QUOT, CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
+                       CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
+                       CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
+                       CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                    // Not a param entity ref - treat % as literal and continue with this char
+                    .to(MiniState.ACCUMULATING_CDATA).done();
         
         builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT)
             .miniState(MiniState.ACCUMULATING_PARAM_ENTITY_NAME)
@@ -1115,6 +1125,7 @@ class MiniStateTransitionBuilder {
                     .changeState(TokenizerState.DOCTYPE_INTERNAL)
                     .to(MiniState.READY).done()
                 .on(CharClass.AMP).to(MiniState.SEEN_AMP).done()
+                .on(CharClass.PERCENT).to(MiniState.SEEN_PERCENT).done()
                 .onAny(CharClass.NAME_START_CHAR, CharClass.NAME_CHAR, CharClass.CHAR_DATA,
                        CharClass.DIGIT, CharClass.HEX_DIGIT, CharClass.WHITESPACE,
                        CharClass.LT, CharClass.GT, CharClass.QUOT,
@@ -1122,7 +1133,7 @@ class MiniStateTransitionBuilder {
                        CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
-                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                       CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // DOCTYPE_INTERNAL_QUOTED_APOS:ACCUMULATING_CDATA - Greedy CDATA accumulation
@@ -1183,7 +1194,16 @@ class MiniStateTransitionBuilder {
         // Parameter entity references in DOCTYPE_INTERNAL_QUOTED_APOS
         builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
             .miniState(MiniState.SEEN_PERCENT)
-                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done();
+                .on(CharClass.NAME_START_CHAR).to(MiniState.ACCUMULATING_PARAM_ENTITY_NAME).done()
+                .onAny(CharClass.NAME_CHAR, CharClass.CHAR_DATA, CharClass.DIGIT, CharClass.HEX_DIGIT,
+                       CharClass.WHITESPACE, CharClass.LT, CharClass.GT, CharClass.AMP, CharClass.APOS,
+                       CharClass.QUOT, CharClass.EQ, CharClass.SEMICOLON, CharClass.HASH,
+                       CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
+                       CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
+                       CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                    // Not a param entity ref - treat % as literal and continue with this char
+                    .to(MiniState.ACCUMULATING_CDATA).done();
         
         builder.state(TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS)
             .miniState(MiniState.ACCUMULATING_PARAM_ENTITY_NAME)

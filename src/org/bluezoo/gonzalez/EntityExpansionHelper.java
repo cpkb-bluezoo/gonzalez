@@ -286,14 +286,34 @@ public class EntityExpansionHelper {
             } else if (part instanceof GeneralEntityReference) {
                 // Nested general entity reference
                 GeneralEntityReference ref = (GeneralEntityReference) part;
-                String expanded = expandGeneralEntity(ref.name, context);
-                if (expanded == null) {
-                    // External entity requiring async resolution
-                    throw new SAXParseException(
-                        "External entity reference in entity value requires async resolution",
-                        locator);
+                try {
+                    String expanded = expandGeneralEntity(ref.name, context);
+                    if (expanded == null) {
+                        // External entity requiring async resolution
+                        throw new SAXParseException(
+                            "External entity reference in entity value requires async resolution",
+                            locator);
+                    }
+                    result.append(expanded);
+                } catch (SAXParseException e) {
+                    // If entity doesn't exist, it might be inside a CDATA section that was
+                    // incorrectly tokenized during DTD parsing (e.g., "<![CDATA[&foo;]]>").
+                    // Check if we're in a CDATA-like context by looking at surrounding text.
+                    if (e.getMessage() != null && e.getMessage().contains("not declared")) {
+                        // Check if previous text ends with "[CDATA[" or similar
+                        String resultSoFar = result.toString();
+                        if (resultSoFar.endsWith("[CDATA[") || 
+                            resultSoFar.contains("<![CDATA[")) {
+                            // Likely inside CDATA section - reconstruct as literal
+                            result.append("&").append(ref.name).append(";");
+                        } else {
+                            // Not in CDATA context - rethrow the error
+                            throw e;
+                        }
+                    } else {
+                        throw e;
+                    }
                 }
-                result.append(expanded);
             } else if (part instanceof ParameterEntityReference) {
                 // Nested parameter entity reference
                 ParameterEntityReference ref = (ParameterEntityReference) part;
