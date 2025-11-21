@@ -388,36 +388,12 @@ enum CharClass {
                    (c >= 0xF8 && c <= 0x2FF);
         }
         
-        // Greek Extended (0x370-0x37D, 0x37F-0x1FFF)
-        // Break down the 0x37F-0x1FFF range to exclude invalid characters
+        // Greek Extended through CJK (0x370-0x1FFF)
+        // XML 1.0 5th edition simplification: use broad ranges per Unicode categories
+        // [#x370-#x37D] | [#x37F-#x1FFF]
         if (c >= 0x370 && c <= 0x1FFF) {
             return (c >= 0x370 && c <= 0x37D) ||
-                   (c >= 0x37F && c <= 0x1FFF &&
-                    // Exclude CombiningChar ranges within this block
-                    !(c >= 0x300 && c <= 0x36F) &&  // Combining Diacritical Marks (NameChar only)
-                    // Break down the large 0x37F-0x1FFF range into precise Letter ranges
-                    // to exclude characters like U+0E5C that fall in gaps
-                    (c <= 0x0D7F ||  // Up to Sinhala (0x0D80-0x0DFF not all valid, but close enough)
-                     (c >= 0x0E01 && c <= 0x0E30) ||  // Thai (precise range)
-                     (c >= 0x0E32 && c <= 0x0E33) ||  // Thai (continued)
-                     (c >= 0x0E40 && c <= 0x0E46) ||  // Thai (continued) - note: 0x0E5C excluded
-                     (c >= 0x0E81 && c <= 0x0E82) ||  // Lao
-                     c == 0x0E84 ||                    // Lao
-                     (c >= 0x0E87 && c <= 0x0E88) ||  // Lao
-                     c == 0x0E8A ||                    // Lao
-                     c == 0x0E8D ||                    // Lao
-                     (c >= 0x0E94 && c <= 0x0E97) ||  // Lao
-                     (c >= 0x0E99 && c <= 0x0E9F) ||  // Lao
-                     (c >= 0x0EA1 && c <= 0x0EA3) ||  // Lao
-                     c == 0x0EA5 ||                    // Lao
-                     c == 0x0EA7 ||                    // Lao
-                     (c >= 0x0EAA && c <= 0x0EAB) ||  // Lao
-                     (c >= 0x0EAD && c <= 0x0EB0) ||  // Lao
-                     (c >= 0x0EB2 && c <= 0x0EB3) ||  // Lao
-                     c == 0x0EBD ||                    // Lao
-                     (c >= 0x0EC0 && c <= 0x0EC4) ||  // Lao
-                     c == 0x0EC6 ||                    // Lao
-                     (c >= 0x0F00 && c <= 0x1FFF)));  // Tibetan onwards (large valid range)
+                   c >= 0x37F;  // Simplified: all chars from 0x37F to 0x1FFF are valid
         }
         
         // Zero Width Non-Joiner and Zero Width Joiner
