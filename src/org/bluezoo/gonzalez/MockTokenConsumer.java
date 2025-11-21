@@ -89,6 +89,10 @@ public class MockTokenConsumer implements TokenConsumer {
     }
 
     @Override
+    public void tokenizerState(TokenizerState state) {
+    }
+
+    @Override
     public void receive(Token token, CharBuffer data) throws SAXException {
         String dataString = null;
         if (data != null) {
