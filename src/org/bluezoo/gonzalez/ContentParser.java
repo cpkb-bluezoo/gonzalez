@@ -608,6 +608,9 @@ public class ContentParser implements TokenConsumer {
             dtdParser.entityStack.push(entry);
         }
         
+        // Increment depth to track that we're processing an external entity
+        externalEntityDepth++;
+        
         try {
             // Create nested tokenizer and decoder for external entity
             // Determine the initial state for the entity:
@@ -660,6 +663,9 @@ public class ContentParser implements TokenConsumer {
             // Entity processing complete, continue with main stream
             
         } finally {
+            // Decrement depth
+            externalEntityDepth--;
+            
             // Pop context from stack
             if (dtdParser != null && !dtdParser.entityStack.isEmpty() && 
                 dtdParser.entityStack.peek() == entry) {

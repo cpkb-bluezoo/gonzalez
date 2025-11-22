@@ -396,7 +396,15 @@ public class DTDParser implements TokenConsumer {
                 
             case IN_ELEMENTDECL:
                 // Handle parameter entity expansion before delegating
+                // BUT: check WFC: PEs in Internal Subset first
                 if (token == Token.PARAMETERENTITYREF) {
+                    // In internal subset, PE references are not allowed within declarations
+                    // Check if we're processing the internal subset (not an external entity)
+                    if (!xmlParser.isProcessingExternalEntity()) {
+                        throw new SAXParseException(
+                            "Parameter entity references are not allowed within markup declarations " +
+                            "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                    }
                     String refName = extractString(data);
                     expandParameterEntityInline(refName);
                 } else {
@@ -406,7 +414,15 @@ public class DTDParser implements TokenConsumer {
                 
             case IN_ATTLISTDECL:
                 // Handle parameter entity expansion before delegating
+                // BUT: check WFC: PEs in Internal Subset first
                 if (token == Token.PARAMETERENTITYREF) {
+                    // In internal subset, PE references are not allowed within declarations
+                    // Check if we're processing the internal subset (not an external entity)
+                    if (!xmlParser.isProcessingExternalEntity()) {
+                        throw new SAXParseException(
+                            "Parameter entity references are not allowed within markup declarations " +
+                            "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                    }
                     String refName = extractString(data);
                     expandParameterEntityInline(refName);
                 } else if (attListDeclParser != null && attListDeclParser.handleToken(token, data)) {
@@ -418,7 +434,15 @@ public class DTDParser implements TokenConsumer {
                 
             case IN_ENTITYDECL:
                 // Handle parameter entity expansion before delegating
+                // BUT: check WFC: PEs in Internal Subset first
                 if (token == Token.PARAMETERENTITYREF) {
+                    // In internal subset, PE references are not allowed within declarations
+                    // Check if we're processing the internal subset (not an external entity)
+                    if (!xmlParser.isProcessingExternalEntity()) {
+                        throw new SAXParseException(
+                            "Parameter entity references are not allowed within markup declarations " +
+                            "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                    }
                     String refName = extractString(data);
                     expandParameterEntityInline(refName);
                 } else if (entityDeclParser != null && entityDeclParser.handleToken(token, data)) {
@@ -430,7 +454,15 @@ public class DTDParser implements TokenConsumer {
             
             case IN_NOTATIONDECL:
                 // Handle parameter entity expansion before delegating
+                // BUT: check WFC: PEs in Internal Subset first
                 if (token == Token.PARAMETERENTITYREF) {
+                    // In internal subset, PE references are not allowed within declarations
+                    // Check if we're processing the internal subset (not an external entity)
+                    if (!xmlParser.isProcessingExternalEntity()) {
+                        throw new SAXParseException(
+                            "Parameter entity references are not allowed within markup declarations " +
+                            "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                    }
                     String refName = extractString(data);
                     expandParameterEntityInline(refName);
                 } else if (notationDeclParser != null && notationDeclParser.handleToken(token, data)) {
