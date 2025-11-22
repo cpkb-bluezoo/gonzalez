@@ -813,7 +813,7 @@ public class Tokenizer {
         }
         
         CharBuffer window = CharBuffer.wrap(chars);
-        consumer.receive(Token.ENTITYREF, window);
+        consumer.receive(Token.CHARENTITYREF, window);
     }
     
     // ===== Core Tokenization Logic =====
@@ -1043,11 +1043,11 @@ public class Tokenizer {
                             if (token == Token.GENERALENTITYREF) {
                                 int predefinedIndex = getPredefinedEntityIndex(tokenStart, tokenEnd);
                                 if (predefinedIndex >= 0) {
-                                    // It's predefined - emit ENTITYREF with window into predefined text
+                                    // It's predefined - emit PREDEFENTITYREF with window into predefined text
                                     CharBuffer window = PREDEFINED_ENTITY_TEXT.duplicate();
                                     window.position(predefinedIndex);
                                     window.limit(predefinedIndex + 1);
-                                    consumer.receive(Token.ENTITYREF, window);
+                                    consumer.receive(Token.PREDEFENTITYREF, window);
                                 } else {
                                     // General entity - emit name only
                                     emitTokenWindow(Token.GENERALENTITYREF, tokenStart, tokenLength);                                }

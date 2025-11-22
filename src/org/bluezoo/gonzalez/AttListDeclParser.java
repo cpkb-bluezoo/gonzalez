@@ -421,8 +421,13 @@ class AttListDeclParser {
                         defaultValueTextBuilder.append(extractString(data));
                         break;
                         
-                    case ENTITYREF:
-                        // Predefined entity or character reference (already expanded)
+                    case CHARENTITYREF:
+                        // Character reference (already expanded) - e.g., &#60; -> '<'
+                        defaultValueTextBuilder.append(extractString(data));
+                        break;
+                        
+                    case PREDEFENTITYREF:
+                        // Predefined entity reference (already expanded) - e.g., &lt; -> '<'
                         defaultValueTextBuilder.append(extractString(data));
                         break;
                         

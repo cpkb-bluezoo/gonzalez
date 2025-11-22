@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" ?>
-<testsuite errors="0" failures="22" hostname="MBJL7V6TV54K" name="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" skipped="0" tests="364" time="0.326" timestamp="2025-11-22T14:21:09">
+<testsuite errors="0" failures="21" hostname="MBJL7V6TV54K" name="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" skipped="0" tests="364" time="0.347" timestamp="2025-11-22T15:38:36">
   <properties>
     <property name="gopherProxySet" value="false" />
     <property name="awt.toolkit" value="sun.lwawt.macosx.LWCToolkit" />
@@ -22,7 +22,7 @@
     <property name="sun.java.launcher" value="SUN_STANDARD" />
     <property name="user.country" value="GB" />
     <property name="sun.boot.library.path" value="/Library/Java/JavaVirtualMachines/amazon-corretto-11.jdk/Contents/Home/lib" />
-    <property name="sun.java.command" value="org.apache.tools.ant.taskdefs.optional.junit.JUnitTestRunner org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest skipNonTests=false filtertrace=true haltOnError=false haltOnFailure=false formatter=org.apache.tools.ant.taskdefs.optional.junit.SummaryJUnitResultFormatter showoutput=false outputtoformatters=true logfailedtests=true threadid=0 logtestlistenerevents=false formatter=org.apache.tools.ant.taskdefs.optional.junit.XMLJUnitResultFormatter,/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/test/junit/results/TEST-org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.xml formatter=org.apache.tools.ant.taskdefs.optional.junit.PlainJUnitResultFormatter crashfile=/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/junitvmwatcher218526715952783028.properties propsfile=/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/junit6408119361580113369.properties" />
+    <property name="sun.java.command" value="org.apache.tools.ant.taskdefs.optional.junit.JUnitTestRunner org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest skipNonTests=false filtertrace=true haltOnError=false haltOnFailure=false formatter=org.apache.tools.ant.taskdefs.optional.junit.SummaryJUnitResultFormatter showoutput=false outputtoformatters=true logfailedtests=true threadid=0 logtestlistenerevents=false formatter=org.apache.tools.ant.taskdefs.optional.junit.XMLJUnitResultFormatter,/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/test/junit/results/TEST-org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.xml formatter=org.apache.tools.ant.taskdefs.optional.junit.PlainJUnitResultFormatter crashfile=/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/junitvmwatcher14403096433639296128.properties propsfile=/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/junit17016379250506334748.properties" />
     <property name="jdk.debug" value="release" />
     <property name="test" value="/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/test" />
     <property name="sun.cpu.endian" value="little" />
@@ -35,7 +35,7 @@
     <property name="basedir" value="/Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez" />
     <property name="hamcrest.jar" value="hamcrest-3.0.jar" />
     <property name="file.separator" value="/" />
-    <property name="java.vm.compressedOopsMode" value="Zero based" />
+    <property name="java.vm.compressedOopsMode" value="Non-zero based" />
     <property name="line.separator" value="&#xa;" />
     <property name="ant.java.version" value="11" />
     <property name="java.specification.name" value="Java Platform API Specification" />
@@ -78,13 +78,13 @@
     <property name="java.class.version" value="55.0" />
     <property name="ant.project.default-target" value="dist" />
   </properties>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-001 (not-wf)]" time="0.008" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-002 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-001 (not-wf)]" time="0.009" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-002 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-003 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-004 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-005 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-005 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-006 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-007 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-007 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-008 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-009 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-010 (not-wf)]" time="0.0" />
@@ -94,84 +94,84 @@
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-014 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-015 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-016 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-017 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-017 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-018 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-019 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-020 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-021 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-020 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-021 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-022 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-023 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-024 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-025 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-026 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-027 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-028 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-028 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-029 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-030 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-031 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-032 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-033 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-030 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-031 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-032 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-033 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-034 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-035 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-036 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-037 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-038 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-039 (not-wf)]" time="0.005" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-040 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-039 (not-wf)]" time="0.002" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-040 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-041 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-042 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-043 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-042 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-043 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-044 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-045 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-045 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-046 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-047 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-048 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-049 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-050 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-050 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-051 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-052 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-053 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-054 (not-wf)]" time="0.002" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-055 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-054 (not-wf)]" time="0.003" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-055 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-056 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-057 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-058 (not-wf)]" time="0.002" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-059 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-060 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-061 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-062 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-062 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-063 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-064 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-065 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-065 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-066 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-067 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-068 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-069 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-070 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-071 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-068 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-069 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-070 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-071 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-072 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-073 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-074 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-075 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-074 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-075 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-076 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-077 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-077 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-078 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-079 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-080 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-080 (not-wf)]" time="0.002" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-081 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-082 (not-wf)]" time="0.002" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-083 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-082 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-083 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-084 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-085 (not-wf)]" time="0.002" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-086 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-087 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-088 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-088 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-089 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-090 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-091 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-091 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-092 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-093 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-094 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-093 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-094 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-095 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-096 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-097 (not-wf)]" time="0.001" />
@@ -182,8 +182,8 @@
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-102 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-103 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-104 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-105 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-106 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-105 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-106 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-107 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-108 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-109 (not-wf)]" time="0.0" />
@@ -195,57 +195,57 @@
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-115 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-116 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-117 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-118 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-119 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-118 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-119 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-120 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-121 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-122 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-123 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-124 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-125 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-125 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-126 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-127 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-128 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-129 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-130 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-130 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-131 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-132 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-133 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-134 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-135 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-136 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-136 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-137 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-138 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-139 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-140 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-141 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-142 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-140 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-141 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-142 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-143 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-144 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-144 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-145 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-146 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-147 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-147 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-148 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-149 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-150 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-151 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-152 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-153 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-153 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-154 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-155 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-156 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-157 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-158 (not-wf)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-158 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-159 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-160 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-160 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-161 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-162 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-162 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-163 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-164 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-165 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-166 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-167 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-168 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-168 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-169 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-170 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-171 (not-wf)]" time="0.0" />
@@ -259,16 +259,16 @@
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-179 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-180 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-181 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-182 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-182 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-183 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-184 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-185 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-185 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-sa-186 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-001 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-002 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-003 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-003 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-004 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-005 (error)]" time="0.003">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-005 (error)]" time="0.004">
     <failure message="[not-wf-not-sa-005] null: Tests the Entity Declared VC by referring to an&#xa;    undefined parameter entity within an external entity." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [not-wf-not-sa-005] null: Tests the Entity Declared VC by referring to an
     undefined parameter entity within an external entity.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
@@ -276,8 +276,8 @@
 	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
 </failure>
   </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-006 (not-wf)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-007 (not-wf)]" time="0.005">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-006 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-007 (not-wf)]" time="0.006">
     <failure message="[not-wf-not-sa-007] NullPointerException: null: A &lt;!DOCTYPE ...&gt; declaration may not begin any external&#xa;    entity; it&apos;s only found once, in the document entity." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [not-wf-not-sa-007] NullPointerException: null: A &lt;!DOCTYPE ...&gt; declaration may not begin any external
     entity; it&apos;s only found once, in the document entity.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
@@ -285,7 +285,7 @@
 	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
 </failure>
   </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-008 (not-wf)]" time="0.0">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-not-sa-008 (not-wf)]" time="0.002">
     <failure message="[not-wf-not-sa-008] Expected not-wf but parsed successfully: In DTDs, the &apos;%&apos; character must be part of a parameter&#xa;    entity reference." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [not-wf-not-sa-008] Expected not-wf but parsed successfully: In DTDs, the &apos;%&apos; character must be part of a parameter
     entity reference.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
@@ -303,7 +303,7 @@
 </failure>
   </testcase>
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-ext-sa-001 (not-wf)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-ext-sa-002 (not-wf)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-ext-sa-002 (not-wf)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[not-wf-ext-sa-003 (not-wf)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[invalid--002 (invalid)]" time="0.001">
     <failure message="[invalid--002] Got fatal error instead of validation error: Error expanding parameter entity %e;: Tests the &quot;Proper Group/PE Nesting&quot; validity constraint by&#xa;    fragmenting a content model between two parameter entities." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [invalid--002] Got fatal error instead of validation error: Error expanding parameter entity %e;: Tests the &quot;Proper Group/PE Nesting&quot; validity constraint by
@@ -314,8 +314,8 @@
 </failure>
   </testcase>
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[invalid--005 (invalid)]" time="0.004" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[invalid--006 (invalid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[invalid-not-sa-022 (invalid)]" time="0.002">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[invalid--006 (invalid)]" time="0.013" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[invalid-not-sa-022 (invalid)]" time="0.001">
     <failure message="[invalid-not-sa-022] Got fatal error instead of validation error: Error expanding parameter entity %e;: Test the &quot;Proper Conditional Section/ PE Nesting&quot; validity constraint." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [invalid-not-sa-022] Got fatal error instead of validation error: Error expanding parameter entity %e;: Test the &quot;Proper Conditional Section/ PE Nesting&quot; validity constraint.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
 	at jdk.internal.reflect.GeneratedMethodAccessor1.invoke(Unknown Source)
@@ -326,135 +326,125 @@
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-002 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-003 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-004 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-005 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-006 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-005 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-006 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-007 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-008 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-009 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-010 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-009 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-010 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-011 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-012 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-012 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-013 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-014 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-014 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-015 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-016 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-017 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-018 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-019 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-018 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-019 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-020 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-021 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-021 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-022 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-023 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-024 (valid)]" time="0.002" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-024 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-025 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-026 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-027 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-028 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-028 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-029 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-030 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-031 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-031 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-032 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-033 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-033 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-034 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-035 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-036 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-036 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-037 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-038 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-038 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-039 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-040 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-041 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-042 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-041 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-042 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-043 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-044 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-045 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-046 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-047 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-046 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-047 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-048 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-049 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-050 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-051 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-052 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-053 (valid)]" time="0.002" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-050 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-051 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-052 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-053 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-054 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-055 (valid)]" time="0.003" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-056 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-057 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-055 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-056 (valid)]" time="0.004" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-057 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-058 (valid)]" time="0.006" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-059 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-060 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-059 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-060 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-061 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-062 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-063 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-063 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-064 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-065 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-065 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-066 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-067 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-068 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-068 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-069 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-070 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-071 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-072 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-073 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-074 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-075 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-073 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-074 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-075 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-076 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-077 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-078 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-079 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-080 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-079 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-080 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-081 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-082 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-082 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-083 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-084 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-085 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-086 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-086 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-087 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-088 (valid)]" time="0.002">
-    <failure message="[valid-sa-088] Expected valid but got error: Entity &apos;&amp;e;&apos; creates unbalanced markup: element &apos;foo&apos; opened within entity but not closed (WFC: Parsed Entity): Tests whether entity references in internal entities are&#xa;    expanded late enough, by relying on correct handling to&#xa;    make the expanded text be valid.  (If it&apos;s expanded too&#xa;    early, the entity will parse as an element that&apos;s not&#xa;    valid in that context.)" type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-sa-088] Expected valid but got error: Entity &apos;&amp;e;&apos; creates unbalanced markup: element &apos;foo&apos; opened within entity but not closed (WFC: Parsed Entity): Tests whether entity references in internal entities are
-    expanded late enough, by relying on correct handling to
-    make the expanded text be valid.  (If it&apos;s expanded too
-    early, the entity will parse as an element that&apos;s not
-    valid in that context.)
-	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
-	at jdk.internal.reflect.GeneratedMethodAccessor1.invoke(Unknown Source)
-	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
-</failure>
-  </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-089 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-088 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-089 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-090 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-091 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-091 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-092 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-093 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-094 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-095 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-096 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-097 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-097 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-098 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-099 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-100 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-101 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-102 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-102 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-103 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-104 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-104 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-105 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-106 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-106 (valid)]" time="0.002" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-107 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-108 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-109 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-108 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-109 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-110 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-111 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-112 (valid)]" time="0.003" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-112 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-113 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-114 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-115 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-116 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-117 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-114 (valid)]" time="0.002" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-115 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-116 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-117 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-118 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-sa-119 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-001 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-002 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-003 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-004 (valid)]" time="0.001">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-002 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-003 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-004 (valid)]" time="0.004">
     <failure message="[valid-not-sa-004] Expected valid but got error: Unexpected token in entity value: START_ATTLISTDECL: Expands an external parameter entity in two different ways,&#xa;    with one of them declaring an attribute." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-004] Expected valid but got error: Unexpected token in entity value: START_ATTLISTDECL: Expands an external parameter entity in two different ways,
     with one of them declaring an attribute.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
@@ -462,8 +452,8 @@
 	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
 </failure>
   </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-005 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-006 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-005 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-006 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-007 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-008 (valid)]" time="0.001">
     <failure message="[valid-not-sa-008] Expected valid but got error: Expected whitespace between public ID and system ID: Test demonstrates that an external identifier may include a public identifier." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-008] Expected valid but got error: Expected whitespace between public ID and system ID: Test demonstrates that an external identifier may include a public identifier.
@@ -479,8 +469,8 @@
 	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
 </failure>
   </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-010 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-011 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-010 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-011 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-012 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-013 (valid)]" time="0.001">
     <failure message="[valid-not-sa-013] Expected valid but got error: Invalid attribute type in &lt;!ATTLIST: CDATA: Test demonstrates the use of the conditional section INCLUDE that will include its contents as part of the DTD." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-013] Expected valid but got error: Invalid attribute type in &lt;!ATTLIST: CDATA: Test demonstrates the use of the conditional section INCLUDE that will include its contents as part of the DTD.
@@ -496,14 +486,14 @@
 	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
 </failure>
   </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-015 (valid)]" time="0.002">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-015 (valid)]" time="0.001">
     <failure message="[valid-not-sa-015] Expected valid but got error: Undefined parameter entity: %e;: Test demonstrates the use of the conditonal section IGNORE the will ignore its content from being part of the DTD.  The keyword is a parameter-entity reference." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-015] Expected valid but got error: Undefined parameter entity: %e;: Test demonstrates the use of the conditonal section IGNORE the will ignore its content from being part of the DTD.  The keyword is a parameter-entity reference.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
 	at jdk.internal.reflect.GeneratedMethodAccessor1.invoke(Unknown Source)
 	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
 </failure>
   </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-016 (valid)]" time="0.001">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-016 (valid)]" time="0.0">
     <failure message="[valid-not-sa-016] Expected valid but got error: Unexpected character &apos;%&apos; (PERCENT) in DOCTYPE_INTERNAL:SEEN_LT_BANG_OPEN_BRACKET: Test demonstrates the use of the conditional section INCLUDE that will include its contents as part of the DTD.  The keyword is a parameter-entity reference." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-016] Expected valid but got error: Unexpected character &apos;%&apos; (PERCENT) in DOCTYPE_INTERNAL:SEEN_LT_BANG_OPEN_BRACKET: Test demonstrates the use of the conditional section INCLUDE that will include its contents as part of the DTD.  The keyword is a parameter-entity reference.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
 	at jdk.internal.reflect.GeneratedMethodAccessor1.invoke(Unknown Source)
@@ -511,7 +501,7 @@
 </failure>
   </testcase>
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-017 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-018 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-018 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-019 (valid)]" time="0.001">
     <failure message="[valid-not-sa-019] Expected valid but got error: Error expanding parameter entity %e;: Test demonstrates that a parameter entity will be expanded with spaces on either side." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-019] Expected valid but got error: Error expanding parameter entity %e;: Test demonstrates that a parameter entity will be expanded with spaces on either side.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
@@ -541,8 +531,8 @@
 </failure>
   </testcase>
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-024 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-025 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-026 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-025 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-026 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-027 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-028 (valid)]" time="0.0">
     <failure message="[valid-not-sa-028] Expected valid but got error: Invalid attribute type in &lt;!ATTLIST: CDATA: Test demonstrates the use of the conditional section INCLUDE that will include its contents." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-028] Expected valid but got error: Invalid attribute type in &lt;!ATTLIST: CDATA: Test demonstrates the use of the conditional section INCLUDE that will include its contents.
@@ -551,7 +541,7 @@
 	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
 </failure>
   </testcase>
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-029 (valid)]" time="0.001">
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-029 (valid)]" time="0.0">
     <failure message="[valid-not-sa-029] Expected valid but got error: Unexpected character &apos;&lt;&apos; (LT) in CONDITIONAL_SECTION_IGNORE:READY: Test demonstrates the use of the conditonal section IGNORE the will ignore its content from being used." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-not-sa-029] Expected valid but got error: Unexpected character &apos;&lt;&apos; (LT) in CONDITIONAL_SECTION_IGNORE:READY: Test demonstrates the use of the conditonal section IGNORE the will ignore its content from being used.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
 	at jdk.internal.reflect.GeneratedMethodAccessor1.invoke(Unknown Source)
@@ -566,16 +556,16 @@
 </failure>
   </testcase>
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-not-sa-031 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-001 (valid)]" time="0.001" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-002 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-001 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-002 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-003 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-004 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-005 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-006 (valid)]" time="0.001" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-007 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-008 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-009 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-011 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-009 (valid)]" time="0.001" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-011 (valid)]" time="0.0" />
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-012 (valid)]" time="0.0">
     <failure message="[valid-ext-sa-012] Expected valid but got error: External entity reference in entity value requires async resolution: Test demonstrates both internal and external entities and that processing of entity references may be required to produce the correct replacement text." type="junit.framework.AssertionFailedError">junit.framework.AssertionFailedError: [valid-ext-sa-012] Expected valid but got error: External entity reference in entity value requires async resolution: Test demonstrates both internal and external entities and that processing of entity references may be required to produce the correct replacement text.
 	at org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest.runTest(JamesClarkXmlTestConformanceTest.java:302)
@@ -584,12 +574,12 @@
 </failure>
   </testcase>
   <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-013 (valid)]" time="0.0" />
-  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-014 (valid)]" time="0.0" />
+  <testcase classname="org.bluezoo.gonzalez.JamesClarkXmlTestConformanceTest" name="runTest[valid-ext-sa-014 (valid)]" time="0.001" />
   <system-out><![CDATA[Loaded 364 tests from James Clark xmltest suite
 
 === James Clark xmltest Report ===
-Passed: 342 / 364 (94.0%)
-Failed: 22 / 364 (6.0%)
+Passed: 343 / 364 (94.2%)
+Failed: 21 / 364 (5.8%)
 
 Detailed report written to: /Users/cburdess@mimecast.com/cpkb-bluezoo/gonzalez/test/output/james-clark-xmltest-report.txt
 ]]></system-out>

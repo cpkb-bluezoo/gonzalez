@@ -35,7 +35,8 @@ public enum Token {
     S(true), // whitespace
     NAME(true), // name token
     CDATA(true), // character data
-    ENTITYREF(true), // entity reference replacement text (e.g., &amp; -> '&', &lt; -> '<', &#65; -> 'A')
+    CHARENTITYREF(true), // character reference replacement text (e.g., &#60; -> '<', &#65; -> 'A')
+    PREDEFENTITYREF(true), // predefined entity reference replacement text (e.g., &amp; -> '&', &lt; -> '<')
     GENERALENTITYREF(true), // general entity reference &name; - CharBuffer contains entity name
     PARAMETERENTITYREF(true), // parameter entity reference %name; - CharBuffer contains entity name
     COLON(false), // ':'

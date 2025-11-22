@@ -187,10 +187,16 @@ class EntityDeclParser {
                         // Accumulate text
                         entityValueTextBuilder.append(extractString(data));
                         break;
-                    case ENTITYREF:
-                        // Predefined entity or character reference (already expanded)
-                        // Mark that this entity contains character/predefined references
-                        // Per XML 1.0 § 4.4.8, markup delimiters from references are bypassed
+                    case CHARENTITYREF:
+                        // Character reference (already expanded) - e.g., &#60; -> '<'
+                        // These are expanded immediately during DTD parsing per XML 1.0 § 4.4.4
+                        // and do NOT trigger the bypass rule
+                        entityValueTextBuilder.append(extractString(data));
+                        break;
+                    case PREDEFENTITYREF:
+                        // Predefined entity reference (already expanded) - e.g., &lt; -> '<'
+                        // Per XML 1.0 § 4.4.8, markup delimiters from predefined entity
+                        // references are bypassed (not recognized as markup)
                         currentEntity.containsCharacterReferences = true;
                         entityValueTextBuilder.append(extractString(data));
                         break;

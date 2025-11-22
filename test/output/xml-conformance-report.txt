@@ -2,12 +2,12 @@ XML Conformance Test Report
 ============================
 
 Total tests: 912
-Passed: 801 (87.8%)
-Failed: 111 (12.2%)
+Passed: 802 (87.9%)
+Failed: 110 (12.1%)
 
 Results by Suite:
 ----------------
-James Clark xmltest: 343/364 passed (94.2%)
+James Clark xmltest: 344/364 passed (94.5%)
 eduni/errata-2e: 25/34 passed (73.5%)
 eduni/errata-3e: 11/13 passed (84.6%)
 eduni/errata-4e: 357/392 passed (91.1%)
@@ -709,8 +709,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
     Description: Tests whether character references in internal entities are
     expanded early enough, by relying on correct handling to
     make the entity be well formed.
-[FAIL] valid-sa-088 | Expected: valid | Actual: not-wf | 088.xml
-    Expected valid but got error: Entity '&e;' creates unbalanced markup: element 'foo' opened within entity but not closed (WFC: Parsed Entity)
+[PASS] valid-sa-088 | Expected: valid | Actual: valid (parsed successfully) | 088.xml
     Description: Tests whether entity references in internal entities are
     expanded late enough, by relying on correct handling to
     make the expanded text be valid.  (If it's expanded too

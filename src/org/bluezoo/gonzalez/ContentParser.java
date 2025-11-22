@@ -1152,8 +1152,11 @@ public class ContentParser implements TokenConsumer {
         } else if (token == Token.S) {
             // Whitespace in attribute value
             currentAttributeValue.append(extractString(data));
-        } else if (token == Token.ENTITYREF) {
-            // Predefined entity or character reference in attribute value (already expanded)
+        } else if (token == Token.CHARENTITYREF) {
+            // Character reference in attribute value (already expanded) - e.g., &#60; -> '<'
+            currentAttributeValue.append(extractString(data));
+        } else if (token == Token.PREDEFENTITYREF) {
+            // Predefined entity reference in attribute value (already expanded) - e.g., &lt; -> '<'
             currentAttributeValue.append(extractString(data));
         } else if (token == Token.GENERALENTITYREF) {
             // General entity reference: &name;
@@ -1189,17 +1192,31 @@ public class ContentParser implements TokenConsumer {
                 }
                 break;
                 
-            case ENTITYREF:
-                // Predefined entity or character reference (already expanded)
-                String expandedText = extractString(data);
+            case CHARENTITYREF:
+                // Character reference (already expanded) - e.g., &#60; -> '<'
+                String charRefText = extractString(data);
                 
                 // Record for validation
                 if (validationEnabled && dtdParser != null) {
-                    recordTextContent(expandedText);
+                    recordTextContent(charRefText);
                 }
                 
                 if (contentHandler != null) {
-                    contentHandler.characters(expandedText.toCharArray(), 0, expandedText.length());
+                    contentHandler.characters(charRefText.toCharArray(), 0, charRefText.length());
+                }
+                break;
+                
+            case PREDEFENTITYREF:
+                // Predefined entity reference (already expanded) - e.g., &lt; -> '<'
+                String predefRefText = extractString(data);
+                
+                // Record for validation
+                if (validationEnabled && dtdParser != null) {
+                    recordTextContent(predefRefText);
+                }
+                
+                if (contentHandler != null) {
+                    contentHandler.characters(predefRefText.toCharArray(), 0, predefRefText.length());
                 }
                 break;
                 
@@ -1556,11 +1573,14 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             return;
         }
         
+        // Internal entity - get the entity declaration to check flags
+        EntityDeclaration entity = dtdParser.getGeneralEntity(entityName);
+        
         // Internal entity - re-tokenize the expanded value
         // This ensures markup in the entity value (like <?xml...?>) is properly recognized
         // The tokenizer will start in the current tokenizer state (tracked via tokenizerState callback)
         if (!expandedValue.isEmpty()) {
-            retokenizeInternalEntity(entityName, expandedValue);
+            retokenizeInternalEntity(entityName, expandedValue, entity);
         }
     }
     
@@ -1570,18 +1590,28 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      * Uses the current tokenizer state to ensure the entity is expanded in the
      * correct context (e.g., CONTENT vs DOCTYPE_INTERNAL).
      * 
+     * Implements XML 1.0 § 4.4.7 character reference bypass: If an entity's replacement
+     * text contains character references (like &amp;lt;), the resulting characters are
+     * treated as literal data, not markup.
+     * 
      * Enforces WFC: Parsed Entity - the entity replacement text must not cause
      * unbalanced elements (element start/end tags must match within the entity).
      * 
      * @param entityName the entity name (for error reporting)
      * @param expandedValue the fully expanded entity value
+     * @param entity the entity declaration (to check containsCharacterReferences flag)
      * @throws SAXException if re-tokenization fails or entity causes unbalanced markup
      */
-    private void retokenizeInternalEntity(String entityName, String expandedValue) 
+    private void retokenizeInternalEntity(String entityName, String expandedValue, EntityDeclaration entity) 
             throws SAXException {
-        // TODO: Implement proper character reference bypass per XML 1.0 § 4.4.7
-        // For now, always retokenize to validate structure
-        // This causes test 088 to fail but makes tests 103, 116-120, 182 pass
+        // XML 1.0 § 4.4.7: If entity contains character references, bypass re-tokenization
+        // The characters resulting from character references (like &lt; → <) should be
+        // treated as literal data, not as markup delimiters.
+        if (entity != null && entity.containsCharacterReferences) {
+            // Emit the expanded value as pure character data without re-tokenizing
+            contentHandler.characters(expandedValue.toCharArray(), 0, expandedValue.length());
+            return;
+        }
         
         // Entity does NOT contain character references - any markup delimiters
         // are literal in the entity value and should be recognized as markup.

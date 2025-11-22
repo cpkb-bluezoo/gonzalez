@@ -2,8 +2,8 @@ James Clark xmltest Conformance Test Report
 ===========================================
 
 Total tests: 364
-Passed: 342 (94.0%)
-Failed: 22 (6.0%)
+Passed: 343 (94.2%)
+Failed: 21 (5.8%)
 
 Detailed Results:
 ----------------
@@ -985,8 +985,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
     expanded early enough, by relying on correct handling to
     make the entity be well formed.
 
-[FAIL] valid-sa-088 | Expected: valid | Actual: not-wf | 088.xml
-    Expected valid but got error: Entity '&e;' creates unbalanced markup: element 'foo' opened within entity but not closed (WFC: Parsed Entity)
+[PASS] valid-sa-088 | Expected: valid | Actual: valid (parsed successfully) | 088.xml
     Description: Tests whether entity references in internal entities are
     expanded late enough, by relying on correct handling to
     make the expanded text be valid.  (If it's expanded too
