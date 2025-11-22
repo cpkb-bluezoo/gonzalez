@@ -97,6 +97,9 @@ public class SAXAttributes implements Attributes2 {
   
   // Normalizer for lazy attribute value normalization
   private LazyNormalizedValue.AttributeValueNormalizer normalizer;
+  
+  // QName pool for reusing QName objects
+  private QNamePool qnamePool;
 
   /**
    * Creates a new empty attribute list.
@@ -114,6 +117,15 @@ public class SAXAttributes implements Attributes2 {
    */
   public void setNormalizer(LazyNormalizedValue.AttributeValueNormalizer normalizer) {
     this.normalizer = normalizer;
+  }
+  
+  /**
+   * Sets the QName pool for reusing QName objects.
+   * 
+   * @param pool the QName pool
+   */
+  public void setQNamePool(QNamePool pool) {
+    this.qnamePool = pool;
   }
 
   /**
@@ -147,7 +159,14 @@ public class SAXAttributes implements Attributes2 {
       throw new IllegalArgumentException("Duplicate attribute: " + qName);
     }
     
-    QName qnameKey = new QName(uri, localName, qName);
+    // Get QName from pool (reuse if possible)
+    QName qnameKey;
+    if (qnamePool != null) {
+      qnameKey = qnamePool.get(uri, localName, qName);
+    } else {
+      qnameKey = new QName(uri, localName, qName);
+    }
+    
     Attribute attr = new Attribute(qnameKey, type, value, specified);
 
     // Add to all indices
@@ -246,8 +265,13 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public int getIndex(String uri, String localName) {
-    // Create temporary QName for lookup
-    QName key = new QName(uri, localName, "");
+    // Create temporary QName for lookup (will be pooled if qnamePool is set)
+    QName key;
+    if (qnamePool != null) {
+      key = qnamePool.get(uri, localName, "");
+    } else {
+      key = new QName(uri, localName, "");
+    }
     Attribute attr = qnameMap.get(key);
 
     if (attr == null) {
@@ -272,7 +296,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getType(String uri, String localName) {
-    QName key = new QName(uri, localName, "");
+    QName key;
+    if (qnamePool != null) {
+      key = qnamePool.get(uri, localName, "");
+    } else {
+      key = new QName(uri, localName, "");
+    }
     Attribute attr = qnameMap.get(key);
 
     if (attr == null) {
@@ -313,7 +342,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getValue(String uri, String localName) {
-    QName key = new QName(uri, localName, "");
+    QName key;
+    if (qnamePool != null) {
+      key = qnamePool.get(uri, localName, "");
+    } else {
+      key = new QName(uri, localName, "");
+    }
     Attribute attr = qnameMap.get(key);
     return (attr != null) ? attr.getValueAsString(normalizer) : null;
   }
@@ -359,7 +393,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public boolean isDeclared(String uri, String localName) {
-    QName key = new QName(uri, localName, "");
+    QName key;
+    if (qnamePool != null) {
+      key = qnamePool.get(uri, localName, "");
+    } else {
+      key = new QName(uri, localName, "");
+    }
     Attribute attr = qnameMap.get(key);
 
     if (attr == null) {
@@ -395,7 +434,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public boolean isSpecified(String uri, String localName) {
-    QName key = new QName(uri, localName, "");
+    QName key;
+    if (qnamePool != null) {
+      key = qnamePool.get(uri, localName, "");
+    } else {
+      key = new QName(uri, localName, "");
+    }
     Attribute attr = qnameMap.get(key);
 
     if (attr == null) {

@@ -139,6 +139,11 @@ public class ContentParser implements TokenConsumer {
     private CharSequenceInternPool internPool;
     
     /**
+     * QName pool for reusing QName objects (reduces allocation and hash overhead).
+     */
+    private QNamePool qnamePool;
+    
+    /**
      * Reusable char array for passing character data to SAX handlers.
      * Grown as needed, never shrunk (single-threaded parser, no concurrency concerns).
      * This avoids exposing the CharBuffer's backing array directly (security risk)
@@ -423,6 +428,10 @@ public class ContentParser implements TokenConsumer {
         // Initialize namespace tracker if enabling namespaces
         if (enabled && namespaceTracker == null) {
             namespaceTracker = new NamespaceScopeTracker();
+            // Set intern pool if available
+            if (internPool != null) {
+                namespaceTracker.setInternPool(internPool);
+            }
         }
     }
 
@@ -749,6 +758,11 @@ public class ContentParser implements TokenConsumer {
             internPool = new CharSequenceInternPool();
         }
         
+        // Initialize QName pool
+        if (qnamePool == null) {
+            qnamePool = new QNamePool();
+        }
+        
         // Clear entity resolution stack
         
         // Clear working state
@@ -773,6 +787,10 @@ public class ContentParser implements TokenConsumer {
         // Reset namespace tracker if namespaces enabled
         if (namespacesEnabled && namespaceTracker != null) {
             namespaceTracker.reset();
+            // Update intern pool reference
+            if (internPool != null) {
+                namespaceTracker.setInternPool(internPool);
+            }
         }
     }
 
@@ -974,6 +992,8 @@ throw fatalError("Expected element name after '<', got: " + token);
                             throw new RuntimeException("Normalization failed", e);
                         }
                     });
+                    // Set QName pool for reusing QName objects
+                    attributes.setQNamePool(qnamePool);
                 } else {
                     attributes.clear();
                 }

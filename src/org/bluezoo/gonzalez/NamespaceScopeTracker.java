@@ -96,6 +96,12 @@ public class NamespaceScopeTracker {
     private final Map<String, String> activeBindings;
     
     /**
+     * Optional intern pool for namespace URIs and prefixes.
+     * If set, all strings will be interned for better performance.
+     */
+    private CharSequenceInternPool internPool;
+    
+    /**
      * Creates a new namespace scope tracker with pre-bound xml and xmlns prefixes.
      */
     public NamespaceScopeTracker() {
@@ -109,6 +115,15 @@ public class NamespaceScopeTracker {
         // Pre-bind xml and xmlns prefixes (per XML Namespaces spec)
         declarePrefix("xml", XML_NAMESPACE_URI);
         declarePrefix("xmlns", XMLNS_NAMESPACE_URI);
+    }
+    
+    /**
+     * Sets the intern pool for namespace URIs and prefixes.
+     * 
+     * @param pool the intern pool (null to disable interning)
+     */
+    public void setInternPool(CharSequenceInternPool pool) {
+        this.internPool = pool;
     }
     
     /**
@@ -162,6 +177,12 @@ public class NamespaceScopeTracker {
     public boolean declarePrefix(String prefix, String uri) {
         if (prefix == null || uri == null) {
             throw new IllegalArgumentException("Prefix and URI must not be null");
+        }
+        
+        // Intern strings if pool is available
+        if (internPool != null) {
+            prefix = internPool.intern(prefix);
+            uri = internPool.intern(uri);
         }
         
         Scope scope = scopes.get(scopeDepth);
