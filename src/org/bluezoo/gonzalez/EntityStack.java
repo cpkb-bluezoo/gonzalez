@@ -116,9 +116,12 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
     
     /**
      * Checks if a systemId is currently being resolved (external recursion detection).
+     * Checks ALL entries on the stack, including DTD subsets and entity expansions.
+     * This prevents circular references when the same external file is referenced
+     * multiple times in nested contexts.
      * 
      * @param systemId the system identifier to check
-     * @return true if the systemId is on the stack
+     * @return true if the systemId is currently being resolved
      */
     boolean isResolvingSystemId(String systemId) {
         if (systemId == null) {
@@ -190,11 +193,12 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
                 }
                 // External entities allowed but require async resolution
                 if (entity.isExternal()) {
-                    // Check external ID loop
+                    // Check for systemId recursion
                     if (entity.externalID != null && entity.externalID.systemId != null &&
                         isResolvingSystemId(entity.externalID.systemId)) {
                         throw new SAXParseException(
-                            "Circular external entity reference detected: " + entity.externalID.systemId,
+                            "Circular external entity reference detected: &" + entityName + "; via systemId: " + 
+                            entity.externalID.systemId,
                             locator);
                     }
                     // Return null to signal async resolution needed
@@ -265,11 +269,12 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
         
         // External entities in DTD context require async resolution
         if (entity.isExternal() && context == EntityExpansionContext.DTD) {
-            // Check for external ID circular reference
+            // Check for systemId recursion
             if (entity.externalID != null && entity.externalID.systemId != null &&
                 isResolvingSystemId(entity.externalID.systemId)) {
                 throw new SAXParseException(
-                    "Circular external parameter entity reference detected: " + entity.externalID.systemId,
+                    "Circular external parameter entity reference detected: %" + entityName + "; via systemId: " +
+                    entity.externalID.systemId,
                     locator);
             }
             // Return null to signal async resolution needed

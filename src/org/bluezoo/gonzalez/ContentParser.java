@@ -126,12 +126,6 @@ public class ContentParser implements TokenConsumer {
     private DefaultEntityResolver defaultEntityResolver;
     
     /**
-     * Stack for tracking entity resolution to prevent infinite recursion.
-     * Contains system IDs of entities currently being resolved.
-     */
-    private Set<String> entityResolutionStack;
-    
-    /**
      * Depth of external entity processing.
      * 0 = main document
      * >0 = inside external entity (DTD subset or general entity)
@@ -584,21 +578,6 @@ public class ContentParser implements TokenConsumer {
             resolvedSystemId = systemId; // Fallback to original
         }
         
-        // Check for recursive entity reference
-        if (entityResolutionStack == null) {
-            entityResolutionStack = new HashSet<>();
-        }
-        
-        if (entityResolutionStack.contains(resolvedSystemId)) {
- throw fatalError("Recursive entity reference detected: " + resolvedSystemId);
-        }
-        
-        // Add to stack
-        entityResolutionStack.add(resolvedSystemId);
-        
-        // Increment external entity depth
-        externalEntityDepth++;
-        
         // Get current XML version from DTDParser's entity stack
         // If no DTD parser, assume XML 1.0
         boolean currentVersion = false;
@@ -606,29 +585,22 @@ public class ContentParser implements TokenConsumer {
             currentVersion = dtdParser.entityStack.peek().isXML11;
         }
         
-        // Check for systemId recursion
-        if (entityResolutionStack.contains(resolvedSystemId)) {
-            throw fatalError("Recursive entity reference via systemId: " + resolvedSystemId);
-        }
-        
         // Check for name-based recursion if this is a named entity (not DTD subset)
         if (name != null && dtdParser != null) {
-            boolean isParameterEntity = isDTDSubset; // DTD subsets are parameter entity expansions
+            boolean isParameterEntity = isDTDSubset;
             for (EntityStackEntry ctx : dtdParser.entityStack) {
-                if (ctx.isParameterEntity == isParameterEntity && name.equals(ctx.entityName)) {
+                // Only check named entities - DTD subsets have null entityName
+                if (ctx.entityName != null && 
+                    ctx.isParameterEntity == isParameterEntity && 
+                    name.equals(ctx.entityName)) {
                     throw fatalError("Recursive entity reference: " + 
                         (isParameterEntity ? "%" : "&") + name + ";");
                 }
             }
         }
         
-        // Add to systemId resolution stack
-        entityResolutionStack.add(resolvedSystemId);
-        
-        // Increment external entity depth
-        externalEntityDepth++;
-        
-        // Push entity context onto DTDParser's stack
+        // Push context onto DTDParser's stack (for all external tokenization contexts)
+        // This includes: DTD subsets (name=doctypeName), general entities (name=entityName)
         boolean isParameterEntity = isDTDSubset;
         EntityStackEntry entry = new EntityStackEntry(
             name, publicId, systemId, isParameterEntity, currentVersion, entityExpansionDepth);
@@ -688,15 +660,11 @@ public class ContentParser implements TokenConsumer {
             // Entity processing complete, continue with main stream
             
         } finally {
-            // Pop entity context to restore parent's state
+            // Pop context from stack
             if (dtdParser != null && !dtdParser.entityStack.isEmpty() && 
                 dtdParser.entityStack.peek() == entry) {
                 dtdParser.entityStack.pop();
             }
-            // Decrement external entity depth
-            externalEntityDepth--;
-            // Remove from stack
-            entityResolutionStack.remove(resolvedSystemId);
         }
     }
 
@@ -738,9 +706,6 @@ public class ContentParser implements TokenConsumer {
         defaultEntityResolver = null;
         
         // Clear entity resolution stack
-        if (entityResolutionStack != null) {
-            entityResolutionStack.clear();
-        }
         
         // Clear working state
         currentElementName = null;
@@ -1505,6 +1470,13 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      *         or if circular references are detected
      */
     private String expandGeneralEntityInAttributeValue(String entityName) throws SAXException {
+        // Check if we have a DTD parser (document must have DOCTYPE)
+        if (dtdParser == null) {
+            throw fatalError(
+                "General entity reference '&" + entityName + ";' used in attribute value but no DTD present",
+                null);
+        }
+        
         String expandedValue = dtdParser.entityStack.expandGeneralEntity(entityName, EntityExpansionContext.ATTRIBUTE_VALUE);
         
         // WFC: No < in Attribute Values
@@ -1539,6 +1511,13 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      *         or if circular references are detected
      */
     private void expandGeneralEntityInContent(String entityName) throws SAXException {
+        // Check if we have a DTD parser (document must have DOCTYPE)
+        if (dtdParser == null) {
+            throw fatalError(
+                "General entity reference '&" + entityName + ";' used but no DTD present",
+                null);
+        }
+        
         String expandedValue = dtdParser.entityStack.expandGeneralEntity(entityName, EntityExpansionContext.CONTENT);
         
         if (expandedValue == null) {

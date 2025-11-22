@@ -395,12 +395,21 @@ public class DTDParser implements TokenConsumer {
                 break;
                 
             case IN_ELEMENTDECL:
-                handleInElementDecl(token, data);
+                // Handle parameter entity expansion before delegating
+                if (token == Token.PARAMETERENTITYREF) {
+                    String refName = extractString(data);
+                    expandParameterEntityInline(refName);
+                } else {
+                    handleInElementDecl(token, data);
+                }
                 break;
                 
             case IN_ATTLISTDECL:
-                // Delegate to the attlist parser; if it returns true, parsing is complete
-                if (attListDeclParser != null && attListDeclParser.handleToken(token, data)) {
+                // Handle parameter entity expansion before delegating
+                if (token == Token.PARAMETERENTITYREF) {
+                    String refName = extractString(data);
+                    expandParameterEntityInline(refName);
+                } else if (attListDeclParser != null && attListDeclParser.handleToken(token, data)) {
                     // ATTLIST declaration complete - return to saved state
                     attListDeclParser = null;
                     state = savedState;
@@ -408,8 +417,11 @@ public class DTDParser implements TokenConsumer {
                 break;
                 
             case IN_ENTITYDECL:
-                // Delegate to the entity parser; if it returns true, parsing is complete
-                if (entityDeclParser != null && entityDeclParser.handleToken(token, data)) {
+                // Handle parameter entity expansion before delegating
+                if (token == Token.PARAMETERENTITYREF) {
+                    String refName = extractString(data);
+                    expandParameterEntityInline(refName);
+                } else if (entityDeclParser != null && entityDeclParser.handleToken(token, data)) {
                     // ENTITY declaration complete - return to saved state
                     entityDeclParser = null;
                     state = savedState;
@@ -417,8 +429,11 @@ public class DTDParser implements TokenConsumer {
                 break;
             
             case IN_NOTATIONDECL:
-                // Delegate to the notation parser; if it returns true, parsing is complete
-                if (notationDeclParser != null && notationDeclParser.handleToken(token, data)) {
+                // Handle parameter entity expansion before delegating
+                if (token == Token.PARAMETERENTITYREF) {
+                    String refName = extractString(data);
+                    expandParameterEntityInline(refName);
+                } else if (notationDeclParser != null && notationDeclParser.handleToken(token, data)) {
                     // NOTATION declaration complete - return to saved state
                     notationDeclParser = null;
                     state = savedState;
@@ -1533,77 +1548,39 @@ public class DTDParser implements TokenConsumer {
      * @throws SAXException if expansion fails
      */
     void expandParameterEntityInline(String entityName) throws SAXException {
-        // Look up the parameter entity
-        EntityDeclaration entity = getParameterEntity(entityName);
+        // Use EntityStack to get the expanded value (handles recursion checking)
+        String expandedValue = entityStack.expandParameterEntity(entityName, EntityExpansionContext.DTD);
         
-        if (entity == null) {
-            throw new SAXParseException(
-                "Parameter entity %" + entityName + "; not declared " +
-                "(XXX: or declared after use - forward references not yet supported)",
-                locator);
-        }
-        
-        // Check if it's an external entity
-        if (entity.externalID != null) {
+        // If null, it's an external entity requiring async resolution
+        if (expandedValue == null) {
             // External parameter entity - resolve and process it
-            // This works the same as external DTD subset processing
-            try {
-                xmlParser.processExternalEntity(
-                    entityName, 
-                    entity.externalID.publicId, 
-                    entity.externalID.systemId);
-            } catch (IOException e) {
-                throw new SAXParseException(
-                    "Failed to resolve external parameter entity %" + entityName + ";",
-                    locator, e);
-            }
-            return;
-        }
-        
-        // Internal parameter entity - expand its replacement text
-        if (entity.replacementText == null || entity.replacementText.isEmpty()) {
-            // Empty entity - nothing to expand
-            return;
-        }
-        
-        // Expand any nested parameter entities in the replacement text
-        StringBuilder expanded = new StringBuilder();
-        
-        for (Object part : entity.replacementText) {
-            if (part instanceof String) {
-                expanded.append((String) part);
-            } else if (part instanceof ParameterEntityReference) {
-                ParameterEntityReference ref = (ParameterEntityReference) part;
-                String refExpanded = entityStack.expandParameterEntity(ref.name, EntityExpansionContext.DTD);
-                if (refExpanded != null) {
-                    expanded.append(refExpanded);
+            EntityDeclaration entity = getParameterEntity(entityName);
+            if (entity != null && entity.externalID != null) {
+                try {
+                    xmlParser.processExternalEntity(
+                        entityName, 
+                        entity.externalID.publicId, 
+                        entity.externalID.systemId);
+                } catch (IOException e) {
+                    throw new SAXParseException(
+                        "Failed to resolve external parameter entity %" + entityName + ";",
+                        locator, e);
                 }
-            } else if (part instanceof GeneralEntityReference) {
-                // General entity references in parameter entity values stay as literal text
-                GeneralEntityReference ref = (GeneralEntityReference) part;
-                expanded.append("&").append(ref.name).append(";");
             }
+            return;
         }
         
-        String replacementText = expanded.toString();
-        if (replacementText.isEmpty()) {
-            return; // Nothing to tokenize
+        // If empty, nothing to tokenize
+        if (expandedValue.isEmpty()) {
+            return;
         }
         
-        // Create entity context for this expansion
+        // For inline DTD expansion, we need to tokenize the expanded value
+        // Create entity context for this tokenization
         EntityStackEntry parentEntry = entityStack.peek();
         boolean currentVersion = parentEntry != null ? parentEntry.isXML11 : false;
         
-        // Check for recursion - has this entity name already been expanded?
-        for (EntityStackEntry ctx : entityStack) {
-            if (ctx.isParameterEntity && entityName.equals(ctx.entityName)) {
-                throw new SAXParseException(
-                    "Recursive parameter entity reference: %" + entityName + ";",
-                    locator);
-            }
-        }
-        
-        // Push entity context onto stack
+        // Push entity context onto stack for tokenization
         EntityStackEntry entry = new EntityStackEntry(
             entityName, true /* parameter entity */, currentVersion, 0 /* element depth N/A for DTD */);
         entityStack.push(entry);
@@ -1619,7 +1596,7 @@ public class DTDParser implements TokenConsumer {
             
             // Feed the replacement text through the tokenizer as characters
             // (internal entity values are already decoded strings)
-            java.nio.CharBuffer buffer = java.nio.CharBuffer.wrap(replacementText);
+            java.nio.CharBuffer buffer = java.nio.CharBuffer.wrap(expandedValue);
             tokenizer.receive(buffer);
             tokenizer.close();
             
