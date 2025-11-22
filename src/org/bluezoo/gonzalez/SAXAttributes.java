@@ -49,34 +49,58 @@ import org.xml.sax.ext.Attributes2;
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public class SAXAttributes implements Attributes2 {
+  
+  /**
+   * Functional interface for normalizing attribute values on demand.
+   */
+  @FunctionalInterface
+  public interface AttributeValueNormalizer {
+    /**
+     * Normalizes an attribute value.
+     * 
+     * @param rawValue the raw StringBuilder value
+     * @param elementName the element name
+     * @param attributeName the attribute name
+     * @return the normalized String value
+     */
+    String normalize(StringBuilder rawValue, String elementName, String attributeName);
+  }
 
   /**
    * Single attribute holder.
-   * Stores either a materialized String value, a StringBuilder, or LazyNormalizedValue.
+   * Stores either a materialized String value or a StringBuilder (to be normalized on demand).
    */
   private static class Attribute {
     final QName qname;
     final String type;
-    final Object value;  // String, StringBuilder, or LazyNormalizedValue
+    final Object value;  // String or StringBuilder
     final boolean specified;
+    final String elementName;  // For lazy normalization
+    final String attributeName;  // For lazy normalization
 
-    Attribute(QName qname, String type, Object value, boolean specified) {
+    Attribute(QName qname, String type, Object value, boolean specified, 
+              String elementName, String attributeName) {
       this.qname = qname;
       this.type = type;
       this.value = value;
       this.specified = specified;
+      this.elementName = elementName;
+      this.attributeName = attributeName;
     }
     
     /**
-     * Gets the value as a String, materializing from StringBuilder or LazyNormalizedValue if needed.
+     * Gets the value as a String, normalizing from StringBuilder if needed.
      */
-    String getValueAsString(LazyNormalizedValue.AttributeValueNormalizer normalizer) {
+    String getValueAsString(AttributeValueNormalizer normalizer) {
       if (value instanceof String) {
         return (String) value;
       } else if (value instanceof StringBuilder) {
-        return ((StringBuilder) value).toString();
-      } else if (value instanceof LazyNormalizedValue) {
-        return ((LazyNormalizedValue) value).getValue(normalizer);
+        // Normalize on demand
+        if (normalizer != null) {
+          return normalizer.normalize((StringBuilder) value, elementName, attributeName);
+        } else {
+          return ((StringBuilder) value).toString();
+        }
       }
       return null;
     }
@@ -96,10 +120,13 @@ public class SAXAttributes implements Attributes2 {
   private DTDParser dtdParser;
   
   // Normalizer for lazy attribute value normalization
-  private LazyNormalizedValue.AttributeValueNormalizer normalizer;
+  private AttributeValueNormalizer normalizer;
   
   // QName pool for reusing QName objects
   private QNamePool qnamePool;
+  
+  // Current element name (for lazy normalization)
+  private String currentElementName;
 
   /**
    * Creates a new empty attribute list.
@@ -115,7 +142,7 @@ public class SAXAttributes implements Attributes2 {
    * 
    * @param normalizer the normalizer function
    */
-  public void setNormalizer(LazyNormalizedValue.AttributeValueNormalizer normalizer) {
+  public void setNormalizer(AttributeValueNormalizer normalizer) {
     this.normalizer = normalizer;
   }
   
@@ -126,6 +153,15 @@ public class SAXAttributes implements Attributes2 {
    */
   public void setQNamePool(QNamePool pool) {
     this.qnamePool = pool;
+  }
+  
+  /**
+   * Sets the current element name for lazy attribute normalization.
+   * 
+   * @param elementName the element name
+   */
+  public void setElementName(String elementName) {
+    this.currentElementName = elementName;
   }
 
   /**
@@ -140,7 +176,7 @@ public class SAXAttributes implements Attributes2 {
   }
 
   /**
-   * Adds an attribute to the list with a String value.
+   * Adds an attribute to the list.
    * Throws an IllegalArgumentException if an attribute with the same qName already exists
    * (violates XML well-formedness constraint).
    *
@@ -148,7 +184,7 @@ public class SAXAttributes implements Attributes2 {
    * @param localName the local name
    * @param qName the qualified name
    * @param type the attribute type
-   * @param value the attribute value (String or StringBuilder for lazy allocation)
+   * @param value the attribute value (String or StringBuilder for lazy normalization)
    * @param specified whether the attribute was specified in the document
    * @throws IllegalArgumentException if duplicate attribute detected
    */
@@ -167,7 +203,8 @@ public class SAXAttributes implements Attributes2 {
       qnameKey = new QName(uri, localName, qName);
     }
     
-    Attribute attr = new Attribute(qnameKey, type, value, specified);
+    Attribute attr = new Attribute(qnameKey, type, value, specified, 
+                                    currentElementName, qName);
 
     // Add to all indices
     attributes.add(attr);
@@ -184,7 +221,8 @@ public class SAXAttributes implements Attributes2 {
   public void setType(int index, String type) {
     if (index >= 0 && index < attributes.size()) {
       Attribute oldAttr = attributes.get(index);
-      Attribute newAttr = new Attribute(oldAttr.qname, type, oldAttr.value, oldAttr.specified);
+      Attribute newAttr = new Attribute(oldAttr.qname, type, oldAttr.value, oldAttr.specified,
+                                         oldAttr.elementName, oldAttr.attributeName);
 
       // Update all indices
       attributes.set(index, newAttr);

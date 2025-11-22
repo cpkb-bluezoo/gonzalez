@@ -99,7 +99,7 @@ public class NamespaceScopeTracker {
      * Optional intern pool for namespace URIs and prefixes.
      * If set, all strings will be interned for better performance.
      */
-    private CharSequenceInternPool internPool;
+    private InternedStringPool internPool;
     
     /**
      * Creates a new namespace scope tracker with pre-bound xml and xmlns prefixes.
@@ -122,7 +122,7 @@ public class NamespaceScopeTracker {
      * 
      * @param pool the intern pool (null to disable interning)
      */
-    public void setInternPool(CharSequenceInternPool pool) {
+    public void setInternPool(InternedStringPool pool) {
         this.internPool = pool;
     }
     
@@ -179,9 +179,11 @@ public class NamespaceScopeTracker {
             throw new IllegalArgumentException("Prefix and URI must not be null");
         }
         
-        // Intern strings if pool is available
+        // Intern namespace URIs if pool is available.
+        // While URIs are initially attribute values, they have very limited variety
+        // (typically 5-10 per document) and are reused constantly during namespace
+        // processing, so interning provides significant benefit.
         if (internPool != null) {
-            prefix = internPool.intern(prefix);
             uri = internPool.intern(uri);
         }
         

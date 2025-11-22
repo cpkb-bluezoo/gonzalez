@@ -136,7 +136,7 @@ public class ContentParser implements TokenConsumer {
      * Can look up interned strings from CharBuffer without creating temporary String objects.
      * Used for element and attribute names (high frequency, low variety).
      */
-    private CharSequenceInternPool internPool;
+    private InternedStringPool internPool;
     
     /**
      * QName pool for reusing QName objects (reduces allocation and hash overhead).
@@ -759,7 +759,12 @@ public class ContentParser implements TokenConsumer {
         
         // Initialize intern pool if string interning is enabled
         if (stringInterning && internPool == null) {
-            internPool = new CharSequenceInternPool();
+            internPool = new InternedStringPool();
+        }
+        
+        // Set string interning on intern pool
+        if (internPool != null) {
+            internPool.setStringInterning(stringInterning);
         }
         
         // Initialize QName pool
@@ -983,14 +988,14 @@ throw fatalError("Expected element name after '<', got: " + token);
         switch (token) {
             case S:
                 // Whitespace before attributes or GT
-                // Initialize attributes object
+                // Initialize/clear attributes object (reuse if possible)
                 if (attributes == null) {
                     attributes = new SAXAttributes();
                     // Set normalizer for lazy attribute value normalization
-                    // Wrap normalizeAttributeValue to catch SAXException
                     attributes.setNormalizer((raw, elem, attr) -> {
                         try {
-                            return normalizeAttributeValue(raw, elem, attr);
+                            // Convert StringBuilder to String and normalize
+                            return normalizeAttributeValue(raw.toString(), elem, attr);
                         } catch (SAXException e) {
                             // Convert to RuntimeException since normalizer can't throw checked exceptions
                             throw new RuntimeException("Normalization failed", e);
@@ -1001,6 +1006,8 @@ throw fatalError("Expected element name after '<', got: " + token);
                 } else {
                     attributes.clear();
                 }
+                // Set element name for lazy normalization
+                attributes.setElementName(currentElementName);
                 // Push namespace context for this element (before parsing attributes)
                 if (namespacesEnabled && namespaceTracker != null) {
                     namespaceTracker.pushContext();
@@ -1012,12 +1019,23 @@ throw fatalError("Expected element name after '<', got: " + token);
                 
             case GT:
                 // End of start tag (no attributes)
-                // Create empty attributes
+                // Create/clear empty attributes
                 if (attributes == null) {
                     attributes = new SAXAttributes();
+                    attributes.setQNamePool(qnamePool);
+                    attributes.setNormalizer((raw, elem, attr) -> {
+                        try {
+                            // Convert StringBuilder to String and normalize
+                            return normalizeAttributeValue(raw.toString(), elem, attr);
+                        } catch (SAXException e) {
+                            throw new RuntimeException("Normalization failed", e);
+                        }
+                    });
                 } else {
                     attributes.clear();
                 }
+                // Set element name for lazy normalization
+                attributes.setElementName(currentElementName);
                 // Set DTD context for attribute type lookup
                 attributes.setDTDContext(currentElementName, dtdParser);
                 // Fire startElement (handles namespaces, defaults, etc.)
@@ -1027,12 +1045,23 @@ throw fatalError("Expected element name after '<', got: " + token);
                 
             case END_EMPTY_ELEMENT:
                 // Empty element (no attributes)
-                // Create empty attributes
+                // Create/clear empty attributes
                 if (attributes == null) {
                     attributes = new SAXAttributes();
+                    attributes.setQNamePool(qnamePool);
+                    attributes.setNormalizer((raw, elem, attr) -> {
+                        try {
+                            // Convert StringBuilder to String and normalize
+                            return normalizeAttributeValue(raw.toString(), elem, attr);
+                        } catch (SAXException e) {
+                            throw new RuntimeException("Normalization failed", e);
+                        }
+                    });
                 } else {
                     attributes.clear();
                 }
+                // Set element name for lazy normalization
+                attributes.setElementName(currentElementName);
                 // Set DTD context for attribute type lookup
                 attributes.setDTDContext(currentElementName, dtdParser);
                 // Fire startElement and endElement (handles namespaces, defaults, etc.)
@@ -1221,17 +1250,16 @@ throw fatalError("Expected element name after '<', got: " + token);
                 
                 try {
                     // For namespace declarations, use normalized String
-                    // For regular attributes, pass StringBuilder for lazy allocation
+                    // For regular attributes, pass StringBuilder for lazy normalization
                     Object value;
                     if (isNamespaceDecl) {
                         value = normalizedValue;
                         returnStringBuilder(currentAttributeValue); // Don't need StringBuilder anymore
                     } else {
-                        // Pass StringBuilder directly - will be normalized lazily if getValue() is called
-                        // Store element/attribute name for lazy normalization
-                        value = new LazyNormalizedValue(currentAttributeValue, 
-                                                       currentElementName, currentAttributeName);
-                        // Don't return StringBuilder yet - LazyNormalizedValue owns it
+                        // Pass StringBuilder directly - will be normalized lazily by SAXAttributes if getValue() is called
+                        // SAXAttributes already has the element/attribute name for normalization
+                        value = currentAttributeValue;
+                        // Don't return StringBuilder yet - SAXAttributes will normalize it on-demand
                     }
                     
                     attributes.addAttribute(uri, localName, currentAttributeName, 
