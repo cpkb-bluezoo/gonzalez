@@ -52,18 +52,33 @@ public class SAXAttributes implements Attributes2 {
 
   /**
    * Single attribute holder.
+   * Stores either a materialized String value, a StringBuilder, or LazyNormalizedValue.
    */
   private static class Attribute {
     final QName qname;
     final String type;
-    final String value;
+    final Object value;  // String, StringBuilder, or LazyNormalizedValue
     final boolean specified;
 
-    Attribute(QName qname, String type, String value, boolean specified) {
+    Attribute(QName qname, String type, Object value, boolean specified) {
       this.qname = qname;
       this.type = type;
       this.value = value;
       this.specified = specified;
+    }
+    
+    /**
+     * Gets the value as a String, materializing from StringBuilder or LazyNormalizedValue if needed.
+     */
+    String getValueAsString(LazyNormalizedValue.AttributeValueNormalizer normalizer) {
+      if (value instanceof String) {
+        return (String) value;
+      } else if (value instanceof StringBuilder) {
+        return ((StringBuilder) value).toString();
+      } else if (value instanceof LazyNormalizedValue) {
+        return ((LazyNormalizedValue) value).getValue(normalizer);
+      }
+      return null;
     }
   }
 
@@ -79,6 +94,9 @@ public class SAXAttributes implements Attributes2 {
   // Element name for lazy DTD lookup
   private String elementName;
   private DTDParser dtdParser;
+  
+  // Normalizer for lazy attribute value normalization
+  private LazyNormalizedValue.AttributeValueNormalizer normalizer;
 
   /**
    * Creates a new empty attribute list.
@@ -87,6 +105,15 @@ public class SAXAttributes implements Attributes2 {
     this.attributes = new ArrayList<>();
     this.qnameMap = new HashMap<>();
     this.stringNameMap = new HashMap<>();
+  }
+  
+  /**
+   * Sets the normalizer for lazy attribute value normalization.
+   * 
+   * @param normalizer the normalizer function
+   */
+  public void setNormalizer(LazyNormalizedValue.AttributeValueNormalizer normalizer) {
+    this.normalizer = normalizer;
   }
 
   /**
@@ -101,7 +128,7 @@ public class SAXAttributes implements Attributes2 {
   }
 
   /**
-   * Adds an attribute to the list.
+   * Adds an attribute to the list with a String value.
    * Throws an IllegalArgumentException if an attribute with the same qName already exists
    * (violates XML well-formedness constraint).
    *
@@ -109,12 +136,12 @@ public class SAXAttributes implements Attributes2 {
    * @param localName the local name
    * @param qName the qualified name
    * @param type the attribute type
-   * @param value the attribute value
+   * @param value the attribute value (String or StringBuilder for lazy allocation)
    * @param specified whether the attribute was specified in the document
    * @throws IllegalArgumentException if duplicate attribute detected
    */
   public void addAttribute(String uri, String localName, String qName,
-      String type, String value, boolean specified) {
+      String type, Object value, boolean specified) {
     // Check for duplicate attribute (well-formedness constraint)
     if (stringNameMap.containsKey(qName)) {
       throw new IllegalArgumentException("Duplicate attribute: " + qName);
@@ -214,7 +241,7 @@ public class SAXAttributes implements Attributes2 {
     if (index < 0 || index >= attributes.size()) {
       return null;
     }
-    return attributes.get(index).value;
+    return attributes.get(index).getValueAsString(normalizer);
   }
 
   @Override
@@ -288,13 +315,13 @@ public class SAXAttributes implements Attributes2 {
   public String getValue(String uri, String localName) {
     QName key = new QName(uri, localName, "");
     Attribute attr = qnameMap.get(key);
-    return (attr != null) ? attr.value : null;
+    return (attr != null) ? attr.getValueAsString(normalizer) : null;
   }
 
   @Override
   public String getValue(String qName) {
     Attribute attr = stringNameMap.get(qName);
-    return (attr != null) ? attr.value : null;
+    return (attr != null) ? attr.getValueAsString(normalizer) : null;
   }
 
   // Attributes2 interface - lazy DTD lookup

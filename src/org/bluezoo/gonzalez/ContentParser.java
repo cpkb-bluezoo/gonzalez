@@ -132,6 +132,13 @@ public class ContentParser implements TokenConsumer {
     private StringBuilder stringBuilderPool;
     
     /**
+     * CharSequence-based intern pool for zero-allocation string interning.
+     * Can look up interned strings from CharBuffer without creating temporary String objects.
+     * Used for element and attribute names (high frequency, low variety).
+     */
+    private CharSequenceInternPool internPool;
+    
+    /**
      * Reusable char array for passing character data to SAX handlers.
      * Grown as needed, never shrunk (single-threaded parser, no concurrency concerns).
      * This avoids exposing the CharBuffer's backing array directly (security risk)
@@ -737,6 +744,11 @@ public class ContentParser implements TokenConsumer {
             charArrayBuffer = new char[1024];
         }
         
+        // Initialize intern pool if string interning is enabled
+        if (stringInterning && internPool == null) {
+            internPool = new CharSequenceInternPool();
+        }
+        
         // Clear entity resolution stack
         
         // Clear working state
@@ -906,7 +918,8 @@ public class ContentParser implements TokenConsumer {
      */
     private void handleElementStart(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {
-            currentElementName = data.toString();
+            // Intern element names if enabled (use zero-alloc pool)
+            currentElementName = intern(data);
             elementDepth++;
             
             // Push element onto stack for well-formedness and validation
@@ -923,8 +936,22 @@ public class ContentParser implements TokenConsumer {
             
             state = State.ELEMENT_NAME;
         } else {
- throw fatalError("Expected element name after '<', got: " + token);
+throw fatalError("Expected element name after '<', got: " + token);
         }
+    }
+    
+    /**
+     * Interns a string from CharBuffer if string interning is enabled.
+     * Uses the zero-allocation intern pool to avoid creating temporary String objects.
+     * 
+     * @param data the CharBuffer containing the string
+     * @return the interned string (if enabled), or a new string
+     */
+    private String intern(CharBuffer data) {
+        if (stringInterning && internPool != null) {
+            return internPool.intern(data);
+        }
+        return data.toString();
     }
     
     /**
@@ -937,6 +964,16 @@ public class ContentParser implements TokenConsumer {
                 // Initialize attributes object
                 if (attributes == null) {
                     attributes = new SAXAttributes();
+                    // Set normalizer for lazy attribute value normalization
+                    // Wrap normalizeAttributeValue to catch SAXException
+                    attributes.setNormalizer((raw, elem, attr) -> {
+                        try {
+                            return normalizeAttributeValue(raw, elem, attr);
+                        } catch (SAXException e) {
+                            // Convert to RuntimeException since normalizer can't throw checked exceptions
+                            throw new RuntimeException("Normalization failed", e);
+                        }
+                    });
                 } else {
                     attributes.clear();
                 }
@@ -1020,7 +1057,8 @@ public class ContentParser implements TokenConsumer {
                 if (attributes.getLength() > 0 && !sawWhitespaceAfterAttributeValue) {
                     throw fatalError("Whitespace required between attributes");
                 }
-                currentAttributeName = data.toString();
+                // Intern attribute names if enabled (use zero-alloc pool)
+                currentAttributeName = intern(data);
                 sawWhitespaceAfterAttributeValue = false; // Reset for next attribute
                 state = State.ATTRIBUTE_NAME;
                 break;
@@ -1132,16 +1170,16 @@ public class ContentParser implements TokenConsumer {
      */
     private void handleAttributeValue(Token token, CharBuffer data) throws SAXException {
         if (token == currentAttributeQuote) {
-            // End of attribute value - apply normalization
-            String rawValue = currentAttributeValue.toString();
-            returnStringBuilder(currentAttributeValue); // Return to pool
-            currentAttributeValue = null;
-            
-            String normalizedValue = normalizeAttributeValue(rawValue, currentElementName, currentAttributeName);
+            // End of attribute value - do NOT normalize yet, pass StringBuilder for lazy allocation
+            // Normalization will happen only if getValue() is called
             
             // Check if this is a namespace declaration (xmlns or xmlns:prefix)
             boolean isNamespaceDecl = false;
+            String normalizedValue = null;
             if (namespacesEnabled) {
+                // Namespace declarations must be normalized immediately (needed for URI tracking)
+                normalizedValue = normalizeAttributeValue(currentAttributeValue.toString(), 
+                                                         currentElementName, currentAttributeName);
                 isNamespaceDecl = processNamespaceAttribute(currentAttributeName, normalizedValue);
             }
             
@@ -1158,31 +1196,48 @@ public class ContentParser implements TokenConsumer {
                 }
                 
                 try {
+                    // For namespace declarations, use normalized String
+                    // For regular attributes, pass StringBuilder for lazy allocation
+                    Object value;
+                    if (isNamespaceDecl) {
+                        value = normalizedValue;
+                        returnStringBuilder(currentAttributeValue); // Don't need StringBuilder anymore
+                    } else {
+                        // Pass StringBuilder directly - will be normalized lazily if getValue() is called
+                        // Store element/attribute name for lazy normalization
+                        value = new LazyNormalizedValue(currentAttributeValue, 
+                                                       currentElementName, currentAttributeName);
+                        // Don't return StringBuilder yet - LazyNormalizedValue owns it
+                    }
+                    
                     attributes.addAttribute(uri, localName, currentAttributeName, 
-                                                  "CDATA", normalizedValue, true);
+                                                  "CDATA", value, true);
                 } catch (IllegalArgumentException e) {
                     // Duplicate attribute - well-formedness error
                     throw fatalError(e.getMessage());
                 }
+            } else {
+                // Namespace declaration not added to attributes - return StringBuilder to pool
+                returnStringBuilder(currentAttributeValue);
             }
             
-            // currentAttributeValue already returned to pool above
+            currentAttributeValue = null;
             state = State.ELEMENT_ATTRS;
         } else if (token == Token.CDATA) {
-            // Attribute value text
-            currentAttributeValue.append(data.toString());
+            // Attribute value text - append directly from CharBuffer without toString()
+            appendBufferToBuilder(currentAttributeValue, data);
         } else if (token == Token.S) {
-            // Whitespace in attribute value
-            currentAttributeValue.append(data.toString());
+            // Whitespace in attribute value - append directly
+            appendBufferToBuilder(currentAttributeValue, data);
         } else if (token == Token.CHARENTITYREF) {
-            // Character reference in attribute value (already expanded) - e.g., &#60; -> '<'
-            currentAttributeValue.append(data.toString());
+            // Character reference in attribute value (already expanded) - append directly
+            appendBufferToBuilder(currentAttributeValue, data);
         } else if (token == Token.PREDEFENTITYREF) {
-            // Predefined entity reference in attribute value (already expanded) - e.g., &lt; -> '<'
-            currentAttributeValue.append(data.toString());
+            // Predefined entity reference in attribute value (already expanded) - append directly
+            appendBufferToBuilder(currentAttributeValue, data);
         } else if (token == Token.GENERALENTITYREF) {
-            // General entity reference: &name;
-            String entityName = data.toString();
+            // General entity reference: &name; - must intern for lookup
+            String entityName = intern(data);
             String expandedValue = expandGeneralEntityInAttributeValue(entityName);
             currentAttributeValue.append(expandedValue);
         } else {
@@ -1197,18 +1252,20 @@ public class ContentParser implements TokenConsumer {
         switch (token) {
             case CDATA:
                 // Character data
-                // Check for forbidden ]]> sequence and record for validation
-                String text = data.toString();
-                if (text.contains("]]>")) {
+                // Check for forbidden ]]> sequence (need to check CharBuffer directly)
+                if (containsSequence(data, "]]>")) {
                     throw fatalError("The character sequence ']]>' must not appear in content");
                 }
                 
                 if (validationEnabled && dtdParser != null) {
+                    // Validation requires String - allocate only when needed
+                    String text = data.toString();
                     recordTextContent(text);
                 }
                 
                 if (contentHandler != null) {
-                    contentHandler.characters(text.toCharArray(), 0, text.length());
+                    // Fast path: send directly from buffer
+                    sendCharactersFromBuffer(data, contentHandler);
                 }
                 break;
                 
@@ -1243,8 +1300,8 @@ public class ContentParser implements TokenConsumer {
                 break;
                 
             case GENERALENTITYREF:
-                // General entity reference: &name;
-                String entityName = data.toString();
+                // General entity reference: &name; - intern for lookup
+                String entityName = intern(data);
                 expandGeneralEntityInContent(entityName);
                 break;
                 
@@ -1305,10 +1362,11 @@ public class ContentParser implements TokenConsumer {
      */
     private void handleEndElementStart(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {
-            currentElementName = data.toString();
+            // Intern element names if enabled (use zero-alloc pool)
+            currentElementName = intern(data);
             state = State.END_ELEMENT_NAME;
         } else {
- throw fatalError("Expected element name after '</', got: " + token);
+throw fatalError("Expected element name after '</', got: " + token);
         }
     }
     
@@ -1366,10 +1424,11 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      */
     private void handlePITarget(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {
-            currentPITarget = data.toString();
+            // Intern PI target (likely reused: xml-stylesheet, etc.)
+            currentPITarget = intern(data);
             state = State.PI_CONTENT;
         } else {
- throw fatalError("Expected PI target after '<?', got: " + token);
+throw fatalError("Expected PI target after '<?', got: " + token);
         }
     }
     
@@ -1380,9 +1439,9 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         switch (token) {
             case S:
             case CDATA:
-                // PI data (including whitespace)
+                // PI data (including whitespace) - append directly from CharBuffer
                 if (data != null) {
-                    currentPIData.append(data.toString());
+                    appendBufferToBuilder(currentPIData, data);
                 }
                 break;
                 
@@ -1531,6 +1590,60 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         
         // Pass to handler - handler can only access [0, length)
         handler.characters(charArrayBuffer, 0, length);
+    }
+    
+    /**
+     * Appends CharBuffer to StringBuilder without allocating a String.
+     * Directly copies characters from buffer to builder.
+     * 
+     * @param builder the StringBuilder to append to
+     * @param buffer the CharBuffer containing data
+     */
+    private void appendBufferToBuilder(StringBuilder builder, CharBuffer buffer) {
+        if (buffer == null || builder == null) {
+            return;
+        }
+        
+        int length = buffer.remaining();
+        for (int i = 0; i < length; i++) {
+            builder.append(buffer.get(buffer.position() + i));
+        }
+    }
+    
+    /**
+     * Checks if a CharBuffer contains a specific character sequence without allocating a String.
+     * 
+     * @param buffer the CharBuffer to search
+     * @param sequence the sequence to find
+     * @return true if the sequence is found
+     */
+    private boolean containsSequence(CharBuffer buffer, String sequence) {
+        if (buffer == null || sequence == null || sequence.isEmpty()) {
+            return false;
+        }
+        
+        int length = buffer.remaining();
+        int seqLen = sequence.length();
+        
+        if (length < seqLen) {
+            return false;
+        }
+        
+        // Simple substring search
+        for (int i = 0; i <= length - seqLen; i++) {
+            boolean match = true;
+            for (int j = 0; j < seqLen; j++) {
+                if (buffer.get(buffer.position() + i + j) != sequence.charAt(j)) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                return true;
+            }
+        }
+        
+        return false;
     }
     
     /**

@@ -940,18 +940,16 @@ public class Tokenizer {
                 }
             }
             
-            // Look up transition
-            Map<MiniState, Map<CharClass, MiniStateTransitionBuilder.Transition>> stateMap = transitionTable.get(state);
-            if (stateMap == null) {
+            // Look up transition using optimized flat array
+            // This eliminates two levels of map lookups (MiniState → CharClass)
+            MiniStateTransitionBuilder.Transition[] flatArray = MiniStateTransitionBuilder.FLAT_TRANSITION_TABLE.get(state);
+            if (flatArray == null) {
                 throw fatalError("No transitions defined for state: " + state);
             }
             
-            Map<CharClass, MiniStateTransitionBuilder.Transition> miniStateMap = stateMap.get(miniState);
-            if (miniStateMap == null) {
-                throw fatalError("No transitions defined for " + state + ":" + miniState);
-            }
+            int index = miniState.ordinal() * MiniStateTransitionBuilder.NUM_CHAR_CLASSES + cc.ordinal();
+            MiniStateTransitionBuilder.Transition transition = flatArray[index];
             
-            MiniStateTransitionBuilder.Transition transition = miniStateMap.get(cc);
             if (transition == null) {
                 // Provide more specific error messages for common mistakes
                 if (miniState == MiniState.SEEN_AMP) {

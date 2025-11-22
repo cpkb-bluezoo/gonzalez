@@ -48,6 +48,24 @@ class MiniStateTransitionBuilder {
      */
     static final Map<TokenizerState, Map<MiniState, Map<CharClass, Transition>>> TRANSITION_TABLE;
     
+    /**
+     * Optimized flat array lookup for transitions.
+     * Maps TokenizerState → (MiniState × CharClass flattened array).
+     * This eliminates two levels of HashMap/EnumMap lookups per character.
+     */
+    static final EnumMap<TokenizerState, Transition[]> FLAT_TRANSITION_TABLE;
+    
+    /**
+     * Number of CharClass enum values (for array stride calculation).
+     * Package-private so Tokenizer can use it for flat array indexing.
+     */
+    static final int NUM_CHAR_CLASSES = CharClass.values().length;
+    
+    /**
+     * Number of MiniState enum values (for array size calculation).
+     */
+    private static final int NUM_MINI_STATES = MiniState.values().length;
+    
     static {
         // Build the complete transition table once at class load time
         MiniStateTransitionBuilder builder = new MiniStateTransitionBuilder();
@@ -1711,6 +1729,9 @@ class MiniStateTransitionBuilder {
         // ===== End of transitions =====
         
         TRANSITION_TABLE = builder.build();
+        
+        // Build optimized flat array lookup table
+        FLAT_TRANSITION_TABLE = builder.buildFlatTable();
     }
     
     // ===== Instance fields and methods for builder pattern =====
@@ -1747,6 +1768,48 @@ class MiniStateTransitionBuilder {
      */
     Map<TokenizerState, Map<MiniState, Map<CharClass, Transition>>> build() {
         return table;
+    }
+    
+    /**
+     * Builds an optimized flat array lookup table.
+     * For each TokenizerState, creates a flattened array where:
+     * index = miniState.ordinal() * NUM_CHAR_CLASSES + charClass.ordinal()
+     * 
+     * This eliminates two levels of map lookups per character.
+     * 
+     * @return the flat transition table
+     */
+    EnumMap<TokenizerState, Transition[]> buildFlatTable() {
+        EnumMap<TokenizerState, Transition[]> flatTable = new EnumMap<>(TokenizerState.class);
+        
+        for (Map.Entry<TokenizerState, Map<MiniState, Map<CharClass, Transition>>> stateEntry : table.entrySet()) {
+            TokenizerState state = stateEntry.getKey();
+            Map<MiniState, Map<CharClass, Transition>> miniStateMap = stateEntry.getValue();
+            
+            // Create flat array for this state
+            // Size: NUM_MINI_STATES * NUM_CHAR_CLASSES
+            Transition[] flatArray = new Transition[NUM_MINI_STATES * NUM_CHAR_CLASSES];
+            
+            // Populate the flat array
+            for (Map.Entry<MiniState, Map<CharClass, Transition>> miniEntry : miniStateMap.entrySet()) {
+                MiniState miniState = miniEntry.getKey();
+                Map<CharClass, Transition> charClassMap = miniEntry.getValue();
+                
+                int miniStateOrdinal = miniState.ordinal();
+                
+                for (Map.Entry<CharClass, Transition> charEntry : charClassMap.entrySet()) {
+                    CharClass charClass = charEntry.getKey();
+                    Transition transition = charEntry.getValue();
+                    
+                    int index = miniStateOrdinal * NUM_CHAR_CLASSES + charClass.ordinal();
+                    flatArray[index] = transition;
+                }
+            }
+            
+            flatTable.put(state, flatArray);
+        }
+        
+        return flatTable;
     }
     
     /**
