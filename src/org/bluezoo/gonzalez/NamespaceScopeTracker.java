@@ -277,26 +277,27 @@ public class NamespaceScopeTracker {
     }
     
     /**
-     * Processes a raw XML qualified name (QName) into namespace components.
+     * Processes a raw XML qualified name into namespace components.
      * 
-     * <p>Returns a 3-element array: [namespaceURI, localName, qName]
+     * <p>Returns a QName object from the pool containing:
      * <ul>
-     * <li>namespaceURI: the namespace URI (empty string if no namespace)</li>
+     * <li>uri: the namespace URI (empty string if no namespace)</li>
      * <li>localName: the local part of the name (after colon)</li>
      * <li>qName: the original qualified name (prefix:localName or just localName)</li>
      * </ul>
      * 
-     * @param qName the qualified name (may contain prefix)
+     * @param rawQName the qualified name (may contain prefix)
      * @param isAttribute true if this is an attribute name (affects default namespace)
-     * @return array of [namespaceURI, localName, qName]
+     * @param pool the QName pool to use for retrieving/caching QName objects
+     * @return QName object from the pool
      * @throws IllegalArgumentException if prefix is not bound
      */
-    public String[] processName(String qName, boolean isAttribute) {
-        if (qName == null || qName.isEmpty()) {
+    public QName processName(String rawQName, boolean isAttribute, QNamePool pool) {
+        if (rawQName == null || rawQName.isEmpty()) {
             throw new IllegalArgumentException("QName must not be null or empty");
         }
         
-        int colonIndex = qName.indexOf(':');
+        int colonIndex = rawQName.indexOf(':');
         
         if (colonIndex == -1) {
             // No prefix
@@ -309,11 +310,11 @@ public class NamespaceScopeTracker {
                 String defaultNS = getURI("");
                 namespaceURI = (defaultNS != null) ? defaultNS : "";
             }
-            return new String[] { namespaceURI, qName, qName };
+            return pool.get(namespaceURI, rawQName, rawQName);
         } else {
             // Has prefix
-            String prefix = qName.substring(0, colonIndex);
-            String localName = qName.substring(colonIndex + 1);
+            String prefix = rawQName.substring(0, colonIndex);
+            String localName = rawQName.substring(colonIndex + 1);
             
             // Special case: single colon ":" is valid XML 1.0 name
             // Prefix and localName are both empty strings
@@ -325,7 +326,7 @@ public class NamespaceScopeTracker {
                 throw new IllegalArgumentException("Unbound namespace prefix: " + prefix);
             }
             
-            return new String[] { namespaceURI, localName, qName };
+            return pool.get(namespaceURI, localName, rawQName);
         }
     }
     

@@ -433,6 +433,10 @@ public class ContentParser implements TokenConsumer {
                 namespaceTracker.setInternPool(internPool);
             }
         }
+        // Initialize QName pool if enabling namespaces
+        if (enabled && qnamePool == null) {
+            qnamePool = new QNamePool();
+        }
     }
 
     public boolean getNamespacePrefixesEnabled() {
@@ -1210,9 +1214,9 @@ throw fatalError("Expected element name after '<', got: " + token);
                 String localName = currentAttributeName;
                 
                 if (namespacesEnabled && namespaceTracker != null) {
-                    String[] attrParts = namespaceTracker.processName(currentAttributeName, true);
-                    uri = attrParts[0];
-                    localName = attrParts[1];
+                    QName attrQName = namespaceTracker.processName(currentAttributeName, true, qnamePool);
+                    uri = attrQName.getURI();
+                    localName = attrQName.getLocalName();
                 }
                 
                 try {
@@ -1613,7 +1617,7 @@ throw fatalError("Expected PI target after '<?', got: " + token);
     
     /**
      * Appends CharBuffer to StringBuilder without allocating a String.
-     * Directly copies characters from buffer to builder.
+     * Uses StringBuilder.append(CharSequence) which CharBuffer implements.
      * 
      * @param builder the StringBuilder to append to
      * @param buffer the CharBuffer containing data
@@ -1623,10 +1627,9 @@ throw fatalError("Expected PI target after '<?', got: " + token);
             return;
         }
         
-        int length = buffer.remaining();
-        for (int i = 0; i < length; i++) {
-            builder.append(buffer.get(buffer.position() + i));
-        }
+        // CharBuffer implements CharSequence, so StringBuilder.append(CharSequence) works directly
+        // This is much more efficient than char-by-char append
+        builder.append(buffer);
     }
     
     /**
@@ -1940,10 +1943,10 @@ throw fatalError("Expected PI target after '<?', got: " + token);
             }
             
             // Process element name
-            String[] elementParts = namespaceTracker.processName(elementName, false);
-            String namespaceURI = elementParts[0];
-            String localName = elementParts[1];
-            String qName = elementParts[2];
+            QName elementQName = namespaceTracker.processName(elementName, false, qnamePool);
+            String namespaceURI = elementQName.getURI();
+            String localName = elementQName.getLocalName();
+            String qName = elementQName.getQName();
             
             // Fire startElement with namespace info
             contentHandler.startElement(namespaceURI, localName, qName, attributes);
@@ -2007,10 +2010,10 @@ throw fatalError("Expected PI target after '<?', got: " + token);
             // Namespace-aware mode
             
             // Process element name
-            String[] elementParts = namespaceTracker.processName(elementName, false);
-            String namespaceURI = elementParts[0];
-            String localName = elementParts[1];
-            String qName = elementParts[2];
+            QName elementQName = namespaceTracker.processName(elementName, false, qnamePool);
+            String namespaceURI = elementQName.getURI();
+            String localName = elementQName.getLocalName();
+            String qName = elementQName.getQName();
             
             // Fire endElement
             contentHandler.endElement(namespaceURI, localName, qName);
