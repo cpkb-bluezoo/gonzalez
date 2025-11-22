@@ -2,8 +2,8 @@ James Clark xmltest Conformance Test Report
 ===========================================
 
 Total tests: 364
-Passed: 291 (79.9%)
-Failed: 73 (20.1%)
+Passed: 342 (94.0%)
+Failed: 22 (6.0%)
 
 Detailed Results:
 ----------------
@@ -240,8 +240,7 @@ Detailed Results:
 [PASS] not-wf-sa-073 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 073.xml
     Description: Undefined ENTITY f.
 
-[FAIL] not-wf-sa-074 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 074.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-074 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 074.xml
     Description: Internal general parsed entities are only well formed if
     they match the "content" production.
 
@@ -343,8 +342,7 @@ Detailed Results:
 [PASS] not-wf-sa-103 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 103.xml
     Description: End-tag required for element foo.
 
-[FAIL] not-wf-sa-104 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 104.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-104 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 104.xml
     Description: Internal general parsed entities are only well formed if
     they match the "content" production.
 
@@ -380,20 +378,17 @@ Detailed Results:
     Description: General entity values must use valid reference syntax;
     this reference is malformed.
 
-[FAIL] not-wf-sa-115 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 115.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-115 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 115.xml
     Description: The replacement text of this entity is an illegal character
     reference, which must be rejected when it is parsed in the
     context of an attribute value.
 
-[FAIL] not-wf-sa-116 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 116.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-116 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 116.xml
     Description: Internal general parsed entities are only well formed if
     they match the "content" production.  This is a partial
     character reference, not a full one.
 
-[FAIL] not-wf-sa-117 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 117.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-117 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 117.xml
     Description: Internal general parsed entities are only well formed if
     they match the "content" production.  This is a partial
     character reference, not a full one.
@@ -401,14 +396,12 @@ Detailed Results:
 [PASS] not-wf-sa-118 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 118.xml
     Description: Entity reference expansion is not recursive.
 
-[FAIL] not-wf-sa-119 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 119.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-119 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 119.xml
     Description: Internal general parsed entities are only well formed if
     they match the "content" production.  This is a partial
     character reference, not a full one.
 
-[FAIL] not-wf-sa-120 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 120.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-120 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 120.xml
     Description: Character references are expanded in the replacement text of
     an internal entity, which is then parsed as usual.  Accordingly,
     & must be doubly quoted - encoded either as &amp;
@@ -542,8 +535,7 @@ Detailed Results:
     Description: Uses '&' unquoted in an entity declaration,
     which is illegal syntax for an entity reference.
 
-[FAIL] not-wf-sa-160 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 160.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-160 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 160.xml
     Description: Violates the PEs in Internal Subset WFC
     by using a PE reference within a declaration.
 
@@ -551,8 +543,7 @@ Detailed Results:
     Description: Violates the PEs in Internal Subset WFC
     by using a PE reference within a declaration.
 
-[FAIL] not-wf-sa-162 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 162.xml
-    Expected not-wf but parsed successfully
+[PASS] not-wf-sa-162 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 162.xml
     Description: Violates the PEs in Internal Subset WFC
     by using a PE reference within a declaration.
 
@@ -673,7 +664,8 @@ Detailed Results:
     Description: In DTDs, the '%' character must be part of a parameter
     entity reference.
 
-[PASS] not-wf-not-sa-009 | Expected: not-wf | Actual: not-wf (got expected fatal error) | 009.xml
+[FAIL] not-wf-not-sa-009 | Expected: not-wf | Actual: PARSED (expected fatal error!) | 009.xml
+    Expected not-wf but parsed successfully
     Description: This test violates WFC:PE Between Declarations in Production 28a.  
     The last character of a markup declaration is not contained in the same 
     parameter-entity text replacement.
@@ -693,12 +685,11 @@ Detailed Results:
     of "xml" in any case are not allowed).
 
 [FAIL] invalid--002 | Expected: invalid | Actual: not-wf | 002.xml
-    Got fatal error instead of validation error: Empty content model () is not allowed in <!ELEMENT
+    Got fatal error instead of validation error: Error expanding parameter entity %e;
     Description: Tests the "Proper Group/PE Nesting" validity constraint by
     fragmenting a content model between two parameter entities.
 
-[FAIL] invalid--005 | Expected: invalid | Actual: not-wf | 005.xml
-    Got fatal error instead of validation error: Expected '&gt;' to close &lt;!ELEMENT declaration, got: PARAMETERENTITYREF
+[PASS] invalid--005 | Expected: invalid | Actual: valid | 005.xml
     Description: Tests the "Proper Declaration/PE Nesting" validity constraint by
     fragmenting an element declaration between two parameter entities.
 
@@ -707,7 +698,7 @@ Detailed Results:
     fragmenting an element declaration between two parameter entities.
 
 [FAIL] invalid-not-sa-022 | Expected: invalid | Actual: not-wf | 022.xml
-    Got fatal error instead of validation error: Unexpected character ' ' (WHITESPACE) in DOCTYPE_INTERNAL:SEEN_LT_BANG_OPEN_BRACKET
+    Got fatal error instead of validation error: Error expanding parameter entity %e;
     Description: Test the "Proper Conditional Section/ PE Nesting" validity constraint.
 
 [PASS] valid-sa-001 | Expected: valid | Actual: valid (parsed successfully) | 001.xml
@@ -744,8 +735,7 @@ contains whitespace on both sides of the equal sign.
 [PASS] valid-sa-011 | Expected: valid | Actual: valid (parsed successfully) | 011.xml
     Description: Test demonstrates mutliple Attibutes within the Start-tag.
 
-[FAIL] valid-sa-012 | Expected: valid | Actual: not-wf | 012.xml
-    Expected valid but got error: Unexpected character ':' (CHAR_DATA) in DOCTYPE_INTERNAL:READY
+[PASS] valid-sa-012 | Expected: valid | Actual: valid (parsed successfully) | 012.xml
     Description: Uses a legal XML 1.0 name consisting of a single colon
     character (disallowed by the latest XML Namespaces draft).
 
@@ -758,12 +748,10 @@ contains whitespace on both sides of the equal sign.
 [PASS] valid-sa-015 | Expected: valid | Actual: valid (parsed successfully) | 015.xml
     Description: Test demonstrates that all upper case letters are valid for the Attribute in a Start-tag.
 
-[FAIL] valid-sa-016 | Expected: valid | Actual: not-wf | 016.xml
-    Expected valid but got error: Unexpected token in processing instruction: NAME
+[PASS] valid-sa-016 | Expected: valid | Actual: valid (parsed successfully) | 016.xml
     Description: Test demonstrates that Processing Instructions are valid element content.
 
-[FAIL] valid-sa-017 | Expected: valid | Actual: not-wf | 017.xml
-    Expected valid but got error: Unclosed processing instruction at end of document
+[PASS] valid-sa-017 | Expected: valid | Actual: valid (parsed successfully) | 017.xml
     Description: Test demonstrates that Processing Instructions are valid element content and there can be more than one.
 
 [PASS] valid-sa-018 | Expected: valid | Actual: valid (parsed successfully) | 018.xml
@@ -810,12 +798,10 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-031 | Expected: valid | Actual: valid (parsed successfully) | 031.xml
     Description: Test demonstrates a valid EncodingDecl within the prolog.
 
-[FAIL] valid-sa-032 | Expected: valid | Actual: not-wf | 032.xml
-    Expected valid but got error: Text declaration in external entity must not have 'standalone' attribute
+[PASS] valid-sa-032 | Expected: valid | Actual: valid (parsed successfully) | 032.xml
     Description: Test demonstrates a valid SDDecl within the prolog.
 
-[FAIL] valid-sa-033 | Expected: valid | Actual: not-wf | 033.xml
-    Expected valid but got error: Text declaration in external entity must not have 'standalone' attribute
+[PASS] valid-sa-033 | Expected: valid | Actual: valid (parsed successfully) | 033.xml
     Description: Test demonstrates that both a EncodingDecl and SDDecl are valid within the prolog.
 
 [PASS] valid-sa-034 | Expected: valid | Actual: valid (parsed successfully) | 034.xml
@@ -833,8 +819,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-038 | Expected: valid | Actual: valid (parsed successfully) | 038.xml
     Description: Test demonstrates a valid comment and that it may appear anywhere in the document including the beginning.
 
-[FAIL] valid-sa-039 | Expected: valid | Actual: not-wf | 039.xml
-    Expected valid but got error: Expected 'ml' but found mismatch
+[PASS] valid-sa-039 | Expected: valid | Actual: valid (parsed successfully) | 039.xml
     Description: Test demonstrates a valid processing instruction and that it may appear at the beginning of the document.
 
 [PASS] valid-sa-040 | Expected: valid | Actual: valid (parsed successfully) | 040.xml
@@ -875,8 +860,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
     Description: The document is encoded in UTF-16 and uses some name
     characters well outside of the normal ASCII range.
 
-[FAIL] valid-sa-052 | Expected: valid | Actual: not-wf | 052.xml
-    Expected valid but got error: Illegal XML character: 0xD800
+[PASS] valid-sa-052 | Expected: valid | Actual: valid (parsed successfully) | 052.xml
     Description: The document is encoded in UTF-8 and the text inside the
     root element uses two non-ASCII characters, encoded in UTF-8
     and each of which expands to a Unicode surrogate pair.
@@ -909,8 +893,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-061 | Expected: valid | Actual: valid (parsed successfully) | 061.xml
     Description: Test demonstrates the use of decimal Character References within element content.
 
-[FAIL] valid-sa-062 | Expected: valid | Actual: not-wf | 062.xml
-    Expected valid but got error: Unexpected character 'e' (NAME_START_CHAR) in CONTENT:SEEN_AMP_HASH_X
+[PASS] valid-sa-062 | Expected: valid | Actual: valid (parsed successfully) | 062.xml
     Description: Test demonstrates the use of hexadecimal Character References within element.
 
 [PASS] valid-sa-063 | Expected: valid | Actual: valid (parsed successfully) | 063.xml
@@ -923,7 +906,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 
 [PASS] valid-sa-065 | Expected: valid | Actual: valid (parsed successfully) | 065.xml
     Description: Tests ability to define an internal entity which can't
-    legally be expanded (contains an unquoted lt;).
+    legally be expanded (contains an unquoted <).
 
 [PASS] valid-sa-066 | Expected: valid | Actual: valid (parsed successfully) | 066.xml
     Description: Expands a CDATA attribute with a character reference.
@@ -936,8 +919,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
     reference, which must not be normalized before reporting to the application.  Line 
     break normalization only occurs when parsing external parsed entities.
 
-[FAIL] valid-sa-069 | Expected: valid | Actual: not-wf | 069.xml
-    Expected valid but got error: Expected SYSTEM or PUBLIC after notation name, got: NAME
+[PASS] valid-sa-069 | Expected: valid | Actual: valid (parsed successfully) | 069.xml
     Description: Verifies that an XML parser will parse a NOTATION
     declaration; the output phase of this test ensures that
     it's reported to the application.
@@ -961,14 +943,12 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-075 | Expected: valid | Actual: valid (parsed successfully) | 075.xml
     Description: Test demonstrates that an AttlistDecl can use ENTITIES as the TokenizedType within the Attribute type.  The test also shows that IMPLIED is a valid DefaultDecl.
 
-[FAIL] valid-sa-076 | Expected: valid | Actual: not-wf | 076.xml
-    Expected valid but got error: Expected SYSTEM or PUBLIC after notation name, got: NAME
+[PASS] valid-sa-076 | Expected: valid | Actual: valid (parsed successfully) | 076.xml
     Description: Verifies that an XML parser will parse a NOTATION
     attribute; the output phase of this test ensures that
     both notations are reported to the application.
 
-[FAIL] valid-sa-077 | Expected: valid | Actual: not-wf | 077.xml
-    Expected valid but got error: Unexpected character '1' (DIGIT) in DOCTYPE_INTERNAL:READY
+[PASS] valid-sa-077 | Expected: valid | Actual: valid (parsed successfully) | 077.xml
     Description: Test demonstrates that an AttlistDecl can use an EnumeratedType within the Attribute type.  The test also shows that IMPLIED is a valid DefaultDecl.
 
 [PASS] valid-sa-078 | Expected: valid | Actual: valid (parsed successfully) | 078.xml
@@ -983,12 +963,10 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-081 | Expected: valid | Actual: valid (parsed successfully) | 081.xml
     Description: Test demonstrates the use of the optional character following a name or list  to govern the number of times an element or content particles in the list occur.
 
-[FAIL] valid-sa-082 | Expected: valid | Actual: not-wf | 082.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-sa-082 | Expected: valid | Actual: valid (parsed successfully) | 082.xml
     Description: Tests that an external PE may be defined (but not referenced).
 
-[FAIL] valid-sa-083 | Expected: valid | Actual: not-wf | 083.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-sa-083 | Expected: valid | Actual: valid (parsed successfully) | 083.xml
     Description: Tests that an external PE may be defined (but not referenced).
 
 [PASS] valid-sa-084 | Expected: valid | Actual: valid (parsed successfully) | 084.xml
@@ -998,8 +976,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
     Description: Parameter and General entities use different namespaces,
     so there can be an entity of each type with a given name.
 
-[FAIL] valid-sa-086 | Expected: valid | Actual: not-wf | 086.xml
-    Expected valid but got error: End tag </doc> does not match start tag <foo>
+[PASS] valid-sa-086 | Expected: valid | Actual: valid (parsed successfully) | 086.xml
     Description: Tests whether entities may be declared more than once,
     with the first declaration being the binding one.
 
@@ -1009,26 +986,23 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
     make the entity be well formed.
 
 [FAIL] valid-sa-088 | Expected: valid | Actual: not-wf | 088.xml
-    Expected valid but got error: End tag </doc> does not match start tag <foo>
+    Expected valid but got error: Entity '&e;' creates unbalanced markup: element 'foo' opened within entity but not closed (WFC: Parsed Entity)
     Description: Tests whether entity references in internal entities are
     expanded late enough, by relying on correct handling to
     make the expanded text be valid.  (If it's expanded too
     early, the entity will parse as an element that's not
     valid in that context.)
 
-[FAIL] valid-sa-089 | Expected: valid | Actual: not-wf | 089.xml
-    Expected valid but got error: Unexpected character '1' (DIGIT) in DOCTYPE_INTERNAL_QUOTED_QUOT:SEEN_AMP_HASH_X
+[PASS] valid-sa-089 | Expected: valid | Actual: valid (parsed successfully) | 089.xml
     Description: Tests entity expansion of three legal character references,
     which each expand to a Unicode surrogate pair.
 
-[FAIL] valid-sa-090 | Expected: valid | Actual: not-wf | 090.xml
-    Expected valid but got error: Expected SYSTEM or PUBLIC after notation name, got: NAME
+[PASS] valid-sa-090 | Expected: valid | Actual: valid (parsed successfully) | 090.xml
     Description: Verifies that an XML parser will parse a NOTATION
     attribute; the output phase of this test ensures that
     the notation is reported to the application.
 
-[FAIL] valid-sa-091 | Expected: valid | Actual: not-wf | 091.xml
-    Expected valid but got error: Expected SYSTEM or PUBLIC after notation name, got: NAME
+[PASS] valid-sa-091 | Expected: valid | Actual: valid (parsed successfully) | 091.xml
     Description: Verifies that an XML parser will parse an ENTITY
     attribute; the output phase of this test ensures that
     the notation is reported to the application, and for
@@ -1056,8 +1030,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-096 | Expected: valid | Actual: valid (parsed successfully) | 096.xml
     Description: Test demonstrates that extra whitespace is normalized into a single space character in an attribute of type NMTOKENS.
 
-[FAIL] valid-sa-097 | Expected: valid | Actual: not-wf | 097.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-sa-097 | Expected: valid | Actual: valid (parsed successfully) | 097.xml
     Description: Basically an output test, this tests whether an externally
     defined attribute declaration (with a default) takes proper
     precedence over a subsequent internal declaration.
@@ -1068,8 +1041,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-099 | Expected: valid | Actual: valid (parsed successfully) | 099.xml
     Description: Test demonstrates the name of the encoding can be composed of lowercase characters.
 
-[FAIL] valid-sa-100 | Expected: valid | Actual: not-wf | 100.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-sa-100 | Expected: valid | Actual: valid (parsed successfully) | 100.xml
     Description: Makes sure that PUBLIC identifiers may have some strange
     characters.  NOTE:  The XML editors have said that the XML
     specification errata will specify that parameter entity expansion
@@ -1123,8 +1095,7 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-sa-113 | Expected: valid | Actual: valid (parsed successfully) | 113.xml
     Description: Test demonstrates that it is not an error to have attributes declared for an element not itself declared.
 
-[FAIL] valid-sa-114 | Expected: valid | Actual: not-wf | 114.xml
-    Expected valid but got error: General entity reference '&foo;' used but entity not declared
+[PASS] valid-sa-114 | Expected: valid | Actual: valid (parsed successfully) | 114.xml
     Description: Test demonstrates that all text within a valid CDATA section is considered text and not recognized as markup.
 
 [PASS] valid-sa-115 | Expected: valid | Actual: valid (parsed successfully) | 115.xml
@@ -1149,17 +1120,15 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-not-sa-002 | Expected: valid | Actual: valid (parsed successfully) | 002.xml
     Description: Test demonstrates the use of an ExternalID within a document type definition.
 
-[FAIL] valid-not-sa-003 | Expected: valid | Actual: not-wf | 003.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-not-sa-003 | Expected: valid | Actual: valid (parsed successfully) | 003.xml
     Description: Test demonstrates the expansion of an external parameter entity that declares an attribute.
 
 [FAIL] valid-not-sa-004 | Expected: valid | Actual: not-wf | 004.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+    Expected valid but got error: Unexpected token in entity value: START_ATTLISTDECL
     Description: Expands an external parameter entity in two different ways,
     with one of them declaring an attribute.
 
-[FAIL] valid-not-sa-005 | Expected: valid | Actual: not-wf | 005.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-not-sa-005 | Expected: valid | Actual: valid (parsed successfully) | 005.xml
     Description: Test demonstrates the expansion of an external parameter entity that declares an attribute.
 
 [PASS] valid-not-sa-006 | Expected: valid | Actual: valid (parsed successfully) | 006.xml
@@ -1179,24 +1148,22 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-not-sa-010 | Expected: valid | Actual: valid (parsed successfully) | 010.xml
     Description: Test demonstrates that when more that one definition is provided for the same attribute of a given element type only the first declaration is binding.
 
-[FAIL] valid-not-sa-011 | Expected: valid | Actual: not-wf | 011.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-not-sa-011 | Expected: valid | Actual: valid (parsed successfully) | 011.xml
     Description: Test demonstrates a parameter entity declaration whose parameter entity definition is an ExternalID.
 
-[FAIL] valid-not-sa-012 | Expected: valid | Actual: not-wf | 012.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-not-sa-012 | Expected: valid | Actual: valid (parsed successfully) | 012.xml
     Description: Test demonstrates an enternal parsed entity that begins with a text declaration.
 
 [FAIL] valid-not-sa-013 | Expected: valid | Actual: not-wf | 013.xml
-    Expected valid but got error: Unexpected character ' ' (WHITESPACE) in DOCTYPE_INTERNAL:SEEN_LT_BANG_OPEN_BRACKET
+    Expected valid but got error: Invalid attribute type in <!ATTLIST: CDATA
     Description: Test demonstrates the use of the conditional section INCLUDE that will include its contents as part of the DTD.
 
 [FAIL] valid-not-sa-014 | Expected: valid | Actual: not-wf | 014.xml
-    Expected valid but got error: Unexpected character ' ' (WHITESPACE) in DOCTYPE_INTERNAL:SEEN_LT_BANG_OPEN_BRACKET
+    Expected valid but got error: Undefined parameter entity: %e;
     Description: Test demonstrates the use of the conditional section INCLUDE that will include its contents as part of the DTD.  The keyword is a parameter-entity reference.
 
 [FAIL] valid-not-sa-015 | Expected: valid | Actual: not-wf | 015.xml
-    Expected valid but got error: Unexpected character ' ' (WHITESPACE) in DOCTYPE_INTERNAL:SEEN_LT_BANG_OPEN_BRACKET
+    Expected valid but got error: Undefined parameter entity: %e;
     Description: Test demonstrates the use of the conditonal section IGNORE the will ignore its content from being part of the DTD.  The keyword is a parameter-entity reference.
 
 [FAIL] valid-not-sa-016 | Expected: valid | Actual: not-wf | 016.xml
@@ -1206,12 +1173,11 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
 [PASS] valid-not-sa-017 | Expected: valid | Actual: valid (parsed successfully) | 017.xml
     Description: Test demonstrates a parameter entity declaration that contains an attribute list declaration.
 
-[FAIL] valid-not-sa-018 | Expected: valid | Actual: not-wf | 018.xml
-    Expected valid but got error: Expected default declaration (#REQUIRED, #IMPLIED, #FIXED, or value) in &lt;!ATTLIST, got: PARAMETERENTITYREF
+[PASS] valid-not-sa-018 | Expected: valid | Actual: valid (parsed successfully) | 018.xml
     Description: Test demonstrates an EnternalID whose contents contain an parameter entity declaration and a attribute list definition.
 
 [FAIL] valid-not-sa-019 | Expected: valid | Actual: not-wf | 019.xml
-    Expected valid but got error: Expected whitespace after attribute type in &lt;!ATTLIST, got: PARAMETERENTITYREF
+    Expected valid but got error: Error expanding parameter entity %e;
     Description: Test demonstrates that a parameter entity will be expanded with spaces on either side.
 
 [FAIL] valid-not-sa-020 | Expected: valid | Actual: not-wf | 020.xml
@@ -1219,105 +1185,88 @@ everyting between the CDStart and CDEnd is recognized as character data not mark
     Description: Parameter entities expand with spaces on either side.
 
 [FAIL] valid-not-sa-021 | Expected: valid | Actual: not-wf | 021.xml
-    Expected valid but got error: Expected element name after &lt;!ATTLIST, got: PARAMETERENTITYREF
+    Expected valid but got error: Error expanding parameter entity %e;
     Description: Test demonstrates a parameter entity declaration that contains a partial attribute list declaration.
 
 [FAIL] valid-not-sa-023 | Expected: valid | Actual: not-wf | 023.xml
-    Expected valid but got error: Expected element name after &lt;!ATTLIST, got: PARAMETERENTITYREF
+    Expected valid but got error: Error expanding parameter entity %e1;
     Description: Test demonstrates the use of a parameter entity reference within an attribute list declaration.
 
-[FAIL] valid-not-sa-024 | Expected: valid | Actual: not-wf | 024.xml
-    Expected valid but got error: Expected attribute name or '&gt;' in &lt;!ATTLIST, got: PARAMETERENTITYREF
+[PASS] valid-not-sa-024 | Expected: valid | Actual: valid (parsed successfully) | 024.xml
     Description: Constructs an <!ATTLIST...> declaration from several PEs.
 
-[FAIL] valid-not-sa-025 | Expected: valid | Actual: not-wf | 025.xml
-    Expected valid but got error: Expected default declaration (#REQUIRED, #IMPLIED, #FIXED, or value) in &lt;!ATTLIST, got: PARAMETERENTITYREF
+[PASS] valid-not-sa-025 | Expected: valid | Actual: valid (parsed successfully) | 025.xml
     Description: Test demonstrates that when more that one definition is provided for the same entity only the first declaration is binding.
 
-[FAIL] valid-not-sa-026 | Expected: valid | Actual: not-wf | 026.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-not-sa-026 | Expected: valid | Actual: valid (parsed successfully) | 026.xml
     Description: Test demonstrates that when more that one definition is provided for the same attribute of a given element type only the first declaration is binding.
 
-[FAIL] valid-not-sa-027 | Expected: valid | Actual: not-wf | 027.xml
-    Expected valid but got error: Unexpected token in &lt;!ELEMENT content model: PARAMETERENTITYREF
+[PASS] valid-not-sa-027 | Expected: valid | Actual: valid (parsed successfully) | 027.xml
     Description: Test demonstrates a parameter entity reference whose value is NULL.
 
 [FAIL] valid-not-sa-028 | Expected: valid | Actual: not-wf | 028.xml
-    Expected valid but got error: Unexpected character '[' (OPEN_BRACKET) in DOCTYPE_INTERNAL:READY
+    Expected valid but got error: Invalid attribute type in <!ATTLIST: CDATA
     Description: Test demonstrates the use of the conditional section INCLUDE that will include its contents.
 
 [FAIL] valid-not-sa-029 | Expected: valid | Actual: not-wf | 029.xml
-    Expected valid but got error: Expected INCLUDE, IGNORE, or parameter entity reference in conditional section, got: NAME
+    Expected valid but got error: Unexpected character '<' (LT) in CONDITIONAL_SECTION_IGNORE:READY
     Description: Test demonstrates the use of the conditonal section IGNORE the will ignore its content from being used.
 
 [FAIL] valid-not-sa-030 | Expected: valid | Actual: not-wf | 030.xml
-    Expected valid but got error: Expected INCLUDE, IGNORE, or parameter entity reference in conditional section, got: NAME
+    Expected valid but got error: Conditional section not properly terminated (external entity ended mid-section)
     Description: Test demonstrates the use of the conditonal section IGNORE the will ignore its content from being used.
 
-[FAIL] valid-not-sa-031 | Expected: valid | Actual: not-wf | 031.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-not-sa-031 | Expected: valid | Actual: valid (parsed successfully) | 031.xml
     Description: Expands a general entity which contains a CDATA section with
     what looks like a markup declaration (but is just text since
     it's in a CDATA section).
 
-[FAIL] valid-ext-sa-001 | Expected: valid | Actual: not-wf | 001.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-001 | Expected: valid | Actual: valid (parsed successfully) | 001.xml
     Description: A combination of carriage return line feed in an external entity must
     be normalized to a single newline.
 
-[FAIL] valid-ext-sa-002 | Expected: valid | Actual: not-wf | 002.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-002 | Expected: valid | Actual: valid (parsed successfully) | 002.xml
     Description: A carriage return (also CRLF) in an external entity must
     be normalized to a single newline.
 
-[FAIL] valid-ext-sa-003 | Expected: valid | Actual: not-wf | 003.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-003 | Expected: valid | Actual: valid (parsed successfully) | 003.xml
     Description: Test demonstrates that the content of an element can be empty. In this case the external entity is an empty file.
 
-[FAIL] valid-ext-sa-004 | Expected: valid | Actual: not-wf | 004.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-004 | Expected: valid | Actual: valid (parsed successfully) | 004.xml
     Description: A carriage return (also CRLF) in an external entity must
     be normalized to a single newline.
 
-[FAIL] valid-ext-sa-005 | Expected: valid | Actual: not-wf | 005.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-005 | Expected: valid | Actual: valid (parsed successfully) | 005.xml
     Description: Test demonstrates the use of optional character and content particles within an element content.  The test also show the use of external entity.
 
-[FAIL] valid-ext-sa-006 | Expected: valid | Actual: not-wf | 006.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-006 | Expected: valid | Actual: valid (parsed successfully) | 006.xml
     Description: Test demonstrates the use of optional character and content particles within mixed element content.  The test also shows the use of an external entity and that a carriage control line feed in an external entity must be normalized to a single newline.
 
-[FAIL] valid-ext-sa-007 | Expected: valid | Actual: not-wf | 007.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-007 | Expected: valid | Actual: valid (parsed successfully) | 007.xml
     Description: Test demonstrates the use of external entity and how replacement 
 text is retrieved and processed.
 
-[FAIL] valid-ext-sa-008 | Expected: valid | Actual: not-wf | 008.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-008 | Expected: valid | Actual: valid (parsed successfully) | 008.xml
     Description: Test demonstrates the use of external 
 entity and how replacement text is retrieved and processed.  Also tests the use of an 
 EncodingDecl of UTF-16.
 
-[FAIL] valid-ext-sa-009 | Expected: valid | Actual: not-wf | 009.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-009 | Expected: valid | Actual: valid (parsed successfully) | 009.xml
     Description: A carriage return (also CRLF) in an external entity must
     be normalized to a single newline.
 
-[FAIL] valid-ext-sa-011 | Expected: valid | Actual: not-wf | 011.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-011 | Expected: valid | Actual: valid (parsed successfully) | 011.xml
     Description: Test demonstrates the use of a public identifier with and external entity.  
 The test also show that a carriage control line feed combination in an external 
 entity must be normalized to a single newline.
 
 [FAIL] valid-ext-sa-012 | Expected: valid | Actual: not-wf | 012.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+    Expected valid but got error: External entity reference in entity value requires async resolution
     Description: Test demonstrates both internal and external entities and that processing of entity references may be required to produce the correct replacement text.
 
-[FAIL] valid-ext-sa-013 | Expected: valid | Actual: not-wf | 013.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-013 | Expected: valid | Actual: valid (parsed successfully) | 013.xml
     Description: Test demonstrates that whitespace is handled by adding a single whitespace to the normalized value in the attribute list.
 
-[FAIL] valid-ext-sa-014 | Expected: valid | Actual: not-wf | 014.xml
-    Expected valid but got error: Expected quoted value, SYSTEM, or PUBLIC in <!ENTITY, got: NAME
+[PASS] valid-ext-sa-014 | Expected: valid | Actual: valid (parsed successfully) | 014.xml
     Description: Test demonstrates use of characters outside of normal ASCII range.
 

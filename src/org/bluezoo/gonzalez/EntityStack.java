@@ -221,8 +221,24 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
                     locator);
         }
         
-        // Expand internal entity
-        return expandEntityValue(entity.replacementText, context);
+        // Push onto stack before expanding (for recursion detection during value expansion)
+        String publicId = entity.externalID != null ? entity.externalID.publicId : null;
+        String systemId = entity.externalID != null ? entity.externalID.systemId : null;
+        push(new EntityStackEntry(
+            entityName,
+            publicId,
+            systemId,
+            false, // isParameterEntity
+            peekIsXML11(),
+            -1)); // element depth not relevant for general entities
+        
+        try {
+            // Expand internal entity
+            return expandEntityValue(entity.replacementText, context);
+        } finally {
+            // Pop from stack
+            pop();
+        }
     }
     
     /**
@@ -288,9 +304,25 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
                 locator);
         }
         
-        // Expand internal entity - when expanding a parameter entity's value, 
-        // we're still in ENTITY_VALUE context
-        return expandEntityValue(entity.replacementText, EntityExpansionContext.ENTITY_VALUE);
+        // Push onto stack before expanding (for recursion detection during value expansion)
+        String publicId = entity.externalID != null ? entity.externalID.publicId : null;
+        String systemId = entity.externalID != null ? entity.externalID.systemId : null;
+        push(new EntityStackEntry(
+            entityName,
+            publicId,
+            systemId,
+            true, // isParameterEntity
+            peekIsXML11(),
+            -1)); // element depth not relevant for parameter entities
+        
+        try {
+            // Expand internal entity - when expanding a parameter entity's value, 
+            // we're still in ENTITY_VALUE context
+            return expandEntityValue(entity.replacementText, EntityExpansionContext.ENTITY_VALUE);
+        } finally {
+            // Pop from stack
+            pop();
+        }
     }
     
     /**
