@@ -21,82 +21,90 @@
 
 package org.bluezoo.gonzalez;
 
-import java.util.HashMap;
+import java.util.ArrayDeque;
 
 /**
- * Pool for reusing QName objects to avoid allocation overhead.
+ * Object pool for QName instances.
  * 
- * <p>Since QName objects are immutable and used extensively as HashMap keys
- * in SAXAttributes, pooling them reduces both allocation and hash computation overhead.
+ * <p>QName objects are checked out from the pool, used, and returned.
+ * If the pool is empty, a new QName is created. If the pool is full on return,
+ * the QName is discarded (will be garbage collected).
  * 
- * <p>This pool is NOT thread-safe and should not be shared across threads.
+ * <p>Usage pattern:
+ * <pre>
+ * QName qname = pool.checkout();
+ * qname.update(uri, localName, qName);
+ * // ... use qname ...
+ * pool.returnToPool(qname);
+ * </pre>
+ * 
+ * <p>The pool should be cleared between parse operations to release resources.
  * 
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 class QNamePool {
     
     /**
-     * Pool of canonical QName instances.
-     * Key is a QName, value is the same QName (for interning).
+     * Maximum pool size. Limits memory usage while providing enough capacity
+     * for typical XML documents (elements + attributes per level).
      */
-    private final HashMap<QName, QName> pool;
+    private static final int MAX_POOL_SIZE = 24;
     
     /**
-     * Creates a new QName pool with default initial capacity.
+     * Pool of available QName objects ready for reuse.
+     */
+    private final ArrayDeque<QName> available;
+    
+    /**
+     * Creates a new QName pool.
      */
     QNamePool() {
-        this(128); // Reasonable default for element/attribute names
+        this.available = new ArrayDeque<>(MAX_POOL_SIZE);
     }
     
     /**
-     * Creates a new QName pool with specified initial capacity.
+     * Checks out a QName from the pool.
+     * If the pool is empty, creates a new QName.
      * 
-     * @param initialCapacity the initial capacity
+     * <p>The caller is responsible for calling returnToPool() when done.
+     * 
+     * @return a QName object (from pool or newly created)
      */
-    QNamePool(int initialCapacity) {
-        this.pool = new HashMap<>(initialCapacity);
-    }
-    
-    /**
-     * Gets a QName from the pool, creating and caching it if not present.
-     * 
-     * <p>All input strings (uri, localName, qName) should already be interned
-     * for maximum efficiency.
-     * 
-     * @param uri the namespace URI (never null, use "" for no namespace)
-     * @param localName the local name (never null)
-     * @param qName the qualified name (never null)
-     * @return the canonical QName instance
-     */
-    QName get(String uri, String localName, String qName) {
-        // Create temporary QName for lookup
-        QName key = new QName(uri, localName, qName);
-        
-        // Check if already in pool
-        QName pooled = pool.get(key);
-        if (pooled != null) {
-            return pooled;
+    QName checkout() {
+        QName qname = available.poll();
+        if (qname == null) {
+            qname = new QName();
         }
-        
-        // Not in pool: add it
-        pool.put(key, key);
-        return key;
+        return qname;
     }
     
     /**
-     * Clears all QNames from the pool.
+     * Returns a QName to the pool for reuse.
+     * If the pool is at maximum capacity, the QName is discarded.
+     * 
+     * @param qname the QName to return (must not be null)
+     */
+    void returnToPool(QName qname) {
+        if (qname != null && available.size() < MAX_POOL_SIZE) {
+            available.add(qname);
+        }
+        // If pool full or qname is null, just discard (will be GC'd)
+    }
+    
+    /**
+     * Clears the pool, releasing all QName objects.
+     * Should be called between parse operations to free resources.
      */
     void clear() {
-        pool.clear();
+        available.clear();
     }
     
     /**
-     * Returns the number of QNames currently in the pool.
+     * Returns the number of QName objects currently available in the pool.
      * 
-     * @return the pool size
+     * @return the number of available QNames
      */
-    int size() {
-        return pool.size();
+    int getAvailableCount() {
+        return available.size();
     }
 }
-

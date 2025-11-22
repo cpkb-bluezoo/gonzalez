@@ -208,13 +208,9 @@ public class SAXAttributes implements Attributes2 {
       throw new IllegalArgumentException("Duplicate attribute: " + qName);
     }
     
-    // Get QName from pool (reuse if possible)
-    QName qnameKey;
-    if (qnamePool != null) {
-      qnameKey = qnamePool.get(uri, localName, qName);
-    } else {
-      qnameKey = new QName(uri, localName, qName);
-    }
+    // Get QName from pool (checkout and update)
+    QName qnameKey = qnamePool.checkout();
+    qnameKey.update(uri, localName, qName);
     
     // Get Attribute object from pool or create new
     Attribute attr;
@@ -254,9 +250,15 @@ public class SAXAttributes implements Attributes2 {
   /**
    * Clears all attributes.
    * Does NOT remove Attribute objects from the pool - reuses them for next element.
+   * Returns QName objects to the QName pool for reuse.
    */
   public void clear() {
-    attributeCount = 0;  // Reset active count, keep pooled objects
+    // Return QName objects to pool before clearing
+    for (int i = 0; i < attributeCount; i++) {
+      qnamePool.returnToPool(attributes.get(i).qname);
+    }
+    
+    attributeCount = 0;  // Reset active count, keep pooled Attribute objects
     qnameMap.clear();
     stringNameMap.clear();
     elementName = null;
@@ -324,14 +326,13 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public int getIndex(String uri, String localName) {
-    // Create temporary QName for lookup (will be pooled if qnamePool is set)
-    QName key;
-    if (qnamePool != null) {
-      key = qnamePool.get(uri, localName, "");
-    } else {
-      key = new QName(uri, localName, "");
-    }
+    // Create temporary QName for lookup (checkout from pool)
+    QName key = qnamePool.checkout();
+    key.update(uri, localName, "");
     Attribute attr = qnameMap.get(key);
+    
+    // Return temporary QName to pool
+    qnamePool.returnToPool(key);
 
     if (attr == null) {
       return -1;
@@ -355,13 +356,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getType(String uri, String localName) {
-    QName key;
-    if (qnamePool != null) {
-      key = qnamePool.get(uri, localName, "");
-    } else {
-      key = new QName(uri, localName, "");
-    }
+    QName key = qnamePool.checkout();
+    key.update(uri, localName, "");
     Attribute attr = qnameMap.get(key);
+    
+    // Return temporary QName to pool
+    qnamePool.returnToPool(key);
 
     if (attr == null) {
       return null;
@@ -401,13 +401,13 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getValue(String uri, String localName) {
-    QName key;
-    if (qnamePool != null) {
-      key = qnamePool.get(uri, localName, "");
-    } else {
-      key = new QName(uri, localName, "");
-    }
+    QName key = qnamePool.checkout();
+    key.update(uri, localName, "");
     Attribute attr = qnameMap.get(key);
+    
+    // Return temporary QName to pool
+    qnamePool.returnToPool(key);
+    
     return (attr != null) ? attr.getValueAsString(normalizer) : null;
   }
 
@@ -452,13 +452,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public boolean isDeclared(String uri, String localName) {
-    QName key;
-    if (qnamePool != null) {
-      key = qnamePool.get(uri, localName, "");
-    } else {
-      key = new QName(uri, localName, "");
-    }
+    QName key = qnamePool.checkout();
+    key.update(uri, localName, "");
     Attribute attr = qnameMap.get(key);
+    
+    // Return temporary QName to pool
+    qnamePool.returnToPool(key);
 
     if (attr == null) {
       throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
@@ -493,13 +492,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public boolean isSpecified(String uri, String localName) {
-    QName key;
-    if (qnamePool != null) {
-      key = qnamePool.get(uri, localName, "");
-    } else {
-      key = new QName(uri, localName, "");
-    }
+    QName key = qnamePool.checkout();
+    key.update(uri, localName, "");
     Attribute attr = qnameMap.get(key);
+    
+    // Return temporary QName to pool
+    qnamePool.returnToPool(key);
 
     if (attr == null) {
       throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);

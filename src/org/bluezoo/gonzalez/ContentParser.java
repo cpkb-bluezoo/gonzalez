@@ -141,7 +141,7 @@ public class ContentParser implements TokenConsumer {
     /**
      * QName pool for reusing QName objects (reduces allocation and hash overhead).
      */
-    private QNamePool qnamePool;
+    private final QNamePool qnamePool = new QNamePool();
     
     /**
      * Reusable char array for passing character data to SAX handlers.
@@ -433,10 +433,7 @@ public class ContentParser implements TokenConsumer {
                 namespaceTracker.setInternPool(internPool);
             }
         }
-        // Initialize QName pool if enabling namespaces
-        if (enabled && qnamePool == null) {
-            qnamePool = new QNamePool();
-        }
+        // QName pool is always available (initialized at declaration)
     }
 
     public boolean getNamespacePrefixesEnabled() {
@@ -768,9 +765,8 @@ public class ContentParser implements TokenConsumer {
         }
         
         // Initialize QName pool
-        if (qnamePool == null) {
-            qnamePool = new QNamePool();
-        }
+        // Clear QName pool
+        qnamePool.clear();
         
         // Clear entity resolution stack
         
@@ -1979,6 +1975,11 @@ throw fatalError("Expected PI target after '<?', got: " + token);
             // Fire startElement with namespace info
             contentHandler.startElement(namespaceURI, localName, qName, attributes);
             
+            // Return element QName to pool (no longer needed after startElement)
+            if (qnamePool != null) {
+                qnamePool.returnToPool(elementQName);
+            }
+            
             // If empty element, fire endElement immediately
             if (isEmpty) {
                 // Validate empty element content
@@ -2005,6 +2006,8 @@ throw fatalError("Expected PI target after '<?', got: " + token);
         } else {
             // Non-namespace-aware mode
             contentHandler.startElement("", elementName, elementName, attributes);
+            
+            // No QName to return in non-namespace mode
             
             if (isEmpty) {
                 // Validate empty element content
@@ -2045,6 +2048,11 @@ throw fatalError("Expected PI target after '<?', got: " + token);
             
             // Fire endElement
             contentHandler.endElement(namespaceURI, localName, qName);
+            
+            // Return element QName to pool (no longer needed after endElement)
+            if (qnamePool != null) {
+                qnamePool.returnToPool(elementQName);
+            }
             
             // Fire endPrefixMapping for all declarations at this level (in reverse order)
             ArrayList<String> prefixes = new ArrayList<>();

@@ -24,9 +24,8 @@ package org.bluezoo.gonzalez;
 /**
  * Represents a qualified name in XML with namespace URI and local name.
  *
- * <p>This class is optimized for use as a key in hash maps and provides
- * efficient equality checking and hash code computation. It is immutable
- * and safe for concurrent use.
+ * <p>This class is mutable and designed for object pooling to reduce allocations.
+ * QName objects are reused across multiple elements/attributes by updating their values.
  *
  * <p>Two QNames are considered equal if both their namespace URIs and
  * local names are equal. The qualified name (prefix:localName) is not
@@ -36,21 +35,42 @@ package org.bluezoo.gonzalez;
  */
 public final class QName {
 
-  private final String uri;
-  private final String localName;
-  private final String qName;
+  private String uri;
+  private String localName;
+  private String qName;
 
-  // Cache hash code for performance
-  private final int hash;
+  // Cache hash code for performance (recomputed on update)
+  private int hash;
 
   /**
-   * Creates a new QName.
+   * Creates a new QName with default empty values (for pooling).
+   */
+  public QName() {
+    this.uri = "";
+    this.localName = "";
+    this.qName = "";
+    this.hash = 0;
+  }
+
+  /**
+   * Creates a new QName with specified values.
    *
    * @param uri the namespace URI (never null, use "" for no namespace)
    * @param localName the local name (never null)
    * @param qName the qualified name (never null)
    */
   public QName(String uri, String localName, String qName) {
+    update(uri, localName, qName);
+  }
+  
+  /**
+   * Updates this QName with new values (for object pooling).
+   *
+   * @param uri the namespace URI (never null, use "" for no namespace)
+   * @param localName the local name (never null)
+   * @param qName the qualified name (never null)
+   */
+  public void update(String uri, String localName, String qName) {
     if (uri == null || localName == null || qName == null) {
       throw new NullPointerException("QName components must not be null");
     }
@@ -59,7 +79,7 @@ public final class QName {
     this.localName = localName;
     this.qName = qName;
 
-    // Precompute hash code - critical for HashMap performance
+    // Recompute hash code when values change
     this.hash = computeHash();
   }
 

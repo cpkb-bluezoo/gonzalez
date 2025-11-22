@@ -301,6 +301,9 @@ public class NamespaceScopeTracker {
         
         int colonIndex = rawQName.indexOf(':');
         
+        // Checkout QName from pool
+        QName qname = pool.checkout();
+        
         if (colonIndex == -1) {
             // No prefix
             String namespaceURI;
@@ -312,7 +315,8 @@ public class NamespaceScopeTracker {
                 String defaultNS = getURI("");
                 namespaceURI = (defaultNS != null) ? defaultNS : "";
             }
-            return pool.get(namespaceURI, rawQName, rawQName);
+            qname.update(namespaceURI, rawQName, rawQName);
+            return qname;
         } else {
             // Has prefix
             String prefix = rawQName.substring(0, colonIndex);
@@ -325,10 +329,13 @@ public class NamespaceScopeTracker {
             // Look up prefix
             String namespaceURI = getURI(prefix);
             if (namespaceURI == null) {
+                // Return QName to pool before throwing
+                pool.returnToPool(qname);
                 throw new IllegalArgumentException("Unbound namespace prefix: " + prefix);
             }
             
-            return pool.get(namespaceURI, localName, rawQName);
+            qname.update(namespaceURI, localName, rawQName);
+            return qname;
         }
     }
     
