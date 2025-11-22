@@ -94,11 +94,18 @@ public class DTDParser implements TokenConsumer {
     // Current tokenizer state (updated via tokenizerState callback)
     private TokenizerState currentTokenizerState = TokenizerState.DOCTYPE_INTERNAL;
     
-    // XML version stack - tracks XML version at each entity expansion level
-    // Initialize with XML 1.0 (false) as the default
-    private final java.util.ArrayDeque<Boolean> xmlVersionStack = new java.util.ArrayDeque<Boolean>() {{
-        push(false); // Default to XML 1.0
-    }};
+    /**
+     * Entity stack - tracks all entity expansion entries and provides expansion logic.
+     * Unified stack for both general and parameter entities, used for:
+     * - Detecting infinite recursion (by name and systemId)
+     * - Tracking XML version across entity boundaries
+     * - Validating element nesting (WFC: Parsed Entity)
+     * - Context-aware entity value expansion
+     * 
+     * The bottom of the stack is always the document entity.
+     * Package-private to allow ContentParser access.
+     */
+    final EntityStack entityStack;
     
     /**
      * Sub-states for parsing &lt;!ELEMENT declarations.
@@ -329,6 +336,9 @@ public class DTDParser implements TokenConsumer {
      */
     public DTDParser(ContentParser xmlParser) {
         this.xmlParser = xmlParser;
+        // Initialize entity stack (includes document entity by default)
+        // Use a locator accessor method from ContentParser
+        this.entityStack = new EntityStack(this, xmlParser.getLocator());
     }
 
     @Override
@@ -391,10 +401,7 @@ public class DTDParser implements TokenConsumer {
     public void xmlVersion(boolean isXML11) {
         // Update the XML version at the current entity expansion level (top of stack)
         // This is called when a tokenizer parses an XML/text declaration
-        if (!xmlVersionStack.isEmpty()) {
-            xmlVersionStack.pop();
-            xmlVersionStack.push(isXML11);
-        }
+        entityStack.xmlVersion(isXML11);
     }
 
     /**
@@ -2896,13 +2903,12 @@ public class DTDParser implements TokenConsumer {
         
         // Expand parameter entity references
         List<Object> result = new ArrayList<>();
-        EntityExpansionHelper helper = new EntityExpansionHelper(this, locator);
         
         for (Object part : list) {
             if (part instanceof ParameterEntityReference) {
                 // Expand the parameter entity reference
                 ParameterEntityReference ref = (ParameterEntityReference) part;
-                String expanded = helper.expandParameterEntity(ref.name, EntityExpansionContext.ENTITY_VALUE);
+                String expanded = entityStack.expandParameterEntity(ref.name, EntityExpansionContext.ENTITY_VALUE);
                 
                 if (expanded == null) {
                     throw new SAXParseException(
@@ -2970,7 +2976,6 @@ public class DTDParser implements TokenConsumer {
         }
         
         // Expand any nested parameter entities in the replacement text
-        EntityExpansionHelper helper = new EntityExpansionHelper(this, locator);
         StringBuilder expanded = new StringBuilder();
         
         for (Object part : entity.replacementText) {
@@ -2978,7 +2983,7 @@ public class DTDParser implements TokenConsumer {
                 expanded.append((String) part);
             } else if (part instanceof ParameterEntityReference) {
                 ParameterEntityReference ref = (ParameterEntityReference) part;
-                String refExpanded = helper.expandParameterEntity(ref.name, EntityExpansionContext.DTD);
+                String refExpanded = entityStack.expandParameterEntity(ref.name, EntityExpansionContext.DTD);
                 if (refExpanded != null) {
                     expanded.append(refExpanded);
                 }
@@ -2994,10 +2999,23 @@ public class DTDParser implements TokenConsumer {
             return; // Nothing to tokenize
         }
         
-        // Push current XML version to stack - entity inherits parent's version
-        // (unless it declares its own via XML/text declaration)
-        boolean currentVersion = xmlVersionStack.isEmpty() ? false : xmlVersionStack.peek();
-        xmlVersionStack.push(currentVersion);
+        // Create entity context for this expansion
+        EntityStackEntry parentEntry = entityStack.peek();
+        boolean currentVersion = parentEntry != null ? parentEntry.isXML11 : false;
+        
+        // Check for recursion - has this entity name already been expanded?
+        for (EntityStackEntry ctx : entityStack) {
+            if (ctx.isParameterEntity && entityName.equals(ctx.entityName)) {
+                throw new SAXParseException(
+                    "Recursive parameter entity reference: %" + entityName + ";",
+                    locator);
+            }
+        }
+        
+        // Push entity context onto stack
+        EntityStackEntry entry = new EntityStackEntry(
+            entityName, true /* parameter entity */, currentVersion, 0 /* element depth N/A for DTD */);
+        entityStack.push(entry);
         
         // Create a tokenizer for the replacement text and feed tokens through DTD parser
         // Use the current tokenizer state to ensure proper context
@@ -3019,9 +3037,9 @@ public class DTDParser implements TokenConsumer {
                 "Error expanding parameter entity %" + entityName + ";",
                 locator, e);
         } finally {
-            // Pop XML version stack to restore parent's version
-            if (!xmlVersionStack.isEmpty()) {
-                xmlVersionStack.pop();
+            // Pop entity context to restore parent's state
+            if (!entityStack.isEmpty() && entityStack.peek() == entry) {
+                entityStack.pop();
             }
         }
     }

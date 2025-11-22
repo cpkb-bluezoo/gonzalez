@@ -22,70 +22,46 @@
 package org.bluezoo.gonzalez;
 
 /**
- * Entity expansion contexts as defined in XML 1.0 specification section 4.4.
- * Different contexts have different rules for entity expansion:
+ * Enumeration of entity expansion contexts.
+ * 
+ * <p>Different contexts have different rules for entity expansion per
+ * XML 1.0 specification section 4.4:
  * 
  * <ul>
- * <li><b>CONTENT</b>: Reference in element content (&amp;name;)
- *     - External parsed entities: Allowed (requires async resolution)
- *     - Unparsed entities: Forbidden
- * </li>
- * <li><b>ATTRIBUTE_VALUE</b>: Reference in attribute value (attr="&amp;name;")
- *     - External parsed entities: Forbidden
- *     - Unparsed entities: Forbidden
- * </li>
- * <li><b>ENTITY_ATTRIBUTE_VALUE</b>: Attribute of type ENTITY in attribute value
- *     - References unparsed entity name (no & or ;)
- *     - Must be declared unparsed entity
- * </li>
- * <li><b>ENTITY_VALUE</b>: Reference in entity value (&lt;!ENTITY x "&amp;y;"&gt;)
- *     - External parsed entities: Forbidden
- *     - General entity refs: Bypassed (stored as GeneralEntityReference for later)
- *     - Parameter entity refs: Immediately included
- * </li>
- * <li><b>DTD</b>: Reference in DTD markup
- *     - Only parameter entity refs allowed
- *     - External parameter entities: Allowed (requires async resolution)
- * </li>
+ * <li><b>CONTENT</b>: Element content - allows internal and external general entities</li>
+ * <li><b>ATTRIBUTE_VALUE</b>: Attribute values - allows only internal general entities</li>
+ * <li><b>ENTITY_VALUE</b>: Entity replacement text - allows only internal entities</li>
+ * <li><b>DTD</b>: DTD declarations - allows parameter entities</li>
  * </ul>
- *
+ * 
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-public enum EntityExpansionContext {
-    
+enum EntityExpansionContext {
     /**
-     * Reference in element content.
-     * External parsed entities are allowed (requires async resolution).
-     * Unparsed entities are forbidden.
+     * Element content context.
+     * Allows both internal and external general entities.
+     * External entities require async resolution.
      */
     CONTENT,
     
     /**
-     * Reference in attribute value.
-     * External parsed entities are forbidden.
-     * Unparsed entities are forbidden.
+     * Attribute value context.
+     * Allows only internal general entities.
+     * External and unparsed entities are forbidden.
      */
     ATTRIBUTE_VALUE,
     
     /**
-     * Attribute value of type ENTITY.
-     * Value is an unparsed entity name (not a reference, no &amp; or ;).
-     * Must refer to a declared unparsed entity.
-     */
-    ENTITY_ATTRIBUTE_VALUE,
-    
-    /**
-     * Reference in entity value (inside &lt;!ENTITY declaration).
-     * General entity refs are bypassed (stored for later expansion).
-     * Parameter entity refs are immediately included.
+     * Entity value context (replacement text).
+     * Allows only internal entities (both general and parameter).
      * External entities are forbidden.
      */
     ENTITY_VALUE,
     
     /**
-     * Reference in DTD markup.
-     * Only parameter entity refs are processed.
-     * External parameter entities are allowed (requires async resolution).
+     * DTD context (DOCTYPE declarations).
+     * Allows parameter entities (internal and external).
+     * External parameter entities require async resolution.
      */
     DTD
 }

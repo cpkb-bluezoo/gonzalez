@@ -76,15 +76,6 @@ public class ContentParser implements TokenConsumer {
     // Current tokenizer state (updated via tokenizerState callback)
     private TokenizerState currentTokenizerState = TokenizerState.CONTENT;
     
-    // XML version stack - tracks XML version at each entity expansion level
-    // The top of the stack represents the current XML version context.
-    // When creating a nested tokenizer/EED, push the current version.
-    // When finishing entity expansion, pop to restore parent's version.
-    // Initialize with XML 1.0 (false) as the default for the main document.
-    private final java.util.ArrayDeque<Boolean> xmlVersionStack = new java.util.ArrayDeque<Boolean>() {{
-        push(false); // Default to XML 1.0
-    }};
-    
     // Entity expansion depth - tracks how deeply nested we are in entity expansions
     // Used to enforce WFC: Parsed Entity (element nesting must respect entity boundaries)
     private int entityExpansionDepth = 0;
@@ -250,6 +241,16 @@ public class ContentParser implements TokenConsumer {
     @Override
     public void setLocator(Locator locator) {
         this.locator = locator;
+    }
+
+    /**
+     * Gets the locator for this parser.
+     * Package-private to allow DTDParser access.
+     * 
+     * @return the locator, or null if not set
+     */
+    Locator getLocator() {
+        return locator;
     }
 
     /**
@@ -598,10 +599,42 @@ public class ContentParser implements TokenConsumer {
         // Increment external entity depth
         externalEntityDepth++;
         
-        // Push current XML version to stack - entity inherits parent's version
-        // (unless it declares its own via text declaration)
-        boolean currentVersion = xmlVersionStack.isEmpty() ? false : xmlVersionStack.peek();
-        xmlVersionStack.push(currentVersion);
+        // Get current XML version from DTDParser's entity stack
+        // If no DTD parser, assume XML 1.0
+        boolean currentVersion = false;
+        if (dtdParser != null && !dtdParser.entityStack.isEmpty()) {
+            currentVersion = dtdParser.entityStack.peek().isXML11;
+        }
+        
+        // Check for systemId recursion
+        if (entityResolutionStack.contains(resolvedSystemId)) {
+            throw fatalError("Recursive entity reference via systemId: " + resolvedSystemId);
+        }
+        
+        // Check for name-based recursion if this is a named entity (not DTD subset)
+        if (name != null && dtdParser != null) {
+            boolean isParameterEntity = isDTDSubset; // DTD subsets are parameter entity expansions
+            for (EntityStackEntry ctx : dtdParser.entityStack) {
+                if (ctx.isParameterEntity == isParameterEntity && name.equals(ctx.entityName)) {
+                    throw fatalError("Recursive entity reference: " + 
+                        (isParameterEntity ? "%" : "&") + name + ";");
+                }
+            }
+        }
+        
+        // Add to systemId resolution stack
+        entityResolutionStack.add(resolvedSystemId);
+        
+        // Increment external entity depth
+        externalEntityDepth++;
+        
+        // Push entity context onto DTDParser's stack
+        boolean isParameterEntity = isDTDSubset;
+        EntityStackEntry entry = new EntityStackEntry(
+            name, publicId, systemId, isParameterEntity, currentVersion, entityExpansionDepth);
+        if (dtdParser != null) {
+            dtdParser.entityStack.push(entry);
+        }
         
         try {
             // Create nested tokenizer and decoder for external entity
@@ -655,9 +688,10 @@ public class ContentParser implements TokenConsumer {
             // Entity processing complete, continue with main stream
             
         } finally {
-            // Pop XML version stack to restore parent's version
-            if (!xmlVersionStack.isEmpty()) {
-                xmlVersionStack.pop();
+            // Pop entity context to restore parent's state
+            if (dtdParser != null && !dtdParser.entityStack.isEmpty() && 
+                dtdParser.entityStack.peek() == entry) {
+                dtdParser.entityStack.pop();
             }
             // Decrement external entity depth
             externalEntityDepth--;
@@ -1471,8 +1505,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      *         or if circular references are detected
      */
     private String expandGeneralEntityInAttributeValue(String entityName) throws SAXException {
-        EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
-        String expandedValue = helper.expandGeneralEntity(entityName, EntityExpansionContext.ATTRIBUTE_VALUE);
+        String expandedValue = dtdParser.entityStack.expandGeneralEntity(entityName, EntityExpansionContext.ATTRIBUTE_VALUE);
         
         // WFC: No < in Attribute Values
         // WFC: No External Entity References (handled by EntityExpansionHelper)
@@ -1506,8 +1539,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      *         or if circular references are detected
      */
     private void expandGeneralEntityInContent(String entityName) throws SAXException {
-        EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
-        String expandedValue = helper.expandGeneralEntity(entityName, EntityExpansionContext.CONTENT);
+        String expandedValue = dtdParser.entityStack.expandGeneralEntity(entityName, EntityExpansionContext.CONTENT);
         
         if (expandedValue == null) {
             // External entity - use blocking I/O to resolve and parse it
@@ -1567,10 +1599,28 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         // This marks any elements opened during expansion so we can verify they're closed
         entityExpansionDepth++;
         
-        // Push current XML version to stack - entity inherits parent's version
-        // (unless it declares its own via XML/text declaration)
-        boolean currentVersion = xmlVersionStack.isEmpty() ? false : xmlVersionStack.peek();
-        xmlVersionStack.push(currentVersion);
+        // Get current XML version from DTDParser's entity stack
+        // If no DTD parser, assume XML 1.0
+        boolean currentVersion = false;
+        if (dtdParser != null && !dtdParser.entityStack.isEmpty()) {
+            currentVersion = dtdParser.entityStack.peek().isXML11;
+        }
+        
+        // Check for recursion - has this entity name already been expanded?
+        if (dtdParser != null) {
+            for (EntityStackEntry ctx : dtdParser.entityStack) {
+                if (!ctx.isParameterEntity && entityName.equals(ctx.entityName)) {
+                    throw fatalError("Recursive entity reference: &" + entityName + ";");
+                }
+            }
+        }
+        
+        // Push entity context onto DTDParser's stack
+        EntityStackEntry entry = new EntityStackEntry(
+            entityName, false /* general entity */, currentVersion, entityExpansionDepth);
+        if (dtdParser != null) {
+            dtdParser.entityStack.push(entry);
+        }
         
         try {
             // Create tokenizer for the expanded value with the current tokenizer state and XML version
@@ -1599,9 +1649,10 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 }
             }
         } finally {
-            // Pop XML version stack to restore parent's version
-            if (!xmlVersionStack.isEmpty()) {
-                xmlVersionStack.pop();
+            // Pop entity context to restore parent's state
+            if (dtdParser != null && !dtdParser.entityStack.isEmpty() && 
+                dtdParser.entityStack.peek() == entry) {
+                dtdParser.entityStack.pop();
             }
             // Always decrement depth, even if expansion failed
             entityExpansionDepth--;
@@ -1791,8 +1842,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 // #FIXED attribute
                 if (decl.defaultValue != null) {
                     // Expand the fixed value
-                    EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
-                    String fixedValue = helper.expandEntityValue(decl.defaultValue, EntityExpansionContext.ATTRIBUTE_VALUE);
+                    String fixedValue = dtdParser.entityStack.expandEntityValue(decl.defaultValue, EntityExpansionContext.ATTRIBUTE_VALUE);
                     
                     if (specified) {
                         // Verify specified value matches fixed value
@@ -1811,8 +1861,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             } else if (!specified && decl.defaultValue != null) {
                 // Attribute not specified and has default value (not #REQUIRED, not #IMPLIED)
                 // Expand entity references in default value
-                EntityExpansionHelper helper = new EntityExpansionHelper(dtdParser, locator);
-                String expandedValue = helper.expandEntityValue(decl.defaultValue, EntityExpansionContext.ATTRIBUTE_VALUE);
+                String expandedValue = dtdParser.entityStack.expandEntityValue(decl.defaultValue, EntityExpansionContext.ATTRIBUTE_VALUE);
                 
                 // Apply normalization
                 String normalizedValue = normalizeAttributeValue(expandedValue, elementName, decl.name);
@@ -2078,12 +2127,15 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
     
     @Override
     public void xmlVersion(boolean isXML11) {
-        // Update the XML version at the current entity expansion level (top of stack)
+        // Update the XML version at the current entity expansion level
         // This is called when a tokenizer parses an XML/text declaration
-        if (!xmlVersionStack.isEmpty()) {
-            xmlVersionStack.pop();
-            xmlVersionStack.push(isXML11);
+        // Delegate to DTDParser's unified entity stack (if DTD is initialized)
+        // Otherwise update a document-level entity context
+        if (dtdParser != null && !dtdParser.entityStack.isEmpty()) {
+            dtdParser.entityStack.peek().isXML11 = isXML11;
         }
+        // Note: If no DTD parser exists yet, the main document's version will be set
+        // when the DTD parser is lazily initialized in handleDoctype()
     }
     
     /**

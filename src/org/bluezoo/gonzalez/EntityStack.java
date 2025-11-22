@@ -1,5 +1,5 @@
 /*
- * EntityExpansionHelper.java
+ * EntityExpansionStack.java
  * Copyright (C) 2025 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -21,29 +21,30 @@
 
 package org.bluezoo.gonzalez;
 
-import java.util.HashSet;
+import java.util.ArrayDeque;
 import java.util.List;
-import java.util.Set;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 
 /**
- * Helper class for context-aware entity expansion.
+ * Stack of entity expansion entries with integrated expansion logic.
  * 
- * <p>This class provides a unified mechanism for expanding entity references
- * in different contexts (content, attribute values, entity values, DTD).
- * Each context has different rules per XML 1.0 specification section 4.4.
+ * <p>Combines entity expansion state tracking with context-aware expansion logic.
+ * This class is responsible for:
+ * <ul>
+ * <li>Managing the stack of nested entity expansions ({@link EntityStackEntry})</li>
+ * <li>Tracking XML version inheritance across entity boundaries</li>
+ * <li>Detecting circular entity references (by name and systemId)</li>
+ * <li>Validating entity references based on expansion context ({@link EntityExpansionContext})</li>
+ * <li>Expanding entity values with nested references</li>
+ * </ul>
  * 
- * <p>The helper tracks two types of infinite loops:
- * <ol>
- * <li><b>Entity name recursion</b>: Entity A references Entity B which references Entity A
- * <li><b>External ID recursion</b>: Same external resource (publicId/systemId) referenced multiple times
- * </ol>
- *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-public class EntityExpansionHelper {
+class EntityStack extends ArrayDeque<EntityStackEntry> {
+    
+    private static final long serialVersionUID = 1L;
     
     /** DTD parser for entity lookups */
     private final DTDParser dtdParser;
@@ -51,43 +52,84 @@ public class EntityExpansionHelper {
     /** Locator for error reporting */
     private final Locator locator;
     
-    /** 
-     * Set of entity names currently being expanded (for circular reference detection).
-     * This is passed through the recursion chain.
-     */
-    private final Set<String> visitedEntityNames;
-    
-    /** 
-     * Set of external IDs currently being resolved (for external entity loop detection).
-     * Contains both publicId and systemId strings from ExternalID objects.
-     * This is passed through the external resolution chain.
-     */
-    private final Set<String> visitedExternalIDs;
-    
     /**
-     * Creates an entity expansion helper.
+     * Creates an entity stack.
      * 
-     * @param dtdParser the DTD parser for entity lookups (may be null if no DTD)
+     * @param dtdParser the DTD parser for entity lookups
      * @param locator the locator for error reporting
      */
-    public EntityExpansionHelper(DTDParser dtdParser, Locator locator) {
+    EntityStack(DTDParser dtdParser, Locator locator) {
+        super();
         this.dtdParser = dtdParser;
         this.locator = locator;
-        this.visitedEntityNames = new HashSet<>();
-        this.visitedExternalIDs = new HashSet<>();
+        // Initialize with document entity (XML 1.0 by default)
+        push(new EntityStackEntry(false));
     }
     
     /**
-     * Creates a child helper for nested expansion.
-     * Inherits the visited sets from parent.
+     * Gets the XML version flag from the top entity on the stack.
      * 
-     * @param parent the parent helper
+     * @return true if current entity is XML 1.1, false if XML 1.0
      */
-    private EntityExpansionHelper(EntityExpansionHelper parent) {
-        this.dtdParser = parent.dtdParser;
-        this.locator = parent.locator;
-        this.visitedEntityNames = new HashSet<>(parent.visitedEntityNames);
-        this.visitedExternalIDs = new HashSet<>(parent.visitedExternalIDs);
+    boolean peekIsXML11() {
+        EntityStackEntry top = peek();
+        return top != null ? top.isXML11 : false;
+    }
+    
+    /**
+     * Updates the XML version flag for the current entity.
+     * Called when an XML or text declaration is parsed.
+     * 
+     * @param isXML11 true if XML 1.1, false if XML 1.0
+     */
+    void xmlVersion(boolean isXML11) {
+        EntityStackEntry top = peek();
+        if (top != null) {
+            top.isXML11 = isXML11;
+        }
+    }
+    
+    /**
+     * Resets the stack to its initial state (document entity only).
+     */
+    void reset() {
+        clear();
+        push(new EntityStackEntry(false));
+    }
+    
+    /**
+     * Checks if an entity is currently being expanded (recursion detection).
+     * 
+     * @param entityName the entity name to check
+     * @param isParameterEntity true for parameter entity, false for general entity
+     * @return true if the entity is on the stack
+     */
+    boolean isExpanding(String entityName, boolean isParameterEntity) {
+        for (EntityStackEntry entry : this) {
+            if (entry.isParameterEntity == isParameterEntity && 
+                entityName.equals(entry.entityName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Checks if a systemId is currently being resolved (external recursion detection).
+     * 
+     * @param systemId the system identifier to check
+     * @return true if the systemId is on the stack
+     */
+    boolean isResolvingSystemId(String systemId) {
+        if (systemId == null) {
+            return false;
+        }
+        for (EntityStackEntry entry : this) {
+            if (systemId.equals(entry.systemId)) {
+                return true;
+            }
+        }
+        return false;
     }
     
     /**
@@ -98,7 +140,7 @@ public class EntityExpansionHelper {
      * @return the expanded value (for internal entities) or null (for external entities requiring async resolution)
      * @throws SAXException if expansion fails or entity reference is invalid in context
      */
-    public String expandGeneralEntity(String entityName, EntityExpansionContext context) 
+    String expandGeneralEntity(String entityName, EntityExpansionContext context) 
             throws SAXException {
         // Check if we have a DTD
         if (dtdParser == null) {
@@ -116,7 +158,7 @@ public class EntityExpansionHelper {
         }
         
         // Check circular reference
-        if (visitedEntityNames.contains(entityName)) {
+        if (isExpanding(entityName, false)) {
             throw new SAXParseException(
                 "Circular entity reference detected: &" + entityName + ";",
                 locator);
@@ -149,10 +191,10 @@ public class EntityExpansionHelper {
                 // External entities allowed but require async resolution
                 if (entity.isExternal()) {
                     // Check external ID loop
-                    String externalKey = entity.externalID.toString();
-                    if (visitedExternalIDs.contains(externalKey)) {
+                    if (entity.externalID != null && entity.externalID.systemId != null &&
+                        isResolvingSystemId(entity.externalID.systemId)) {
                         throw new SAXParseException(
-                            "Circular external entity reference detected: " + externalKey,
+                            "Circular external entity reference detected: " + entity.externalID.systemId,
                             locator);
                     }
                     // Return null to signal async resolution needed
@@ -175,13 +217,8 @@ public class EntityExpansionHelper {
                     locator);
         }
         
-        // Add entity to visited set before creating child helper
-        // This ensures the child inherits knowledge that we're expanding this entity
-        visitedEntityNames.add(entityName);
-        
-        // Expand internal entity with child helper that inherits visited set
-        EntityExpansionHelper childHelper = new EntityExpansionHelper(this);
-        return childHelper.expandEntityValue(entity.replacementText, context);
+        // Expand internal entity
+        return expandEntityValue(entity.replacementText, context);
     }
     
     /**
@@ -195,7 +232,7 @@ public class EntityExpansionHelper {
      * @return the expanded value (for internal entities) or null (for external entities requiring async resolution)
      * @throws SAXException if expansion fails or entity reference is invalid in context
      */
-    public String expandParameterEntity(String entityName, EntityExpansionContext context)
+    String expandParameterEntity(String entityName, EntityExpansionContext context)
             throws SAXException {
         // Check for DTD
         if (dtdParser == null) {
@@ -219,9 +256,8 @@ public class EntityExpansionHelper {
                 locator);
         }
         
-        // Check circular reference (use % prefix to distinguish from general entities)
-        String paramEntityKey = "%" + entityName;
-        if (visitedEntityNames.contains(paramEntityKey)) {
+        // Check circular reference
+        if (isExpanding(entityName, true)) {
             throw new SAXParseException(
                 "Circular parameter entity reference detected: %" + entityName + ";",
                 locator);
@@ -230,13 +266,11 @@ public class EntityExpansionHelper {
         // External entities in DTD context require async resolution
         if (entity.isExternal() && context == EntityExpansionContext.DTD) {
             // Check for external ID circular reference
-            if (entity.externalID != null) {
-                String externalKey = entity.externalID.toString();
-                if (visitedExternalIDs.contains(externalKey)) {
-                    throw new SAXParseException(
-                        "Circular external parameter entity reference detected: " + externalKey,
-                        locator);
-                }
+            if (entity.externalID != null && entity.externalID.systemId != null &&
+                isResolvingSystemId(entity.externalID.systemId)) {
+                throw new SAXParseException(
+                    "Circular external parameter entity reference detected: " + entity.externalID.systemId,
+                    locator);
             }
             // Return null to signal async resolution needed
             return null;
@@ -249,29 +283,24 @@ public class EntityExpansionHelper {
                 locator);
         }
         
-        // Add entity to visited set before creating child helper
-        // This ensures the child inherits knowledge that we're expanding this entity
-        visitedEntityNames.add(paramEntityKey);
-        
-        // Expand internal entity with child helper that inherits visited set
-        EntityExpansionHelper childHelper = new EntityExpansionHelper(this);
-        // When expanding a parameter entity's value, we're still in ENTITY_VALUE context
-        return childHelper.expandEntityValue(entity.replacementText, EntityExpansionContext.ENTITY_VALUE);
+        // Expand internal entity - when expanding a parameter entity's value, 
+        // we're still in ENTITY_VALUE context
+        return expandEntityValue(entity.replacementText, EntityExpansionContext.ENTITY_VALUE);
     }
     
     /**
      * Recursively expands an entity value, processing both literal strings
      * and nested entity references.
      * 
-     * <p>This public method allows expansion of entity values (e.g., default
+     * <p>This method allows expansion of entity values (e.g., default
      * attribute values from DTD) without requiring an entity name lookup.
      * 
-     * @param replacementText the entity value as list of String and GeneralEntityReference
+     * @param replacementText the entity value as list of String and entity references
      * @param context the expansion context
      * @return the fully expanded value
      * @throws SAXException if expansion fails
      */
-    public String expandEntityValue(List<Object> replacementText, EntityExpansionContext context) 
+    String expandEntityValue(List<Object> replacementText, EntityExpansionContext context) 
             throws SAXException {
         if (replacementText == null || replacementText.isEmpty()) {
             return "";
@@ -333,23 +362,6 @@ public class EntityExpansionHelper {
         }
         
         return result.toString();
-    }
-    
-    /**
-     * Marks an external ID as visited (for loop detection).
-     * Call this when beginning to resolve an external entity.
-     * 
-     * @param externalID the external ID being resolved
-     * @throws SAXException if this external ID has already been visited (circular reference)
-     */
-    public void markExternalIDVisited(ExternalID externalID) throws SAXException {
-        String key = externalID.toString();
-        if (visitedExternalIDs.contains(key)) {
-            throw new SAXParseException(
-                "Circular external entity reference detected: " + key,
-                locator);
-        }
-        visitedExternalIDs.add(key);
     }
 }
 
