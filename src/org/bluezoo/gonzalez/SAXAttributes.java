@@ -69,17 +69,26 @@ public class SAXAttributes implements Attributes2 {
   /**
    * Single attribute holder.
    * Stores either a materialized String value or a StringBuilder (to be normalized on demand).
+   * 
+   * Made mutable for object pooling - attributes are reused across startElement calls.
    */
   private static class Attribute {
-    final QName qname;
-    final String type;
-    final Object value;  // String or StringBuilder
-    final boolean specified;
-    final String elementName;  // For lazy normalization
-    final String attributeName;  // For lazy normalization
+    QName qname;
+    String type;
+    Object value;  // String or StringBuilder
+    boolean specified;
+    String elementName;  // For lazy normalization
+    String attributeName;  // For lazy normalization
 
-    Attribute(QName qname, String type, Object value, boolean specified, 
-              String elementName, String attributeName) {
+    Attribute() {
+      // Default constructor for pooling
+    }
+    
+    /**
+     * Updates this attribute with new values (for pooling/reuse).
+     */
+    void update(QName qname, String type, Object value, boolean specified, 
+                String elementName, String attributeName) {
       this.qname = qname;
       this.type = type;
       this.value = value;
@@ -106,8 +115,11 @@ public class SAXAttributes implements Attributes2 {
     }
   }
 
-  // Sequential access
+  // Sequential access - also serves as the Attribute object pool
   private List<Attribute> attributes;
+  
+  // Number of active attributes (vs pool size)
+  private int attributeCount;
 
   // Namespace-aware lookup (CRITICAL PATH - primary access method)
   private Map<QName, Attribute> qnameMap;
@@ -133,6 +145,7 @@ public class SAXAttributes implements Attributes2 {
    */
   public SAXAttributes() {
     this.attributes = new ArrayList<>();
+    this.attributeCount = 0;
     this.qnameMap = new HashMap<>();
     this.stringNameMap = new HashMap<>();
   }
@@ -203,11 +216,22 @@ public class SAXAttributes implements Attributes2 {
       qnameKey = new QName(uri, localName, qName);
     }
     
-    Attribute attr = new Attribute(qnameKey, type, value, specified, 
-                                    currentElementName, qName);
+    // Get Attribute object from pool or create new
+    Attribute attr;
+    if (attributeCount < attributes.size()) {
+      // Reuse existing Attribute object from pool
+      attr = attributes.get(attributeCount);
+      attr.update(qnameKey, type, value, specified, currentElementName, qName);
+    } else {
+      // Create new Attribute and add to pool
+      attr = new Attribute();
+      attr.update(qnameKey, type, value, specified, currentElementName, qName);
+      attributes.add(attr);
+    }
+    
+    attributeCount++;
 
-    // Add to all indices
-    attributes.add(attr);
+    // Add to lookup indices
     qnameMap.put(qnameKey, attr);
     stringNameMap.put(qName, attr);
   }
@@ -219,23 +243,20 @@ public class SAXAttributes implements Attributes2 {
    * @param type the new type
    */
   public void setType(int index, String type) {
-    if (index >= 0 && index < attributes.size()) {
-      Attribute oldAttr = attributes.get(index);
-      Attribute newAttr = new Attribute(oldAttr.qname, type, oldAttr.value, oldAttr.specified,
-                                         oldAttr.elementName, oldAttr.attributeName);
-
-      // Update all indices
-      attributes.set(index, newAttr);
-      qnameMap.put(oldAttr.qname, newAttr);
-      stringNameMap.put(oldAttr.qname.getQName(), newAttr);
+    if (index >= 0 && index < attributeCount) {
+      Attribute attr = attributes.get(index);
+      // Just update the type field (Attribute is now mutable)
+      attr.type = type;
+      // Maps still point to same object, no need to update
     }
   }
 
   /**
    * Clears all attributes.
+   * Does NOT remove Attribute objects from the pool - reuses them for next element.
    */
   public void clear() {
-    attributes.clear();
+    attributeCount = 0;  // Reset active count, keep pooled objects
     qnameMap.clear();
     stringNameMap.clear();
     elementName = null;
@@ -246,12 +267,12 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public int getLength() {
-    return attributes.size();
+    return attributeCount;
   }
 
   @Override
   public String getURI(int index) {
-    if (index < 0 || index >= attributes.size()) {
+    if (index < 0 || index >= attributeCount) {
       return null;
     }
     return attributes.get(index).qname.getURI();
@@ -259,7 +280,7 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getLocalName(int index) {
-    if (index < 0 || index >= attributes.size()) {
+    if (index < 0 || index >= attributeCount) {
       return null;
     }
     return attributes.get(index).qname.getLocalName();
@@ -267,7 +288,7 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getQName(int index) {
-    if (index < 0 || index >= attributes.size()) {
+    if (index < 0 || index >= attributeCount) {
       return null;
     }
     return attributes.get(index).qname.getQName();
@@ -275,7 +296,7 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getType(int index) {
-    if (index < 0 || index >= attributes.size()) {
+    if (index < 0 || index >= attributeCount) {
       return null;
     }
 
@@ -295,7 +316,7 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public String getValue(int index) {
-    if (index < 0 || index >= attributes.size()) {
+    if (index < 0 || index >= attributeCount) {
       return null;
     }
     return attributes.get(index).getValueAsString(normalizer);
@@ -400,7 +421,7 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public boolean isDeclared(int index) {
-    if (index < 0 || index >= attributes.size()) {
+    if (index < 0 || index >= attributeCount) {
       throw new ArrayIndexOutOfBoundsException(index);
     }
 
@@ -454,7 +475,7 @@ public class SAXAttributes implements Attributes2 {
 
   @Override
   public boolean isSpecified(int index) {
-    if (index < 0 || index >= attributes.size()) {
+    if (index < 0 || index >= attributeCount) {
       throw new ArrayIndexOutOfBoundsException(index);
     }
 
