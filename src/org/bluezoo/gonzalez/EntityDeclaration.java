@@ -66,6 +66,13 @@ public class EntityDeclaration {
      */
     public boolean containsCharacterReferences = false;
     
+    /**
+     * True if the entity value contains literal markup start characters (&lt;) in the source.
+     * When false and containsCharacterReferences is true, the entity value is pure character
+     * data and should not be re-tokenized.
+     */
+    public boolean containsLiteralMarkup = false;
+    
     /** External ID for external entities (null for internal) */
     public ExternalID externalID;
     

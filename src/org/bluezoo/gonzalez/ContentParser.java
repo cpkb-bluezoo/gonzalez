@@ -2135,7 +2135,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      * @param cause the underlying exception that caused this error
      * @return the SAXException to throw
      * @throws SAXException if the ErrorHandler itself throws
-     */
+     */    
     private SAXException fatalError(String message, Exception cause) throws SAXException {
         SAXParseException exception = new SAXParseException(message, locator, cause);
         if (errorHandler != null) {
