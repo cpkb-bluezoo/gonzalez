@@ -149,6 +149,13 @@ public class Tokenizer {
      */
     private CharBuffer charBuffer;
     
+    /**
+     * Reusable buffer for character references (e.g., &#60; or &#x1F4A9;).
+     * Sized for 2 chars to handle surrogate pairs.
+     * Reused across all character reference emissions to avoid allocating a new char[] every time.
+     */
+    private final char[] charRefBuffer = new char[2];
+    
     // ===== Position Tracking =====
     
     /**
@@ -340,9 +347,10 @@ public class Tokenizer {
         }
         
         // Ensure charBuffer is large enough
+        // Only reallocate if significantly too small (< 50% of needed capacity)
         int neededCapacity = (charUnderflow != null ? charUnderflow.remaining() : 0) + data.remaining();
-        if (charBuffer.capacity() < neededCapacity) {
-            int newCapacity = Math.max(neededCapacity, 4096);
+        if (charBuffer.capacity() < neededCapacity * 0.5) {
+            int newCapacity = Math.max(neededCapacity * 2, 4096);
             CharBuffer newBuffer = CharBuffer.allocate(newCapacity);
             if (charBuffer.hasRemaining()) {
                 charBuffer.flip();
@@ -368,7 +376,10 @@ public class Tokenizer {
         
         // Save character underflow
         if (charBuffer.hasRemaining()) {
-            if (charUnderflow == null || charUnderflow.capacity() < charBuffer.remaining()) {
+            // Only reallocate if significantly too small (< 50% of needed capacity)
+            if (charUnderflow == null) {
+                charUnderflow = CharBuffer.allocate(Math.max(charBuffer.remaining() * 2, 4096));
+            } else if (charUnderflow.capacity() < charBuffer.remaining() * 0.5) {
                 charUnderflow = CharBuffer.allocate(Math.max(charBuffer.remaining() * 2, 4096));
             } else {
                 charUnderflow.clear();
@@ -800,19 +811,23 @@ public class Tokenizer {
             throw fatalError("Literal '<' character (from character reference) not allowed in attribute values");
         }
         
-        // Allocate CharBuffer and encode the code point
-        char[] chars;
+        // Encode the code point into the reusable buffer
+        int length;
         if (codePoint <= 0xFFFF) {
-            chars = new char[] { (char) codePoint };
+            // BMP character - single char
+            charRefBuffer[0] = (char) codePoint;
+            length = 1;
         } else {
             // Supplementary character - encode as surrogate pair
             codePoint -= 0x10000;
-            char high = (char) (0xD800 + (codePoint >> 10));
-            char low = (char) (0xDC00 + (codePoint & 0x3FF));
-            chars = new char[] { high, low };
+            charRefBuffer[0] = (char) (0xD800 + (codePoint >> 10));  // high surrogate
+            charRefBuffer[1] = (char) (0xDC00 + (codePoint & 0x3FF)); // low surrogate
+            length = 2;
         }
         
-        CharBuffer window = CharBuffer.wrap(chars);
+        // Wrap the reusable buffer and emit
+        // Note: CharBuffer.wrap() creates a lightweight wrapper, not a copy
+        CharBuffer window = CharBuffer.wrap(charRefBuffer, 0, length);
         consumer.receive(Token.CHARENTITYREF, window);
     }
     
@@ -1559,7 +1574,10 @@ public class Tokenizer {
             return;
         }
         
-        if (charUnderflow == null || charUnderflow.capacity() < buffer.remaining()) {
+        // Only reallocate if significantly too small (< 50% of needed capacity)
+        if (charUnderflow == null) {
+            charUnderflow = CharBuffer.allocate(Math.max(buffer.remaining() * 2, 4096));
+        } else if (charUnderflow.capacity() < buffer.remaining() * 0.5) {
             charUnderflow = CharBuffer.allocate(Math.max(buffer.remaining() * 2, 4096));
         } else {
             charUnderflow.clear();

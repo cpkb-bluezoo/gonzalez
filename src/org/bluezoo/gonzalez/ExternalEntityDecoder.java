@@ -271,8 +271,11 @@ public class ExternalEntityDecoder implements Locator2 {
         ByteBuffer combined;
         if (byteUnderflow != null && byteUnderflow.hasRemaining()) {
             int totalSize = byteUnderflow.remaining() + buffer.remaining();
-            if (byteWorkingBuffer == null || byteWorkingBuffer.capacity() < totalSize) {
+            // Only reallocate if significantly too small (< 50% of needed capacity)
+            if (byteWorkingBuffer == null) {
                 byteWorkingBuffer = ByteBuffer.allocate(Math.max(totalSize, 4096));
+            } else if (byteWorkingBuffer.capacity() < totalSize * 0.5) {
+                byteWorkingBuffer = ByteBuffer.allocate(Math.max(totalSize * 2, 4096));
             }
             byteWorkingBuffer.clear();
             byteWorkingBuffer.put(byteUnderflow);
@@ -518,7 +521,10 @@ public class ExternalEntityDecoder implements Locator2 {
      */
     private void saveByteUnderflow(ByteBuffer buffer) {
         if (buffer.hasRemaining()) {
-            if (byteUnderflow == null || byteUnderflow.capacity() < buffer.remaining()) {
+            // Only reallocate if significantly too small (< 50% of needed capacity)
+            if (byteUnderflow == null) {
+                byteUnderflow = ByteBuffer.allocate(Math.max(buffer.remaining() * 2, 1024));
+            } else if (byteUnderflow.capacity() < buffer.remaining() * 0.5) {
                 byteUnderflow = ByteBuffer.allocate(Math.max(buffer.remaining() * 2, 1024));
             } else {
                 byteUnderflow.clear();
@@ -538,13 +544,20 @@ public class ExternalEntityDecoder implements Locator2 {
         currentByteBuffer = buffer;
         
         // Ensure charBuffer is large enough
+        // Only reallocate if current buffer is significantly too small (< 50% of needed capacity)
+        // This avoids reallocating on every receive() call for steady-state chunk sizes
         int neededCapacity = buffer.remaining() * 2;
-        if (charBuffer == null || charBuffer.capacity() < neededCapacity) {
-            int newCapacity = Math.max(neededCapacity, 4096);
+        if (charBuffer == null) {
+            // Initial allocation
+            int initialCapacity = Math.max(neededCapacity, 4096);
+            charBuffer = CharBuffer.allocate(initialCapacity);
+        } else if (charBuffer.capacity() < neededCapacity * 0.5) {
+            // Current buffer is significantly too small - reallocate with growth factor
+            int newCapacity = Math.max(neededCapacity * 2, 4096);
             charBuffer = CharBuffer.allocate(newCapacity);
         }
         
-        // Clear buffer for decoding
+        // Clear buffer for decoding (reuse existing buffer)
         charBuffer.clear();
         
         // Decode bytes to characters
