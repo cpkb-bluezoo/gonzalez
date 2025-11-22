@@ -152,6 +152,30 @@ including:
 - Comments
 - Namespaces
 - Validation using DTD
+- XML 1.1
+
+## Performance
+
+For small documents (~1KB) Gonzalez outperforms the default (Sun) SAX
+implementation in the standard JDK by approximately 5 times (i.e. 5 times
+quicker to parse a document).
+
+For larger documents (~1MB) Gonzalez is around 5 times slower than the
+default SAX implementation.
+
+The difficulty with performance on larger documents is inherent to
+Gonzalez's non-blocking nature, which allows us to process incoming data
+entirely in chunks of any size, producing as many SAX handler events as
+can be determined from it at that time, and storing any underflow for
+the next chunk. However this design allows Gonzalez to form part of an
+overall data pipeline based on asynchronous NIO that can be much more
+efficient overall since your thread is never waiting on more data (e.g. from
+a network connection).
+
+## Conformance
+
+Gonzalez has been tested with the W3C Conformance test suite xmlconf and
+work is under way to achieve full conformance with that suite.
 
 ## Dependencies
 
