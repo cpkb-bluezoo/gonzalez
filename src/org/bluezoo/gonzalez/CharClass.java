@@ -433,11 +433,46 @@ enum CharClass {
         }
         
         // Greek Extended through CJK (0x370-0x1FFF)
-        // XML 1.0 5th edition simplification: use broad ranges per Unicode categories
-        // [#x370-#x37D] | [#x37F-#x1FFF]
+        // XML 1.0 5th edition simplification, but with exclusions for non-name characters
+        // [#x370-#x37D] | [#x37F-#x1FFF] (with specific ranges for each script)
         if (c >= 0x370 && c <= 0x1FFF) {
-            return (c >= 0x370 && c <= 0x37D) ||
-                   c >= 0x37F;  // Simplified: all chars from 0x37F to 0x1FFF are valid
+            // Greek Extended
+            if (c >= 0x370 && c <= 0x37D) {
+                return true;
+            }
+            if (c < 0x37F) {
+                return false;
+            }
+            // Explicitly check Thai (0x0E00-0x0E7F) and Lao (0x0E80-0x0EFF)
+            // These have specific allowed ranges, not all characters are valid
+            if (c >= 0x0E00 && c <= 0x0EFF) {
+                // Thai: [#x0E01-#x0E30] | [#x0E32-#x0E33] | [#x0E40-#x0E45]
+                // Lao: [#x0E81-#x0E82] | #x0E84 | [#x0E87-#x0E88] | [#x0E8A] | #x0E8D |
+                //      [#x0E94-#x0E97] | [#x0E99-#x0E9F] | [#x0EA1-#x0EA3] | #x0EA5 |
+                //      #x0EA7 | [#x0EAA-#x0EAB] | [#x0EAD-#x0EAE] | [#x0EB0] |
+                //      [#x0EB2-#x0EB3] | #x0EBD | [#x0EC0-#x0EC4]
+                return (c >= 0x0E01 && c <= 0x0E30) ||
+                       (c >= 0x0E32 && c <= 0x0E33) ||
+                       (c >= 0x0E40 && c <= 0x0E45) ||
+                       (c >= 0x0E81 && c <= 0x0E82) ||
+                       c == 0x0E84 ||
+                       (c >= 0x0E87 && c <= 0x0E88) ||
+                       c == 0x0E8A ||
+                       c == 0x0E8D ||
+                       (c >= 0x0E94 && c <= 0x0E97) ||
+                       (c >= 0x0E99 && c <= 0x0E9F) ||
+                       (c >= 0x0EA1 && c <= 0x0EA3) ||
+                       c == 0x0EA5 ||
+                       c == 0x0EA7 ||
+                       (c >= 0x0EAA && c <= 0x0EAB) ||
+                       (c >= 0x0EAD && c <= 0x0EAE) ||
+                       c == 0x0EB0 ||
+                       (c >= 0x0EB2 && c <= 0x0EB3) ||
+                       c == 0x0EBD ||
+                       (c >= 0x0EC0 && c <= 0x0EC4);
+            }
+            // All other characters in 0x37F-0x1FFF are valid (simplified)
+            return true;
         }
         
         // Zero Width Non-Joiner and Zero Width Joiner
