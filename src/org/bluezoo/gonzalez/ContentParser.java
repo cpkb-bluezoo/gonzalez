@@ -600,8 +600,10 @@ public class ContentParser implements TokenConsumer {
         }
         
         // Push context onto DTDParser's stack (for all external tokenization contexts)
-        // This includes: DTD subsets (name=doctypeName), general entities (name=entityName)
-        boolean isParameterEntity = isDTDSubset;
+        // This includes: DTD subsets (name=doctypeName), parameter entities, general entities
+        // Determine if this is a parameter entity by checking if it's declared as one
+        boolean isParameterEntity = isDTDSubset || 
+                                   (dtdParser != null && name != null && dtdParser.getParameterEntity(name) != null);
         EntityStackEntry entry = new EntityStackEntry(
             name, publicId, systemId, isParameterEntity, currentVersion, entityExpansionDepth);
         if (dtdParser != null) {
@@ -615,8 +617,10 @@ public class ContentParser implements TokenConsumer {
             // Create nested tokenizer and decoder for external entity
             // Determine the initial state for the entity:
             // - External DTD subsets should start in DOCTYPE_INTERNAL (to parse DTD declarations)
+            // - External parameter entities should start in DOCTYPE_INTERNAL (they contain DTD declarations)
             // - General entities should start in CONTENT (to parse element content)
-            TokenizerState initialState = isDTDSubset ? TokenizerState.DOCTYPE_INTERNAL : TokenizerState.CONTENT;
+            boolean isDTDContent = isDTDSubset || isParameterEntity;
+            TokenizerState initialState = isDTDContent ? TokenizerState.DOCTYPE_INTERNAL : TokenizerState.CONTENT;
             
             Tokenizer entityTokenizer = new Tokenizer(this);
             entityTokenizer.setInitialContext(initialState);
