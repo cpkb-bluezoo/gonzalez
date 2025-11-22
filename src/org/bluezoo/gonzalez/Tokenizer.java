@@ -1382,7 +1382,7 @@ public class Tokenizer {
                 xmlDeclSeenWhitespace = false;  // Reset for next attribute
                 
                 if (data != null) {
-                    xmlDeclAttributeName = extractString(data);
+                    xmlDeclAttributeName = data.toString();
                     validateXMLDeclAttributeName(xmlDeclAttributeName);
                 }
                 break;
@@ -1422,7 +1422,7 @@ public class Tokenizer {
             case CDATA:
                 // Attribute value
                 if (data != null && xmlDeclAttributeName != null) {
-                    String value = extractString(data);
+                    String value = data.toString();
                     storeXMLDeclAttributeValue(xmlDeclAttributeName, value);
                     xmlDeclAttributeName = null;
                 }
@@ -1549,17 +1549,6 @@ public class Tokenizer {
         xmlDeclEncoding = null;
         xmlDeclQuoteChar = '\0';
         xmlDeclSeenWhitespace = false;
-    }
-    
-    /**
-     * Extracts a string from a CharBuffer.
-     */
-    private String extractString(CharBuffer buffer) {
-        StringBuilder sb = new StringBuilder(buffer.remaining());
-        while (buffer.hasRemaining()) {
-            sb.append(buffer.get());
-        }
-        return sb.toString();
     }
     
     /**

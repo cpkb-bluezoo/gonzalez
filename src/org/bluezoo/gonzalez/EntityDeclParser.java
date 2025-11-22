@@ -115,7 +115,7 @@ class EntityDeclParser {
                                 "Expected whitespace after <!ENTITY keyword", locator);
                         }
                         currentEntity.isParameter = false;
-                        currentEntity.name = extractString(data);
+                        currentEntity.name = data.toString();
                         state = State.AFTER_NAME;
                         break;
                     default:
@@ -130,7 +130,7 @@ class EntityDeclParser {
                         // Skip whitespace
                         break;
                     case NAME:
-                        currentEntity.name = extractString(data);
+                        currentEntity.name = data.toString();
                         state = State.AFTER_NAME;
                         break;
                     default:
@@ -185,20 +185,20 @@ class EntityDeclParser {
                     case CDATA:
                     case S:
                         // Accumulate text
-                        entityValueTextBuilder.append(extractString(data));
+                        entityValueTextBuilder.append(data.toString());
                         break;
                     case CHARENTITYREF:
                         // Character reference (already expanded) - e.g., &#60; -> '<'
                         // These are expanded immediately during DTD parsing per XML 1.0 § 4.4.4
                         // and do NOT trigger the bypass rule
-                        entityValueTextBuilder.append(extractString(data));
+                        entityValueTextBuilder.append(data.toString());
                         break;
                     case PREDEFENTITYREF:
                         // Predefined entity reference (already expanded) - e.g., &lt; -> '<'
                         // Per XML 1.0 § 4.4.8, markup delimiters from predefined entity
                         // references are bypassed (not recognized as markup)
                         currentEntity.containsCharacterReferences = true;
-                        entityValueTextBuilder.append(extractString(data));
+                        entityValueTextBuilder.append(data.toString());
                         break;
                     case GENERALENTITYREF:
                         // General entity reference - flush text and add reference
@@ -206,7 +206,7 @@ class EntityDeclParser {
                             entityValueBuilder.add(entityValueTextBuilder.toString());
                             entityValueTextBuilder.setLength(0);
                         }
-                        String entityName = extractString(data);
+                        String entityName = data.toString();
                         entityValueBuilder.add(new GeneralEntityReference(entityName));
                         break;
                     case PARAMETERENTITYREF:
@@ -222,7 +222,7 @@ class EntityDeclParser {
                         
                         // In external subset, parameter entities are allowed in entity values
                         // Expand the parameter entity inline
-                        String paramEntityName = extractString(data);
+                        String paramEntityName = data.toString();
                         // XXX: For now, just store the reference - proper expansion would require
                         // XXX: retokenizing the expanded value
                         // XXX: This is a limitation that should be addressed when implementing
@@ -285,9 +285,9 @@ class EntityDeclParser {
                     case NAME:
                         // Workaround for tokenizer issues: accumulate system ID
                         if (currentEntity.externalID.systemId == null) {
-                            currentEntity.externalID.systemId = extractString(data);
+                            currentEntity.externalID.systemId = data.toString();
                         } else {
-                            currentEntity.externalID.systemId += extractString(data);
+                            currentEntity.externalID.systemId += data.toString();
                         }
                         // Transition to AFTER_EXTERNAL_ID after system ID is read
                         state = State.AFTER_EXTERNAL_ID;
@@ -315,9 +315,9 @@ class EntityDeclParser {
                     case NAME:
                         // Workaround for tokenizer issues
                         if (currentEntity.externalID.publicId == null) {
-                            currentEntity.externalID.publicId = extractString(data);
+                            currentEntity.externalID.publicId = data.toString();
                         } else {
-                            currentEntity.externalID.publicId += extractString(data);
+                            currentEntity.externalID.publicId += data.toString();
                         }
                         // Validate public ID when complete (on transition to AFTER_PUBLIC_ID)
                         dtdParser.validatePublicId(currentEntity.externalID.publicId);
@@ -354,9 +354,9 @@ class EntityDeclParser {
                             throw new SAXParseException("Expected whitespace between public ID and system ID in <!ENTITY", locator);
                         }
                         if (currentEntity.externalID.systemId == null) {
-                            currentEntity.externalID.systemId = extractString(data);
+                            currentEntity.externalID.systemId = data.toString();
                         } else {
-                            currentEntity.externalID.systemId += extractString(data);
+                            currentEntity.externalID.systemId += data.toString();
                         }
                         state = State.AFTER_EXTERNAL_ID;
                         break;
@@ -379,7 +379,7 @@ class EntityDeclParser {
                     case CDATA:
                     case NAME:
                         // Tokenizer splitting system ID, accumulate
-                        currentEntity.externalID.systemId += extractString(data);
+                        currentEntity.externalID.systemId += data.toString();
                         break;
                     case GT:
                         // End of entity declaration (external parsed entity) - save and return true
@@ -408,7 +408,7 @@ class EntityDeclParser {
                         // Skip whitespace
                         break;
                     case NAME:
-                        currentEntity.notationName = extractString(data);
+                        currentEntity.notationName = data.toString();
                         state = State.EXPECT_GT;
                         break;
                     default:
@@ -438,20 +438,5 @@ class EntityDeclParser {
         return false; // Not done yet
     }
     
-    /**
-     * Extracts a string from a CharBuffer.
-     * @param buffer the buffer containing the string
-     * @return the extracted string
-     */
-    private String extractString(CharBuffer buffer) {
-        if (buffer == null) {
-            return null;
-        }
-        StringBuilder sb = new StringBuilder();
-        while (buffer.hasRemaining()) {
-            sb.append(buffer.get());
-        }
-        return sb.toString();
-    }
 }
 

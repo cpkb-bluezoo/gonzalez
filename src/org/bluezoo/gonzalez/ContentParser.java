@@ -126,6 +126,20 @@ public class ContentParser implements TokenConsumer {
     private DefaultEntityResolver defaultEntityResolver;
     
     /**
+     * Pool of StringBuilder instances for reuse to reduce allocations.
+     * Simple single-instance pool (since parsing is single-threaded).
+     */
+    private StringBuilder stringBuilderPool;
+    
+    /**
+     * Reusable char array for passing character data to SAX handlers.
+     * Grown as needed, never shrunk (single-threaded parser, no concurrency concerns).
+     * This avoids exposing the CharBuffer's backing array directly (security risk)
+     * while still avoiding allocation on every characters() call.
+     */
+    private char[] charArrayBuffer = new char[1024]; // Start with reasonable size
+    
+    /**
      * Depth of external entity processing.
      * 0 = main document
      * >0 = inside external entity (DTD subset or general entity)
@@ -718,6 +732,11 @@ public class ContentParser implements TokenConsumer {
         // Clear default entity resolver (will be recreated with new base URL)
         defaultEntityResolver = null;
         
+        // Reset reusable char array to reasonable size if it grew too large
+        if (charArrayBuffer.length > 8192) {
+            charArrayBuffer = new char[1024];
+        }
+        
         // Clear entity resolution stack
         
         // Clear working state
@@ -851,13 +870,13 @@ public class ContentParser implements TokenConsumer {
                 
             case START_PI:
                 // Processing instruction in prolog
-                currentPIData = new StringBuilder();
+                currentPIData = borrowStringBuilder();
                 state = State.PI_TARGET;
                 break;
                 
             case START_COMMENT:
                 // Comment in prolog
-                currentCommentText = new StringBuilder();
+                currentCommentText = borrowStringBuilder();
                 state = State.COMMENT;
                 break;
                 
@@ -887,7 +906,7 @@ public class ContentParser implements TokenConsumer {
      */
     private void handleElementStart(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {
-            currentElementName = extractString(data);
+            currentElementName = data.toString();
             elementDepth++;
             
             // Push element onto stack for well-formedness and validation
@@ -1001,7 +1020,7 @@ public class ContentParser implements TokenConsumer {
                 if (attributes.getLength() > 0 && !sawWhitespaceAfterAttributeValue) {
                     throw fatalError("Whitespace required between attributes");
                 }
-                currentAttributeName = extractString(data);
+                currentAttributeName = data.toString();
                 sawWhitespaceAfterAttributeValue = false; // Reset for next attribute
                 state = State.ATTRIBUTE_NAME;
                 break;
@@ -1092,7 +1111,7 @@ public class ContentParser implements TokenConsumer {
             case APOS:
                 // Start of attribute value
                 currentAttributeQuote = token;
-                currentAttributeValue = new StringBuilder();
+                currentAttributeValue = borrowStringBuilder();
                 state = State.ATTRIBUTE_VALUE_START;
                 break;
                 
@@ -1115,6 +1134,9 @@ public class ContentParser implements TokenConsumer {
         if (token == currentAttributeQuote) {
             // End of attribute value - apply normalization
             String rawValue = currentAttributeValue.toString();
+            returnStringBuilder(currentAttributeValue); // Return to pool
+            currentAttributeValue = null;
+            
             String normalizedValue = normalizeAttributeValue(rawValue, currentElementName, currentAttributeName);
             
             // Check if this is a namespace declaration (xmlns or xmlns:prefix)
@@ -1140,27 +1162,27 @@ public class ContentParser implements TokenConsumer {
                                                   "CDATA", normalizedValue, true);
                 } catch (IllegalArgumentException e) {
                     // Duplicate attribute - well-formedness error
- throw fatalError(e.getMessage());
+                    throw fatalError(e.getMessage());
                 }
             }
             
-            currentAttributeValue.setLength(0); // Reset for next attribute
+            // currentAttributeValue already returned to pool above
             state = State.ELEMENT_ATTRS;
         } else if (token == Token.CDATA) {
             // Attribute value text
-            currentAttributeValue.append(extractString(data));
+            currentAttributeValue.append(data.toString());
         } else if (token == Token.S) {
             // Whitespace in attribute value
-            currentAttributeValue.append(extractString(data));
+            currentAttributeValue.append(data.toString());
         } else if (token == Token.CHARENTITYREF) {
             // Character reference in attribute value (already expanded) - e.g., &#60; -> '<'
-            currentAttributeValue.append(extractString(data));
+            currentAttributeValue.append(data.toString());
         } else if (token == Token.PREDEFENTITYREF) {
             // Predefined entity reference in attribute value (already expanded) - e.g., &lt; -> '<'
-            currentAttributeValue.append(extractString(data));
+            currentAttributeValue.append(data.toString());
         } else if (token == Token.GENERALENTITYREF) {
             // General entity reference: &name;
-            String entityName = extractString(data);
+            String entityName = data.toString();
             String expandedValue = expandGeneralEntityInAttributeValue(entityName);
             currentAttributeValue.append(expandedValue);
         } else {
@@ -1175,14 +1197,12 @@ public class ContentParser implements TokenConsumer {
         switch (token) {
             case CDATA:
                 // Character data
-                String text = extractString(data);
-                
-                // Check for forbidden ]]> sequence
+                // Check for forbidden ]]> sequence and record for validation
+                String text = data.toString();
                 if (text.contains("]]>")) {
- throw fatalError("The character sequence ']]>' must not appear in content");
+                    throw fatalError("The character sequence ']]>' must not appear in content");
                 }
                 
-                // Record for validation
                 if (validationEnabled && dtdParser != null) {
                     recordTextContent(text);
                 }
@@ -1194,35 +1214,37 @@ public class ContentParser implements TokenConsumer {
                 
             case CHARENTITYREF:
                 // Character reference (already expanded) - e.g., &#60; -> '<'
-                String charRefText = extractString(data);
-                
-                // Record for validation
+                // Record for validation if needed
                 if (validationEnabled && dtdParser != null) {
+                    String charRefText = data.toString();
                     recordTextContent(charRefText);
-                }
-                
-                if (contentHandler != null) {
-                    contentHandler.characters(charRefText.toCharArray(), 0, charRefText.length());
+                    if (contentHandler != null) {
+                        contentHandler.characters(charRefText.toCharArray(), 0, charRefText.length());
+                    }
+                } else if (contentHandler != null) {
+                    // Fast path: send directly from buffer
+                    sendCharactersFromBuffer(data, contentHandler);
                 }
                 break;
                 
             case PREDEFENTITYREF:
                 // Predefined entity reference (already expanded) - e.g., &lt; -> '<'
-                String predefRefText = extractString(data);
-                
-                // Record for validation
+                // Record for validation if needed
                 if (validationEnabled && dtdParser != null) {
+                    String predefRefText = data.toString();
                     recordTextContent(predefRefText);
-                }
-                
-                if (contentHandler != null) {
-                    contentHandler.characters(predefRefText.toCharArray(), 0, predefRefText.length());
+                    if (contentHandler != null) {
+                        contentHandler.characters(predefRefText.toCharArray(), 0, predefRefText.length());
+                    }
+                } else if (contentHandler != null) {
+                    // Fast path: send directly from buffer
+                    sendCharactersFromBuffer(data, contentHandler);
                 }
                 break;
                 
             case GENERALENTITYREF:
                 // General entity reference: &name;
-                String entityName = extractString(data);
+                String entityName = data.toString();
                 expandGeneralEntityInContent(entityName);
                 break;
                 
@@ -1240,19 +1262,18 @@ public class ContentParser implements TokenConsumer {
                 
             case START_PI:
                 // Processing instruction
-                currentPIData = new StringBuilder();
+                currentPIData = borrowStringBuilder();
                 state = State.PI_TARGET;
                 break;
                 
             case START_COMMENT:
                 // Comment
-                currentCommentText = new StringBuilder();
+                currentCommentText = borrowStringBuilder();
                 state = State.COMMENT;
                 break;
                 
             case START_CDATA:
-                // CDATA section
-                currentCDATAText = new StringBuilder();
+                // CDATA section - no accumulation needed, data sent directly to handler
                 state = State.CDATA_SECTION;
                 if (lexicalHandler != null) {
                     lexicalHandler.startCDATA();
@@ -1261,15 +1282,16 @@ public class ContentParser implements TokenConsumer {
                 
             case S:
                 // Whitespace
-                String whitespace = extractString(data);
-                
-                // Record for validation (whitespace is treated specially)
+                // Record for validation if needed
                 if (validationEnabled && dtdParser != null) {
+                    String whitespace = data.toString();
                     recordTextContent(whitespace);
-                }
-                
-                if (contentHandler != null) {
-                    contentHandler.characters(whitespace.toCharArray(), 0, whitespace.length());
+                    if (contentHandler != null) {
+                        contentHandler.characters(whitespace.toCharArray(), 0, whitespace.length());
+                    }
+                } else if (contentHandler != null) {
+                    // Fast path: send directly from buffer
+                    sendCharactersFromBuffer(data, contentHandler);
                 }
                 break;
                 
@@ -1283,7 +1305,7 @@ public class ContentParser implements TokenConsumer {
      */
     private void handleEndElementStart(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {
-            currentElementName = extractString(data);
+            currentElementName = data.toString();
             state = State.END_ELEMENT_NAME;
         } else {
  throw fatalError("Expected element name after '</', got: " + token);
@@ -1344,7 +1366,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      */
     private void handlePITarget(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {
-            currentPITarget = extractString(data);
+            currentPITarget = data.toString();
             state = State.PI_CONTENT;
         } else {
  throw fatalError("Expected PI target after '<?', got: " + token);
@@ -1360,7 +1382,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             case CDATA:
                 // PI data (including whitespace)
                 if (data != null) {
-                    currentPIData.append(extractString(data));
+                    currentPIData.append(data.toString());
                 }
                 break;
                 
@@ -1369,6 +1391,10 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 if (contentHandler != null) {
                     contentHandler.processingInstruction(currentPITarget, currentPIData.toString());
                 }
+                returnStringBuilder(currentPIData); // Return to pool
+                currentPIData = null;
+                currentPITarget = null;
+                
                 // Return to appropriate state
                 if (elementDepth > 0) {
                     state = State.ELEMENT_CONTENT;
@@ -1393,7 +1419,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             case S:
                 // Comment text
                 if (data != null) {
-                    currentCommentText.append(extractString(data));
+                    currentCommentText.append(data.toString());
                 }
                 break;
                 
@@ -1403,6 +1429,9 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     String text = currentCommentText.toString();
                     lexicalHandler.comment(text.toCharArray(), 0, text.length());
                 }
+                returnStringBuilder(currentCommentText); // Return to pool
+                currentCommentText = null;
+                
                 // Return to appropriate state
                 if (elementDepth > 0) {
                     state = State.ELEMENT_CONTENT;
@@ -1425,13 +1454,9 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         switch (token) {
             case CDATA:
             case S:
-                // CDATA text
-                if (data != null) {
-                    String text = extractString(data);
-                    currentCDATAText.append(text);
-                    if (contentHandler != null) {
-                        contentHandler.characters(text.toCharArray(), 0, text.length());
-                    }
+                // CDATA text - send directly to handler from buffer (no accumulation needed)
+                if (data != null && contentHandler != null) {
+                    sendCharactersFromBuffer(data, contentHandler);
                 }
                 break;
                 
@@ -1459,13 +1484,13 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 
             case START_PI:
                 // PI after root
-                currentPIData = new StringBuilder();
+                currentPIData = borrowStringBuilder();
                 state = State.PI_TARGET;
                 break;
                 
             case START_COMMENT:
                 // Comment after root
-                currentCommentText = new StringBuilder();
+                currentCommentText = borrowStringBuilder();
                 state = State.COMMENT;
                 break;
                 
@@ -1475,19 +1500,68 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
     }
     
     /**
-     * Extracts a string from a CharBuffer.
-     * @param buffer the buffer containing the string
-     * @return the extracted string, or empty string if buffer is null
+     * Sends character data directly from CharBuffer to SAX handler without allocating a String.
+     * Uses a reusable char array (grown as needed) to avoid both String allocation and
+     * exposing the CharBuffer's backing array (security risk).
+     * 
+     * @param buffer the buffer containing character data
+     * @param handler the SAX ContentHandler to receive the data
      */
-    private String extractString(CharBuffer buffer) {
-        if (buffer == null) {
-            return "";
+    private void sendCharactersFromBuffer(CharBuffer buffer, ContentHandler handler) throws SAXException {
+        if (buffer == null || handler == null) {
+            return;
         }
-        StringBuilder sb = new StringBuilder();
-        while (buffer.hasRemaining()) {
-            sb.append(buffer.get());
+        
+        int length = buffer.remaining();
+        if (length == 0) {
+            return;
         }
-        return sb.toString();
+        
+        // Ensure our reusable array is large enough
+        if (charArrayBuffer.length < length) {
+            // Grow the array - use power of 2 sizing for efficiency
+            int newSize = Integer.highestOneBit(length) << 1;
+            charArrayBuffer = new char[newSize];
+        }
+        
+        // Bulk copy from CharBuffer to our reusable array
+        int savedPosition = buffer.position();
+        buffer.get(charArrayBuffer, 0, length);
+        buffer.position(savedPosition); // Restore position (tokenizer manages it)
+        
+        // Pass to handler - handler can only access [0, length)
+        handler.characters(charArrayBuffer, 0, length);
+    }
+    
+    /**
+     * Gets a StringBuilder from the pool, or creates a new one if pool is empty.
+     * The StringBuilder is cleared before being returned.
+     * 
+     * @return a ready-to-use StringBuilder
+     */
+    private StringBuilder borrowStringBuilder() {
+        if (stringBuilderPool != null) {
+            StringBuilder sb = stringBuilderPool;
+            stringBuilderPool = null;
+            sb.setLength(0); // Clear the builder
+            return sb;
+        }
+        return new StringBuilder(128); // Default capacity
+    }
+    
+    /**
+     * Returns a StringBuilder to the pool for reuse.
+     * Only keeps one instance in the pool (simple single-threaded optimization).
+     * 
+     * @param sb the StringBuilder to return to the pool
+     */
+    private void returnStringBuilder(StringBuilder sb) {
+        if (sb != null && stringBuilderPool == null) {
+            // Keep capacity reasonable - if it grew too large, discard it
+            if (sb.capacity() < 8192) {
+                stringBuilderPool = sb;
+            }
+        }
     }
     
     /**

@@ -79,7 +79,7 @@ class NotationDeclParser {
                         
                     case NAME:
                         // Notation name
-                        currentNotationName = extractString(data);
+                        currentNotationName = data.toString();
                         state = State.AFTER_NAME;
                         break;
                         
@@ -140,7 +140,7 @@ class NotationDeclParser {
                     case CDATA:
                     case NAME:
                         // System ID (tokenizer may emit NAME or CDATA in DOCTYPE context)
-                        currentNotationExternalID.systemId = extractString(data);
+                        currentNotationExternalID.systemId = data.toString();
                         state = State.EXPECT_GT;
                         break;
                         
@@ -164,7 +164,7 @@ class NotationDeclParser {
                     case CDATA:
                     case NAME:
                         // Public ID (tokenizer may emit NAME or CDATA in DOCTYPE context)
-                        String publicId = extractString(data);
+                        String publicId = data.toString();
                         dtdParser.validatePublicId(publicId);
                         currentNotationExternalID.publicId = publicId;
                         state = State.AFTER_PUBLIC_ID;
@@ -190,7 +190,7 @@ class NotationDeclParser {
                     case CDATA:
                     case NAME:
                         // Optional system ID after PUBLIC (tokenizer may emit NAME or CDATA)
-                        currentNotationExternalID.systemId = extractString(data);
+                        currentNotationExternalID.systemId = data.toString();
                         state = State.EXPECT_GT;
                         break;
                         
@@ -221,7 +221,7 @@ class NotationDeclParser {
                         // Additional text (e.g., continuation of system ID if split by tokenizer)
                         // Append to existing system ID if present
                         if (currentNotationExternalID.systemId != null) {
-                            currentNotationExternalID.systemId += extractString(data);
+                            currentNotationExternalID.systemId += data.toString();
                         }
                         break;
                         
@@ -242,20 +242,5 @@ class NotationDeclParser {
         return false; // Not done yet
     }
     
-    /**
-     * Extracts a string from a CharBuffer.
-     * @param buffer the buffer containing the string
-     * @return the extracted string
-     */
-    private String extractString(CharBuffer buffer) {
-        if (buffer == null) {
-            return null;
-        }
-        StringBuilder sb = new StringBuilder();
-        while (buffer.hasRemaining()) {
-            sb.append(buffer.get());
-        }
-        return sb.toString();
-    }
 }
 

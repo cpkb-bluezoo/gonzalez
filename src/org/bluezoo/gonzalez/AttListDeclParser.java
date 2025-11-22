@@ -101,7 +101,7 @@ class AttListDeclParser {
                         break;
                         
                     case NAME:
-                        currentAttlistElement = extractString(data);
+                        currentAttlistElement = data.toString();
                         state = State.AFTER_ELEMENT_NAME;
                         break;
                         
@@ -132,7 +132,7 @@ class AttListDeclParser {
                     case NAME:
                         // Start new attribute
                         currentAttributeDecl = new AttributeDeclaration();
-                        currentAttributeDecl.name = extractString(data);
+                        currentAttributeDecl.name = data.toString();
                         state = State.AFTER_ATTR_NAME;
                         break;
                         
@@ -228,7 +228,7 @@ class AttListDeclParser {
                         
                     default:
                         throw new SAXParseException("Invalid attribute type in <!ATTLIST: " + 
-                            (data != null ? extractString(data) : token.toString()), locator);
+                            (data != null ? data.toString() : token.toString()), locator);
                 }
                 break;
                 
@@ -273,7 +273,7 @@ class AttListDeclParser {
                     case NAME:
                         // Part of enumeration - collect it
                         if (enumerationBuilder != null) {
-                            enumerationBuilder.add(extractString(data));
+                            enumerationBuilder.add(data.toString());
                         }
                         // Stay in AFTER_ATTR_TYPE
                         break;
@@ -336,7 +336,7 @@ class AttListDeclParser {
                             defaultValueBuilder = new ArrayList<>();
                             defaultValueTextBuilder = new StringBuilder();
                         }
-                        defaultValueTextBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(data.toString());
                         state = State.AFTER_DEFAULT_VALUE;
                         break;
                         
@@ -403,7 +403,7 @@ class AttListDeclParser {
                             defaultValueBuilder = new ArrayList<>();
                             defaultValueTextBuilder = new StringBuilder();
                         }
-                        defaultValueTextBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(data.toString());
                         state = State.AFTER_DEFAULT_VALUE;
                         break;
                         
@@ -418,17 +418,17 @@ class AttListDeclParser {
                     case CDATA:
                     case S:
                         // Additional chunk of default value - accumulate
-                        defaultValueTextBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(data.toString());
                         break;
                         
                     case CHARENTITYREF:
                         // Character reference (already expanded) - e.g., &#60; -> '<'
-                        defaultValueTextBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(data.toString());
                         break;
                         
                     case PREDEFENTITYREF:
                         // Predefined entity reference (already expanded) - e.g., &lt; -> '<'
-                        defaultValueTextBuilder.append(extractString(data));
+                        defaultValueTextBuilder.append(data.toString());
                         break;
                         
                     case GENERALENTITYREF:
@@ -437,7 +437,7 @@ class AttListDeclParser {
                             defaultValueBuilder.add(defaultValueTextBuilder.toString());
                             defaultValueTextBuilder.setLength(0);
                         }
-                        String entityName = extractString(data);
+                        String entityName = data.toString();
                         // WFC: Entity Declared - entity must be declared before use in attribute default
                         if (dtdParser.getGeneralEntity(entityName) == null) {
                             throw new SAXParseException(
@@ -453,7 +453,7 @@ class AttListDeclParser {
                             defaultValueBuilder.add(defaultValueTextBuilder.toString());
                             defaultValueTextBuilder.setLength(0);
                         }
-                        String paramEntityName = extractString(data);
+                        String paramEntityName = data.toString();
                         // Parameter entities are allowed in default values
                         defaultValueBuilder.add(new ParameterEntityReference(paramEntityName));
                         break;
@@ -484,7 +484,7 @@ class AttListDeclParser {
                     case NAME:
                         // Collect notation name
                         if (enumerationBuilder != null) {
-                            enumerationBuilder.add(extractString(data));
+                            enumerationBuilder.add(data.toString());
                         }
                         break;
                         
@@ -544,20 +544,5 @@ class AttListDeclParser {
         }
     }
     
-    /**
-     * Extracts a string from a CharBuffer.
-     * @param buffer the buffer containing the string
-     * @return the extracted string
-     */
-    private String extractString(CharBuffer buffer) {
-        if (buffer == null) {
-            return null;
-        }
-        StringBuilder sb = new StringBuilder();
-        while (buffer.hasRemaining()) {
-            sb.append(buffer.get());
-        }
-        return sb.toString();
-    }
 }
 

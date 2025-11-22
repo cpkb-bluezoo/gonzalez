@@ -132,7 +132,7 @@ class ElementDeclParser {
     private boolean handleExpectName(Token token, CharBuffer data) throws SAXException {
         // Must see NAME token for element name (whitespace allowed first)
         if (token == Token.NAME) {
-            elementDecl.name = extractString(data);
+            elementDecl.name = data.toString();
             state = State.AFTER_NAME;
         } else if (token == Token.S) {
             // Skip whitespace before element name
@@ -181,7 +181,7 @@ class ElementDeclParser {
             case PARAMETERENTITYREF:
                 // Parameter entity expansion in element content specification
                 // Example: <!ELEMENT doc %content-model;>
-                String refName = extractString(data);
+                String refName = data.toString();
                 dtdParser.expandParameterEntityInline(refName);
                 // After expansion, stay in EXPECT_CONTENTSPEC to process the expanded tokens
                 break;
@@ -201,7 +201,7 @@ class ElementDeclParser {
                 break;
                 
             case NAME:
-                String nameStr = extractString(data);
+                String nameStr = data.toString();
                 // Handle PCDATA special case (tokenizer may emit as NAME)
                 if (nameStr.equals("PCDATA")) {
                     // Create #PCDATA leaf node
@@ -520,14 +520,5 @@ class ElementDeclParser {
         dtdParser.addElementDeclaration(elementDecl);
     }
     
-    /**
-     * Extracts string from character buffer.
-     */
-    private String extractString(CharBuffer data) {
-        if (data == null || !data.hasRemaining()) {
-            return "";
-        }
-        return data.toString();
-    }
 }
 

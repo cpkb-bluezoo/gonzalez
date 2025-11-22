@@ -405,7 +405,7 @@ public class DTDParser implements TokenConsumer {
                             "Parameter entity references are not allowed within markup declarations " +
                             "in the internal subset (WFC: PEs in Internal Subset)", locator);
                     }
-                    String refName = extractString(data);
+                    String refName = data.toString();
                     expandParameterEntityInline(refName);
                 } else {
                     handleInElementDecl(token, data);
@@ -419,7 +419,7 @@ public class DTDParser implements TokenConsumer {
                     // In internal subset: let AttListDeclParser handle them (only allowed in default values)
                     if (xmlParser.isProcessingExternalEntity()) {
                         // External subset - expand inline
-                        String refName = extractString(data);
+                        String refName = data.toString();
                         expandParameterEntityInline(refName);
                     } else {
                         // Internal subset - delegate to AttListDeclParser
@@ -447,7 +447,7 @@ public class DTDParser implements TokenConsumer {
                             "Parameter entity references are not allowed within markup declarations " +
                             "in the internal subset (WFC: PEs in Internal Subset)", locator);
                     }
-                    String refName = extractString(data);
+                    String refName = data.toString();
                     expandParameterEntityInline(refName);
                 } else if (entityDeclParser != null && entityDeclParser.handleToken(token, data)) {
                     // ENTITY declaration complete - return to saved state
@@ -467,7 +467,7 @@ public class DTDParser implements TokenConsumer {
                             "Parameter entity references are not allowed within markup declarations " +
                             "in the internal subset (WFC: PEs in Internal Subset)", locator);
                     }
-                    String refName = extractString(data);
+                    String refName = data.toString();
                     expandParameterEntityInline(refName);
                 } else if (notationDeclParser != null && notationDeclParser.handleToken(token, data)) {
                     // NOTATION declaration complete - return to saved state
@@ -509,7 +509,7 @@ public class DTDParser implements TokenConsumer {
 
             case NAME:
                 // This is the DOCTYPE name (root element name)
-                doctypeName = extractString(data);
+                doctypeName = data.toString();
                 changeState(State.AFTER_NAME);
                 break;
 
@@ -606,13 +606,13 @@ public class DTDParser implements TokenConsumer {
                         doctypeExternalID = new ExternalID();
                     }
                     if (doctypeExternalID.publicId == null) {
-                        String publicId = extractString(data);
+                        String publicId = data.toString();
                         validatePublicId(publicId);
                         doctypeExternalID.publicId = publicId;
                         changeState(State.AFTER_PUBLIC_ID);
                     } else {
                         // Second string after PUBLIC
-                        doctypeExternalID.systemId = extractString(data);
+                        doctypeExternalID.systemId = data.toString();
                         changeState(State.AFTER_EXTERNAL_ID);
                     }
                 } else {
@@ -620,7 +620,7 @@ public class DTDParser implements TokenConsumer {
                     if (doctypeExternalID == null) {
                         doctypeExternalID = new ExternalID();
                     }
-                    doctypeExternalID.systemId = extractString(data);
+                    doctypeExternalID.systemId = data.toString();
                     changeState(State.AFTER_EXTERNAL_ID);
                 }
                 break;
@@ -663,7 +663,7 @@ public class DTDParser implements TokenConsumer {
                 if (doctypeExternalID == null) {
                     doctypeExternalID = new ExternalID();
                 }
-                doctypeExternalID.systemId = extractString(data);
+                doctypeExternalID.systemId = data.toString();
                 changeState(State.AFTER_EXTERNAL_ID);
                 break;
 
@@ -826,7 +826,7 @@ public class DTDParser implements TokenConsumer {
                 // Direct parameter entity references in DTD declarations (not in entity values)
                 // Example: <!ELEMENT doc %content-model;>
                 // This requires inline expansion during DTD parsing.
-                String refName = extractString(data);
+                String refName = data.toString();
                 expandParameterEntityInline(refName);
                 break;
                     
@@ -905,7 +905,7 @@ public class DTDParser implements TokenConsumer {
             case S:
                 // Accumulate comment text (may receive multiple chunks)
                 if (data != null) {
-                    commentBuilder.append(extractString(data));
+                    commentBuilder.append(data.toString());
                 }
                 break;
                 
@@ -936,7 +936,7 @@ public class DTDParser implements TokenConsumer {
             case NAME:
                 // First token should be the PI target
                 if (piTarget == null) {
-                    piTarget = extractString(data);
+                    piTarget = data.toString();
                 } else {
                     throw new SAXParseException("Unexpected NAME token in PI data", locator);
                 }
@@ -946,7 +946,7 @@ public class DTDParser implements TokenConsumer {
             case CDATA:
                 // Accumulate PI data (may receive multiple chunks)
                 if (data != null) {
-                    piDataBuilder.append(extractString(data));
+                    piDataBuilder.append(data.toString());
                 }
                 break;
                 
@@ -995,7 +995,7 @@ public class DTDParser implements TokenConsumer {
                     case PARAMETERENTITYREF:
                         // Parameter entity reference for keyword (e.g., <![ %draft; [...)
                         // Expand inline to get INCLUDE or IGNORE
-                        String refName = extractString(data);
+                        String refName = data.toString();
                         expandParameterEntityInline(refName);
                         // After expansion, we should receive INCLUDE or IGNORE token
                         break;
@@ -1138,22 +1138,6 @@ public class DTDParser implements TokenConsumer {
      * Called when GT is encountered at the end of the ATTLIST.
      * Merges currentAttlistMap into attributeDecls keyed by element name.
      */
-    /**
-     * Extracts a string from a CharBuffer.
-     * @param buffer the buffer containing the string
-     * @return the extracted string
-     */
-    private String extractString(CharBuffer buffer) {
-        if (buffer == null) {
-            return null;
-        }
-        StringBuilder sb = new StringBuilder();
-        while (buffer.hasRemaining()) {
-            sb.append(buffer.get());
-        }
-        return sb.toString();
-    }
-    
     /**
      * Changes the parser state and saves the new state.
      * This ensures savedState always contains the current state for returning from comments.
