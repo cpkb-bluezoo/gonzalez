@@ -1336,20 +1336,29 @@ public class Tokenizer {
             }
             
             if (token.hasAssociatedText()) {
-                CharBuffer window = charBuffer.duplicate();
-                window.position(start);
-                window.limit(start + length);
-                receiveXMLDeclToken(token, window);
+                // Set window into charBuffer (no duplicate needed)
+                int savedPosition = charBuffer.position();
+                int savedLimit = charBuffer.limit();
+                charBuffer.position(start);
+                charBuffer.limit(start + length);
+                receiveXMLDeclToken(token, charBuffer);
+                charBuffer.position(savedPosition);
+                charBuffer.limit(savedLimit);
             } else {
                 receiveXMLDeclToken(token, null);
             }
         } else {
             // Normal tokens go to main consumer
             if (token.hasAssociatedText()) {
-                CharBuffer window = charBuffer.duplicate();
-                window.position(start);
-                window.limit(start + length);
-                consumer.receive(token, window);
+                // Set window into charBuffer (no duplicate needed - consumer won't modify position)
+                int savedPosition = charBuffer.position();
+                int savedLimit = charBuffer.limit();
+                charBuffer.position(start);
+                charBuffer.limit(start + length);
+                consumer.receive(token, charBuffer);
+                // Restore position/limit for tokenizer to continue
+                charBuffer.position(savedPosition);
+                charBuffer.limit(savedLimit);
             } else {
                 consumer.receive(token, null);
             }

@@ -1604,9 +1604,8 @@ throw fatalError("Expected PI target after '<?', got: " + token);
         }
         
         // Bulk copy from CharBuffer to our reusable array
-        int savedPosition = buffer.position();
+        // Tokenizer has already set position/limit window, just read from current position
         buffer.get(charArrayBuffer, 0, length);
-        buffer.position(savedPosition); // Restore position (tokenizer manages it)
         
         // Pass to handler - handler can only access [0, length)
         handler.characters(charArrayBuffer, 0, length);
