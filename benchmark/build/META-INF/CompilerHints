@@ -1,0 +1,12 @@
+dontinline,*.*_all_jmhStub
+dontinline,*.*_avgt_jmhStub
+dontinline,*.*_sample_jmhStub
+dontinline,*.*_ss_jmhStub
+dontinline,*.*_thrpt_jmhStub
+inline,org/bluezoo/gonzalez/benchmark/XMLParserBenchmark.largeFile_GonzalezByteBuffer
+inline,org/bluezoo/gonzalez/benchmark/XMLParserBenchmark.largeFile_GonzalezFileChannel
+inline,org/bluezoo/gonzalez/benchmark/XMLParserBenchmark.largeFile_JavaSAX
+inline,org/bluezoo/gonzalez/benchmark/XMLParserBenchmark.setup
+inline,org/bluezoo/gonzalez/benchmark/XMLParserBenchmark.smallFile_GonzalezByteBuffer
+inline,org/bluezoo/gonzalez/benchmark/XMLParserBenchmark.smallFile_GonzalezFileChannel
+inline,org/bluezoo/gonzalez/benchmark/XMLParserBenchmark.smallFile_JavaSAX

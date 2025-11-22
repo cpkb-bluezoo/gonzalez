@@ -164,5 +164,60 @@
     <echo message='Example: java -cp test/build:build:lib/sax2.jar QuickATTLISTTest'/>
   </target>
 
+  <!-- JMH Benchmarks -->
+  <property name='benchmark.src' location='benchmark/src'/>
+  <property name='benchmark.build' location='benchmark/build'/>
+  <property name='benchmark.resources' location='benchmark/resources'/>
+  <property name='jmh.version' value='1.37'/>
+
+  <target name='download-jmh' description='Download JMH libraries'>
+    <mkdir dir='lib'/>
+    <echo message='Downloading JMH ${jmh.version}...'/>
+    <get src='https://repo1.maven.org/maven2/org/openjdk/jmh/jmh-core/${jmh.version}/jmh-core-${jmh.version}.jar'
+         dest='lib/jmh-core-${jmh.version}.jar' 
+         skipexisting='true'
+         verbose='true'/>
+    <get src='https://repo1.maven.org/maven2/org/openjdk/jmh/jmh-generator-annprocess/${jmh.version}/jmh-generator-annprocess-${jmh.version}.jar'
+         dest='lib/jmh-generator-annprocess-${jmh.version}.jar'
+         skipexisting='true'
+         verbose='true'/>
+    <echo message='JMH libraries downloaded to lib/'/>
+  </target>
+
+  <target name='build-benchmark' depends='build,download-jmh' description='Compile JMH benchmarks'>
+    <mkdir dir='${benchmark.build}'/>
+    <javac srcdir='${benchmark.src}' 
+           destdir='${benchmark.build}' 
+           debug='true' 
+           includeantruntime='false'>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
+        <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
+      </classpath>
+    </javac>
+    <echo message='Benchmark classes compiled to ${benchmark.build}'/>
+  </target>
+
+  <target name='benchmark' depends='build-benchmark' description='Run JMH benchmarks'>
+    <echo message='Running JMH benchmarks...'/>
+    <echo message='This may take several minutes to complete.'/>
+    <echo message=''/>
+    <java classname='org.openjdk.jmh.Main' fork='true'>
+      <classpath>
+        <pathelement location='${benchmark.build}'/>
+        <pathelement location='${build}'/>
+        <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
+        <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
+      </classpath>
+      <arg value='org.bluezoo.gonzalez.benchmark.XMLParserBenchmark'/>
+    </java>
+  </target>
+
+  <target name='clean-benchmark' description='Clean benchmark build artifacts'>
+    <delete dir='${benchmark.build}'/>
+    <echo message='Benchmark build directory cleaned'/>
+  </target>
+
 </project>
 
