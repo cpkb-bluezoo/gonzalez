@@ -82,6 +82,14 @@ public class Tokenizer {
     private TokenizerState returnState = null;
     
     /**
+     * State to transition to after parsing XML/text declaration.
+     * For top-level documents: PROLOG_BEFORE_DOCTYPE
+     * For external DTD subsets/parameter entities: DOCTYPE_INTERNAL
+     * For external general entities: CONTENT
+     */
+    private TokenizerState postDeclState = TokenizerState.PROLOG_BEFORE_DOCTYPE;
+    
+    /**
      * Current fine-grained token recognition state.
      */
     private MiniState miniState = MiniState.READY;
@@ -266,13 +274,13 @@ public class Tokenizer {
     }
     
     /**
-     * Package-private method to set initial context for entity expansion.
-     * Used when creating a tokenizer for inline entity expansion.
+     * Package-private method to set the state to transition to after parsing XML/text declaration.
+     * For external entities, this should be set before feeding data to handle text declarations properly.
      * 
-     * @param initialState the initial state (typically TokenizerState.CONTENT or TokenizerState.DOCTYPE_INTERNAL)
+     * @param postDeclState the state to enter after optional text declaration (DOCTYPE_INTERNAL for DTD entities, CONTENT for general entities)
      */
-    void setInitialContext(TokenizerState initialState) {
-        this.state = initialState;
+    void setPostDeclarationState(TokenizerState postDeclState) {
+        this.postDeclState = postDeclState;
     }
     
     /**
@@ -834,6 +842,32 @@ public class Tokenizer {
                 throw fatalError("Illegal XML character: 0x" + Integer.toHexString(c).toUpperCase());
             }
             
+            // Special handling: Auto-transition from INIT/BOM_READ to postDeclState when encountering
+            // content that is NOT a text declaration. Text declarations MUST be at the very start.
+            // This ensures:
+            // 1. External entities without text decls start processing in the correct state
+            // 2. After one text decl, subsequent <?xml...?> are treated as (illegal) PIs
+            if ((state == TokenizerState.INIT || state == TokenizerState.BOM_READ)) {
+                boolean shouldTransition = false;
+                
+                if (miniState == MiniState.READY) {
+                    // In READY, if we see anything other than '<', it's content
+                    if (cc != CharClass.LT && cc != CharClass.WHITESPACE) {
+                        shouldTransition = true;
+                    }
+                } else if (miniState == MiniState.SEEN_LT) {
+                    // After '<', if we don't see '?', it's not a text decl
+                    if (cc != CharClass.QUERY) {
+                        shouldTransition = true;
+                    }
+                }
+                
+                if (shouldTransition) {
+                    changeState(postDeclState);
+                    // Continue to process this character in the new state
+                }
+            }
+            
             // Special handling for greedy AND name accumulation states
             // Entity refs and char refs are NOT handled here - they go through the trie
             if (miniState.isGreedyAccumulation() ||
@@ -922,12 +956,20 @@ public class Tokenizer {
             // Special validation: <?xm followed by non-'l' NAME_START_CHAR
             // This catches cases like <?XML, <?xmL, <?xmFoo where the PI target will start with "xm"
             // Check if it would form a case variant of "xml" (reserved PI target)
+            // EXCEPT: At the start of external entities, <?xml is a text declaration (allowed)
             if (state == TokenizerState.BOM_READ) {
+                boolean isExternalEntity = (externalEntityDecoder != null && externalEntityDecoder.isExternalEntity());
+                
                 // After <?xm, if we see NAME_START_CHAR that's not 'l', check if it's 'L'
                 if (miniState == MiniState.SEEN_LT_QUERY_XM && cc == CharClass.NAME_START_CHAR) {
                     if (c == 'L') {
-                        // This forms "xmL" which matches [Xx][Mm][Ll] - reserved PI target
-                        throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
+                        // This forms "xmL" which matches [Xx][Mm][Ll]
+                        // If we're at the start of an external entity, allow it (text declaration)
+                        // Otherwise it's a reserved PI target
+                        if (!isExternalEntity) {
+                            throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
+                        }
+                        // In external entity: let it proceed as text declaration
                     }
                 }
                 // After <?x, if we see NAME_START_CHAR that's not 'm', check if it forms reserved pattern
@@ -1048,6 +1090,12 @@ public class Tokenizer {
             // Change state if specified
             if (transition.stateToChangeTo != null) {
                 TokenizerState newState = transition.stateToChangeTo;
+                
+                // Special handling for exiting XMLDECL state (text/XML declaration end)
+                // Use the configured postDeclState instead of hardcoded PROLOG_BEFORE_DOCTYPE
+                if (state == TokenizerState.XMLDECL && newState == TokenizerState.PROLOG_BEFORE_DOCTYPE) {
+                    newState = postDeclState;
+                }
                 
                 // Save return state when entering COMMENT, PI_TARGET, or PI_DATA
                 // But don't overwrite if transitioning from PI_TARGET to PI_DATA (preserve original)
@@ -1250,12 +1298,17 @@ public class Tokenizer {
         
         // Check if this is a PI target name and validate it's not "xml" (case-insensitive)
         // Per XML 1.0 spec rule 17: PITarget names matching [Xx][Mm][Ll] are reserved
+        // EXCEPT: Text declarations at the START of external entities (INIT/BOM_READ state) are allowed
         if (token == Token.NAME && state == TokenizerState.PI_TARGET) {
             if (length == 3) {
                 char c0 = charBuffer.get(start);
                 char c1 = charBuffer.get(start + 1);
                 char c2 = charBuffer.get(start + 2);
                 if ((c0 == 'x' || c0 == 'X') && (c1 == 'm' || c1 == 'M') && (c2 == 'l' || c2 == 'L')) {
+                    // This is ALWAYS an error in PI_TARGET state because:
+                    // 1. If we're at the start of an external entity (INIT/BOM_READ), <?xml would have been
+                    //    recognized as START_XMLDECL, not as PI_TARGET
+                    // 2. After the first text declaration, subsequent <?xml...?> are illegal PIs
                     throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
                 }
             }
@@ -1387,24 +1440,33 @@ public class Tokenizer {
     
     /**
      * Validates that the attribute name is allowed in XML declarations and in correct order.
+     * Different rules apply for XML declarations (document entity) vs text declarations (external entities):
+     * - XML declaration: version required, encoding optional, standalone optional
+     * - Text declaration: version optional, encoding required, standalone forbidden
      */
     private void validateXMLDeclAttributeName(String name) throws SAXException {
+        boolean isTextDecl = (externalEntityDecoder != null && externalEntityDecoder.isExternalEntity());
+        
         if ("version".equals(name)) {
             if (xmlDeclSeenAttributes != 0) {
-                throw fatalError("'version' must be the first attribute in XML declaration");
+                String declType = isTextDecl ? "text declaration" : "XML declaration";
+                throw fatalError("'version' must be the first attribute in " + declType);
             }
             xmlDeclSeenAttributes |= 1;
         } else if ("encoding".equals(name)) {
-            if ((xmlDeclSeenAttributes & 1) == 0) {
+            // In XML declarations, if encoding is present, version must come first
+            // In text declarations, encoding can appear without version
+            if (!isTextDecl && (xmlDeclSeenAttributes & 1) == 0) {
                 throw fatalError("'version' must come before 'encoding' in XML declaration");
             }
             if ((xmlDeclSeenAttributes & 4) != 0) {
-                throw fatalError("'encoding' must come before 'standalone' in XML declaration");
+                String declType = isTextDecl ? "text declaration" : "XML declaration";
+                throw fatalError("'encoding' must come before 'standalone' in " + declType);
             }
             xmlDeclSeenAttributes |= 2;
         } else if ("standalone".equals(name)) {
             // Text declarations (in external entities) MUST NOT have standalone attribute
-            if (externalEntityDecoder != null && externalEntityDecoder.isExternalEntity()) {
+            if (isTextDecl) {
                 throw fatalError(
                     "Text declaration in external entity must not have 'standalone' attribute");
             }
@@ -1413,7 +1475,8 @@ public class Tokenizer {
             }
             xmlDeclSeenAttributes |= 4;
         } else {
-            throw fatalError("Unknown attribute in XML declaration: " + name);
+            String declType = isTextDecl ? "text declaration" : "XML declaration";
+            throw fatalError("Unknown attribute in " + declType + ": " + name);
         }
     }
     
@@ -1456,11 +1519,19 @@ public class Tokenizer {
     /**
      * Applies the encoding from the XML declaration,
      * delegating to the ExternalEntityDecoder if present.
+     * Also validates required attributes based on declaration type.
      */
     private void applyXMLDeclEncoding() throws SAXException {
+        boolean isTextDecl = (externalEntityDecoder != null && externalEntityDecoder.isExternalEntity());
+        
         // Validate required attributes
-        if ((xmlDeclSeenAttributes & 1) == 0) {
+        // XML declaration: version required, encoding optional
+        // Text declaration: version optional, encoding required
+        if (!isTextDecl && (xmlDeclSeenAttributes & 1) == 0) {
             throw fatalError("XML declaration missing required 'version' attribute");
+        }
+        if (isTextDecl && (xmlDeclSeenAttributes & 2) == 0) {
+            throw fatalError("Text declaration missing required 'encoding' attribute");
         }
         
         // If encoding was specified, apply it via the EED

@@ -615,15 +615,15 @@ public class ContentParser implements TokenConsumer {
         
         try {
             // Create nested tokenizer and decoder for external entity
-            // Determine the initial state for the entity:
-            // - External DTD subsets should start in DOCTYPE_INTERNAL (to parse DTD declarations)
-            // - External parameter entities should start in DOCTYPE_INTERNAL (they contain DTD declarations)
-            // - General entities should start in CONTENT (to parse element content)
+            // External entities start in INIT state (default) to allow optional text declarations.
+            // The postDeclState determines where to transition after the optional text declaration:
+            // - External DTD subsets/parameter entities → DOCTYPE_INTERNAL (DTD declarations)
+            // - External general entities → CONTENT (element content)
             boolean isDTDContent = isDTDSubset || isParameterEntity;
-            TokenizerState initialState = isDTDContent ? TokenizerState.DOCTYPE_INTERNAL : TokenizerState.CONTENT;
+            TokenizerState postDeclState = isDTDContent ? TokenizerState.DOCTYPE_INTERNAL : TokenizerState.CONTENT;
             
             Tokenizer entityTokenizer = new Tokenizer(this);
-            entityTokenizer.setInitialContext(initialState);
+            entityTokenizer.setPostDeclarationState(postDeclState);  // Set target state after optional text decl
             entityTokenizer.setXML11(currentVersion); // Inherit parent's XML version
             
             ExternalEntityDecoder entityDecoder = new ExternalEntityDecoder(
@@ -634,6 +634,9 @@ public class ContentParser implements TokenConsumer {
             );
             // Set XML version on decoder to match tokenizer
             entityDecoder.setVersion(currentVersion ? "1.1" : "1.0");
+            
+            // Link decoder back to tokenizer so it can check if in external entity
+            entityTokenizer.setExternalEntityDecoder(entityDecoder);
             
             // Get input stream from source
             InputStream inputStream = source.getByteStream();
