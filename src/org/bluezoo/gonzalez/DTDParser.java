@@ -413,18 +413,22 @@ public class DTDParser implements TokenConsumer {
                 break;
                 
             case IN_ATTLISTDECL:
-                // Handle parameter entity expansion before delegating
-                // BUT: check WFC: PEs in Internal Subset first
+                // Handle parameter entity expansion based on context
                 if (token == Token.PARAMETERENTITYREF) {
-                    // In internal subset, PE references are not allowed within declarations
-                    // Check if we're processing the internal subset (not an external entity)
-                    if (!xmlParser.isProcessingExternalEntity()) {
-                        throw new SAXParseException(
-                            "Parameter entity references are not allowed within markup declarations " +
-                            "in the internal subset (WFC: PEs in Internal Subset)", locator);
+                    // In external subset: expand PE refs inline (they can appear anywhere)
+                    // In internal subset: let AttListDeclParser handle them (only allowed in default values)
+                    if (xmlParser.isProcessingExternalEntity()) {
+                        // External subset - expand inline
+                        String refName = extractString(data);
+                        expandParameterEntityInline(refName);
+                    } else {
+                        // Internal subset - delegate to AttListDeclParser
+                        // It will accept PE refs in default values, reject elsewhere
+                        if (attListDeclParser != null && attListDeclParser.handleToken(token, data)) {
+                            attListDeclParser = null;
+                            state = savedState;
+                        }
                     }
-                    String refName = extractString(data);
-                    expandParameterEntityInline(refName);
                 } else if (attListDeclParser != null && attListDeclParser.handleToken(token, data)) {
                     // ATTLIST declaration complete - return to saved state
                     attListDeclParser = null;
