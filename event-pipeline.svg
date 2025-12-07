@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="networkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a365d"/>
+      <stop offset="100%" style="stop-color:#2c5282"/>
+    </linearGradient>
+    <linearGradient id="bufferGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#2d3748"/>
+      <stop offset="100%" style="stop-color:#4a5568"/>
+    </linearGradient>
+    <linearGradient id="parserGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#744210"/>
+      <stop offset="100%" style="stop-color:#b7791f"/>
+    </linearGradient>
+    <linearGradient id="saxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#22543d"/>
+      <stop offset="100%" style="stop-color:#38a169"/>
+    </linearGradient>
+    <linearGradient id="appGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#553c9a"/>
+      <stop offset="100%" style="stop-color:#805ad5"/>
+    </linearGradient>
+    <linearGradient id="arrowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#ed8936"/>
+      <stop offset="100%" style="stop-color:#f6ad55"/>
+    </linearGradient>
+    
+    <!-- Arrow marker -->
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#ed8936"/>
+    </marker>
+    
+    <!-- Glow filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    
+    <!-- Drop shadow -->
+    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="2" dy="3" stdDeviation="3" flood-opacity="0.3"/>
+    </filter>
+    
+    <!-- Data chunk pattern -->
+    <pattern id="dataPattern" patternUnits="userSpaceOnUse" width="8" height="8">
+      <rect width="8" height="8" fill="#2d3748"/>
+      <rect x="0" y="0" width="4" height="4" fill="#4a5568"/>
+      <rect x="4" y="4" width="4" height="4" fill="#4a5568"/>
+    </pattern>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="900" height="600" fill="#0f1419"/>
+  
+  <!-- Title -->
+  <text x="450" y="40" text-anchor="middle" font-family="Georgia, serif" font-size="24" fill="#f7fafc" font-weight="bold">
+    Gonzalez NIO Event Pipeline
+  </text>
+  <text x="450" y="62" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#a0aec0">
+    Non-blocking XML Streaming with Bounded Memory
+  </text>
+  
+  <!-- Network Sources Section -->
+  <g transform="translate(40, 100)">
+    <!-- Container -->
+    <rect x="0" y="0" width="140" height="200" rx="8" fill="url(#networkGrad)" filter="url(#shadow)"/>
+    <text x="70" y="25" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="13" fill="#bee3f8" font-weight="600">DATA SOURCES</text>
+    
+    <!-- Network socket -->
+    <g transform="translate(20, 45)">
+      <rect width="100" height="40" rx="6" fill="#2b6cb0" stroke="#4299e1" stroke-width="1.5"/>
+      <text x="50" y="17" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#ebf8ff">SocketChannel</text>
+      <text x="50" y="30" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#90cdf4">.read(buffer)</text>
+    </g>
+    
+    <!-- SSL unwrap -->
+    <g transform="translate(20, 95)">
+      <rect width="100" height="40" rx="6" fill="#2b6cb0" stroke="#4299e1" stroke-width="1.5"/>
+      <text x="50" y="17" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#ebf8ff">SSLEngine</text>
+      <text x="50" y="30" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#90cdf4">.unwrap()</text>
+    </g>
+    
+    <!-- File channel -->
+    <g transform="translate(20, 145)">
+      <rect width="100" height="40" rx="6" fill="#2b6cb0" stroke="#4299e1" stroke-width="1.5"/>
+      <text x="50" y="17" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#ebf8ff">FileChannel</text>
+      <text x="50" y="30" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#90cdf4">.read(buffer)</text>
+    </g>
+  </g>
+  
+  <!-- Arrow 1: Sources to Buffer -->
+  <g>
+    <line x1="185" y1="200" x2="230" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
+  </g>
+  
+  <!-- ByteBuffer Chunks Section -->
+  <g transform="translate(240, 120)">
+    <rect x="0" y="0" width="120" height="160" rx="8" fill="url(#bufferGrad)" filter="url(#shadow)"/>
+    <text x="60" y="22" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="12" fill="#e2e8f0" font-weight="600">ByteBuffer</text>
+    <text x="60" y="36" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#a0aec0">chunks</text>
+    
+    <!-- Animated chunk representation -->
+    <g transform="translate(15, 50)">
+      <!-- Chunk 1 -->
+      <rect x="0" y="0" width="90" height="25" rx="3" fill="#4a5568" stroke="#718096" stroke-width="1">
+        <animate attributeName="opacity" values="1;0.7;1" dur="2s" repeatCount="indefinite"/>
+      </rect>
+      <text x="45" y="16" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#e2e8f0">&lt;root&gt;&lt;item</text>
+      
+      <!-- Chunk 2 -->
+      <rect x="0" y="30" width="90" height="25" rx="3" fill="#4a5568" stroke="#718096" stroke-width="1">
+        <animate attributeName="opacity" values="0.7;1;0.7" dur="2s" repeatCount="indefinite"/>
+      </rect>
+      <text x="45" y="46" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#e2e8f0">id="1"&gt;data</text>
+      
+      <!-- Chunk 3 -->
+      <rect x="0" y="60" width="90" height="25" rx="3" fill="#4a5568" stroke="#718096" stroke-width="1">
+        <animate attributeName="opacity" values="1;0.7;1" dur="2s" repeatCount="indefinite" begin="0.5s"/>
+      </rect>
+      <text x="45" y="76" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#e2e8f0">&lt;/item&gt;...</text>
+    </g>
+    
+    <!-- Size indicator -->
+    <text x="60" y="150" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#68d391">↔ user-defined size</text>
+  </g>
+  
+  <!-- Arrow 2: Buffer to Parser -->
+  <g>
+    <line x1="365" y1="200" x2="410" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
+    <text x="387" y="185" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#ed8936">receive()</text>
+  </g>
+  
+  <!-- Gonzalez Parser Section -->
+  <g transform="translate(420, 95)">
+    <rect x="0" y="0" width="160" height="210" rx="10" fill="url(#parserGrad)" filter="url(#shadow)" stroke="#d69e2e" stroke-width="2"/>
+    
+    <!-- Parser header -->
+    <text x="80" y="25" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#fefcbf" font-weight="bold">Gonzalez</text>
+    <text x="80" y="42" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#faf089">Parser</text>
+    
+    <!-- Internal components -->
+    <g transform="translate(15, 55)">
+      <!-- EED -->
+      <rect width="130" height="35" rx="4" fill="#975a16" stroke="#d69e2e" stroke-width="1"/>
+      <text x="65" y="15" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#fefcbf">ExternalEntityDecoder</text>
+      <text x="65" y="27" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#ecc94b">bytes → chars</text>
+      
+      <!-- Tokenizer -->
+      <rect y="40" width="130" height="35" rx="4" fill="#975a16" stroke="#d69e2e" stroke-width="1"/>
+      <text x="65" y="55" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#fefcbf">Tokenizer</text>
+      <text x="65" y="67" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#ecc94b">state machine</text>
+      
+      <!-- Content Parser -->
+      <rect y="80" width="130" height="35" rx="4" fill="#975a16" stroke="#d69e2e" stroke-width="1"/>
+      <text x="65" y="95" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#fefcbf">ContentParser</text>
+      <text x="65" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#ecc94b">tokens → events</text>
+    </g>
+    
+    <!-- Key feature badges -->
+    <g transform="translate(20, 175)">
+      <rect width="55" height="18" rx="9" fill="#2f855a"/>
+      <text x="27" y="12" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="7" fill="#c6f6d5" font-weight="600">STREAMING</text>
+    </g>
+    <g transform="translate(80, 175)">
+      <rect width="60" height="18" rx="9" fill="#2f855a"/>
+      <text x="30" y="12" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="7" fill="#c6f6d5" font-weight="600">NON-BLOCK</text>
+    </g>
+  </g>
+  
+  <!-- Arrow 3: Parser to SAX Events -->
+  <g>
+    <line x1="585" y1="200" x2="630" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
+  </g>
+  
+  <!-- SAX Events Section -->
+  <g transform="translate(640, 110)">
+    <rect x="0" y="0" width="110" height="180" rx="8" fill="url(#saxGrad)" filter="url(#shadow)"/>
+    <text x="55" y="22" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="12" fill="#c6f6d5" font-weight="600">SAX Events</text>
+    
+    <!-- Event list -->
+    <g transform="translate(10, 38)" font-family="Menlo, monospace" font-size="8" fill="#9ae6b4">
+      <rect x="0" y="0" width="90" height="18" rx="3" fill="#276749"/>
+      <text x="45" y="12" text-anchor="middle">startDocument()</text>
+      
+      <rect x="0" y="22" width="90" height="18" rx="3" fill="#276749"/>
+      <text x="45" y="34" text-anchor="middle">startElement()</text>
+      
+      <rect x="0" y="44" width="90" height="18" rx="3" fill="#276749"/>
+      <text x="45" y="56" text-anchor="middle">characters()</text>
+      
+      <rect x="0" y="66" width="90" height="18" rx="3" fill="#276749"/>
+      <text x="45" y="78" text-anchor="middle">endElement()</text>
+      
+      <rect x="0" y="88" width="90" height="18" rx="3" fill="#276749"/>
+      <text x="45" y="100" text-anchor="middle">startElement()</text>
+      
+      <rect x="0" y="110" width="90" height="18" rx="3" fill="#276749"/>
+      <text x="45" y="122" text-anchor="middle">...</text>
+    </g>
+    
+    <text x="55" y="172" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#68d391">immediate dispatch</text>
+  </g>
+  
+  <!-- Arrow 4: SAX to Application -->
+  <g>
+    <line x1="755" y1="200" x2="800" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
+  </g>
+  
+  <!-- Application Handler Section -->
+  <g transform="translate(810, 145)">
+    <rect x="0" y="0" width="75" height="110" rx="8" fill="url(#appGrad)" filter="url(#shadow)"/>
+    <text x="37" y="22" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="10" fill="#e9d8fd" font-weight="600">Your</text>
+    <text x="37" y="36" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="10" fill="#e9d8fd" font-weight="600">Handler</text>
+    
+    <!-- Handler icon -->
+    <g transform="translate(22, 48)">
+      <rect width="30" height="45" rx="4" fill="#6b46c1" stroke="#9f7aea" stroke-width="1"/>
+      <line x1="6" y1="10" x2="24" y2="10" stroke="#d6bcfa" stroke-width="2"/>
+      <line x1="6" y1="18" x2="20" y2="18" stroke="#d6bcfa" stroke-width="2"/>
+      <line x1="6" y1="26" x2="22" y2="26" stroke="#d6bcfa" stroke-width="2"/>
+      <line x1="6" y1="34" x2="18" y2="34" stroke="#d6bcfa" stroke-width="2"/>
+    </g>
+  </g>
+  
+  <!-- Key Benefits Panel -->
+  <g transform="translate(40, 340)">
+    <rect x="0" y="0" width="820" height="130" rx="10" fill="#1a202c" stroke="#2d3748" stroke-width="2"/>
+    <text x="410" y="25" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="14" fill="#e2e8f0" font-weight="600">Key Benefits of Push-Model XML Parsing</text>
+    
+    <!-- Benefit 1 -->
+    <g transform="translate(30, 45)">
+      <circle cx="10" cy="10" r="10" fill="#38a169"/>
+      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">1</text>
+      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#68d391" font-weight="600">Non-Blocking I/O</text>
+      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Parser never waits for data — processes what's available, returns control</text>
+    </g>
+    
+    <!-- Benefit 2 -->
+    <g transform="translate(300, 45)">
+      <circle cx="10" cy="10" r="10" fill="#ed8936"/>
+      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">2</text>
+      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#f6ad55" font-weight="600">Bounded Memory</text>
+      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">User controls buffer size — document size is unlimited</text>
+    </g>
+    
+    <!-- Benefit 3 -->
+    <g transform="translate(560, 45)">
+      <circle cx="10" cy="10" r="10" fill="#4299e1"/>
+      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">3</text>
+      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#63b3ed" font-weight="600">Real-Time Processing</text>
+      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Events fire immediately as tokens complete</text>
+    </g>
+    
+    <!-- Benefit 4 -->
+    <g transform="translate(30, 85)">
+      <circle cx="10" cy="10" r="10" fill="#9f7aea"/>
+      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">4</text>
+      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#b794f4" font-weight="600">Pipeline Integration</text>
+      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Perfect for Selector-based async servers and event loops</text>
+    </g>
+    
+    <!-- Benefit 5 -->
+    <g transform="translate(300, 85)">
+      <circle cx="10" cy="10" r="10" fill="#ed64a6"/>
+      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">5</text>
+      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#f687b3" font-weight="600">Streaming Architecture</text>
+      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Process while receiving — no waiting for complete document</text>
+    </g>
+    
+    <!-- Benefit 6 -->
+    <g transform="translate(560, 85)">
+      <circle cx="10" cy="10" r="10" fill="#48bb78"/>
+      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">6</text>
+      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#68d391" font-weight="600">State Machine Driven</text>
+      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Efficient resumable parsing across chunk boundaries</text>
+    </g>
+  </g>
+  
+  <!-- Data flow annotation -->
+  <g transform="translate(180, 320)">
+    <text font-family="SF Pro Display, Helvetica, sans-serif" font-size="10" fill="#718096">
+      <tspan x="0" y="0">Data flows left → right: Each component processes available data and forwards results immediately.</tspan>
+    </text>
+  </g>
+  
+  <!-- Streaming indicator animation -->
+  <g>
+    <circle r="4" fill="#ed8936" filter="url(#glow)">
+      <animateMotion dur="4s" repeatCount="indefinite" path="M 110,200 L 230,200 L 365,200 L 410,200 L 585,200 L 630,200 L 755,200 L 800,200"/>
+    </circle>
+  </g>
+  
+  <!-- Footer -->
+  <text x="450" y="585" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#4a5568">
+    parser.receive(byteBuffer)  →  contentHandler.startElement() / characters() / endElement() ...
+  </text>
+</svg>
+

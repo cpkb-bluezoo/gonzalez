@@ -1,0 +1,1 @@
+packageSearchIndex = [{"l":"All Packages","url":"allpackages-index.html"},{"l":"org.bluezoo.gonzalez"},{"l":"org.bluezoo.util"}]
