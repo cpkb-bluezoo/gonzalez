@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<document>
+    <header>
+        <title>Small Test Document</title>
+        <author>Test Author</author>
+        <date>2025-11-22</date>
+    </header>
+    <body>
+        <section id="intro">
+            <h1>Introduction</h1>
+            <p>This is a small test document for performance benchmarking.</p>
+            <p>It contains several paragraphs with various elements to test parsing speed.</p>
+        </section>
+        <section id="content">
+            <h1>Main Content</h1>
+            <p>The quick brown fox jumps over the lazy dog.</p>
+            <ul>
+                <li>First item</li>
+                <li>Second item with <em>emphasis</em></li>
+                <li>Third item with <strong>strong text</strong></li>
+            </ul>
+            <p>Some text with special characters: &lt; &gt; &amp; &apos; &quot;</p>
+        </section>
+        <section id="data">
+            <h1>Data Section</h1>
+            <table>
+                <row><cell>A1</cell><cell>B1</cell><cell>C1</cell></row>
+                <row><cell>A2</cell><cell>B2</cell><cell>C2</cell></row>
+                <row><cell>A3</cell><cell>B3</cell><cell>C3</cell></row>
+            </table>
+        </section>
+    </body>
+    <footer>
+        <copyright>Copyright 2025</copyright>
+    </footer>
+</document>
+
