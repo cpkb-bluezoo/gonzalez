@@ -217,25 +217,8 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     
     /**
      * Current attribute value being accumulated (fallback mode).
-     * Null when using direct buffer mode.
      */
     private StringBuilder currentAttributeValue;
-    
-    /**
-     * Direct buffer mode for attribute values: the CharBuffer containing the value.
-     * When non-null, we're accumulating directly in the buffer without StringBuilder.
-     */
-    private CharBuffer attrValueBuffer;
-    
-    /**
-     * Direct buffer mode: start position of attribute value in attrValueBuffer.
-     */
-    private int attrValueStart;
-    
-    /**
-     * Direct buffer mode: end position of attribute value in attrValueBuffer.
-     */
-    private int attrValueEnd;
     
     /**
      * Current attribute quote character (QUOT or APOS).
@@ -278,6 +261,11 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * Each context contains the element name and its validator (if validation is enabled).
      */
     private java.util.Deque<ElementValidationContext> elementStack;
+    
+    /**
+     * Pool for reusing ElementValidationContext objects to reduce allocation.
+     */
+    private ElementValidationContext.Pool elementContextPool;
     
     /**
      * Attribute validator for validation mode (only used when validationEnabled).
@@ -856,12 +844,16 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         currentPIData = null;
         currentCommentText = null;
         currentCDATAText = null;
-        attributes = null;
+        // Keep attributes allocated - just clear it
+        if (attributes != null) {
+            attributes.clear();
+        }
         
-        // Clear validation stacks
+        // Clear element stack but keep the pool (pool is for reuse!)
         if (elementStack != null) {
             elementStack.clear();
         }
+        // Don't clear elementContextPool - that defeats the purpose of pooling
         if (attributeValidator != null) {
             attributeValidator.reset();
         }
@@ -1002,9 +994,10 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                     documentStarted = true;
                 }
                 
-                // Initialize element stack for well-formedness and validation
+                // Initialize element stack and pool for well-formedness and validation
                 if (elementStack == null) {
                     elementStack = new java.util.ArrayDeque<>();
+                    elementContextPool = new ElementValidationContext.Pool();
                 }
                 
                 state = State.ELEMENT_START;
@@ -1028,8 +1021,8 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             
             // Push element onto stack for well-formedness and validation
             // (validator will be null if validation is disabled)
-            if (elementStack != null) {
-                elementStack.addLast(new ElementValidationContext(currentElementName, null, entityExpansionDepth));
+            if (elementStack != null && elementContextPool != null) {
+                elementStack.addLast(elementContextPool.checkout(currentElementName, null, entityExpansionDepth));
             }
 
             // Record this element as a child of its parent (for validation)
@@ -1153,7 +1146,10 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 fireStartElement(currentElementName, true);
                 // Pop element name from stack (empty element closes immediately)
                 if (elementStack != null && !elementStack.isEmpty()) {
-                    elementStack.removeLast();
+                    ElementValidationContext ctx = elementStack.removeLast();
+                    if (elementContextPool != null) {
+                        elementContextPool.returnToPool(ctx);
+                    }
                 }
                 elementDepth--;
                 if (elementDepth == 0) {
@@ -1228,7 +1224,10 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 fireStartElement(currentElementName, true);
                 // Pop element name from stack (empty element closes immediately)
                 if (elementStack != null && !elementStack.isEmpty()) {
-                    elementStack.removeLast();
+                    ElementValidationContext ctx = elementStack.removeLast();
+                    if (elementContextPool != null) {
+                        elementContextPool.returnToPool(ctx);
+                    }
                 }
                 elementDepth--;
                 if (elementDepth == 0) {
@@ -1285,12 +1284,9 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 
             case QUOT:
             case APOS:
-                // Start of attribute value - use direct buffer mode initially
+                // Start of attribute value
                 currentAttributeQuote = token;
-                currentAttributeValue = null;  // Will be allocated if we need to fall back
-                attrValueBuffer = null;        // Will be set on first CDATA token
-                attrValueStart = -1;
-                attrValueEnd = -1;
+                currentAttributeValue = borrowStringBuilder();  // Allocate StringBuilder to accumulate value
                 state = State.ATTRIBUTE_VALUE_START;
                 break;
                 
@@ -1582,8 +1578,11 @@ throw fatalError("Expected element name after '</', got: " + token);
                     if (!currentElementName.equals(expectedName)) {
 throw fatalError("End tag </" + currentElementName + "> does not match start tag <" + expectedName + ">");
                     }
-                    // Pop the element from stack
-                    elementStack.removeLast();
+                    // Pop the element from stack and return to pool
+                    ElementValidationContext ctx = elementStack.removeLast();
+                    if (elementContextPool != null) {
+                        elementContextPool.returnToPool(ctx);
+                    }
                 }
 
                 // Fire endElement (handles namespaces, etc.)
@@ -1761,36 +1760,34 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
     }
     
     /**
-     * Sends character data directly from CharBuffer to SAX handler without allocating a String.
-     * Uses a reusable char array (grown as needed) to avoid both String allocation and
-     * exposing the CharBuffer's backing array (security risk).
+     * Sends character data directly from CharBuffer to SAX handler using zero-copy.
+     * Uses the CharBuffer's backing array directly to avoid allocation and copying.
      * 
      * @param buffer the buffer containing character data
      * @param handler the SAX ContentHandler to receive the data
      */
     private void sendCharactersFromBuffer(CharBuffer buffer, ContentHandler handler) throws SAXException {
-        if (buffer == null || handler == null) {
+        if (buffer == null || handler == null || !buffer.hasRemaining()) {
             return;
         }
         
-        int length = buffer.remaining();
-        if (length == 0) {
-            return;
+        // Zero-copy: pass backing array directly to handler
+        // The tokenizer has already set position/limit to define the window
+        if (buffer.hasArray()) {
+            char[] array = buffer.array();
+            int offset = buffer.arrayOffset() + buffer.position();
+            int length = buffer.remaining();
+            handler.characters(array, offset, length);
+        } else {
+            // Fallback for non-heap buffers (rare - only if using direct buffers)
+            int length = buffer.remaining();
+            if (charArrayBuffer.length < length) {
+                int newSize = Integer.highestOneBit(length) << 1;
+                charArrayBuffer = new char[newSize];
+            }
+            buffer.get(charArrayBuffer, 0, length);
+            handler.characters(charArrayBuffer, 0, length);
         }
-        
-        // Ensure our reusable array is large enough
-        if (charArrayBuffer.length < length) {
-            // Grow the array - use power of 2 sizing for efficiency
-            int newSize = Integer.highestOneBit(length) << 1;
-            charArrayBuffer = new char[newSize];
-        }
-        
-        // Bulk copy from CharBuffer to our reusable array
-        // Tokenizer has already set position/limit window, just read from current position
-        buffer.get(charArrayBuffer, 0, length);
-        
-        // Pass to handler - handler can only access [0, length)
-        handler.characters(charArrayBuffer, 0, length);
     }
     
     /**
@@ -2749,8 +2746,13 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         
         // Create validator and replace the context on the stack
         ContentModelValidator validator = new ContentModelValidator(elementDecl);
-        elementStack.removeLast(); // Remove the context with null validator
-        elementStack.addLast(new ElementValidationContext(elementName, validator, entityExpansionDepth));
+        ElementValidationContext oldCtx = elementStack.removeLast(); // Remove the context with null validator
+        if (elementContextPool != null) {
+            elementContextPool.returnToPool(oldCtx);
+            elementStack.addLast(elementContextPool.checkout(elementName, validator, entityExpansionDepth));
+        } else {
+            elementStack.addLast(new ElementValidationContext(elementName, validator, entityExpansionDepth));
+        }
     }
     
     /**

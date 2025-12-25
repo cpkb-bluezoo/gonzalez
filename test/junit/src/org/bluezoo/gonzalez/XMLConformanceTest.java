@@ -317,6 +317,9 @@ public class XMLConformanceTest {
     
     @Test
     public void runTest() {
+        // Print test info before running
+        System.out.println("[TEST] " + testCase.suite + ":" + testCase.id + " - " + testCase.file);
+        
         // Skip tests that are only for earlier editions of XML 1.0
         // Our parser implements XML 1.0 5th Edition
         if (testCase.edition != null && !testCase.edition.isEmpty()) {

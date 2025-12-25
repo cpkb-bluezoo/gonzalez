@@ -29,7 +29,7 @@
   <property name='gumdrop.jar' location='${gumdrop.home}/dist/server.jar'/>
   
   <!-- Gonzalez version -->
-  <property name='version' value='0.1.0'/>
+  <property name='version' value='0.2.0'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
 
   <!-- Java version. We use Java 8 only -->
@@ -100,7 +100,7 @@
   <target name='junit-test' depends='junit-build'>
     <mkdir dir='${test}/junit/results'/>
     <mkdir dir='${test}/output'/>
-    <junit printsummary='yes' haltonfailure='no' fork='yes'>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'>
       <classpath>
         <pathelement location='${build}'/>
         <pathelement location='${test}/junit/classes'/>

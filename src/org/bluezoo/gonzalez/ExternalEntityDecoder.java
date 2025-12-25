@@ -26,11 +26,11 @@ import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CoderResult;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.IllegalCharsetNameException;
 import java.nio.charset.StandardCharsets;
 import java.nio.charset.UnsupportedCharsetException;
 import java.util.Objects;
-import org.bluezoo.util.CompositeByteBuffer;
 import org.xml.sax.SAXException;
 
 /**
@@ -39,13 +39,29 @@ import org.xml.sax.SAXException;
  * <p>This class handles:
  * <ul>
  * <li>BOM (Byte Order Mark) detection</li>
+ * <li>XML/text declaration parsing (directly from bytes - no decode needed)</li>
  * <li>Charset decoding with underflow handling</li>
  * <li>Line-ending normalization</li>
  * <li>Location tracking (line/column numbers)</li>
  * </ul>
  * 
- * <p>Decoded character data is fed to an {@link Tokenizer} via its
+ * <p>Decoded character data is fed to a {@link Tokenizer} via its
  * {@code receive(CharBuffer)} method.
+ * 
+ * <h3>Zero-Copy Declaration Parsing</h3>
+ * <p>XML/text declarations only contain 7-bit ASCII characters. This class
+ * parses declarations directly from the ByteBuffer without creating a CharsetDecoder,
+ * using the byte encoding scheme (UTF-8/UTF-16LE/UTF-16BE) detected from the BOM.
+ * The CharsetDecoder is only created after the declaration is parsed and the
+ * final encoding is known.
+ * 
+ * <h3>Buffer Contract</h3>
+ * <p>The caller is responsible for proper buffer management following the standard
+ * NIO pattern: read, flip, receive, compact. On entry to {@code receive()}, the
+ * buffer must be in read mode (position at start of data, limit at end). On exit,
+ * the buffer's position will point to the first unconsumed byte (which may be
+ * part of an incomplete multi-byte character sequence). The caller must compact
+ * the buffer before reading more data.
  * 
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -55,8 +71,15 @@ class ExternalEntityDecoder {
     
     /**
      * The character set used to decode incoming bytes into characters.
+     * Only set after declaration parsing is complete.
      */
-    private Charset charset = StandardCharsets.UTF_8;
+    private Charset charset;
+    
+    /**
+     * The BOM detected at start of document.
+     * Determines byte encoding for declaration parsing.
+     */
+    private BOM bom = BOM.NONE;
     
     // ===== Tokenizer Integration =====
     
@@ -77,25 +100,20 @@ class ExternalEntityDecoder {
     // ===== Buffers =====
     
     /**
-     * Composite byte buffer that manages underflow and incoming data.
-     * Provides a unified view over both buffers for decoding.
-     */
-    private CompositeByteBuffer compositeByteBuffer;
-    
-    /**
      * Character decoder for the current charset.
+     * Only created after declaration parsing is complete.
      */
     private CharsetDecoder decoder;
     
     /**
      * Working buffer for decoded character data.
      * Reused to avoid allocation on every receive() call.
+     * Only allocated when actual decoding begins (after declaration).
      */
     private CharBuffer charBuffer;
     
     /**
      * Tokenizer that consumes decoded characters.
-     * Initialized in the correct post-declaration state before EED is used.
      */
     private final Tokenizer tokenizer;
     
@@ -105,33 +123,27 @@ class ExternalEntityDecoder {
      * Decoder state for tracking processing phase.
      */
     private enum State {
-        INIT,           // Initial state
-        SEEN_BOM,       // BOM detected or no BOM, ready to check for XMLDecl/TextDecl
+        INIT,           // Initial state, checking for BOM
+        SEEN_BOM,       // BOM detected (or no BOM), ready to check for XMLDecl/TextDecl
         CONTENT,        // Processing content with main tokenizer
         CLOSED          // Decoder has been closed, cannot receive more data
     }
     
     private State state = State.INIT;
     
-    /**
-     * XMLDecl or TextDecl parser (created when entering CHECK_DECL state).
-     */
-    private DeclParser declParser;
-
-    /**
-     * Byte position at start of document.
-     */
-    private int startDoc;
     
     /**
-     * Byte position at start of XMLDecl/TextDecl.
+     * XMLDecl or TextDecl parser.
+     */
+    private final DeclParser declParser;
+    
+    /**
+     * Byte position at start of document (after BOM, if any).
      */
     private int startDecl;
     
     /**
-     * The last character read in the decoded character buffer.
-     * If the last character is CR, then a following LF will be consumed as
-     * part of line-end normalization.
+     * The last character read for line-ending normalization.
      */
     private char lastChar = '\u0000';
     
@@ -140,40 +152,23 @@ class ExternalEntityDecoder {
     /**
      * Creates a new external entity decoder.
      * 
-     * @param tokenizer the tokenizer (already in correct post-declaration state) to receive decoded characters
-     * @param publicId public identifier for this entity (may be null)
-     * @param systemId system identifier for this entity (may be null)
-     * @param isExternalEntity true if this is an external parsed entity, false for document entity
-     * @param initialCharset the initial charset to use for decoding (before BOM or declaration), or null for UTF-8
-     */
-    public ExternalEntityDecoder(Tokenizer tokenizer, String publicId, String systemId, boolean isExternalEntity, Charset initialCharset) {
-        this.tokenizer = Objects.requireNonNull(tokenizer);
-        tokenizer.publicId = publicId;
-        tokenizer.systemId = systemId;
-        this.isExternalEntity = isExternalEntity;
-        this.charset = (initialCharset != null) ? initialCharset : StandardCharsets.UTF_8;
-        declParser = isExternalEntity ? new TextDeclParser() : new XMLDeclParser();
-        compositeByteBuffer = new CompositeByteBuffer();
-    }
-    
-    /**
-     * Creates a new external entity decoder with UTF-8 as the initial charset.
-     * 
-     * @param tokenizer the tokenizer (already in correct post-declaration state) to receive decoded characters
+     * @param tokenizer the tokenizer to receive decoded characters
      * @param publicId public identifier for this entity (may be null)
      * @param systemId system identifier for this entity (may be null)
      * @param isExternalEntity true if this is an external parsed entity, false for document entity
      */
     public ExternalEntityDecoder(Tokenizer tokenizer, String publicId, String systemId, boolean isExternalEntity) {
-        this(tokenizer, publicId, systemId, isExternalEntity, null);
+        this.tokenizer = Objects.requireNonNull(tokenizer);
+        tokenizer.publicId = publicId;
+        tokenizer.systemId = systemId;
+        this.isExternalEntity = isExternalEntity;
+        declParser = isExternalEntity ? new TextDeclParser() : new XMLDeclParser();
     }
     
     // ===== Accessors =====
     
     /**
      * Returns whether this decoder is for an external parsed entity.
-     * 
-     * @return true if this is an external entity, false if it's the document entity
      */
     public boolean isExternalEntity() {
         return isExternalEntity;
@@ -184,7 +179,10 @@ class ExternalEntityDecoder {
     /**
      * Receives a buffer of bytes to decode and tokenize.
      * 
-     * @param data the byte buffer to process
+     * <p>The buffer must be in read mode on entry. On return, the buffer's position
+     * will be set to the first unconsumed byte.
+     * 
+     * @param data the byte buffer to process (position will be updated)
      * @throws SAXException if a parsing error occurs
      */
     public void receive(ByteBuffer data) throws SAXException {
@@ -192,122 +190,30 @@ class ExternalEntityDecoder {
             throw new IllegalStateException("Decoder is closed");
         }
         
-        // Set up composite buffer with new data
-        compositeByteBuffer.put(data);
-        compositeByteBuffer.flip(); // ready to read
+        if (!data.hasRemaining()) {
+            return;
+        }
         
-        boolean decoded = false;
         // Process based on state
         switch (state) {
             case INIT:
                 // Detect BOM
-                if (!parseBOM()) {
-                    // Need more bytes to determine if there's a BOM
-                    compositeByteBuffer.compact();
-                    return;
+                if (!parseBOM(data)) {
+                    return; // Need more bytes
                 }
-                // detectBOM has set state to SEEN_BOM
-                // Fall through
+                // Fall through to SEEN_BOM
                 
             case SEEN_BOM:
-                // Check for XMLDecl/TextDecl
-                if (!parseDeclaration()) {
-                    // Need more data
-                    compositeByteBuffer.compact();
-                    return;
+                // Parse XMLDecl/TextDecl directly from bytes
+                if (!parseDeclaration(data)) {
+                    return; // Need more data
                 }
-                // Declaration handled, composite buffer repositioned, state is now CONTENT
-                // If charBuffer has decoded content, mark it as decoded so CONTENT doesn't re-decode
-                // But if charBuffer is empty (e.g., MALFORMED with 0 chars), don't set decoded flag
-                // so that CONTENT will decode the remaining bytes and catch any errors
-                
-                // charBuffer is currently in read mode:
-                // - If declaration was found: position at end of declaration, limit at end of data
-                // - If no declaration: position at 0 (parser reset to mark), limit at end of data
-                // Convert to write mode for tokenizer: compact to move remaining data to start
-                if (charBuffer.remaining() > 0) {
-                    charBuffer.compact(); // Now in write mode with remaining data at start
-                    decoded = true;
-                } else {
-                    // No remaining data after declaration (or no declaration and no data)
-                    charBuffer.clear(); // Put in write mode with position=0
-                    decoded = false;
-                }
-                // Fall through to process remaining content
+                // Declaration parsed (or not present), now in CONTENT state
+                // Fall through to CONTENT
                 
             case CONTENT:
-                // Decode and send decoded chars to Tokenizer
-                if (!decoded) {
-                    int bytesToDecode = compositeByteBuffer.remaining();
-                    
-                    // Check if charBuffer exists and has enough space for the decode
-                    // charBuffer arrives in write mode with underflow at position 0, position at end of underflow
-                    if (charBuffer == null) {
-                        // First time - allocate fresh buffer
-                        charBuffer = CharBuffer.allocate(Math.max(bytesToDecode, 4096));
-                    } else {
-                        int underflowSize = charBuffer.position(); // position points to end of underflow
-                        int availableSpace = charBuffer.remaining(); // space after position
-                        
-                        // Decoded chars are never larger than input bytes, but we need some margin
-                        if (availableSpace < bytesToDecode) {
-                            // Need to reallocate - preserve underflow
-                            int newCapacity = Math.max(underflowSize + bytesToDecode + 1024, 4096);
-                            CharBuffer newCharBuffer = CharBuffer.allocate(newCapacity);
-                            
-                            // Copy underflow from old buffer
-                            charBuffer.flip(); // switch to read mode to read underflow
-                            newCharBuffer.put(charBuffer); // copy underflow
-                            charBuffer = newCharBuffer;
-                            // charBuffer is now in write mode with underflow copied, position at end of underflow
-                        }
-                        // else: enough space, charBuffer already in write mode ready for decode
-                    }
-                    
-                    // Decode into charBuffer at current position (after any underflow)
-                    CoderResult result = compositeByteBuffer.decode(decoder, charBuffer, false);
-                    
-                    // Check for decoding errors (malformed or unmappable)
-                    if (result.isError()) {
-                        if (result.isMalformed()) {
-                            throw tokenizer.fatalError("Malformed byte sequence in encoding " + charset.name() + 
-                                " (length: " + result.length() + ")");
-                        } else if (result.isUnmappable()) {
-                            throw tokenizer.fatalError("Unmappable byte sequence in encoding " + charset.name() + 
-                                " (length: " + result.length() + ")");
-                        }
-                    }
-                    
-                    // Normalize line endings (charBuffer is in write mode, normalize from 0 to position)
-                    normalizeLineEndings();
-                    
-                    // Flip to read mode before passing to tokenizer
-                    charBuffer.flip();
-                    
-                    // Pass to tokenizer (buffer in read mode, tokenizer will consume as much as possible)
-                    tokenizer.receive(charBuffer);
-                    
-                    // Compact to preserve any unconsumed data (underflow)
-                    // After compact: underflow at position 0, position at end of underflow
-                    charBuffer.compact();
-
-                    // Save any byte underflow
-                    compositeByteBuffer.compact();
-                } else {
-                    // Decoded data from declaration parsing - already in write mode after compact
-                    // Flip to read mode before passing to tokenizer
-                    charBuffer.flip();
-                    
-                    // Pass to tokenizer (buffer in read mode, tokenizer will consume as much as possible)
-                    tokenizer.receive(charBuffer);
-                    
-                    // Compact to preserve any unconsumed data (underflow)
-                    // After compact: underflow at position 0, position at end of underflow
-                    charBuffer.compact();
-                    
-                    // Save any byte underflow from declaration parsing
-                    compositeByteBuffer.compact();
-                }
+                // Decode and send to tokenizer
+                decodeAndTokenize(data);
                 break;
                 
             case CLOSED:
@@ -317,358 +223,365 @@ class ExternalEntityDecoder {
     
     /**
      * Closes the decoder and flushes any remaining data to the tokenizer.
-     * 
-     * @throws SAXException if a parsing error occurs
      */
     public void close() throws SAXException {
         if (state == State.CLOSED) {
             return;
         }
-        
-        // Close the tokenizer
         tokenizer.close();
-        
-        // Mark as closed
         state = State.CLOSED;
     }
     
     /**
-     * Resets the decoder to initial state for reuse.
-     * Clears all buffers and resets state to INIT.
-     * Resets to UTF-8 encoding (call setInitialCharset if different encoding is needed).
+     * Resets the decoder to its initial state for reuse.
+     * Preserves allocated buffers to avoid reallocation.
      */
     public void reset() {
         state = State.INIT;
-        charset = StandardCharsets.UTF_8;
-        xml11 = false; // Reset to XML 1.0 mode
-        decoder = null;
-        compositeByteBuffer = new CompositeByteBuffer();
-        charBuffer = null;
+        charset = null;
+        bom = BOM.NONE;
+        xml11 = false;
+        // Reset decoder but keep the object if charset stays the same
+        if (decoder != null) {
+            decoder.reset();
+        }
+        decoder = null;  // Will be recreated for new charset
+        // Keep charBuffer allocated - just clear it
+        if (charBuffer != null) {
+            charBuffer.clear();
+        }
+        lastChar = '\u0000';
     }
     
     /**
-     * Sets the initial charset for decoding (before BOM or XML/text declaration is processed).
-     * This should be called after reset() and before receive() if the application knows
-     * the encoding (e.g., from HTTP headers or InputSource.getEncoding()).
-     * 
-     * @param initialCharset the initial charset, or null for UTF-8
+     * Sets the initial charset hint (e.g., from HTTP headers).
+     * Must be called before receive() if the charset is known externally.
      */
     public void setInitialCharset(Charset initialCharset) {
         if (state != State.INIT) {
             throw new IllegalStateException("Cannot set initial charset after decoding has started");
         }
-        this.charset = (initialCharset != null) ? initialCharset : StandardCharsets.UTF_8;
+        // Map charset to byte encoding for declaration parsing
+        if (initialCharset != null) {
+            if (initialCharset.equals(StandardCharsets.UTF_16LE)) {
+                bom = BOM.UTF16LE;
+            } else if (initialCharset.equals(StandardCharsets.UTF_16BE)) {
+                bom = BOM.UTF16BE;
+            } else {
+                bom = BOM.NONE;
+            }
+        }
     }
     
     // ===== BOM Detection =====
     
     /**
-     * Detects and consumes a BOM (Byte Order Mark) if present.
-     * We support: UTF-16LE, UTF-16BE, UTF-8. UTF-32 is NOT required to be supported.
-     *
-     * @return true if BOM detection is complete (BOM found or definitely absent),
-     *         false if more bytes are needed
+     * Detects and consumes a BOM if present, setting the byte encoding accordingly.
+     * 
+     * @return true if BOM detection is complete, false if more data is needed
      */
-    private boolean parseBOM() {
-        startDoc = compositeByteBuffer.position();
-        int len = compositeByteBuffer.remaining();
-        if (len < 2) {
-            return false; // Need at least 2 bytes to detect BOM
+    private boolean parseBOM(ByteBuffer data) throws SAXException {
+        int startPos = data.position();
+        
+        if (data.remaining() < 2) {
+            return false; // Need at least 2 bytes for BOM detection
         }
         
-        int pos = compositeByteBuffer.position();
-        int b0 = compositeByteBuffer.get(pos) & 0xFF;
-        int b1 = compositeByteBuffer.get(pos + 1) & 0xFF;
+        int b0 = data.get() & 0xFF;
+        int b1 = data.get() & 0xFF;
         
         if (b0 == 0xFE && b1 == 0xFF) {
-            // UTF-16 BE BOM: FE FF
-            charset = StandardCharsets.UTF_16BE;
-            tokenizer.encoding = charset.name();
-            compositeByteBuffer.position(pos + 2); // position after BOM
+            // UTF-16 Big Endian BOM
+            bom = BOM.UTF16BE;
+            startDecl = data.position();
+            tokenizer.charPosition = 1; // BOM is 1 character
+            tokenizer.columnNumber = 1;
         } else if (b0 == 0xFF && b1 == 0xFE) {
-            // UTF-16 LE BOM: FF FE
-            charset = StandardCharsets.UTF_16LE;
-            tokenizer.encoding = charset.name();
-            compositeByteBuffer.position(pos + 2); // position after BOM
+            // UTF-16 Little Endian BOM
+            bom = BOM.UTF16LE;
+            startDecl = data.position();
+            tokenizer.charPosition = 1;
+            tokenizer.columnNumber = 1;
         } else if (b0 == 0xEF && b1 == 0xBB) {
-            if (len >= 3) {
-                int b2 = compositeByteBuffer.get(pos + 2) & 0xFF;
-                if (b2 == 0xBF) {
-                    // UTF-8 BOM: EF BB BF
-                    charset = StandardCharsets.UTF_8;
-                    tokenizer.encoding = charset.name();
-                    compositeByteBuffer.position(pos + 3); // position after BOM
-                }
-            } else {
-                return false; // Need 3 bytes to rule out UTF-8 BOM
+            // Potential UTF-8 BOM, need third byte
+            if (!data.hasRemaining()) {
+                data.position(startPos);
+                return false;
             }
+            int b2 = data.get() & 0xFF;
+            if (b2 == 0xBF) {
+                // UTF-8 BOM
+                bom = BOM.UTF8;
+                startDecl = data.position();
+                tokenizer.charPosition = 1;
+                tokenizer.columnNumber = 1;
+            } else {
+                // Not a BOM, restore position
+                data.position(startPos);
+                startDecl = startPos;
+            }
+        } else {
+            // No BOM, restore position
+            data.position(startPos);
+            startDecl = startPos;
         }
         
-        startDecl = compositeByteBuffer.position();
-        decoder = charset.newDecoder()
-            .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-            .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
+        // Set encoding on declaration parser
+        declParser.setBOM(bom);
+        
         state = State.SEEN_BOM;
         return true;
     }
     
+    // ===== Declaration Parsing =====
     
     /**
-     * Checks for and handles XMLDecl/TextDecl using dedicated parsers.
-     * Implements the repositioning algorithm for charset switching.
+     * Parses the XML/text declaration directly from bytes.
      * 
-     * After this method completes successfully:
-     * - Composite buffer is positioned after the declaration (or after BOM if no decl)
-     * - Char buffer is positioned after the declaration
-     * - Decoder is set to correct charset
-     * - Ready to continue decoding/tokenizing
-     * 
-     * @return true if ready to proceed to CONTENT, false if need more data
-     * @throws SAXException if parsing or repositioning fails
+     * @return true if declaration parsing is complete, false if more data is needed
      */
-    private boolean parseDeclaration() throws SAXException {
-        int remaining = compositeByteBuffer.remaining();
-        if (charBuffer == null || charBuffer.capacity() < remaining) {
-            // Allocate charBuffer
-            charBuffer = CharBuffer.allocate(Math.max(remaining, 1024));
-        }
-        charBuffer.clear();
-        CoderResult result = compositeByteBuffer.decode(decoder, charBuffer, false);
-        // Save the actual decode position (bytes consumed) before any repositioning
-        int actualDecodePosition = compositeByteBuffer.position();
-        charBuffer.flip(); // ready for reading
+    private boolean parseDeclaration(ByteBuffer data) throws SAXException {
+        int savedPos = data.position();
         
-        // Note: We do NOT check for MALFORMED or UNMAPPABLE here, because:
-        // 1. The decoder decodes everything up to the first malformed byte
-        // 2. The XMLDecl/TextDecl must be ASCII-compatible, so it will decode successfully
-        // 3. If there's a malformed byte after the declaration, we'll read the encoding
-        //    from the declaration and re-decode with the correct charset
-        // 4. If malformed bytes are at the start (0 characters decoded), we skip declaration
-        //    parsing and proceed to CONTENT where the malformed check will catch the error
-        // 5. Only in CONTENT state (after declaration processing) do we check for malformed bytes
-        
-        // Normalize line endings before parsing
-        // This modifies buffer content but preserves position (which is 0 after flip)
-        normalizeLineEndings();
-        
-        // Ensure position is at 0 after normalization (in case normalization modified it)
-        charBuffer.position(0);
-        
-        // Parse the declaration
-        // The DeclParser is responsible for buffer state/positioning:
-        // - On FAILURE: resets buffer to mark position (start, position 0)
-        // - On OK: leaves buffer position at end of declaration
-        int declLength = 0;
-        if (charBuffer.hasRemaining()) {
-            switch (declParser.receive(charBuffer)) {
-                case UNDERFLOW: // can't decide yet
-                    //System.err.println("*** parseDeclaration: receive is UNDERFLOW");
+        try {
+            ReadResult result = declParser.receive(data);
+            
+            switch (result) {
+                case UNDERFLOW:
+                    // Need more data, position already restored by declParser
+                    data.position(savedPos);
                     return false;
-                case FAILURE: // no valid declaration seen
-                    // Parser has reset buffer to mark position (start, position 0)
-                    //System.err.println("*** parseDeclaration: receive is FAILURE");
-                    // declLength remains 0
-                    break;
-                case OK: // valid declaration parsed
-                    // Parser has left buffer position at end of declaration
-                    //System.err.println("*** parseDeclaration: receive is OK");
-                    declLength = charBuffer.position();
-                    break;
-            }
-        }
-        
-        // The DeclParser manages buffer position:
-        // - On FAILURE: resets to mark (position 0) - buffer is ready for content
-        // - On OK: leaves position at end of declaration - buffer is ready for content after declaration
-        // No need to adjust position here - parser has already set it correctly
-
-        // If we got here there was either a valid declaration or no declaration        
-        String declEncoding = declParser.getEncoding();
-        String declVersion = declParser.getVersion();
-        Boolean declStandalone = declParser.getStandalone();
-        //System.err.println("*** parseDeclaration: declEncoding="+declEncoding);
-        //System.err.println("*** parseDeclaration: declVersion="+declVersion);
-        //System.err.println("*** parseDeclaration: declStandalone="+declStandalone);
-
-        if (declVersion != null) {
-            // Version handling per XML spec:
-            // - If this is the main document, set the processor mode based on declared version
-            // - If this is an external entity in a 1.0 document, ignore entity version (process in 1.0 mode)
-            // - If this is an external entity in a 1.1 document, respect entity version
-            
-            boolean entityXml11 = "1.1".equals(declVersion);
-            
-            if (!isExternalEntity) {
-                // Main document - sets the processor mode and document version
-                tokenizer.version = declVersion;
-                tokenizer.documentVersion = declVersion;  // Document version is set once
-                xml11 = entityXml11;
-                tokenizer.xml11 = xml11;
-                // Notify consumer of XML version
-                tokenizer.notifyXmlVersion(xml11);
-            } else {
-                // External entity
-                // Check version compatibility against the DOCUMENT version, not the current entity version
-                boolean documentXml11 = "1.1".equals(tokenizer.documentVersion);
-                
-                if (!documentXml11) {
-                    // Document is 1.0
-                    // Per XML 1.1 spec section 4.3.4: "It is a fatal error if an entity explicitly
-                    // included specifies a version that is not the same as or older than the version
-                    // of the document entity."
-                    if (entityXml11) {
-                        throw tokenizer.fatalError(
-                            "XML 1.0 document cannot include XML 1.1 entity (version " + declVersion + ")");
+                    
+                case FAILURE:
+                    // No declaration present, position restored by declParser
+                    // Use default charset (UTF-8 or BOM-indicated charset)
+                    setupCharsetDecoder(null);
+                    state = State.CONTENT;
+                    return true;
+                    
+                case OK:
+                    // Declaration parsed successfully
+                    String declEncoding = declParser.getEncoding();
+                    String declVersion = declParser.getVersion();
+                    Boolean declStandalone = declParser.getStandalone();
+                    
+                    // Handle version
+                    if (declVersion != null) {
+                        boolean entityXml11 = "1.1".equals(declVersion);
+                        
+                        if (!isExternalEntity) {
+                            // Main document - sets the processor mode
+                            tokenizer.version = declVersion;
+                            tokenizer.documentVersion = declVersion;
+                            xml11 = entityXml11;
+                            tokenizer.xml11 = xml11;
+                            tokenizer.notifyXmlVersion(xml11);
+                        } else {
+                            // External entity - check version compatibility
+                            boolean documentXml11 = "1.1".equals(tokenizer.documentVersion);
+                            
+                            if (!documentXml11 && entityXml11) {
+                                throw tokenizer.fatalError(
+                                    "XML 1.0 document cannot include XML 1.1 entity (version " + declVersion + ")");
+                            }
+                            
+                            tokenizer.version = declVersion;
+                            xml11 = documentXml11 ? entityXml11 : false;
+                            tokenizer.xml11 = xml11;
+                        }
                     }
-                    // Process entity in 1.0 mode
-                    xml11 = false;
-                } else {
-                    // Document is 1.1 - entity can be processed in its declared mode
-                    tokenizer.version = declVersion;
-                    xml11 = entityXml11;
-                    tokenizer.xml11 = xml11;
-                    // Notify consumer of XML version change
-                    tokenizer.notifyXmlVersion(xml11);
-                }
+                    
+                    // Handle standalone (document entity only)
+                    if (declStandalone != null) {
+                        tokenizer.standalone = declStandalone;
+                    }
+                    
+                    // Setup charset decoder with declared encoding
+                    setupCharsetDecoder(declEncoding);
+                    
+                    // Update position tracking for declaration
+                    int declChars = declParser.getCharsConsumed();
+                    tokenizer.charPosition += declChars;
+                    // Count newlines in declaration for line number tracking
+                    // (declarations typically don't have newlines, but handle it correctly)
+                    tokenizer.columnNumber += declChars;
+                    
+                    state = State.CONTENT;
+                    return true;
             }
-        }
-        if (declStandalone != null) {
-            tokenizer.standalone = declStandalone;
+        } catch (IllegalArgumentException e) {
+            // Non-ASCII byte in declaration
+            throw tokenizer.fatalError(e.getMessage());
         }
         
-        // Reposition composite buffer
-        int endDecl = startDecl + declLength;
-        if (charset == StandardCharsets.UTF_16LE || charset == StandardCharsets.UTF_16BE) {
-            // each character corresponds to 2 bytes
-            endDecl = startDecl + (declLength * 2);
-        }
-        compositeByteBuffer.position(endDecl);
-
-        // Update positions for declaration
-        updatePositions(startDecl - startDoc, 0, declLength);
-
+        return false;
+    }
+    
+    /**
+     * Sets up the CharsetDecoder based on the declared encoding.
+     * Validates BOM/encoding compatibility.
+     */
+    private void setupCharsetDecoder(String declEncoding) throws SAXException {
         if (declEncoding != null) {
-            tokenizer.encoding = declEncoding;
-            
-            // Check if charset changed
-            Charset newCharset;
+            // Declared encoding specified
             try {
-                newCharset = Charset.forName(declEncoding);
+                charset = Charset.forName(declEncoding);
             } catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
                 throw tokenizer.fatalError("Invalid or unsupported encoding: " + declEncoding);
             }
             
-            if (!newCharset.equals(charset)) {
-                // Switch charset
-                charset = newCharset;
-                decoder = charset.newDecoder();
-                
-                // re-decode into charBuffer
-                // compositeByteBuffer is already positioned at endDecl (after declaration)
-                // so we decode only the content after the declaration
-                charBuffer.clear();
-                result = compositeByteBuffer.decode(decoder, charBuffer, false);
-                charBuffer.flip(); // ready for reading
-        
-                // Normalize line endings
-                normalizeLineEndings();
-                
-                // After re-decode and flip(), position is at 0, limit is at end of decoded content
-                // This is correct - we've already skipped the declaration by positioning
-                // compositeByteBuffer to endDecl before decoding
-            } else {
-                // No charset change - restore position to actual decode position
-                // so that compact() will correctly save any byte underflow
-                compositeByteBuffer.position(actualDecodePosition);
+            // Validate BOM/encoding compatibility (only if BOM was present)
+            if (bom.requiresCharsetValidation()) {
+                validateBOMEncodingCompatibility(declEncoding);
             }
+            
+            tokenizer.encoding = declEncoding;
         } else {
-            // No encoding in declaration - restore position to actual decode position
-            compositeByteBuffer.position(actualDecodePosition);
+            // No declared encoding - use BOM-indicated charset or default to UTF-8
+            charset = bom.defaultCharset;
+            tokenizer.encoding = charset.name();
         }
         
-        state = State.CONTENT;
-        return true;
+        // Create the CharsetDecoder
+        decoder = charset.newDecoder()
+            .onMalformedInput(CodingErrorAction.REPORT)
+            .onUnmappableCharacter(CodingErrorAction.REPORT);
+    }
+    
+    /**
+     * Validates that the declared encoding is compatible with the BOM.
+     */
+    private void validateBOMEncodingCompatibility(String declEncoding) throws SAXException {
+        String normalized = declEncoding.toUpperCase().replace("-", "").replace("_", "");
+        
+        switch (bom) {
+            case UTF16BE:
+                if (!normalized.contains("UTF16")) {
+                    throw tokenizer.fatalError(
+                        "Encoding '" + declEncoding + "' is incompatible with UTF-16 BE BOM");
+                }
+                break;
+                
+            case UTF16LE:
+                if (!normalized.contains("UTF16")) {
+                    throw tokenizer.fatalError(
+                        "Encoding '" + declEncoding + "' is incompatible with UTF-16 LE BOM");
+                }
+                break;
+                
+            case UTF8:
+                if (normalized.startsWith("UTF16")) {
+                    throw tokenizer.fatalError(
+                        "Encoding '" + declEncoding + "' is incompatible with UTF-8 BOM");
+                }
+                break;
+                
+            case NONE:
+                // No BOM, any encoding is acceptable
+                break;
+        }
+    }
+    
+    // ===== Content Decoding =====
+    
+    /**
+     * Maximum CharBuffer size. Processing is done incrementally to avoid
+     * allocating a buffer sized for the entire input.
+     */
+    private static final int MAX_CHAR_BUFFER = 8192;
+    
+    /**
+     * Decodes bytes to characters and sends to tokenizer.
+     * Processes incrementally to avoid large buffer allocations.
+     */
+    private void decodeAndTokenize(ByteBuffer data) throws SAXException {
+        if (!data.hasRemaining()) {
+            return;
+        }
+        
+        // Allocate CharBuffer if needed (capped at MAX_CHAR_BUFFER)
+        if (charBuffer == null) {
+            charBuffer = CharBuffer.allocate(MAX_CHAR_BUFFER);
+        }
+        
+        // Process in chunks - decode, tokenize, compact, repeat
+        while (data.hasRemaining()) {
+            // Decode into charBuffer (from current position to limit)
+            CoderResult result = decoder.decode(data, charBuffer, false);
+            
+            // Check for decoding errors
+            if (result.isError()) {
+                if (result.isMalformed()) {
+                    throw tokenizer.fatalError("Malformed byte sequence in encoding " + charset.name() + 
+                        " (length: " + result.length() + ")");
+                } else if (result.isUnmappable()) {
+                    throw tokenizer.fatalError("Unmappable byte sequence in encoding " + charset.name() + 
+                        " (length: " + result.length() + ")");
+                }
+            }
+            
+            // Normalize line endings
+            normalizeLineEndings();
+            
+            // Flip to read mode before passing to tokenizer
+            charBuffer.flip();
+            
+            // Pass to tokenizer
+            tokenizer.receive(charBuffer);
+            
+            // Compact to preserve any unconsumed data (underflow)
+            charBuffer.compact();
+            
+            // If OVERFLOW, the charBuffer was full - continue loop to process more
+            // If UNDERFLOW, we've consumed all we can from data - loop will exit
+        }
     }
     
     /**
      * Normalizes line endings in the character buffer according to XML spec.
      * 
-     * XML 1.0: Converts CR and CR LF to LF (U+000A).
-     * XML 1.1: Also converts NEL (U+0085) and LS (U+2028) to LF.
-     * 
-     * <p>Works with buffer in either read or write mode:
+     * <p>XML line ending normalization rules:
      * <ul>
-     * <li>Read mode: normalizes from position to limit</li>
-     * <li>Write mode: normalizes from 0 to position</li>
+     *   <li>CR (\r) alone → LF (\n)</li>
+     *   <li>CR LF (\r\n) → LF (\n) - the LF is removed</li>
+     *   <li>LF (\n) alone → LF (unchanged)</li>
+     *   <li>XML 1.1 only: NEL (\u0085) → LF</li>
+     *   <li>XML 1.1 only: LS (\u2028) → LF</li>
      * </ul>
+     * 
+     * <p>This implementation uses a single-pass O(n) algorithm with separate
+     * read and write positions, avoiding the O(n²) cost of shifting data
+     * for each CRLF encountered.
      */
     private void normalizeLineEndings() {
-        // Determine range based on buffer mode
-        // Read mode: position < limit, normalize from position to limit
-        // Write mode: position <= capacity, limit == capacity, normalize from 0 to position
-        int start, end;
-        if (charBuffer.limit() < charBuffer.capacity()) {
-            // Read mode: position and limit are meaningful
-            start = charBuffer.position();
-            end = charBuffer.limit();
-        } else {
-            // Write mode: normalize from 0 to position
-            start = 0;
-            end = charBuffer.position();
-        }
+        // Buffer is in write mode: normalize from 0 to position
+        int end = charBuffer.position();
+        if (end == 0) return;
         
-        int dataEnd = end;
-        for (int i = start; i < dataEnd; i++) {
-            char c = charBuffer.get(i);
+        int writePos = 0;  // Where to write the next character
+        
+        for (int readPos = 0; readPos < end; readPos++) {
+            char c = charBuffer.get(readPos);
             
             if (c == '\r') {
-                // CR
-                charBuffer.put(i, '\n');
-            } else if (c == '\n') {
-                if (lastChar == '\r') {
-                    // CR LF: skip the LF by shifting remaining data left
-                    for (int j = i + 1; j < dataEnd; j++) {
-                        charBuffer.put(j - 1, charBuffer.get(j));
-                    }
-                    dataEnd--;
-                    // Update limit or position depending on mode
-                    if (charBuffer.limit() < charBuffer.capacity()) {
-                        charBuffer.limit(dataEnd); // Read mode
-                    } else {
-                        charBuffer.position(dataEnd); // Write mode
-                    }
-                }
-            } else if (xml11 && c == '\u0085') {
-                // NEL (Next Line) -> LF (XML 1.1 only)
-                charBuffer.put(i, '\n');
-            } else if (xml11 && c == '\u2028') {
-                // LS (Line Separator) -> LF (XML 1.1 only)
-                charBuffer.put(i, '\n');
-            }
-            lastChar = charBuffer.get(i); // Get potentially modified character
-        }
-    }
-    
-    /**
-     * Updates line and column numbers for the tokenizer
-     * for the BOM and the XML/text declaration
-     */
-    private void updatePositions(int bomLength, int pos, int limit) {
-        tokenizer.charPosition += bomLength;
-        tokenizer.columnNumber += bomLength;
-
-        for (int i = pos; i < limit; i++) {
-            char c = charBuffer.get(i);
-            tokenizer.charPosition++;
-            
-            if (c == '\n') {
-                tokenizer.lineNumber++;
-                tokenizer.columnNumber = 0;
+                // Replace CR with LF
+                charBuffer.put(writePos++, '\n');
+            } else if (c == '\n' && lastChar == '\r') {
+                // CR LF: skip the LF entirely (the CR was already converted to LF)
+                // Don't write anything, don't increment writePos
+            } else if (xml11 && (c == '\u0085' || c == '\u2028')) {
+                // XML 1.1 line endings: replace with LF
+                charBuffer.put(writePos++, '\n');
             } else {
-                tokenizer.columnNumber++;
+                // Normal character: copy it to write position
+                charBuffer.put(writePos++, c);
             }
+            lastChar = c;
         }
+        
+        // Adjust buffer position to reflect any removed CRLF sequences
+        // Note that this is the *end* of the data normalized not the start
+        charBuffer.position(writePos);
     }
 
 }
-

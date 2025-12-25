@@ -57,23 +57,35 @@ public class SAX2ParserTest {
         parser.setContentHandler(handler);
         parser.setSystemId("http://example.com/test2.xml");
         
-        // Feed data in chunks using direct API
+        // Feed data in chunks using direct API with proper NIO buffer management:
+        // read, flip, receive, compact (using same buffer for all chunks)
         byte[] bytes = xml.getBytes("UTF-8");
         
-        // Split at a safe boundary (after "><" between root and child)
-        int splitPoint = 35; // After "<root><"
+        // Use a small buffer to simulate streaming with multiple receive() calls
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(32);
+        int offset = 0;
         
-        // First chunk
-        byte[] chunk1 = new byte[splitPoint];
-        System.arraycopy(bytes, 0, chunk1, 0, splitPoint);
-        java.nio.ByteBuffer buffer1 = java.nio.ByteBuffer.wrap(chunk1);
-        parser.receive(buffer1);
-        
-        // Second chunk
-        byte[] chunk2 = new byte[bytes.length - splitPoint];
-        System.arraycopy(bytes, splitPoint, chunk2, 0, bytes.length - splitPoint);
-        java.nio.ByteBuffer buffer2 = java.nio.ByteBuffer.wrap(chunk2);
-        parser.receive(buffer2);
+        while (true) {
+            // Simulate reading: copy bytes into buffer at current position
+            int bytesToCopy = Math.min(buffer.remaining(), bytes.length - offset);
+            if (bytesToCopy > 0) {
+                buffer.put(bytes, offset, bytesToCopy);
+                offset += bytesToCopy;
+            }
+            
+            // If we have data in buffer, process it
+            if (buffer.position() > 0) {
+                buffer.flip();  // Switch to read mode
+                System.out.println("  Feeding " + buffer.remaining() + " bytes to parser");
+                parser.receive(buffer);
+                buffer.compact();  // Compact unprocessed bytes for next cycle
+            }
+            
+            // Exit loop when all data has been fed and processed
+            if (offset >= bytes.length && buffer.position() == 0) {
+                break;
+            }
+        }
         
         // Close to signal end
         parser.close();

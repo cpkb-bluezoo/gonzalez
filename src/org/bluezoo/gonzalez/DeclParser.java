@@ -21,7 +21,7 @@
 
 package org.bluezoo.gonzalez;
 
-import java.nio.CharBuffer;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -29,9 +29,13 @@ import java.util.Map;
  * Base class for parsers that handle XML declarations (XMLDecl) and text declarations (TextDecl).
  * These parsers extract version, encoding, and standalone information before the main tokenizer starts.
  * 
- * <p>The parser operates directly on the character buffer provided by ExternalEntityDecoder,
- * using mark/reset to handle failures gracefully. The buffer position after a successful parse
- * indicates the end of the declaration.
+ * <p>The parser operates directly on the ByteBuffer, reading 7-bit ASCII characters according
+ * to the byte encoding scheme (UTF-8, UTF-16LE, or UTF-16BE). This avoids the overhead of
+ * creating a CharsetDecoder and CharBuffer for declaration parsing.
+ * 
+ * <p>XML/text declarations only contain 7-bit ASCII characters, so this direct approach is
+ * both safe and efficient. The actual CharsetDecoder is only created after the declaration
+ * has been parsed and the final encoding is known.
  * 
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -39,35 +43,60 @@ abstract class DeclParser {
     
     /** Map of attribute names to values extracted from the declaration */
     protected Map<String,String> attributes = new HashMap<>();
+    
+    /** The BOM detected at start of document (determines byte encoding) */
+    protected BOM bom = BOM.NONE;
+    
+    /** Number of characters consumed by successful parse (for byte position calculation) */
+    protected int charsConsumed = 0;
 
     /**
-     * Parses the declaration from incoming character data.
+     * Sets the BOM for reading characters.
+     * Must be called before receive() based on BOM detection.
+     * 
+     * @param bom the detected BOM
+     */
+    void setBOM(BOM bom) {
+        this.bom = bom;
+    }
+    
+    /**
+     * Returns the number of characters consumed by a successful parse.
+     * This can be used to calculate the byte position after the declaration.
+     * 
+     * @return the number of characters consumed
+     */
+    int getCharsConsumed() {
+        return charsConsumed;
+    }
+
+    /**
+     * Parses the declaration from incoming byte data.
      * Can be called multiple times if more data is needed.
      * 
-     * <p>The parser should use {@link CharBuffer#mark()} at the start and
-     * {@link CharBuffer#reset()} on failure to restore the buffer position.
-     * On success, the buffer position should be left at the end of the declaration.
+     * <p>The parser saves the buffer position at the start and restores it on failure.
+     * On success, the buffer position is left at the end of the declaration.
      * 
-     * @param data the character buffer containing data to parse (positioned at start of potential declaration)
+     * @param data the byte buffer containing data to parse (positioned at start of potential declaration)
      * @return {@link ReadResult#OK} if declaration was successfully parsed,
      *         {@link ReadResult#FAILURE} if no declaration present,
      *         {@link ReadResult#UNDERFLOW} if more data is needed
      */
-    abstract ReadResult receive(CharBuffer data);
+    abstract ReadResult receive(ByteBuffer data);
     
     /**
-     * Try to read the specified chars.
+     * Try to read the specified chars from the ByteBuffer.
+     * @param data the byte buffer to read from
      * @param test the characters to read
+     * @return OK if all characters matched, FAILURE if mismatch, UNDERFLOW if need more data
      */
-    protected ReadResult tryRead(CharBuffer data, String test) {
-        // The caller uses mark/reset, so we can consume characters here
-        // If we return FAILURE or UNDERFLOW, the caller will reset to the mark
+    protected ReadResult tryRead(ByteBuffer data, String test) {
         for (int i = 0; i < test.length(); i++) {
-            char c = test.charAt(i);
-            if (!data.hasRemaining()) {
+            int c = bom.nextChar(data);
+            if (c == -1) {
                 return ReadResult.UNDERFLOW;
             }
-            if (data.get() != c) {
+            if (c != test.charAt(i)) {
                 return ReadResult.FAILURE;
             }
         }
@@ -76,10 +105,12 @@ abstract class DeclParser {
 
     /**
      * Read an entire attribute in an XMLDecl or TextDecl.
-     * Saves position at start and restores it on failure (since mark/reset is already used in receive()).
+     * Saves position at start and restores it on failure.
+     * @param data the byte buffer to read from
      * @param attributeName the name of the attribute we expect
+     * @return OK if attribute read successfully, FAILURE if not found, UNDERFLOW if need more data
      */
-    protected ReadResult tryReadAttribute(CharBuffer data, String attributeName) {
+    protected ReadResult tryReadAttribute(ByteBuffer data, String attributeName) {
         // Save position at start of attribute attempt
         int savedPos = data.position();
         ReadResult ret = requireWhitespace(data);
@@ -89,6 +120,8 @@ abstract class DeclParser {
             case FAILURE:
                 data.position(savedPos); // No whitespace - restore position
                 return ret;
+            case OK:
+                break;
         }
         ret = tryRead(data, attributeName);
         switch (ret) {
@@ -97,6 +130,8 @@ abstract class DeclParser {
             case FAILURE:
                 data.position(savedPos); // Attribute name doesn't match - restore position
                 return ret;
+            case OK:
+                break;
         }
         ignoreWhitespace(data);
         ret = tryRead(data, "=");
@@ -106,67 +141,102 @@ abstract class DeclParser {
             case FAILURE:
                 data.position(savedPos); // No '=' - restore position
                 return ret;
+            case OK:
+                break;
         }
         ignoreWhitespace(data);
-        if (!data.hasRemaining()) {
+        int quoteChar = bom.nextChar(data);
+        if (quoteChar == -1) {
             return ReadResult.UNDERFLOW;
         }
-        char quoteChar = data.get();
         if (quoteChar != '"' && quoteChar != '\'') {
             data.position(savedPos); // No quote - restore position
             return ReadResult.FAILURE;
         }
+        int otherQuote = (quoteChar == '"') ? '\'' : '"';
         StringBuilder buf = new StringBuilder();
-        while (data.hasRemaining()) {
-            char c = data.get();
+        while (true) {
+            int c = bom.nextChar(data);
+            if (c == -1) {
+                return ReadResult.UNDERFLOW;
+            }
             if (c == quoteChar) {
                 // end of attribute value
                 attributes.put(attributeName, buf.toString());
                 return ReadResult.OK;
+            } else if (c == otherQuote || isInvalidInDeclValue(c)) {
+                // Invalid character in declaration attribute value:
+                // - Mismatched quotes (e.g., version='1.0")
+                // - Whitespace (e.g., version='1.0 ?>')  
+                // - Markup characters (< > ?)
+                // These indicate malformed declaration syntax
+                data.position(savedPos);
+                return ReadResult.FAILURE;
             } else {
-                buf.append(c);
+                buf.append((char) c);
             }
         }
-        return ReadResult.UNDERFLOW;
+    }
+    
+    /**
+     * Checks if a character is invalid inside an XML/text declaration attribute value.
+     * Declaration attribute values (version, encoding, standalone) cannot contain
+     * whitespace, markup delimiters, or control characters.
+     */
+    private boolean isInvalidInDeclValue(int c) {
+        // Whitespace is invalid inside declaration attribute values
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+            return true;
+        }
+        // Markup characters that can't appear in version/encoding/standalone values
+        if (c == '<' || c == '>' || c == '?') {
+            return true;
+        }
+        return false;
     }
 
     /**
      * Read as much whitespace as possible.
      * Must read at least some whitespace.
+     * @return OK if at least one whitespace was consumed, FAILURE if no whitespace, UNDERFLOW if need more data
      */
-    protected ReadResult requireWhitespace(CharBuffer data) {
-        if (!data.hasRemaining()) {
+    protected ReadResult requireWhitespace(ByteBuffer data) {
+        int c = bom.peekChar(data);
+        if (c == -1) {
             return ReadResult.UNDERFLOW;
         }
-        // Peek at first character
-        char c = data.get(data.position());
-        if (CharClass.classify(c, null, null, false) != CharClass.WHITESPACE) {
+        if (!isWhitespace(c)) {
             return ReadResult.FAILURE;
         }
-        data.get(); // consume first whitespace
+        bom.nextChar(data); // consume first whitespace
         // Consume as much whitespace as possible
-        while (data.hasRemaining()) {
-            c = data.get(data.position()); // peek
-            if (CharClass.classify(c, null, null, false) != CharClass.WHITESPACE) {
+        while (true) {
+            c = bom.peekChar(data);
+            if (c == -1 || !isWhitespace(c)) {
                 return ReadResult.OK;
             }
-            data.get(); // consume
+            bom.nextChar(data); // consume
         }
-        return ReadResult.OK;
     }
 
     /**
      * Ignore any whitespace.
      */
-    protected void ignoreWhitespace(CharBuffer data) {
-        while (data.hasRemaining()) {
-            char c = data.get(data.position()); // peek
-            if (CharClass.classify(c, null, null, false) != CharClass.WHITESPACE) {
-                // end of whitespace
+    protected void ignoreWhitespace(ByteBuffer data) {
+        while (true) {
+            int c = bom.peekChar(data);
+            if (c == -1 || !isWhitespace(c)) {
                 return;
             }
-            data.get(); // consume
+            bom.nextChar(data); // consume
         }
+    }
+    
+    /**
+     * Checks if a character is XML whitespace.
+     */
+    private boolean isWhitespace(int c) {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n';
     }
     
     /**
@@ -228,4 +298,3 @@ abstract class DeclParser {
     }
 
 }
-
