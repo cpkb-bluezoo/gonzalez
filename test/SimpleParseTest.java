@@ -50,20 +50,30 @@ public class SimpleParseTest {
             parser.setContentHandler(handler);
             parser.setSystemId(xmlFile.toURI().toString());
             
-            // Read and parse the file
+            // Read and parse the file using proper NIO buffer management:
+            // read, flip, receive, compact
             try (FileInputStream fis = new FileInputStream(xmlFile);
                  FileChannel channel = fis.getChannel()) {
                 
                 ByteBuffer buffer = ByteBuffer.allocate(1024);  // Small buffer to see incremental behavior
                 int bytesRead;
                 
-                while ((bytesRead = channel.read(buffer)) >= 0) {
-                    buffer.flip();
-                    if (buffer.hasRemaining()) {
+                // Buffer is in write mode: position indicates end of any unprocessed data
+                while (true) {
+                    bytesRead = channel.read(buffer);
+                    
+                    // If we have data in buffer, process it
+                    if (buffer.position() > 0) {
+                        buffer.flip();  // Switch to read mode
                         System.out.println("[FEED] Feeding " + buffer.remaining() + " bytes to parser");
                         parser.receive(buffer);
+                        buffer.compact();  // Compact unprocessed bytes for next cycle
                     }
-                    buffer.clear();
+                    
+                    // Exit loop on EOF when no remaining data
+                    if (bytesRead == -1 && buffer.position() == 0) {
+                        break;
+                    }
                 }
                 
                 System.out.println("[CLOSE] Calling parser.close()");

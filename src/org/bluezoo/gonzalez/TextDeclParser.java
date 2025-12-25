@@ -21,7 +21,7 @@
 
 package org.bluezoo.gonzalez;
 
-import java.nio.CharBuffer;
+import java.nio.ByteBuffer;
 
 /**
  * Specialized parser for text declarations (external parsed entities).
@@ -35,26 +35,29 @@ import java.nio.CharBuffer;
  * <li>standalone is FORBIDDEN (early failure if seen)</li>
  * </ul>
  * 
- * <p>This parser operates directly on the character buffer from ExternalEntityDecoder,
- * using mark/reset to handle failures gracefully. On success, the buffer position
- * is left at the end of the declaration (after "?>").
+ * <p>This parser operates directly on the ByteBuffer (no CharsetDecoder needed),
+ * saving/restoring position to handle failures gracefully. On success, the buffer
+ * position is left at the end of the declaration (after "?>").
  * 
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
 class TextDeclParser extends DeclParser {
     
     @Override
-    public ReadResult receive(CharBuffer data) {
+    public ReadResult receive(ByteBuffer data) {
         attributes.clear();
-
-        // Parse
-        data.mark();
+        
+        // Save position at start for restoration on failure
+        int startPos = data.position();
+        
         switch (tryRead(data, "<?xml")) {
             case FAILURE:
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         switch (tryReadAttribute(data, "version")) {
             case FAILURE:
@@ -62,40 +65,50 @@ class TextDeclParser extends DeclParser {
                 break;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         switch (tryReadAttribute(data, "encoding")) {
             case FAILURE:
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         ignoreWhitespace(data);
         switch (tryRead(data, "?>")) {
             case FAILURE:
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         String version = getVersion();
         if (version != null) {
             // Validate version matches pattern: [0-9]+\.[0-9]+
             if (!isValidVersionNumber(version)) {
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE; // Invalid version format
             }
             // Validate version is 1.x (XML versions must be 1.0, 1.1, etc.)
             if (!version.startsWith("1.")) {
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE; // Only 1.x versions are valid XML versions
             }
         }
         if (getEncoding() == null) {
             // encoding is required
-            data.reset();
+            data.position(startPos);
             return ReadResult.FAILURE;
         }
+        
+        // Calculate characters consumed for byte position calculation
+        charsConsumed = (data.position() - startPos) / bom.bytesPerChar;
+        
         return ReadResult.OK;
     }
 

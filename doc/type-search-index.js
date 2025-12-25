@@ -1,1 +1,1 @@
-typeSearchIndex = [{"l":"All Classes","url":"allclasses-index.html"},{"p":"org.bluezoo.util","l":"CompositeByteBuffer"},{"p":"org.bluezoo.gonzalez","l":"NamespaceScopeTracker"},{"p":"org.bluezoo.gonzalez","l":"Parser"}]
+typeSearchIndex = [{"l":"All Classes and Interfaces","u":"allclasses-index.html"},{"p":"org.bluezoo.util","l":"CompositeByteBuffer"},{"p":"org.bluezoo.gonzalez","l":"NamespaceScopeTracker"},{"p":"org.bluezoo.gonzalez","l":"Parser"}];updateSearchResults();

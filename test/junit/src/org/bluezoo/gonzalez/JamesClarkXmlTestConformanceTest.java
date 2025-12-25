@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import org.junit.AfterClass;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -49,6 +50,7 @@ import static org.junit.Assert.*;
  * <li>valid: Valid - no errors expected</li>
  * </ul>
  */
+@Ignore("Superseded by XMLConformanceTest which includes this suite")
 @RunWith(Parameterized.class)
 public class JamesClarkXmlTestConformanceTest {
     

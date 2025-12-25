@@ -141,6 +141,14 @@ public class XMLParserBenchmark {
     }
 
     @Benchmark
+    public void largeFile_JavaSAX_Buffered8K() throws Exception {
+        SAXParser parser = saxParserFactory.newSAXParser();
+        try (InputStream is = new BufferedInputStream(Files.newInputStream(largeFile), 8192)) {
+            parser.parse(is, emptyHandler);
+        }
+    }
+
+    @Benchmark
     public void largeFile_GonzalezByteBuffer() throws Exception {
         Parser parser = new Parser();
         parser.setFeature("http://xml.org/sax/features/namespaces", false);
@@ -149,6 +157,24 @@ public class XMLParserBenchmark {
         ByteBuffer buffer = ByteBuffer.wrap(largeBytes);
         parser.receive(buffer);
         parser.close();
+    }
+
+    // Reusable parser instance for reset benchmark
+    private Parser reusableParser;
+    
+    @Benchmark
+    public void largeFile_GonzalezByteBuffer_Reuse() throws Exception {
+        if (reusableParser == null) {
+            reusableParser = new Parser();
+            reusableParser.setFeature("http://xml.org/sax/features/namespaces", false);
+            reusableParser.setContentHandler(emptyHandler);
+        } else {
+            reusableParser.reset();
+        }
+        
+        ByteBuffer buffer = ByteBuffer.wrap(largeBytes);
+        reusableParser.receive(buffer);
+        reusableParser.close();
     }
 
     @Benchmark

@@ -166,16 +166,33 @@ public class Parser implements XMLReader {
             throw new SAXException("InputSource must have a byte stream");
         }
 
-        // Bridge pattern: read from InputStream and feed to tokenizer
-        byte[] buffer = new byte[4096];
+        // Bridge pattern: read from InputStream and feed to decoder
+        // Uses standard NIO buffer management: read, flip, receive, compact
+        ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
+        byte[] array = byteBuffer.array();
         int bytesRead;
         
-        while ((bytesRead = inputStream.read(buffer)) != -1) {
-            // Wrap the data in a ByteBuffer
-            ByteBuffer byteBuffer = ByteBuffer.wrap(buffer, 0, bytesRead);
+        // Buffer is in write mode: position indicates end of any unprocessed data
+        while (true) {
+            // Read into the buffer's backing array starting at current position
+            bytesRead = inputStream.read(array, byteBuffer.position(), byteBuffer.remaining());
             
-            // Feed to receive()
-            receive(byteBuffer);
+            if (bytesRead > 0) {
+                // Advance position to account for bytes read
+                byteBuffer.position(byteBuffer.position() + bytesRead);
+            }
+            
+            // If we have data in buffer, process it
+            if (byteBuffer.position() > 0) {
+                byteBuffer.flip();  // Switch to read mode
+                receive(byteBuffer);
+                byteBuffer.compact();  // Compact unprocessed bytes for next cycle
+            }
+            
+            // Exit loop on EOF when no remaining data
+            if (bytesRead == -1 && byteBuffer.position() == 0) {
+                break;
+            }
         }
         
         // Signal end of document

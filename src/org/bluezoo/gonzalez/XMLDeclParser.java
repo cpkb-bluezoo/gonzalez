@@ -21,7 +21,7 @@
 
 package org.bluezoo.gonzalez;
 
-import java.nio.CharBuffer;
+import java.nio.ByteBuffer;
 
 /**
  * Specialized parser for XML declarations (document entity).
@@ -32,8 +32,8 @@ import java.nio.CharBuffer;
  * <ul>
  * <li>Detects presence of XMLDecl</li>
  * <li>Extracts version, encoding, and standalone attributes</li>
- * <li>Operates directly on the character buffer from ExternalEntityDecoder</li>
- * <li>Uses mark/reset to handle failures gracefully</li>
+ * <li>Operates directly on the ByteBuffer (no CharsetDecoder needed)</li>
+ * <li>Saves/restores position to handle failures gracefully</li>
  * </ul>
  * 
  * <p>The version attribute is required. Encoding and standalone are optional.
@@ -44,24 +44,29 @@ import java.nio.CharBuffer;
 class XMLDeclParser extends DeclParser {
 
     @Override
-    public ReadResult receive(CharBuffer data) {
+    public ReadResult receive(ByteBuffer data) {
         attributes.clear();
-
-        // Parse
-        data.mark();
+        
+        // Save position at start for restoration on failure
+        int startPos = data.position();
+        
         switch (tryRead(data, "<?xml")) {
             case FAILURE:
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         switch (tryReadAttribute(data, "version")) {
             case FAILURE:
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         switch (tryReadAttribute(data, "encoding")) {
             case FAILURE:
@@ -69,6 +74,8 @@ class XMLDeclParser extends DeclParser {
                 break;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         switch (tryReadAttribute(data, "standalone")) {
             case FAILURE:
@@ -76,29 +83,33 @@ class XMLDeclParser extends DeclParser {
                 break;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         ignoreWhitespace(data);
         switch (tryRead(data, "?>")) {
             case FAILURE:
-                data.reset();
+                data.position(startPos);
                 return ReadResult.FAILURE;
             case UNDERFLOW:
                 return ReadResult.UNDERFLOW;
+            case OK:
+                break;
         }
         String version = getVersion();
         if (version == null) {
             // version is required
-            data.reset();
+            data.position(startPos);
             return ReadResult.FAILURE;
         }
         // Validate version matches pattern: [0-9]+\.[0-9]+
         if (!isValidVersionNumber(version)) {
-            data.reset();
+            data.position(startPos);
             return ReadResult.FAILURE; // Invalid version format
         }
         // Validate version is 1.x (XML versions must be 1.0, 1.1, etc.)
         if (!version.startsWith("1.")) {
-            data.reset();
+            data.position(startPos);
             return ReadResult.FAILURE; // Only 1.x versions are valid XML versions
         }
         
@@ -106,12 +117,14 @@ class XMLDeclParser extends DeclParser {
         // XML 1.0 Section 2.9: standalone must be exactly "yes" or "no" (case-sensitive)
         String standalone = attributes.get("standalone");
         if (standalone != null && !standalone.equals("yes") && !standalone.equals("no")) {
-            data.reset();
+            data.position(startPos);
             return ReadResult.FAILURE; // Invalid standalone value (must be "yes" or "no")
         }
+        
+        // Calculate characters consumed for byte position calculation
+        charsConsumed = (data.position() - startPos) / bom.bytesPerChar;
         
         return ReadResult.OK;
     }
 
 }
- 
