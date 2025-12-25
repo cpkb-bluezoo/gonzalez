@@ -46,8 +46,10 @@
  *   <li><b>Full XML 1.0/1.1 support:</b> Including DTD, namespaces, and
  *       entity expansion</li>
  *   <li><b>100% conformant</b> to W3C XML Conformance Test Suite</li>
- *   <li><b>Fast:</b> Can achieve 4.5× the speed of the default Java SAX parser
+ *   <li><b>Fast:</b> Can achieve 7× the speed of the default Java SAX parser
  *       for small documents</li>
+ *   <li><b>Small:</b> only 200KB jar</li>
+ *   <li><b>Zero dependency:</b> no external libraries used</li>
  * </ul>
  *
  * <h2>Streaming Usage (Non-blocking)</h2>
@@ -97,6 +99,7 @@
  * if (bytesRead > 0) {
  *     buffer.flip();
  *     parser.receive(buffer);
+ *     buffer.compact();
  * } else if (bytesRead == -1) {
  *     parser.close();  // End of stream
  * }
