@@ -1161,11 +1161,6 @@ class DTDParser implements TokenConsumer {
                 break;
 
             case PARAMETERENTITYREF:
-                // XXX: This assumes parameter entities are declared BEFORE they are referenced.
-                // XXX: If the XML spec allows forward references (PE declared after use),
-                // XXX: this code will fail and we'll need a two-pass approach or deferred expansion.
-                // XXX: Mark this location if we encounter such a test case.
-                
                 // Parameter entity expansion in DTD markup
                 // Direct parameter entity references in DTD declarations (not in entity values)
                 // Example: <!ELEMENT doc %content-model;>
@@ -2174,8 +2169,6 @@ class DTDParser implements TokenConsumer {
      * Per XML spec section 4.4.8: "When a parameter-entity reference is recognized 
      * in the DTD and included, its replacement text MUST be enlarged by the attachment 
      * of one leading and one following space (#x20) character"
-     * 
-     * XXX: Assumes parameter entity is already declared (no forward references).
      * 
      * @param entityName the parameter entity name (without % and ;)
      * @throws SAXException if expansion fails

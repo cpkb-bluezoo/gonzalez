@@ -301,12 +301,8 @@ class EntityDeclParser {
                         }
                         
                         // In external subset, parameter entities are allowed in entity values
-                        // Expand the parameter entity inline
+                        // Store the reference for later expansion during entity usage
                         String paramEntityName = data.toString();
-                        // XXX: For now, just store the reference - proper expansion would require
-                        // XXX: retokenizing the expanded value
-                        // XXX: This is a limitation that should be addressed when implementing
-                        // XXX: full parameter entity expansion in entity values
                         if (entityValueTextBuilder.length() > 0) {
                             entityValueBuilder.add(entityValueTextBuilder.toString());
                             entityValueTextBuilder.setLength(0);
