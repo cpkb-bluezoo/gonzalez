@@ -29,10 +29,12 @@
   <property name='gumdrop.jar' location='${gumdrop.home}/dist/server.jar'/>
   
   <!-- Gonzalez version -->
-  <property name='version' value='0.2.0'/>
+  <property name='version' value='1.0'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
 
-  <!-- Java version. We use Java 8 only -->
+  <!-- Minimum Java version for runtime (APIs used require Java 8) -->
+  <property name='java.release.version' value='8'/>
+  <!-- Fallback for JDK 8 builds (source/target used when release attr unavailable) -->
   <property name='java.source.version' value='1.8'/>
   <property name='java.target.version' value='1.8'/>
   
@@ -57,9 +59,16 @@
   <!-- Compile -->
   <target name='build'>
     <mkdir dir='${build}'/>
+    <!-- Compile main sources with Java 8 compatibility -->
     <javac srcdir='${src}' destdir='${build}' debug='true' includeantruntime='false'
+           release='${java.release.version}'
            source='${java.source.version}' target='${java.target.version}'>
-      <include name='**/*.java'/>
+      <exclude name='module-info.java'/>
+    </javac>
+    <!-- Compile module-info.java separately with Java 9 (for JPMS support) -->
+    <javac srcdir='${src}' destdir='${build}' debug='true' includeantruntime='false'
+           release='9'>
+      <include name='module-info.java'/>
     </javac>
   </target>
 
@@ -72,6 +81,10 @@
         <attribute name='Implementation-Version' value='${version}'/>
         <attribute name='Implementation-Vendor' value='Chris Burdess'/>
       </manifest>
+      <!-- Include service provider configuration for JAXP discovery -->
+      <fileset dir='${src}'>
+        <include name='META-INF/services/*'/>
+      </fileset>
     </jar>
   </target>
 
@@ -87,7 +100,9 @@
   <!-- JUnit test compilation -->
   <target name='junit-build' depends='build'>
     <mkdir dir='${test}/junit/classes'/>
-    <javac srcdir='${test}/junit/src' destdir='${test}/junit/classes' debug='true' includeantruntime='false'>
+    <javac srcdir='${test}/junit/src' destdir='${test}/junit/classes' debug='true' includeantruntime='false'
+           release='${java.release.version}'
+           source='${java.source.version}' target='${java.target.version}'>
       <classpath>
         <pathelement location='${build}'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>

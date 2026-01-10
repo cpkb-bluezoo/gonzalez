@@ -1,22 +1,34 @@
 # Gonzalez
 
-Non-blocking streaming XML parser for event-driven I/O
+Non-blocking streaming XML parser and serializer for event-driven I/O
 
-This is Gonzalez, a data-driven XML parser using non-blocking, event-driven I/O.
-Unlike traditional SAX parsers that pull data from an InputSource, Gonzalez is
-completely feedforward: you push data to it as it arrives, and it produces SAX
-events without ever blocking, as long as the documents are standalone.
+This is Gonzalez, a data-driven XML parser and serializer using non-blocking,
+event-driven I/O. Unlike traditional SAX parsers that pull data from an
+InputSource, Gonzalez is completely feedforward: you push data to it as it
+arrives, and it produces SAX events without ever blocking, as long as the
+documents are standalone. The XMLWriter provides the inverse: streaming XML
+serialization to NIO channels.
 
 ## Features
 
-- non-blocking: in streaming mode, will only ever block for external
-  entities
+### Parser
+- non-blocking: in streaming mode, will only ever block for external entities
 - data-driven: processes whatever is available, state machine driven
 - SAX-compatible: generates standard ContentHandler events and has a SAX2
   convenience front end (which is blocking, of course)
+- JAXP integration: can be used as a drop-in SAX parser via SAXParserFactory
+- JPMS module: proper Java module (`org.bluezoo.gonzalez`) for Java 9+
 - lazy DTD parsing: DTD parser loaded only when a DOCTYPE is encountered
 - memory efficient: streaming architecture handles documents of any size
 - Java NIO throughput: uses ByteBuffer for content I/O operations
+
+### Serializer (XMLWriter)
+- NIO-first: writes to `WritableByteChannel` with automatic buffering
+- namespace-aware: full support for prefixed and default namespaces
+- pretty-print: optional indentation via `IndentConfig`
+- empty element optimization: automatically emits `<foo/>` instead of `<foo></foo>`
+- proper escaping: handles special characters in content and attributes
+- UTF-8 output: all output is UTF-8 encoded
 
 ## Architecture
 
@@ -110,6 +122,32 @@ parser.close();
 // Signal end of document
 ```
 
+### JAXP Usage
+
+Gonzalez can also be used via the standard JAXP SAXParserFactory mechanism,
+making it a drop-in replacement for other SAX parsers:
+
+```java
+// Explicit factory selection
+SAXParserFactory factory = SAXParserFactory.newInstance(
+    "org.bluezoo.gonzalez.GonzalezSAXParserFactory", null);
+factory.setNamespaceAware(true);
+
+SAXParser parser = factory.newSAXParser();
+parser.parse(inputStream, myHandler);
+```
+
+Or set Gonzalez as the default SAX parser via system property:
+
+```java
+System.setProperty("javax.xml.parsers.SAXParserFactory",
+    "org.bluezoo.gonzalez.GonzalezSAXParserFactory");
+
+SAXParserFactory factory = SAXParserFactory.newInstance();
+SAXParser parser = factory.newSAXParser();
+parser.parse(inputStream, myHandler);
+```
+
 ### Document Location Tracking
 
 The parser implements `org.xml.sax.ext.Locator2` to provide accurate position
@@ -141,6 +179,56 @@ The parser correctly handles CRLF sequences even when split across `receive()`
 boundaries.
 
 XML 1.1 line-end delimiters are also supported in XML 1.1 documents.
+
+### XMLWriter Usage
+
+The XMLWriter provides streaming XML serialization to any `WritableByteChannel`:
+
+```java
+import org.bluezoo.gonzalez.XMLWriter;
+import org.bluezoo.gonzalez.IndentConfig;
+import java.io.FileOutputStream;
+import java.nio.channels.Channels;
+
+// Write to a file with pretty-printing
+try (FileOutputStream fos = new FileOutputStream("output.xml")) {
+    XMLWriter writer = new XMLWriter(fos, IndentConfig.spaces2());
+    
+    writer.writeStartElement("http://example.com/ns", "root");
+    writer.writeDefaultNamespace("http://example.com/ns");
+    writer.writeAttribute("version", "1.0");
+    
+    writer.writeStartElement("item");
+    writer.writeAttribute("id", "1");
+    writer.writeCharacters("Hello, World!");
+    writer.writeEndElement();
+    
+    writer.writeStartElement("empty");
+    writer.writeEndElement();  // Emits <empty/>
+    
+    writer.writeEndElement();
+    writer.close();
+}
+```
+
+Output:
+```xml
+<root xmlns="http://example.com/ns" version="1.0">
+  <item id="1">Hello, World!</item>
+  <empty/>
+</root>
+```
+
+For high-performance scenarios, write directly to a `WritableByteChannel`:
+
+```java
+FileChannel channel = FileChannel.open(path, 
+    StandardOpenOption.WRITE, StandardOpenOption.CREATE);
+XMLWriter writer = new XMLWriter(channel);
+// ... write XML ...
+writer.close();
+channel.close();
+```
 
 ## Building
 
@@ -200,6 +288,14 @@ achieves 100% conformance with that suite.
 ## Dependencies
 
 - Java 8 or later (including SAX API)
+
+For Java 9+, Gonzalez is a proper JPMS module:
+
+```java
+module myapp {
+    requires org.bluezoo.gonzalez;
+}
+```
 
 ## License
 

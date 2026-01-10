@@ -20,16 +20,17 @@
  */
 
 /**
- * Gonzalez: A non-blocking, streaming XML parser for event-driven I/O.
+ * Gonzalez: A non-blocking, streaming XML parser and serializer for event-driven I/O.
  *
  * <h2>Overview</h2>
  *
- * <p>Gonzalez is a data-driven XML parser that uses a push model instead of the
- * traditional pull model used by SAX parsers. Unlike SAX parsers that pull data
- * from an {@link org.xml.sax.InputSource}, Gonzalez allows you to push data to
- * the parser as it arrives, making it ideal for integration with non-blocking
- * I/O frameworks such as Java NIO selectors, Gumdrop, Netty, or other async
- * pipelines.
+ * <p>Gonzalez is a data-driven XML parser and serializer that uses a push model
+ * instead of the traditional pull model used by SAX parsers. Unlike SAX parsers
+ * that pull data from an {@link org.xml.sax.InputSource}, Gonzalez allows you to
+ * push data to the parser as it arrives, making it ideal for integration with
+ * non-blocking I/O frameworks such as Java NIO selectors, Gumdrop, Netty, or
+ * other async pipelines. The {@link org.bluezoo.gonzalez.XMLWriter} provides the
+ * inverse: streaming XML serialization to NIO channels.
  *
  * <h2>Key Features</h2>
  *
@@ -170,6 +171,52 @@
  * parser.close();
  * }</pre>
  *
+ * <h2>XML Serialization (XMLWriter)</h2>
+ *
+ * <p>The {@link org.bluezoo.gonzalez.XMLWriter} provides streaming XML serialization
+ * to any {@link java.nio.channels.WritableByteChannel}. It uses an internal buffer
+ * and automatically flushes to the channel when needed.
+ *
+ * <p>Key features:
+ * <ul>
+ *   <li><b>NIO-first:</b> Writes to WritableByteChannel with automatic buffering</li>
+ *   <li><b>Namespace-aware:</b> Full support for prefixed and default namespaces</li>
+ *   <li><b>Pretty-print:</b> Optional indentation via {@link org.bluezoo.gonzalez.IndentConfig}</li>
+ *   <li><b>Empty element optimization:</b> Automatically emits {@code <foo/>} instead
+ *       of {@code <foo></foo>} when appropriate</li>
+ *   <li><b>UTF-8 output:</b> All output is UTF-8 encoded</li>
+ * </ul>
+ *
+ * <pre>{@code
+ * import org.bluezoo.gonzalez.XMLWriter;
+ * import org.bluezoo.gonzalez.IndentConfig;
+ *
+ * // Write to a file with pretty-printing
+ * try (FileOutputStream fos = new FileOutputStream("output.xml")) {
+ *     XMLWriter writer = new XMLWriter(fos, IndentConfig.spaces2());
+ *
+ *     writer.writeStartElement("http://example.com/ns", "root");
+ *     writer.writeDefaultNamespace("http://example.com/ns");
+ *     writer.writeAttribute("version", "1.0");
+ *
+ *     writer.writeStartElement("item");
+ *     writer.writeAttribute("id", "1");
+ *     writer.writeCharacters("Hello, World!");
+ *     writer.writeEndElement();
+ *
+ *     writer.writeStartElement("empty");
+ *     writer.writeEndElement();  // Emits <empty/>
+ *
+ *     writer.writeEndElement();
+ *     writer.close();
+ * }
+ * // Output:
+ * // <root xmlns="http://example.com/ns" version="1.0">
+ * //   <item id="1">Hello, World!</item>
+ * //   <empty/>
+ * // </root>
+ * }</pre>
+ *
  * <h2>Architecture</h2>
  *
  * <p>Internally, Gonzalez uses a pipeline architecture:
@@ -187,6 +234,8 @@
  *
  * @author Chris Burdess
  * @see org.bluezoo.gonzalez.Parser
+ * @see org.bluezoo.gonzalez.XMLWriter
+ * @see org.bluezoo.gonzalez.IndentConfig
  * @see org.xml.sax.XMLReader
  * @see org.xml.sax.ContentHandler
  */
