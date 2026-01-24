@@ -24,3 +24,7 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# XSLT conformance test suite (generated from external xslt30-test repo)
+# Regenerate with: ./tools/extract-xslt10-tests.sh /path/to/xslt30-test
+xsltconf/

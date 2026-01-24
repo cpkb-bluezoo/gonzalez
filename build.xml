@@ -29,7 +29,7 @@
   <property name='gumdrop.jar' location='${gumdrop.home}/dist/server.jar'/>
   
   <!-- Gonzalez version -->
-  <property name='version' value='1.0'/>
+  <property name='version' value='1.1'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
 
   <!-- Minimum Java version for runtime (APIs used require Java 8) -->
@@ -146,6 +146,40 @@
   <!-- Main test target -->
   <target name='test' depends='junit-test' description='Run W3C XML conformance tests'>
     <echo message='W3C XML Conformance Test Suite complete'/>
+  </target>
+  
+  <!-- XSLT Conformance Tests -->
+  <target name='test-xslt' depends='junit-build' description='Run XSLT conformance tests'>
+    <available file='xsltconf/catalog.xml' property='xsltconf.exists'/>
+    <fail unless='xsltconf.exists' 
+          message='XSLT test suite not found. Run: ./tools/extract-xslt10-tests.sh /path/to/xslt30-test'/>
+    
+    <mkdir dir='${test}/junit/results'/>
+    <mkdir dir='${test}/output'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='${test}/junit/classes'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+      <formatter type='xml'/>
+      <formatter type='plain' usefile='false'/>
+      <batchtest fork='yes' todir='${test}/junit/results'>
+        <fileset dir='${test}/junit/src'>
+          <include name='**/XSLTConformanceTest.java'/>
+        </fileset>
+      </batchtest>
+    </junit>
+    
+    <!-- Display results summary -->
+    <echo message=''/>
+    <echo message='XSLT conformance report written to ${test}/output/xslt-conformance-report.txt'/>
+    <echo message=''/>
+    <available file='${test}/output/xslt-conformance-statistics.txt' property='xslt.stats.exists'/>
+    <loadfile property='xslt.stats.content' srcFile='${test}/output/xslt-conformance-statistics.txt' 
+              failonerror='false' quiet='true'/>
+    <echo message='${xslt.stats.content}'/>
   </target>
   
   <!-- Simple parse test (no JUnit) -->
