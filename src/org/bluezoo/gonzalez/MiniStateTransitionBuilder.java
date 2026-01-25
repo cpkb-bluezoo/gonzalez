@@ -73,6 +73,8 @@ class MiniStateTransitionBuilder {
         // ===== State.CONTENT Transitions =====
         
         // READY - Starting state in content
+        // XML 1.0 Section 2.4: In content, '>' is allowed (only '<' and '&' must be escaped,
+        // and '>' only needs escaping as part of ']]>')
         builder.state(TokenizerState.CONTENT)
             .miniState(MiniState.READY)
                 .on(CharClass.LT).to(MiniState.SEEN_LT).done()
@@ -84,7 +86,8 @@ class MiniStateTransitionBuilder {
                        CharClass.HASH, CharClass.COLON, CharClass.OPEN_PAREN, CharClass.CLOSE_PAREN,
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
-                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET)
+                       CharClass.PERCENT, CharClass.OPEN_BRACKET, CharClass.CLOSE_BRACKET,
+                       CharClass.GT)  // GT is allowed in content per XML 1.0 Section 2.4
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // SEEN_LT - After '<' in content

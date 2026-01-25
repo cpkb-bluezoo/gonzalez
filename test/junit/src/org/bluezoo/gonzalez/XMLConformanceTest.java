@@ -83,6 +83,15 @@ import static org.junit.Assert.*;
 @RunWith(Parameterized.class)
 public class XMLConformanceTest {
     
+    /** Java 8 compatible string repeat helper. */
+    private static String repeatChar(char c, int count) {
+        StringBuilder sb = new StringBuilder(count);
+        for (int i = 0; i < count; i++) {
+            sb.append(c);
+        }
+        return sb.toString();
+    }
+    
     private static final File XMLCONF_DIR = new File("xmlconf");
     private static final File OUTPUT_DIR = new File("test/output");
     private static final File REPORT_FILE = new File(OUTPUT_DIR, "xml-conformance-report.txt");
@@ -576,7 +585,7 @@ public class XMLConformanceTest {
             for (String suite : resultsBySuite.keySet()) {
                 out.println();
                 out.println("Suite: " + suite);
-                out.println("------" + "-".repeat(suite.length()));
+                out.println("------" + repeatChar('-', suite.length()));
                 
                 for (TestResult result : resultsBySuite.get(suite)) {
                     out.printf("[%s] %s | Expected: %s | Actual: %s | %s%n",

@@ -237,6 +237,9 @@ public class XSLTConformanceTest {
                         currentTest.sourceFile = env.sourceFile;
                         currentTest.sourceContent = env.sourceContent;
                     }
+                } else if (inTestCase) {
+                    // Inline environment within test-case (no name or ref)
+                    currentEnv = new Environment();
                 }
             } else if ("source".equals(localName)) {
                 if (currentEnv != null) {
@@ -278,7 +281,19 @@ public class XSLTConformanceTest {
             } else if ("result".equals(localName) && inTestCase) {
                 inResult = true;
             } else if ("assert-xml".equals(localName) && inResult) {
-                // Will capture in characters()
+                // Check for file attribute to load external expected output
+                String file = attrs.getValue("file");
+                if (file != null && !file.isEmpty()) {
+                    try {
+                        File expectedFile = new File(testDir, file);
+                        expectedXml = new String(java.nio.file.Files.readAllBytes(expectedFile.toPath()), 
+                            java.nio.charset.StandardCharsets.UTF_8);
+                    } catch (IOException e) {
+                        // File not found or unreadable - leave expectedXml as null
+                        expectedXml = null;
+                    }
+                }
+                // Will also capture in characters() for inline content
             } else if ("error".equals(localName) && inResult) {
                 expectsError = true;
                 expectedError = attrs.getValue("code");
@@ -302,12 +317,21 @@ public class XSLTConformanceTest {
                 }
             } else if ("environment".equals(localName)) {
                 if (currentEnvName != null && currentEnv != null) {
+                    // Named environment - store for later reference
                     environments.put(currentEnvName, currentEnv);
+                } else if (currentEnv != null && inTestCase && currentTest != null) {
+                    // Inline environment - copy directly to test case
+                    currentTest.sourceFile = currentEnv.sourceFile;
+                    currentTest.sourceContent = currentEnv.sourceContent;
                 }
                 currentEnvName = null;
                 currentEnv = null;
             } else if ("assert-xml".equals(localName)) {
-                expectedXml = charBuffer.toString();
+                // Only use inline content if no file was loaded
+                String inlineContent = charBuffer.toString();
+                if (expectedXml == null || expectedXml.isEmpty()) {
+                    expectedXml = inlineContent;
+                }
             } else if ("dependencies".equals(localName)) {
                 inDependencies = false;
             } else if ("test".equals(localName)) {

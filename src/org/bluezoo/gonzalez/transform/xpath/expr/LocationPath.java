@@ -471,83 +471,40 @@ public final class LocationPath implements Expr {
         }
     }
 
+    /**
+     * Iterator for the following axis.
+     * Returns nodes in document order.
+     */
     private static class FollowingIterator implements Iterator<XPathNode> {
-        private final List<XPathNode> pending = new ArrayList<>();
-        private XPathNode next;
-
-        FollowingIterator(XPathNode node) {
-            // Following axis: all nodes after this node in document order,
-            // excluding descendants
-            XPathNode current = node;
-            while (current != null) {
-                XPathNode sibling = current.getFollowingSibling();
-                if (sibling != null) {
-                    pending.add(sibling);
-                    break;
-                }
-                current = current.getParent();
-            }
-            advance();
-        }
-
-        private void advance() {
-            if (pending.isEmpty()) {
-                next = null;
-            } else {
-                next = pending.remove(0);
-                // Add children to front (depth-first)
-                Iterator<XPathNode> children = next.getChildren();
-                int insertPos = 0;
-                while (children.hasNext()) {
-                    pending.add(insertPos++, children.next());
-                }
-                // Add following sibling
-                XPathNode sibling = next.getFollowingSibling();
-                if (sibling != null) {
-                    pending.add(sibling);
-                }
-            }
-        }
-
-        @Override
-        public boolean hasNext() {
-            return next != null;
-        }
-
-        @Override
-        public XPathNode next() {
-            XPathNode result = next;
-            advance();
-            return result;
-        }
-    }
-
-    private static class PrecedingIterator implements Iterator<XPathNode> {
         private final List<XPathNode> nodes = new ArrayList<>();
         private int index;
 
-        PrecedingIterator(XPathNode node) {
-            // Collect all preceding nodes
-            collectPreceding(node);
-            index = nodes.size() - 1; // Start from end (reverse document order)
+        FollowingIterator(XPathNode contextNode) {
+            // Following axis: all nodes after this node in document order,
+            // excluding descendants
+            collectFollowing(contextNode);
+            index = 0;
         }
 
-        private void collectPreceding(XPathNode node) {
-            // Preceding axis: all nodes before this node in document order,
-            // excluding ancestors
+        private void collectFollowing(XPathNode node) {
+            // First collect all following siblings (and their subtrees) at this level
+            XPathNode sibling = node.getFollowingSibling();
+            while (sibling != null) {
+                collectSubtree(sibling);
+                sibling = sibling.getFollowingSibling();
+            }
+            
+            // Then recurse to parent to get following siblings at higher levels
             XPathNode parent = node.getParent();
             if (parent != null) {
-                XPathNode sibling = node.getPrecedingSibling();
-                while (sibling != null) {
-                    collectSubtree(sibling);
-                    sibling = sibling.getPrecedingSibling();
-                }
-                collectPreceding(parent);
+                collectFollowing(parent);
             }
         }
 
         private void collectSubtree(XPathNode node) {
+            // Add this node first (document order)
             nodes.add(node);
+            // Then add all descendants in document order
             Iterator<XPathNode> children = node.getChildren();
             while (children.hasNext()) {
                 collectSubtree(children.next());
@@ -556,12 +513,72 @@ public final class LocationPath implements Expr {
 
         @Override
         public boolean hasNext() {
-            return index >= 0;
+            return index < nodes.size();
         }
 
         @Override
         public XPathNode next() {
-            return nodes.get(index--);
+            return nodes.get(index++);
+        }
+    }
+
+    /**
+     * Iterator for the preceding axis.
+     * Returns nodes in reverse document order (closest to context node first).
+     */
+    private static class PrecedingIterator implements Iterator<XPathNode> {
+        private final List<XPathNode> nodes = new ArrayList<>();
+        private int index;
+
+        PrecedingIterator(XPathNode node) {
+            // Collect all preceding nodes in reverse document order
+            collectPreceding(node);
+            // Nodes are collected in reverse document order, iterate from start
+            index = 0;
+        }
+
+        private void collectPreceding(XPathNode node) {
+            // Preceding axis: all nodes before this node in document order,
+            // excluding ancestors. We want reverse document order (closest first).
+            XPathNode parent = node.getParent();
+            if (parent != null) {
+                // Process preceding siblings from closest to furthest
+                XPathNode sibling = node.getPrecedingSibling();
+                while (sibling != null) {
+                    // For each sibling, add subtree in reverse document order
+                    // (deepest descendants first, then the node itself)
+                    collectSubtreeReverse(sibling);
+                    sibling = sibling.getPrecedingSibling();
+                }
+                // Then recurse to parent's preceding (further away in document)
+                collectPreceding(parent);
+            }
+        }
+
+        private void collectSubtreeReverse(XPathNode node) {
+            // For reverse document order within subtree:
+            // Process children in reverse order (last child is closest to context)
+            Iterator<XPathNode> children = node.getChildren();
+            List<XPathNode> childList = new ArrayList<>();
+            while (children.hasNext()) {
+                childList.add(children.next());
+            }
+            // Process children in reverse (last child first)
+            for (int i = childList.size() - 1; i >= 0; i--) {
+                collectSubtreeReverse(childList.get(i));
+            }
+            // Then add this node (after its descendants in reverse order)
+            nodes.add(node);
+        }
+
+        @Override
+        public boolean hasNext() {
+            return index < nodes.size();
+        }
+
+        @Override
+        public XPathNode next() {
+            return nodes.get(index++);
         }
     }
 

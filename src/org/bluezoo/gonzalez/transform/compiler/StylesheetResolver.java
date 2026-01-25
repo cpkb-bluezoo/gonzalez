@@ -210,16 +210,43 @@ public class StylesheetResolver {
             }
         }
         
-        // Default resolution
+        // Default resolution - open the stream for the Gonzalez parser
         InputSource inputSource = new InputSource(resolvedUri);
         inputSource.setSystemId(resolvedUri);
+        
+        // Open the byte stream since Gonzalez parser requires it
+        java.io.InputStream byteStream = null;
+        try {
+            java.net.URL url = new java.net.URL(resolvedUri);
+            byteStream = url.openStream();
+        } catch (Exception e) {
+            // URL open failed, try as a file path
+            String filePath = resolvedUri;
+            // Strip file: prefix if present
+            if (filePath.startsWith("file:")) {
+                filePath = filePath.substring(5);
+                // Handle file:/// on Unix
+                if (filePath.startsWith("//")) {
+                    filePath = filePath.substring(2);
+                }
+            }
+            java.io.File file = new java.io.File(filePath);
+            if (file.exists()) {
+                byteStream = new java.io.FileInputStream(file);
+            }
+        }
+        
+        if (byteStream != null) {
+            inputSource.setByteStream(byteStream);
+        }
+        
         return inputSource;
     }
 
     /**
      * Converts a JAXP Source to a SAX InputSource.
      */
-    private InputSource sourceToInputSource(Source source) {
+    private InputSource sourceToInputSource(Source source) throws IOException {
         if (source instanceof StreamSource) {
             StreamSource ss = (StreamSource) source;
             InputSource is = new InputSource();
@@ -227,16 +254,38 @@ public class StylesheetResolver {
             is.setPublicId(ss.getPublicId());
             if (ss.getInputStream() != null) {
                 is.setByteStream(ss.getInputStream());
-            }
-            if (ss.getReader() != null) {
+            } else if (ss.getReader() != null) {
                 is.setCharacterStream(ss.getReader());
+            } else if (ss.getSystemId() != null) {
+                // Open the stream
+                try {
+                    java.net.URL url = new java.net.URL(ss.getSystemId());
+                    is.setByteStream(url.openStream());
+                } catch (java.net.MalformedURLException e) {
+                    java.io.File file = new java.io.File(ss.getSystemId());
+                    if (file.exists()) {
+                        is.setByteStream(new java.io.FileInputStream(file));
+                    }
+                }
             }
             return is;
         }
         
-        // For other source types, just use the system ID
+        // For other source types, try to open by system ID
         InputSource is = new InputSource();
-        is.setSystemId(source.getSystemId());
+        String systemId = source.getSystemId();
+        is.setSystemId(systemId);
+        if (systemId != null) {
+            try {
+                java.net.URL url = new java.net.URL(systemId);
+                is.setByteStream(url.openStream());
+            } catch (java.net.MalformedURLException e) {
+                java.io.File file = new java.io.File(systemId);
+                if (file.exists()) {
+                    is.setByteStream(new java.io.FileInputStream(file));
+                }
+            }
+        }
         return is;
     }
 

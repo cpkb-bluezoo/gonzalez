@@ -915,7 +915,7 @@ class AttListDeclParser {
             return false;
         }
         
-        String[] names = s.trim().split("\\s+");
+        String[] names = splitOnWhitespace(s.trim());
         for (String name : names) {
             if (!isName(name)) {
                 return false;
@@ -990,13 +990,43 @@ class AttListDeclParser {
             return false;
         }
         
-        String[] tokens = s.trim().split("\\s+");
+        String[] tokens = splitOnWhitespace(s.trim());
         for (String token : tokens) {
             if (!isNmtoken(token)) {
                 return false;
             }
         }
         return true;
+    }
+    
+    /**
+     * Splits a string on whitespace characters without using regex.
+     */
+    private static String[] splitOnWhitespace(String s) {
+        if (s == null) {
+            return new String[0];
+        }
+        java.util.List<String> result = new java.util.ArrayList<>();
+        int len = s.length();
+        int start = -1;
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            boolean isWhitespace = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+            if (isWhitespace) {
+                if (start >= 0) {
+                    result.add(s.substring(start, i));
+                    start = -1;
+                }
+            } else {
+                if (start < 0) {
+                    start = i;
+                }
+            }
+        }
+        if (start >= 0) {
+            result.add(s.substring(start));
+        }
+        return result.toArray(new String[0]);
     }
     
 }

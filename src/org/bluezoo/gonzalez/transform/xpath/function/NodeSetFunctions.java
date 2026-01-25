@@ -25,6 +25,7 @@ import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.*;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -94,10 +95,134 @@ public final class NodeSetFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            // ID function requires DTD information to know which attributes are IDs
-            // For now, return empty node-set (full implementation requires document access)
-            // TODO: Implement ID lookup using DTD/Schema information
-            return XPathNodeSet.EMPTY;
+            // Collect all IDs to search for
+            List<String> idValues = new ArrayList<>();
+            XPathValue arg = args.get(0);
+            
+            if (arg.isNodeSet()) {
+                // For node-set, get string value of each node and split on whitespace
+                for (XPathNode node : ((XPathNodeSet) arg).getNodes()) {
+                    splitIds(node.getStringValue(), idValues);
+                }
+            } else {
+                // For other types, convert to string and split on whitespace
+                splitIds(arg.asString(), idValues);
+            }
+            
+            if (idValues.isEmpty()) {
+                return XPathNodeSet.EMPTY;
+            }
+            
+            // Get document root
+            XPathNode contextNode = context.getContextNode();
+            if (contextNode == null) {
+                return XPathNodeSet.EMPTY;
+            }
+            XPathNode root = contextNode.getRoot();
+            if (root == null) {
+                return XPathNodeSet.EMPTY;
+            }
+            
+            // Search for elements with matching IDs
+            List<XPathNode> result = new ArrayList<>();
+            collectElementsById(root, idValues, result);
+            
+            return new XPathNodeSet(result);
+        }
+        
+        private void splitIds(String s, List<String> ids) {
+            if (s == null || s.isEmpty()) return;
+            int start = -1;
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                boolean isWhitespace = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+                if (isWhitespace) {
+                    if (start >= 0) {
+                        ids.add(s.substring(start, i));
+                        start = -1;
+                    }
+                } else {
+                    if (start < 0) {
+                        start = i;
+                    }
+                }
+            }
+            if (start >= 0) {
+                ids.add(s.substring(start));
+            }
+        }
+        
+        private void collectElementsById(XPathNode node, List<String> idValues, List<XPathNode> result) {
+            if (node.isElement()) {
+                // Check for DTD-declared ID attributes and common ID attributes
+                String idAttr = getIdAttribute(node);
+                if (idAttr != null) {
+                    for (String searchId : idValues) {
+                        if (searchId.equals(idAttr)) {
+                            // Avoid duplicates
+                            boolean found = false;
+                            for (XPathNode existing : result) {
+                                if (existing.isSameNode(node)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                result.add(node);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Recurse into children
+            java.util.Iterator<XPathNode> children = node.getChildren();
+            while (children.hasNext()) {
+                collectElementsById(children.next(), idValues, result);
+            }
+        }
+        
+        private String getIdAttribute(XPathNode element) {
+            // First priority: Check for DTD-declared ID attributes
+            java.util.Iterator<XPathNode> attrs = element.getAttributes();
+            while (attrs.hasNext()) {
+                XPathNode attr = attrs.next();
+                // Check if this attribute has DTD type ID (StreamingNode specific)
+                if (attr instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
+                    org.bluezoo.gonzalez.transform.runtime.StreamingNode sn = 
+                        (org.bluezoo.gonzalez.transform.runtime.StreamingNode) attr;
+                    if (sn.isIdAttribute()) {
+                        return attr.getStringValue();
+                    }
+                }
+            }
+            
+            // Second priority: xml:id (XML standard)
+            attrs = element.getAttributes();
+            while (attrs.hasNext()) {
+                XPathNode attr = attrs.next();
+                String name = attr.getLocalName();
+                String uri = attr.getNamespaceURI();
+                
+                if ("id".equals(name) && "http://www.w3.org/XML/1998/namespace".equals(uri)) {
+                    return attr.getStringValue();
+                }
+            }
+            
+            // Third priority: Check for plain "id" or "ID" attribute (fallback)
+            attrs = element.getAttributes();
+            while (attrs.hasNext()) {
+                XPathNode attr = attrs.next();
+                String name = attr.getLocalName();
+                String uri = attr.getNamespaceURI();
+                
+                if ("id".equals(name) && (uri == null || uri.isEmpty())) {
+                    return attr.getStringValue();
+                }
+            }
+            
+            return null;
         }
     };
 

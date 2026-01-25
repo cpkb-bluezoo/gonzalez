@@ -53,10 +53,75 @@ public final class CompiledStylesheet {
     private final Map<String, AttributeSet> attributeSets;
     private final OutputProperties outputProperties;
     private final Map<String, KeyDefinition> keyDefinitions;
-    private final Map<String, String> namespaceAliases;
+    private final Map<String, NamespaceAlias> namespaceAliases;  // keyed by stylesheet URI
     private final List<String> stripSpaceElements;
     private final List<String> preserveSpaceElements;
     private final StreamingCapability streamingCapability;
+    private final Map<String, DecimalFormatInfo> decimalFormats;
+    private final Map<String, AccumulatorDefinition> accumulators;
+    private final Map<String, ModeDeclaration> modeDeclarations;
+
+    /**
+     * Stores decimal format configuration for format-number().
+     */
+    public static class DecimalFormatInfo {
+        public final String name;
+        public final char decimalSeparator;
+        public final char groupingSeparator;
+        public final String infinity;
+        public final char minusSign;
+        public final String nan;
+        public final char percent;
+        public final char perMille;
+        public final char zeroDigit;
+        public final char digit;
+        public final char patternSeparator;
+        
+        public DecimalFormatInfo(String name, String decimalSeparator, String groupingSeparator,
+                String infinity, String minusSign, String nan, String percent,
+                String perMille, String zeroDigit, String digit, String patternSeparator) {
+            this.name = name;
+            this.decimalSeparator = firstChar(decimalSeparator, '.');
+            this.groupingSeparator = firstChar(groupingSeparator, ',');
+            this.infinity = infinity != null ? infinity : "Infinity";
+            this.minusSign = firstChar(minusSign, '-');
+            this.nan = nan != null ? nan : "NaN";
+            this.percent = firstChar(percent, '%');
+            this.perMille = firstChar(perMille, '\u2030');
+            this.zeroDigit = firstChar(zeroDigit, '0');
+            this.digit = firstChar(digit, '#');
+            this.patternSeparator = firstChar(patternSeparator, ';');
+        }
+        
+        private static char firstChar(String s, char defaultChar) {
+            return (s != null && s.length() > 0) ? s.charAt(0) : defaultChar;
+        }
+    }
+
+    /**
+     * Stores namespace alias information for xsl:namespace-alias.
+     *
+     * <p>Per XSLT 1.0 spec section 7.1.1, namespace aliasing maps a stylesheet
+     * namespace URI to a result namespace URI. This allows generating elements
+     * in the XSLT namespace (or any other) without the XSLT processor treating
+     * them as instructions.
+     */
+    public static class NamespaceAlias {
+        /** The result namespace URI to use in output. */
+        public final String resultUri;
+        /** The suggested prefix to use in output (may be empty for default namespace). */
+        public final String resultPrefix;
+        
+        public NamespaceAlias(String resultUri, String resultPrefix) {
+            this.resultUri = resultUri != null ? resultUri : "";
+            this.resultPrefix = resultPrefix != null ? resultPrefix : "";
+        }
+        
+        @Override
+        public String toString() {
+            return "NamespaceAlias[" + resultPrefix + " -> " + resultUri + "]";
+        }
+    }
 
     /**
      * Builder for creating compiled stylesheets.
@@ -68,9 +133,12 @@ public final class CompiledStylesheet {
         private final Map<String, AttributeSet> attributeSets = new HashMap<>();
         private OutputProperties outputProperties = new OutputProperties();
         private final Map<String, KeyDefinition> keyDefinitions = new HashMap<>();
-        private final Map<String, String> namespaceAliases = new HashMap<>();
+        private final Map<String, NamespaceAlias> namespaceAliases = new HashMap<>();  // keyed by stylesheet URI
         private final List<String> stripSpaceElements = new ArrayList<>();
         private final List<String> preserveSpaceElements = new ArrayList<>();
+        private final Map<String, DecimalFormatInfo> decimalFormats = new HashMap<>();
+        private final Map<String, AccumulatorDefinition> accumulators = new HashMap<>();
+        private final Map<String, ModeDeclaration> modeDeclarations = new HashMap<>();
 
         public Builder addTemplateRule(TemplateRule rule) {
             templateRules.add(rule);
@@ -86,7 +154,16 @@ public final class CompiledStylesheet {
         }
 
         public Builder addAttributeSet(AttributeSet attributeSet) {
-            attributeSets.put(attributeSet.getName(), attributeSet);
+            // Per XSLT 1.0: Multiple attribute sets with the same name are MERGED.
+            // Later definitions take precedence for conflicting attribute names.
+            // We store all definitions and merge them when retrieving.
+            String name = attributeSet.getName();
+            AttributeSet existing = attributeSets.get(name);
+            if (existing != null) {
+                // Merge: existing attributes first, then new ones (new takes precedence)
+                attributeSet = existing.mergeWith(attributeSet);
+            }
+            attributeSets.put(name, attributeSet);
             return this;
         }
 
@@ -100,8 +177,16 @@ public final class CompiledStylesheet {
             return this;
         }
 
-        public Builder addNamespaceAlias(String stylesheetPrefix, String resultPrefix) {
-            namespaceAliases.put(stylesheetPrefix, resultPrefix);
+        /**
+         * Adds a namespace alias mapping.
+         *
+         * @param stylesheetUri the namespace URI in the stylesheet (to be replaced)
+         * @param resultUri the namespace URI for the result (replacement)
+         * @param resultPrefix the prefix to use in the result
+         * @return this builder
+         */
+        public Builder addNamespaceAlias(String stylesheetUri, String resultUri, String resultPrefix) {
+            namespaceAliases.put(stylesheetUri, new NamespaceAlias(resultUri, resultPrefix));
             return this;
         }
 
@@ -112,6 +197,38 @@ public final class CompiledStylesheet {
 
         public Builder addPreserveSpaceElement(String element) {
             preserveSpaceElements.add(element);
+            return this;
+        }
+        
+        public Builder addDecimalFormat(String name, String decimalSeparator, String groupingSeparator,
+                String infinity, String minusSign, String nan, String percent,
+                String perMille, String zeroDigit, String digit, String patternSeparator) {
+            String key = name != null ? name : "";
+            decimalFormats.put(key, new DecimalFormatInfo(name, decimalSeparator, groupingSeparator,
+                infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator));
+            return this;
+        }
+
+        /**
+         * Adds an accumulator definition.
+         *
+         * @param accumulator the accumulator
+         * @return this builder
+         */
+        public Builder addAccumulator(AccumulatorDefinition accumulator) {
+            accumulators.put(accumulator.getName(), accumulator);
+            return this;
+        }
+
+        /**
+         * Adds a mode declaration.
+         *
+         * @param mode the mode declaration
+         * @return this builder
+         */
+        public Builder addModeDeclaration(ModeDeclaration mode) {
+            String key = mode.getName() != null ? mode.getName() : "#default";
+            modeDeclarations.put(key, mode);
             return this;
         }
 
@@ -152,13 +269,13 @@ public final class CompiledStylesheet {
                 }
             }
             
-            // Merge attribute sets - combine attributes, importing sheet's go first
+            // Merge attribute sets - later definition wins
+            // Since imports are processed in order (first import first, last import last),
+            // and later imports have higher precedence, letting later merges override
+            // gives us correct import precedence behavior
             for (Map.Entry<String, AttributeSet> entry : imported.attributeSets.entrySet()) {
                 String name = entry.getKey();
-                if (!attributeSets.containsKey(name)) {
-                    attributeSets.put(name, entry.getValue());
-                }
-                // TODO: For includes, should merge attribute set contents
+                attributeSets.put(name, entry.getValue());
             }
             
             // Merge output properties - importing stylesheet values take precedence
@@ -181,7 +298,7 @@ public final class CompiledStylesheet {
             }
             
             // Add namespace aliases - first definition wins
-            for (Map.Entry<String, String> entry : imported.getNamespaceAliases().entrySet()) {
+            for (Map.Entry<String, NamespaceAlias> entry : imported.getNamespaceAliases().entrySet()) {
                 if (!namespaceAliases.containsKey(entry.getKey())) {
                     namespaceAliases.put(entry.getKey(), entry.getValue());
                 }
@@ -196,6 +313,27 @@ public final class CompiledStylesheet {
             for (String element : imported.getPreserveSpaceElements()) {
                 if (!preserveSpaceElements.contains(element)) {
                     preserveSpaceElements.add(element);
+                }
+            }
+            
+            // Add accumulators - first definition wins
+            for (Map.Entry<String, AccumulatorDefinition> entry : imported.accumulators.entrySet()) {
+                if (!accumulators.containsKey(entry.getKey())) {
+                    accumulators.put(entry.getKey(), entry.getValue());
+                }
+            }
+            
+            // Add mode declarations - first definition wins
+            for (Map.Entry<String, ModeDeclaration> entry : imported.modeDeclarations.entrySet()) {
+                if (!modeDeclarations.containsKey(entry.getKey())) {
+                    modeDeclarations.put(entry.getKey(), entry.getValue());
+                }
+            }
+            
+            // Add decimal formats - first definition wins
+            for (Map.Entry<String, DecimalFormatInfo> entry : imported.decimalFormats.entrySet()) {
+                if (!decimalFormats.containsKey(entry.getKey())) {
+                    decimalFormats.put(entry.getKey(), entry.getValue());
                 }
             }
             
@@ -217,6 +355,9 @@ public final class CompiledStylesheet {
         this.namespaceAliases = Collections.unmodifiableMap(new HashMap<>(builder.namespaceAliases));
         this.stripSpaceElements = Collections.unmodifiableList(new ArrayList<>(builder.stripSpaceElements));
         this.preserveSpaceElements = Collections.unmodifiableList(new ArrayList<>(builder.preserveSpaceElements));
+        this.decimalFormats = Collections.unmodifiableMap(new HashMap<>(builder.decimalFormats));
+        this.accumulators = Collections.unmodifiableMap(new HashMap<>(builder.accumulators));
+        this.modeDeclarations = Collections.unmodifiableMap(new HashMap<>(builder.modeDeclarations));
         this.streamingCapability = computeStreamingCapability();
     }
 
@@ -289,12 +430,32 @@ public final class CompiledStylesheet {
     }
 
     /**
+     * Returns a decimal format.
+     *
+     * @param name the format name, or null for the default format
+     * @return the decimal format, or null if not found
+     */
+    public DecimalFormatInfo getDecimalFormat(String name) {
+        return decimalFormats.get(name != null ? name : "");
+    }
+
+    /**
      * Returns namespace aliases.
      *
-     * @return map of stylesheet prefix to result prefix (immutable)
+     * @return map of stylesheet namespace URI to NamespaceAlias (immutable)
      */
-    public Map<String, String> getNamespaceAliases() {
+    public Map<String, NamespaceAlias> getNamespaceAliases() {
         return namespaceAliases;
+    }
+    
+    /**
+     * Gets the namespace alias for a stylesheet namespace URI.
+     *
+     * @param stylesheetUri the namespace URI in the stylesheet
+     * @return the alias, or null if no alias defined
+     */
+    public NamespaceAlias getNamespaceAlias(String stylesheetUri) {
+        return namespaceAliases.get(stylesheetUri != null ? stylesheetUri : "");
     }
 
     /**
@@ -335,6 +496,45 @@ public final class CompiledStylesheet {
         // TODO: Implement proper pattern matching
         String qName = localName;
         return stripSpaceElements.contains(qName) || stripSpaceElements.contains("*");
+    }
+
+    /**
+     * Returns an accumulator definition.
+     *
+     * @param name the accumulator name
+     * @return the accumulator, or null if not found
+     */
+    public AccumulatorDefinition getAccumulator(String name) {
+        return accumulators.get(name);
+    }
+
+    /**
+     * Returns all accumulator definitions.
+     *
+     * @return map of name to accumulator (immutable)
+     */
+    public Map<String, AccumulatorDefinition> getAccumulators() {
+        return accumulators;
+    }
+
+    /**
+     * Returns a mode declaration.
+     *
+     * @param name the mode name, or null for default mode
+     * @return the mode declaration, or null if not found
+     */
+    public ModeDeclaration getModeDeclaration(String name) {
+        String key = name != null ? name : "#default";
+        return modeDeclarations.get(key);
+    }
+
+    /**
+     * Returns all mode declarations.
+     *
+     * @return map of name to mode declaration (immutable)
+     */
+    public Map<String, ModeDeclaration> getModeDeclarations() {
+        return modeDeclarations;
     }
 
     /**

@@ -22,7 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.type;
 
 /**
- * Base interface for all XPath 1.0 value types.
+ * Base interface for all XPath value types.
  *
  * <p>XPath 1.0 defines four data types:
  * <ul>
@@ -30,6 +30,12 @@ package org.bluezoo.gonzalez.transform.xpath.type;
  *   <li><b>number</b> - IEEE 754 double-precision floating point</li>
  *   <li><b>boolean</b> - true or false</li>
  *   <li><b>node-set</b> - an unordered collection of nodes without duplicates</li>
+ * </ul>
+ *
+ * <p>XPath 2.0/3.1 extends this with:
+ * <ul>
+ *   <li><b>sequence</b> - an ordered collection of items (nodes or atomic values)</li>
+ *   <li><b>atomic</b> - untyped atomic value (without schema type information)</li>
  * </ul>
  *
  * <p>Each XPath value can be converted to any other type according to the
@@ -46,7 +52,11 @@ public interface XPathValue {
         STRING,
         NUMBER,
         BOOLEAN,
-        NODESET
+        NODESET,
+        /** XPath 2.0+ sequence type. */
+        SEQUENCE,
+        /** XPath 2.0+ untyped atomic value. */
+        ATOMIC
     }
 
     /**
@@ -115,6 +125,48 @@ public interface XPathValue {
      */
     default boolean isNodeSet() {
         return getType() == Type.NODESET;
+    }
+
+    /**
+     * Returns true if this value is a sequence (XPath 2.0+).
+     *
+     * @return true if this is a sequence value
+     */
+    default boolean isSequence() {
+        return getType() == Type.SEQUENCE;
+    }
+
+    /**
+     * Returns true if this value is an atomic value (XPath 2.0+).
+     *
+     * @return true if this is an atomic value
+     */
+    default boolean isAtomic() {
+        return getType() == Type.ATOMIC;
+    }
+
+    /**
+     * Returns the number of items in this value when treated as a sequence.
+     * For XPath 1.0 types, this returns 1 (except node-set returns its size).
+     *
+     * @return the sequence length
+     */
+    default int sequenceSize() {
+        if (isNodeSet()) {
+            XPathNodeSet ns = asNodeSet();
+            return ns != null ? ns.size() : 0;
+        }
+        return 1;
+    }
+
+    /**
+     * Returns this value as a sequence iterator.
+     * For singleton values, returns an iterator over just this value.
+     *
+     * @return an iterator over the items in this value
+     */
+    default java.util.Iterator<XPathValue> sequenceIterator() {
+        return java.util.Collections.singletonList(this).iterator();
     }
 
 }

@@ -43,6 +43,7 @@ public class BasicTransformContext implements TransformContext {
 
     private final CompiledStylesheet stylesheet;
     private final XPathNode contextNode;
+    private final XPathNode xsltCurrentNode;  // The XSLT current() node
     private final int position;
     private final int size;
     private final String currentMode;
@@ -50,22 +51,36 @@ public class BasicTransformContext implements TransformContext {
     private final XPathFunctionLibrary functionLibrary;
     private final TemplateMatcher templateMatcher;
     private final OutputHandler outputHandler;
+    private AccumulatorManager accumulatorManager;
+    private final javax.xml.transform.ErrorListener errorListener;
 
     /**
      * Creates a new transform context.
      */
     public BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
             TemplateMatcher matcher, OutputHandler outputHandler) {
-        this(stylesheet, contextNode, 1, 1, null, new VariableScope(), 
-             XSLTFunctionLibrary.INSTANCE, matcher, outputHandler);
+        this(stylesheet, contextNode, contextNode, 1, 1, null, new VariableScope(), 
+             XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, null);
+    }
+
+    /**
+     * Creates a new transform context with an error listener.
+     */
+    public BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
+            TemplateMatcher matcher, OutputHandler outputHandler,
+            javax.xml.transform.ErrorListener errorListener) {
+        this(stylesheet, contextNode, contextNode, 1, 1, null, new VariableScope(), 
+             XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, errorListener);
     }
 
     private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
-            int position, int size, String currentMode, VariableScope variableScope,
-            XPathFunctionLibrary functionLibrary, TemplateMatcher matcher,
-            OutputHandler outputHandler) {
+            XPathNode xsltCurrentNode, int position, int size, String currentMode, 
+            VariableScope variableScope, XPathFunctionLibrary functionLibrary, 
+            TemplateMatcher matcher, OutputHandler outputHandler, 
+            AccumulatorManager accumulatorManager, javax.xml.transform.ErrorListener errorListener) {
         this.stylesheet = stylesheet;
         this.contextNode = contextNode;
+        this.xsltCurrentNode = xsltCurrentNode;
         this.position = position;
         this.size = size;
         this.currentMode = currentMode;
@@ -73,6 +88,8 @@ public class BasicTransformContext implements TransformContext {
         this.functionLibrary = functionLibrary;
         this.templateMatcher = matcher;
         this.outputHandler = outputHandler;
+        this.accumulatorManager = accumulatorManager;
+        this.errorListener = errorListener;
     }
 
     @Override
@@ -92,26 +109,57 @@ public class BasicTransformContext implements TransformContext {
 
     @Override
     public TransformContext pushVariableScope() {
-        return new BasicTransformContext(stylesheet, contextNode, position, size,
-            currentMode, variableScope.push(), functionLibrary, templateMatcher, outputHandler);
+        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, position, size,
+            currentMode, variableScope.push(), functionLibrary, templateMatcher, 
+            outputHandler, accumulatorManager, errorListener);
     }
 
     @Override
     public TransformContext withMode(String mode) {
-        return new BasicTransformContext(stylesheet, contextNode, position, size,
-            mode, variableScope, functionLibrary, templateMatcher, outputHandler);
+        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, position, size,
+            mode, variableScope, functionLibrary, templateMatcher, 
+            outputHandler, accumulatorManager, errorListener);
     }
 
     @Override
     public TransformContext withContextNode(XPathNode node) {
-        return new BasicTransformContext(stylesheet, node, position, size,
-            currentMode, variableScope, functionLibrary, templateMatcher, outputHandler);
+        // Note: When changing context node for XPath evaluation (e.g., in predicates),
+        // the XSLT current node stays the same. Use withXsltCurrentNode to update it.
+        return new BasicTransformContext(stylesheet, node, xsltCurrentNode, position, size,
+            currentMode, variableScope, functionLibrary, templateMatcher, 
+            outputHandler, accumulatorManager, errorListener);
+    }
+    
+    /**
+     * Creates a new context with a new XSLT current node.
+     * This should be used when entering a new template or for-each iteration.
+     */
+    public TransformContext withXsltCurrentNode(XPathNode node) {
+        return new BasicTransformContext(stylesheet, node, node, position, size,
+            currentMode, variableScope, functionLibrary, templateMatcher, 
+            outputHandler, accumulatorManager, errorListener);
     }
 
     @Override
     public TransformContext withPositionAndSize(int position, int size) {
-        return new BasicTransformContext(stylesheet, contextNode, position, size,
-            currentMode, variableScope, functionLibrary, templateMatcher, outputHandler);
+        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, position, size,
+            currentMode, variableScope, functionLibrary, templateMatcher, 
+            outputHandler, accumulatorManager, errorListener);
+    }
+
+    @Override
+    public TransformContext withVariable(String namespaceURI, String localName, XPathValue value) {
+        // Create new variable scope with the binding
+        VariableScope newScope = variableScope.push();
+        newScope.bind(localName, value);
+        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, position, size,
+            currentMode, newScope, functionLibrary, templateMatcher, 
+            outputHandler, accumulatorManager, errorListener);
+    }
+
+    @Override
+    public javax.xml.transform.ErrorListener getErrorListener() {
+        return errorListener;
     }
 
     @Override
@@ -124,6 +172,11 @@ public class BasicTransformContext implements TransformContext {
     @Override
     public XPathNode getContextNode() {
         return contextNode;
+    }
+    
+    @Override
+    public XPathNode getXsltCurrentNode() {
+        return xsltCurrentNode != null ? xsltCurrentNode : contextNode;
     }
 
     @Override
@@ -183,6 +236,40 @@ public class BasicTransformContext implements TransformContext {
         if (variableScope.lookup(name) == null) {
             variableScope.bind(name, value);
         }
+    }
+
+    /**
+     * Returns the accumulator manager.
+     *
+     * @return the accumulator manager, or null if not set
+     */
+    public AccumulatorManager getAccumulatorManager() {
+        return accumulatorManager;
+    }
+
+    /**
+     * Sets the accumulator manager.
+     *
+     * @param accumulatorManager the accumulator manager
+     */
+    public void setAccumulatorManager(AccumulatorManager accumulatorManager) {
+        this.accumulatorManager = accumulatorManager;
+    }
+
+    @Override
+    public XPathValue getAccumulatorBefore(String name) {
+        if (accumulatorManager != null) {
+            return accumulatorManager.getAccumulatorBefore(name);
+        }
+        return null;
+    }
+
+    @Override
+    public XPathValue getAccumulatorAfter(String name) {
+        if (accumulatorManager != null) {
+            return accumulatorManager.getAccumulatorAfter(name);
+        }
+        return null;
     }
 
 }

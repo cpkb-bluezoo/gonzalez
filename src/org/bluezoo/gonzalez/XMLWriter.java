@@ -517,6 +517,29 @@ public class XMLWriter {
     }
 
     /**
+     * Writes raw content without XML escaping.
+     * <p>
+     * This method is used for XSLT's disable-output-escaping feature.
+     * The text is written directly to the output without escaping
+     * special characters like &lt;, &gt;, or &amp;.
+     * <p>
+     * <b>Warning:</b> Using this method can produce output that is not
+     * well-formed XML. It should only be used when explicitly requested
+     * (e.g., via xsl:value-of disable-output-escaping="yes").
+     *
+     * @param text the raw text to write without escaping
+     * @throws IOException if there is an error writing data
+     */
+    public void writeRaw(String text) throws IOException {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        closePendingStartTag(true);
+        writeRawString(text);
+        sendIfNeeded();
+    }
+
+    /**
      * Writes a CDATA section.
      * <p>
      * Note: If the data contains "]]&gt;", the CDATA section will be split.

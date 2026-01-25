@@ -128,6 +128,14 @@ public class BasicXPathContext implements XPathContext {
             variables, namespaces, functionLibrary);
     }
 
+    @Override
+    public XPathContext withVariable(String namespaceURI, String localName, XPathValue value) {
+        Map<String, XPathValue> newVars = new HashMap<>(variables);
+        newVars.put(makeVariableKey(namespaceURI, localName), value);
+        return new BasicXPathContext(contextNode, contextPosition, contextSize,
+            newVars, namespaces, functionLibrary);
+    }
+
     /**
      * Sets a variable value.
      *

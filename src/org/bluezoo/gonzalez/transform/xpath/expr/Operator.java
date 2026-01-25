@@ -65,7 +65,36 @@ public enum Operator {
     MOD("mod", 6),
 
     // Union operator (highest binary precedence)
-    UNION("|", 7);
+    UNION("|", 7),
+    
+    // XPath 2.0 range operator (between additive and multiplicative)
+    TO("to", 5),
+    
+    // XPath 2.0 value comparison operators (same precedence as general comparison)
+    VALUE_EQUALS("eq", 3),
+    VALUE_NOT_EQUALS("ne", 3),
+    VALUE_LESS_THAN("lt", 4),
+    VALUE_LESS_THAN_OR_EQUAL("le", 4),
+    VALUE_GREATER_THAN("gt", 4),
+    VALUE_GREATER_THAN_OR_EQUAL("ge", 4),
+    
+    // XPath 2.0 node comparison operators (same precedence as value comparison)
+    NODE_IS("is", 3),
+    NODE_PRECEDES("<<", 3),
+    NODE_FOLLOWS(">>", 3),
+    
+    // XPath 2.0 set operators (between union and path)
+    INTERSECT("intersect", 8),
+    EXCEPT("except", 8),
+    
+    // XPath 3.0 string concatenation (between additive and comparison)
+    STRING_CONCAT("||", 4),
+    
+    // XPath 3.0 simple map operator (highest precedence)
+    SIMPLE_MAP("!", 9),
+    
+    // XPath 3.0 arrow operator (very high precedence, right-associative)
+    ARROW("=>", 10);
 
     private final String symbol;
     private final int precedence;
@@ -145,8 +174,44 @@ public enum Operator {
             case DIV: return DIV;
             case MOD: return MOD;
             case PIPE: return UNION;
+            case TO: return TO;
+            case EQ: return VALUE_EQUALS;
+            case NE: return VALUE_NOT_EQUALS;
+            case LT: return VALUE_LESS_THAN;
+            case LE: return VALUE_LESS_THAN_OR_EQUAL;
+            case GT: return VALUE_GREATER_THAN;
+            case GE: return VALUE_GREATER_THAN_OR_EQUAL;
+            // XPath 2.0 node comparison
+            case IS: return NODE_IS;
+            case PRECEDES: return NODE_PRECEDES;
+            case FOLLOWS: return NODE_FOLLOWS;
+            // XPath 2.0 set operators
+            case INTERSECT: return INTERSECT;
+            case EXCEPT: return EXCEPT;
+            // XPath 3.0 operators
+            case CONCAT: return STRING_CONCAT;
+            case BANG: return SIMPLE_MAP;
+            case ARROW: return ARROW;
             default: return null;
         }
+    }
+    
+    /**
+     * Returns true if this is an XPath 2.0 node comparison operator.
+     *
+     * @return true for is, <<, >>
+     */
+    public boolean isNodeComparison() {
+        return this == NODE_IS || this == NODE_PRECEDES || this == NODE_FOLLOWS;
+    }
+    
+    /**
+     * Returns true if this is an XPath 2.0 set operator.
+     *
+     * @return true for intersect, except
+     */
+    public boolean isSetOperator() {
+        return this == INTERSECT || this == EXCEPT || this == UNION;
     }
 
     @Override

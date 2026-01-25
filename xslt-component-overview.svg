@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 380" width="700" height="380">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4a5568"/>
+    </marker>
+    <linearGradient id="factoryGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#faf5ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#e9d8fd;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="templatesGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ebf8ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#bee3f8;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="transformerGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#f0fff4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#c6f6d5;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="componentGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#fffaf0;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#feebc8;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  
+  <style>
+    .title { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 14px; font-weight: 600; fill: #2d3748; }
+    .subtitle { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 10px; fill: #718096; }
+    .label { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 11px; font-weight: 500; fill: #4a5568; }
+    .desc { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 9px; fill: #718096; }
+    .link { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; font-size: 9px; fill: #4a5568; font-style: italic; }
+  </style>
+  
+  <!-- TransformerFactory (top level) -->
+  <rect x="100" y="20" width="500" height="70" rx="8" fill="url(#factoryGrad)" stroke="#805ad5" stroke-width="2"/>
+  <text x="350" y="48" text-anchor="middle" class="title">TransformerFactory</text>
+  <text x="350" y="65" text-anchor="middle" class="subtitle">Creates Templates (compiled stylesheets) and Transformers</text>
+  
+  <!-- Vertical connector from Factory -->
+  <line x1="350" y1="90" x2="350" y2="110" stroke="#4a5568" stroke-width="1.5"/>
+  
+  <!-- Horizontal connector -->
+  <line x1="220" y1="110" x2="480" y2="110" stroke="#4a5568" stroke-width="1.5"/>
+  
+  <!-- Left branch to Templates -->
+  <line x1="220" y1="110" x2="220" y2="130" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arrow)"/>
+  
+  <!-- Right branch to Transformer -->
+  <line x1="480" y1="110" x2="480" y2="130" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arrow)"/>
+  
+  <!-- Templates box -->
+  <rect x="100" y="140" width="240" height="70" rx="6" fill="url(#templatesGrad)" stroke="#3182ce" stroke-width="1.5"/>
+  <text x="220" y="168" text-anchor="middle" class="title">Templates</text>
+  <text x="220" y="185" text-anchor="middle" class="subtitle">(CompiledStylesheet)</text>
+  
+  <!-- Transformer box -->
+  <rect x="360" y="140" width="240" height="70" rx="6" fill="url(#transformerGrad)" stroke="#38a169" stroke-width="1.5"/>
+  <text x="480" y="168" text-anchor="middle" class="title">Transformer</text>
+  <text x="480" y="185" text-anchor="middle" class="subtitle">(Transformation Instance)</text>
+  
+  <!-- "creates" label -->
+  <text x="340" y="178" text-anchor="end" class="link">creates &#x2192;</text>
+  
+  <!-- Connectors from Templates to bottom components -->
+  <line x1="220" y1="210" x2="220" y2="230" stroke="#4a5568" stroke-width="1"/>
+  <line x1="110" y1="230" x2="330" y2="230" stroke="#4a5568" stroke-width="1"/>
+  
+  <line x1="110" y1="230" x2="110" y2="250" stroke="#4a5568" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="220" y1="230" x2="220" y2="250" stroke="#4a5568" stroke-width="1" marker-end="url(#arrow)"/>
+  <line x1="330" y1="230" x2="330" y2="250" stroke="#4a5568" stroke-width="1" marker-end="url(#arrow)"/>
+  
+  <!-- Connector from Transformer to TransformContext -->
+  <line x1="480" y1="210" x2="480" y2="260" stroke="#4a5568" stroke-width="1" marker-end="url(#arrow)"/>
+  
+  <!-- StreamabilityAnalyzer -->
+  <rect x="30" y="260" width="150" height="80" rx="5" fill="url(#componentGrad)" stroke="#dd6b20" stroke-width="1"/>
+  <text x="105" y="285" text-anchor="middle" class="label">Streamability</text>
+  <text x="105" y="300" text-anchor="middle" class="label">Analyzer</text>
+  <text x="105" y="320" text-anchor="middle" class="desc">Compile-time analysis</text>
+  
+  <!-- TemplateRules (AST) -->
+  <rect x="200" y="260" width="110" height="80" rx="5" fill="url(#componentGrad)" stroke="#dd6b20" stroke-width="1"/>
+  <text x="255" y="285" text-anchor="middle" class="label">Template Rules</text>
+  <text x="255" y="302" text-anchor="middle" class="subtitle">(AST)</text>
+  <text x="255" y="320" text-anchor="middle" class="desc">Match patterns</text>
+  
+  <!-- AccumulatorManager -->
+  <rect x="330" y="260" width="110" height="80" rx="5" fill="url(#componentGrad)" stroke="#dd6b20" stroke-width="1"/>
+  <text x="385" y="285" text-anchor="middle" class="label">Accumulator</text>
+  <text x="385" y="302" text-anchor="middle" class="label">Manager</text>
+  <text x="385" y="320" text-anchor="middle" class="desc">State tracking</text>
+  
+  <!-- TransformContext -->
+  <rect x="460" y="260" width="130" height="80" rx="5" fill="url(#componentGrad)" stroke="#dd6b20" stroke-width="1"/>
+  <text x="525" y="285" text-anchor="middle" class="label">TransformContext</text>
+  <text x="525" y="302" text-anchor="middle" class="subtitle">(State)</text>
+  <text x="525" y="320" text-anchor="middle" class="desc">Runtime context</text>
+</svg>

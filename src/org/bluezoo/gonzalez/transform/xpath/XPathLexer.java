@@ -199,15 +199,15 @@ public final class XPathLexer {
                 return currentToken;
 
             case '|':
+                if (position + 1 < length && expression.charAt(position + 1) == '|') {
+                    position += 2;
+                    currentToken = XPathToken.CONCAT;
+                    currentValue = "||";
+                    return currentToken;
+                }
                 position++;
                 currentToken = XPathToken.PIPE;
                 currentValue = "|";
-                return currentToken;
-
-            case '=':
-                position++;
-                currentToken = XPathToken.EQUALS;
-                currentValue = "=";
                 return currentToken;
 
             case '!':
@@ -217,9 +217,9 @@ public final class XPathLexer {
                     currentValue = "!=";
                     return currentToken;
                 }
-                // '!' alone is not valid in XPath
+                // '!' is the simple map operator in XPath 3.0
                 position++;
-                currentToken = XPathToken.ERROR;
+                currentToken = XPathToken.BANG;
                 currentValue = "!";
                 return currentToken;
 
@@ -228,6 +228,12 @@ public final class XPathLexer {
                     position += 2;
                     currentToken = XPathToken.LESS_THAN_OR_EQUAL;
                     currentValue = "<=";
+                    return currentToken;
+                }
+                if (position + 1 < length && expression.charAt(position + 1) == '<') {
+                    position += 2;
+                    currentToken = XPathToken.PRECEDES;
+                    currentValue = "<<";
                     return currentToken;
                 }
                 position++;
@@ -242,9 +248,27 @@ public final class XPathLexer {
                     currentValue = ">=";
                     return currentToken;
                 }
+                if (position + 1 < length && expression.charAt(position + 1) == '>') {
+                    position += 2;
+                    currentToken = XPathToken.FOLLOWS;
+                    currentValue = ">>";
+                    return currentToken;
+                }
                 position++;
                 currentToken = XPathToken.GREATER_THAN;
                 currentValue = ">";
+                return currentToken;
+            
+            case '=':
+                if (position + 1 < length && expression.charAt(position + 1) == '>') {
+                    position += 2;
+                    currentToken = XPathToken.ARROW;
+                    currentValue = "=>";
+                    return currentToken;
+                }
+                position++;
+                currentToken = XPathToken.EQUALS;
+                currentValue = "=";
                 return currentToken;
 
             case '/':
@@ -276,6 +300,12 @@ public final class XPathLexer {
                     position += 2;
                     currentToken = XPathToken.DOUBLE_COLON;
                     currentValue = "::";
+                    return currentToken;
+                }
+                if (position + 1 < length && expression.charAt(position + 1) == '=') {
+                    position += 2;
+                    currentToken = XPathToken.ASSIGN;
+                    currentValue = ":=";
                     return currentToken;
                 }
                 position++;
@@ -417,6 +447,34 @@ public final class XPathLexer {
             }
         }
         
+        // Scientific notation (e.g., 1.5e10, 2E-5, 3e+2)
+        if (position < length) {
+            char c = expression.charAt(position);
+            if (c == 'e' || c == 'E') {
+                int expStart = position;
+                position++;
+                
+                // Optional sign
+                if (position < length) {
+                    char signChar = expression.charAt(position);
+                    if (signChar == '+' || signChar == '-') {
+                        position++;
+                    }
+                }
+                
+                // Exponent digits (required)
+                int digitStart = position;
+                while (position < length && isDigit(expression.charAt(position))) {
+                    position++;
+                }
+                
+                // If no digits after 'e', it's not scientific notation - backtrack
+                if (position == digitStart) {
+                    position = expStart;
+                }
+            }
+        }
+        
         currentValue = expression.substring(start, position);
         currentToken = XPathToken.NUMBER_LITERAL;
         return currentToken;
@@ -469,10 +527,60 @@ public final class XPathLexer {
             return currentToken;
         }
         
+        // Check for XPath 2.0/3.0 expression keywords
+        XPathToken keywordToken = getKeywordToken(name);
+        if (keywordToken != null && isKeywordContext()) {
+            currentToken = keywordToken;
+            currentValue = name;
+            return currentToken;
+        }
+        
         // Regular NCName
         currentToken = XPathToken.NCNAME;
         currentValue = name;
         return currentToken;
+    }
+    
+    /**
+     * Determines if the current context expects an expression keyword.
+     * Keywords like 'if', 'for', 'let', 'some', 'every' start new expressions.
+     */
+    private boolean isKeywordContext() {
+        // Keywords are expected where a new expression can begin
+        if (previousToken == null) {
+            return true;
+        }
+        switch (previousToken) {
+            case LPAREN:
+            case LBRACKET:
+            case COMMA:
+            case PLUS:
+            case MINUS:
+            case STAR:
+            case EQUALS:
+            case NOT_EQUALS:
+            case LESS_THAN:
+            case LESS_THAN_OR_EQUAL:
+            case GREATER_THAN:
+            case GREATER_THAN_OR_EQUAL:
+            case AND:
+            case OR:
+            case PIPE:
+            case SLASH:
+            case DOUBLE_SLASH:
+            case RETURN:
+            case THEN:
+            case ELSE:
+            case SATISFIES:
+            case ASSIGN:
+            case IN:
+            case BANG:
+            case CONCAT:
+            case ARROW:
+                return true;
+            default:
+                return false;
+        }
     }
 
     private XPathToken getAxisToken(String name) {
@@ -510,6 +618,38 @@ public final class XPathLexer {
             case "or": return XPathToken.OR;
             case "mod": return XPathToken.MOD;
             case "div": return XPathToken.DIV;
+            case "to": return XPathToken.TO;
+            case "eq": return XPathToken.EQ;
+            case "ne": return XPathToken.NE;
+            case "lt": return XPathToken.LT;
+            case "le": return XPathToken.LE;
+            case "gt": return XPathToken.GT;
+            case "ge": return XPathToken.GE;
+            // XPath 2.0 node comparison
+            case "is": return XPathToken.IS;
+            // XPath 2.0 set operators
+            case "intersect": return XPathToken.INTERSECT;
+            case "except": return XPathToken.EXCEPT;
+            default: return null;
+        }
+    }
+
+    /**
+     * Returns the keyword token for XPath 2.0/3.0 expression keywords.
+     * These are not operators but structural keywords.
+     */
+    private XPathToken getKeywordToken(String name) {
+        switch (name) {
+            case "if": return XPathToken.IF;
+            case "then": return XPathToken.THEN;
+            case "else": return XPathToken.ELSE;
+            case "for": return XPathToken.FOR;
+            case "let": return XPathToken.LET;
+            case "return": return XPathToken.RETURN;
+            case "in": return XPathToken.IN;
+            case "some": return XPathToken.SOME;
+            case "every": return XPathToken.EVERY;
+            case "satisfies": return XPathToken.SATISFIES;
             default: return null;
         }
     }
@@ -519,7 +659,11 @@ public final class XPathLexer {
      * Used to disambiguate 'and', 'or', 'div', 'mod' from names.
      */
     private boolean isOperatorContext() {
-        // An operator is expected after these tokens
+        // An operator is expected after these tokens (complete expressions)
+        // Note: STAR is NOT included because when * is used as multiplication,
+        // the next token should be an operand, not an operator.
+        // When * is used as wildcard (name test), it's ambiguous, but treating
+        // the next token as a name (not operator) is safer.
         if (previousToken == null) {
             return false;
         }
@@ -527,7 +671,6 @@ public final class XPathLexer {
             case RPAREN:
             case RBRACKET:
             case NCNAME:
-            case STAR:
             case STRING_LITERAL:
             case NUMBER_LITERAL:
             case NODE_TYPE_COMMENT:
@@ -600,6 +743,22 @@ public final class XPathLexer {
      */
     public int getPosition() {
         return position;
+    }
+
+    /**
+     * Restores the lexer state.
+     * Used for lookahead operations that need to revert the lexer to a previous state.
+     *
+     * @param pos the position to restore
+     * @param token the current token to restore
+     * @param value the current value to restore
+     * @param start the token start position to restore
+     */
+    public void restore(int pos, XPathToken token, String value, int start) {
+        this.position = pos;
+        this.currentToken = token;
+        this.currentValue = value;
+        this.tokenStart = start;
     }
 
 }

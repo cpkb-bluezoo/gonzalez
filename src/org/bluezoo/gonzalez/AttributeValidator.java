@@ -281,8 +281,8 @@ class AttributeValidator {
             }
         }
         
-        String[] tokens = value.trim().split("\\s+");
-        if (tokens.length == 0 || (tokens.length == 1 && tokens[0].isEmpty())) {
+        String[] tokens = splitOnWhitespace(value.trim());
+        if (tokens.length == 0) {
             // VC: Attribute Default Legal (Section 3.3.2)
             return "Attribute '" + attrName + "' value is empty (NMTOKENS requires at least one Nmtoken)";
         }
@@ -353,8 +353,8 @@ class AttributeValidator {
             return "Attribute '" + attrName + "' value is empty (IDREFS requires at least one Name)";
         }
         
-        String[] tokens = value.trim().split("\\s+");
-        if (tokens.length == 0 || (tokens.length == 1 && tokens[0].isEmpty())) {
+        String[] tokens = splitOnWhitespace(value.trim());
+        if (tokens.length == 0) {
             // VC: Attribute Default Legal (Section 3.3.2)
             return "Attribute '" + attrName + "' value is empty (IDREFS requires at least one Name)";
         }
@@ -393,7 +393,7 @@ class AttributeValidator {
      * Validates ENTITIES attribute value (space-separated list).
      */
     private String validateEntities(String value, String attrName) {
-        String[] tokens = value.trim().split("\\s+");
+        String[] tokens = splitOnWhitespace(value.trim());
         for (String token : tokens) {
             String error = validateEntity(token, attrName);
             if (error != null) {
@@ -465,6 +465,36 @@ class AttributeValidator {
             }
         }
         return null;
+    }
+    
+    /**
+     * Splits a string on whitespace characters without using regex.
+     */
+    private static String[] splitOnWhitespace(String s) {
+        if (s == null) {
+            return new String[0];
+        }
+        List<String> result = new ArrayList<>();
+        int len = s.length();
+        int start = -1;
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            boolean isWhitespace = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+            if (isWhitespace) {
+                if (start >= 0) {
+                    result.add(s.substring(start, i));
+                    start = -1;
+                }
+            } else {
+                if (start < 0) {
+                    start = i;
+                }
+            }
+        }
+        if (start >= 0) {
+            result.add(s.substring(start));
+        }
+        return result.toArray(new String[0]);
     }
 }
 

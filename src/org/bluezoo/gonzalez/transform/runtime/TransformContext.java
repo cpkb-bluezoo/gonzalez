@@ -108,4 +108,14 @@ public interface TransformContext extends XPathContext {
      */
     XPathValue evaluateXPath(XPathExpression expression) throws XPathException;
 
+    /**
+     * Returns the error listener for this transformation, if any.
+     *
+     * <p>The error listener receives warnings and errors from xsl:message
+     * and other error reporting mechanisms.
+     *
+     * @return the error listener, or null if none is set
+     */
+    javax.xml.transform.ErrorListener getErrorListener();
+
 }

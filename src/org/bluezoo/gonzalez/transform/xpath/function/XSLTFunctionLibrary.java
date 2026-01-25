@@ -21,7 +21,12 @@
 
 package org.bluezoo.gonzalez.transform.xpath.function;
 
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.KeyDefinition;
+import org.bluezoo.gonzalez.transform.compiler.Pattern;
+import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
@@ -74,6 +79,14 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         map.put("function-available", new FunctionAvailableFunction());
         map.put("unparsed-entity-uri", new UnparsedEntityUriFunction());
         
+        // XSLT 3.0 accumulator functions
+        map.put("accumulator-before", new AccumulatorBeforeFunction());
+        map.put("accumulator-after", new AccumulatorAfterFunction());
+        
+        // XSLT 2.0 grouping functions
+        map.put("current-group", new CurrentGroupFunction());
+        map.put("current-grouping-key", new CurrentGroupingKeyFunction());
+        
         this.xsltFunctions = Collections.unmodifiableMap(map);
     }
 
@@ -115,7 +128,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     // XSLT Function Implementations
     // ========================================================================
 
-    /** current() - Returns the current node being processed. */
+    /** current() - Returns the XSLT current node being processed. */
     private static class CurrentFunction implements Function {
         @Override
         public String getName() { return "current"; }
@@ -128,7 +141,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            XPathNode node = context.getContextNode();
+            // Use getXsltCurrentNode() to get the XSLT current node,
+            // which stays the same during predicate evaluation unlike the context node
+            XPathNode node = context.getXsltCurrentNode();
             if (node == null) {
                 return XPathNodeSet.empty();
             }
@@ -151,8 +166,104 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            // TODO: Implement proper key lookup
-            return XPathNodeSet.empty();
+            String keyName = args.get(0).asString();
+            XPathValue keyValue = args.get(1);
+            
+            // Get the stylesheet from context (must be TransformContext)
+            if (!(context instanceof TransformContext)) {
+                return XPathNodeSet.empty();
+            }
+            TransformContext txContext = (TransformContext) context;
+            CompiledStylesheet stylesheet = txContext.getStylesheet();
+            
+            KeyDefinition keyDef = stylesheet.getKeyDefinition(keyName);
+            if (keyDef == null) {
+                return XPathNodeSet.empty();
+            }
+            
+            // Get the document root
+            XPathNode contextNode = context.getContextNode();
+            if (contextNode == null) {
+                return XPathNodeSet.empty();
+            }
+            XPathNode root = contextNode.getRoot();
+            if (root == null) {
+                return XPathNodeSet.empty();
+            }
+            
+            // Build key index and look up nodes
+            // For node-set key values, check each node's string value
+            List<String> searchValues = new ArrayList<>();
+            if (keyValue instanceof XPathNodeSet) {
+                for (XPathNode node : ((XPathNodeSet) keyValue).getNodes()) {
+                    searchValues.add(node.getStringValue());
+                }
+            } else {
+                searchValues.add(keyValue.asString());
+            }
+            
+            // Find all matching nodes
+            List<XPathNode> result = new ArrayList<>();
+            Pattern matchPattern = keyDef.getMatchPattern();
+            XPathExpression useExpr = keyDef.getUseExpr();
+            
+            // Walk the document tree and find matches
+            collectKeyMatches(root, matchPattern, useExpr, searchValues, result, txContext);
+            
+            return new XPathNodeSet(result);
+        }
+        
+        /**
+         * Recursively collects nodes that match the key definition and have
+         * matching key values.
+         */
+        private void collectKeyMatches(XPathNode node, Pattern matchPattern, 
+                                       XPathExpression useExpr, List<String> searchValues,
+                                       List<XPathNode> result, TransformContext context) 
+                                       throws XPathException {
+            // Check if this node matches the key pattern
+            if (matchPattern.matches(node, context)) {
+                // Evaluate the use expression for this node
+                XPathContext nodeContext = context.withContextNode(node);
+                XPathValue useValue = useExpr.evaluate(nodeContext);
+                
+                // Get the key value(s) for this node
+                List<String> nodeKeyValues = new ArrayList<>();
+                if (useValue instanceof XPathNodeSet) {
+                    for (XPathNode n : ((XPathNodeSet) useValue).getNodes()) {
+                        nodeKeyValues.add(n.getStringValue());
+                    }
+                } else {
+                    nodeKeyValues.add(useValue.asString());
+                }
+                
+                // Check if any of this node's key values match our search values
+                for (String nodeKey : nodeKeyValues) {
+                    for (String searchKey : searchValues) {
+                        if (nodeKey.equals(searchKey)) {
+                            // Avoid duplicates
+                            boolean found = false;
+                            for (XPathNode existing : result) {
+                                if (existing.isSameNode(node)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) {
+                                result.add(node);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Recurse into children
+            java.util.Iterator<XPathNode> children = node.getChildren();
+            while (children.hasNext()) {
+                collectKeyMatches(children.next(), matchPattern, useExpr, 
+                                  searchValues, result, context);
+            }
         }
     }
 
@@ -187,18 +298,157 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            double number = args.get(0).asNumber();
-            String pattern = args.get(1).asString();
+            XPathValue numArg = args.size() > 0 ? args.get(0) : null;
+            XPathValue patArg = args.size() > 1 ? args.get(1) : null;
+            String formatName = args.size() > 2 ? args.get(2).asString() : null;
+            
+            double number = (numArg != null) ? numArg.asNumber() : Double.NaN;
+            String pattern = (patArg != null) ? patArg.asString() : "#";
+            
+            // Get decimal format from stylesheet if available
+            CompiledStylesheet.DecimalFormatInfo decFormat = null;
+            if (context instanceof org.bluezoo.gonzalez.transform.runtime.TransformContext) {
+                org.bluezoo.gonzalez.transform.runtime.TransformContext tc = 
+                    (org.bluezoo.gonzalez.transform.runtime.TransformContext) context;
+                CompiledStylesheet stylesheet = tc.getStylesheet();
+                if (stylesheet != null) {
+                    decFormat = stylesheet.getDecimalFormat(formatName);
+                }
+            }
+            
+            // Default format symbols
+            char decimalSep = '.';
+            char groupingSep = ',';
+            char minusSign = '-';
+            char percent = '%';
+            char perMille = '\u2030';
+            char zeroDigit = '0';
+            char digit = '#';
+            char patternSep = ';';
+            String infinity = "Infinity";
+            String nan = "NaN";
+            
+            // Apply custom format if available
+            if (decFormat != null) {
+                decimalSep = decFormat.decimalSeparator;
+                groupingSep = decFormat.groupingSeparator;
+                minusSign = decFormat.minusSign;
+                percent = decFormat.percent;
+                perMille = decFormat.perMille;
+                zeroDigit = decFormat.zeroDigit;
+                digit = decFormat.digit;
+                patternSep = decFormat.patternSeparator;
+                infinity = decFormat.infinity;
+                nan = decFormat.nan;
+            }
+            
+            // Handle special values
+            if (Double.isNaN(number)) {
+                return XPathString.of(nan);
+            }
+            if (Double.isInfinite(number)) {
+                if (number < 0) {
+                    return XPathString.of(String.valueOf(minusSign) + infinity);
+                }
+                return XPathString.of(infinity);
+            }
+            
+            // Check for per-mille or percent in pattern (for custom char restoration later)
+            boolean hasPerMille = pattern.indexOf(perMille) >= 0;
+            boolean hasPercent = pattern.indexOf(percent) >= 0;
+            
+            // NOTE: We do NOT multiply here. Java's DecimalFormat automatically
+            // multiplies by 100 for % and 1000 for ‰ when these symbols appear
+            // in the pattern.
+            
+            // Translate pattern to Java DecimalFormat syntax
+            String javaPattern = translatePattern(pattern, decimalSep, groupingSep, 
+                minusSign, percent, perMille, zeroDigit, digit, patternSep);
             
             try {
-                java.text.DecimalFormat df = new java.text.DecimalFormat(pattern);
-                return XPathString.of(df.format(number));
+                java.text.DecimalFormatSymbols symbols = new java.text.DecimalFormatSymbols();
+                symbols.setDecimalSeparator(decimalSep);
+                symbols.setGroupingSeparator(groupingSep);
+                // Don't set custom minus sign in symbols - we'll handle it manually
+                // Java DecimalFormat treats '-' in pattern prefix as "use minus sign symbol"
+                // but XSLT treats '-' in an explicit negative subpattern as literal
+                symbols.setPercent(percent);
+                symbols.setPerMill(perMille);
+                symbols.setZeroDigit(zeroDigit);
+                symbols.setDigit(digit);
+                symbols.setPatternSeparator(patternSep);
+                symbols.setInfinity(infinity);
+                symbols.setNaN(nan);
+                
+                java.text.DecimalFormat df = new java.text.DecimalFormat(javaPattern, symbols);
+                String result = df.format(number);
+                
+                // Apply custom minus sign only when using DEFAULT negative prefix
+                // (i.e., pattern has no explicit negative subpattern)
+                boolean hasExplicitNegativeSubpattern = pattern.indexOf(patternSep) >= 0;
+                if (!hasExplicitNegativeSubpattern && number < 0 && minusSign != '-') {
+                    // Replace the default minus with custom minus sign
+                    if (result.startsWith("-")) {
+                        result = minusSign + result.substring(1);
+                    }
+                }
+                
+                // Restore custom per-mille/percent characters in output
+                if (hasPerMille && perMille != '\u2030') {
+                    result = result.replace('\u2030', perMille);
+                }
+                if (hasPercent && percent != '%') {
+                    result = result.replace('%', percent);
+                }
+                
+                return XPathString.of(result);
             } catch (IllegalArgumentException e) {
+                // Fallback for invalid patterns
                 if (number == Math.floor(number) && !Double.isInfinite(number)) {
                     return XPathString.of(String.valueOf((long) number));
                 }
                 return XPathString.of(String.valueOf(number));
             }
+        }
+        
+        private String translatePattern(String pattern, char decimalSep, char groupingSep,
+                char minusSign, char percent, char perMille, char zeroDigit, char digit,
+                char patternSep) {
+            // If all symbols are default, no translation needed
+            if (decimalSep == '.' && groupingSep == ',' &&
+                percent == '%' && perMille == '\u2030' && zeroDigit == '0' &&
+                digit == '#' && patternSep == ';') {
+                return pattern;
+            }
+            
+            // Translate custom symbols to Java DecimalFormat standard symbols
+            // NOTE: We do NOT translate minusSign here because in XSLT patterns,
+            // the minus character in a prefix/suffix is a LITERAL character,
+            // not the special minus-sign symbol. The minus-sign attribute only
+            // affects the DEFAULT negative prefix (when no explicit negative
+            // subpattern is given).
+            StringBuilder sb = new StringBuilder(pattern.length());
+            for (int i = 0; i < pattern.length(); i++) {
+                char c = pattern.charAt(i);
+                if (c == decimalSep) {
+                    sb.append('.');
+                } else if (c == groupingSep) {
+                    sb.append(',');
+                } else if (c == percent) {
+                    sb.append('%');
+                } else if (c == perMille) {
+                    sb.append('\u2030');
+                } else if (c == zeroDigit) {
+                    sb.append('0');
+                } else if (c == digit) {
+                    sb.append('#');
+                } else if (c == patternSep) {
+                    sb.append(';');
+                } else {
+                    sb.append(c);
+                }
+            }
+            return sb.toString();
         }
     }
 
@@ -363,6 +613,137 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             // Would need access to DTD declarations
             return XPathString.of("");
+        }
+    }
+
+    // ========================================================================
+    // XSLT 3.0 Accumulator Functions
+    // ========================================================================
+
+    /**
+     * accumulator-before(name) - Returns the accumulator value before processing
+     * the current node.
+     *
+     * <p>This function returns the value of the named accumulator before any
+     * accumulator rules have fired for the current node. It is typically used
+     * in pre-descent rules to access the value from the parent context.
+     */
+    private static class AccumulatorBeforeFunction implements Function {
+        @Override
+        public String getName() { return "accumulator-before"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 1; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String name = args.get(0).asString();
+            
+            // Get accumulator value from context
+            XPathValue value = context.getAccumulatorBefore(name);
+            if (value != null) {
+                return value;
+            }
+            
+            // Accumulator not found
+            throw new XPathException("Unknown accumulator: " + name);
+        }
+    }
+
+    // ========================================================================
+    // XSLT 2.0 Grouping Functions
+    // ========================================================================
+
+    /**
+     * current-group() - Returns the items in the current group during
+     * xsl:for-each-group iteration.
+     */
+    private static class CurrentGroupFunction implements Function {
+        @Override
+        public String getName() { return "current-group"; }
+        
+        @Override
+        public int getMinArgs() { return 0; }
+        
+        @Override
+        public int getMaxArgs() { return 0; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // Look for current group in variable scope
+            XPathValue group = context.getVariable(null, "__current_group__");
+            if (group != null && group.isNodeSet()) {
+                return group;
+            }
+            // Return empty sequence if not in grouping context
+            return XPathNodeSet.empty();
+        }
+    }
+
+    /**
+     * current-grouping-key() - Returns the grouping key for the current group
+     * during xsl:for-each-group iteration.
+     */
+    private static class CurrentGroupingKeyFunction implements Function {
+        @Override
+        public String getName() { return "current-grouping-key"; }
+        
+        @Override
+        public int getMinArgs() { return 0; }
+        
+        @Override
+        public int getMaxArgs() { return 0; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // Look for grouping key in variable scope
+            XPathValue key = context.getVariable(null, "__current_grouping_key__");
+            if (key != null) {
+                return key;
+            }
+            // Return empty string if not in grouping context
+            return XPathString.of("");
+        }
+    }
+
+    // ========================================================================
+    // XSLT 3.0 Accumulator Functions
+    // ========================================================================
+
+    /**
+     * accumulator-after(name) - Returns the accumulator value after processing
+     * the current node.
+     *
+     * <p>This function returns the value of the named accumulator after all
+     * accumulator rules have fired for the current node and its descendants.
+     * It is typically used to access the final accumulated value at the end
+     * of processing.
+     */
+    private static class AccumulatorAfterFunction implements Function {
+        @Override
+        public String getName() { return "accumulator-after"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 1; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String name = args.get(0).asString();
+            
+            // Get accumulator value from context
+            XPathValue value = context.getAccumulatorAfter(name);
+            if (value != null) {
+                return value;
+            }
+            
+            // Accumulator not found
+            throw new XPathException("Unknown accumulator: " + name);
         }
     }
 }

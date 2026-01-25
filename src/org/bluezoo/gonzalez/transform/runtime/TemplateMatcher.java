@@ -86,7 +86,7 @@ public final class TemplateMatcher {
     
     /**
      * Comparator for template rules: higher import precedence wins,
-     * then higher priority wins.
+     * then higher priority wins. When tied, later-declared wins (higher index).
      */
     private static final Comparator<TemplateRule> TEMPLATE_PRECEDENCE_COMPARATOR = 
         new Comparator<TemplateRule>() {
@@ -98,7 +98,13 @@ public final class TemplateMatcher {
                     return precDiff;
                 }
                 // Then by priority (higher wins)
-                return Double.compare(b.getPriority(), a.getPriority());
+                int priDiff = Double.compare(b.getPriority(), a.getPriority());
+                if (priDiff != 0) {
+                    return priDiff;
+                }
+                // When tied, later-declared template wins (higher declaration index)
+                // XSLT 1.0 spec: "recover by choosing the one that occurs last"
+                return b.getDeclarationIndex() - a.getDeclarationIndex();
             }
         };
 

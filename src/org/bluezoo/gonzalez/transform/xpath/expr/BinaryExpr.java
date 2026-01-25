@@ -26,10 +26,15 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A binary expression (left op right).
@@ -77,6 +82,15 @@ public final class BinaryExpr implements Expr {
             case GREATER_THAN:
             case GREATER_THAN_OR_EQUAL:
                 return evaluateComparison(context);
+                
+            // XPath 2.0 value comparison operators (behave like general comparison for atomics)
+            case VALUE_EQUALS:
+            case VALUE_NOT_EQUALS:
+            case VALUE_LESS_THAN:
+            case VALUE_LESS_THAN_OR_EQUAL:
+            case VALUE_GREATER_THAN:
+            case VALUE_GREATER_THAN_OR_EQUAL:
+                return evaluateValueComparison(context);
 
             // Arithmetic operators
             case PLUS:
@@ -89,6 +103,34 @@ public final class BinaryExpr implements Expr {
             // Union operator
             case UNION:
                 return evaluateUnion(context);
+                
+            // XPath 2.0 range operator
+            case TO:
+                return evaluateRange(context);
+                
+            // XPath 2.0 node comparison operators
+            case NODE_IS:
+            case NODE_PRECEDES:
+            case NODE_FOLLOWS:
+                return evaluateNodeComparison(context);
+                
+            // XPath 2.0 set operators
+            case INTERSECT:
+                return evaluateIntersect(context);
+            case EXCEPT:
+                return evaluateExcept(context);
+                
+            // XPath 3.0 string concatenation
+            case STRING_CONCAT:
+                return evaluateStringConcat(context);
+                
+            // XPath 3.0 simple map operator
+            case SIMPLE_MAP:
+                return evaluateSimpleMap(context);
+                
+            // XPath 3.0 arrow operator
+            case ARROW:
+                return evaluateArrow(context);
 
             default:
                 throw new XPathException("Unknown operator: " + operator);
@@ -114,6 +156,14 @@ public final class BinaryExpr implements Expr {
     private XPathValue evaluateComparison(XPathContext context) throws XPathException {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
+
+        // Handle null values - treat as empty string
+        if (leftVal == null) {
+            leftVal = XPathString.EMPTY;
+        }
+        if (rightVal == null) {
+            rightVal = XPathString.EMPTY;
+        }
 
         // XPath 1.0 Section 3.4: Comparisons involving node-sets
         if (leftVal.isNodeSet() || rightVal.isNodeSet()) {
@@ -247,8 +297,12 @@ public final class BinaryExpr implements Expr {
     }
 
     private XPathValue evaluateArithmetic(XPathContext context) throws XPathException {
-        double leftNum = left.evaluate(context).asNumber();
-        double rightNum = right.evaluate(context).asNumber();
+        XPathValue leftVal = left.evaluate(context);
+        XPathValue rightVal = right.evaluate(context);
+        
+        // Handle null values as NaN
+        double leftNum = (leftVal != null) ? leftVal.asNumber() : Double.NaN;
+        double rightNum = (rightVal != null) ? rightVal.asNumber() : Double.NaN;
 
         double result;
         switch (operator) {
@@ -291,6 +345,312 @@ public final class BinaryExpr implements Expr {
         }
 
         return leftVal.asNodeSet().union(rightVal.asNodeSet());
+    }
+
+    /**
+     * Evaluates an XPath 2.0 value comparison (eq, ne, lt, le, gt, ge).
+     * For XPath 1.0 compatibility, this behaves like general comparison for atomic values.
+     */
+    private XPathValue evaluateValueComparison(XPathContext context) throws XPathException {
+        XPathValue leftVal = left.evaluate(context);
+        XPathValue rightVal = right.evaluate(context);
+        
+        // Handle null values
+        if (leftVal == null || rightVal == null) {
+            // Null comparisons: eq returns false, ne returns true for null vs non-null
+            if (operator == Operator.VALUE_NOT_EQUALS) {
+                return XPathBoolean.of(leftVal != rightVal);
+            }
+            return XPathBoolean.FALSE;
+        }
+        
+        // Try numeric comparison first
+        double leftNum = leftVal.asNumber();
+        double rightNum = rightVal.asNumber();
+        
+        // If both are valid numbers (not NaN), use numeric comparison
+        if (!Double.isNaN(leftNum) && !Double.isNaN(rightNum)) {
+            return XPathBoolean.of(compareValuesNumeric(leftNum, rightNum));
+        }
+        
+        // String comparison
+        String leftStr = leftVal.asString();
+        String rightStr = rightVal.asString();
+        return XPathBoolean.of(compareValuesString(leftStr, rightStr));
+    }
+    
+    private boolean compareValuesNumeric(double a, double b) {
+        switch (operator) {
+            case VALUE_EQUALS: return a == b;
+            case VALUE_NOT_EQUALS: return a != b;
+            case VALUE_LESS_THAN: return a < b;
+            case VALUE_LESS_THAN_OR_EQUAL: return a <= b;
+            case VALUE_GREATER_THAN: return a > b;
+            case VALUE_GREATER_THAN_OR_EQUAL: return a >= b;
+            default: return false;
+        }
+    }
+    
+    private boolean compareValuesString(String a, String b) {
+        int cmp = a.compareTo(b);
+        switch (operator) {
+            case VALUE_EQUALS: return cmp == 0;
+            case VALUE_NOT_EQUALS: return cmp != 0;
+            case VALUE_LESS_THAN: return cmp < 0;
+            case VALUE_LESS_THAN_OR_EQUAL: return cmp <= 0;
+            case VALUE_GREATER_THAN: return cmp > 0;
+            case VALUE_GREATER_THAN_OR_EQUAL: return cmp >= 0;
+            default: return false;
+        }
+    }
+
+    /**
+     * Evaluates an XPath 2.0 range expression (e.g., 1 to 5).
+     * Returns a sequence of integers from left to right (inclusive).
+     */
+    private XPathValue evaluateRange(XPathContext context) throws XPathException {
+        int start = (int) left.evaluate(context).asNumber();
+        int end = (int) right.evaluate(context).asNumber();
+        
+        // If start > end, return empty sequence
+        if (start > end) {
+            return XPathSequence.EMPTY;
+        }
+        
+        // Return a sequence of integers
+        List<XPathValue> items = new ArrayList<>();
+        for (int i = start; i <= end; i++) {
+            items.add(XPathNumber.of(i));
+        }
+        return XPathSequence.fromList(items);
+    }
+
+    /**
+     * Evaluates XPath 2.0 node comparison operators (is, <<, >>).
+     */
+    private XPathValue evaluateNodeComparison(XPathContext context) throws XPathException {
+        XPathValue leftVal = left.evaluate(context);
+        XPathValue rightVal = right.evaluate(context);
+        
+        // Node comparisons require single nodes
+        XPathNode leftNode = getSingleNode(leftVal);
+        XPathNode rightNode = getSingleNode(rightVal);
+        
+        if (leftNode == null || rightNode == null) {
+            // Empty sequence results in empty sequence (which is falsy)
+            return XPathBoolean.FALSE;
+        }
+        
+        switch (operator) {
+            case NODE_IS:
+                // Returns true if both operands are the same node
+                return XPathBoolean.of(leftNode == rightNode || leftNode.equals(rightNode));
+                
+            case NODE_PRECEDES:
+                // Returns true if left node precedes right in document order
+                return XPathBoolean.of(leftNode.getDocumentOrder() < rightNode.getDocumentOrder());
+                
+            case NODE_FOLLOWS:
+                // Returns true if left node follows right in document order
+                return XPathBoolean.of(leftNode.getDocumentOrder() > rightNode.getDocumentOrder());
+                
+            default:
+                throw new XPathException("Unknown node comparison operator: " + operator);
+        }
+    }
+    
+    /**
+     * Extracts a single node from a value, or null if empty/multiple.
+     */
+    private XPathNode getSingleNode(XPathValue value) {
+        if (value == null) return null;
+        
+        if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            if (ns.size() == 1) {
+                return ns.iterator().next();
+            }
+            return null;
+        }
+        
+        // Check if it's a single-item sequence containing a node
+        if (value.sequenceSize() == 1) {
+            Iterator<XPathValue> iter = value.sequenceIterator();
+            if (iter.hasNext()) {
+                XPathValue item = iter.next();
+                if (item.isNodeSet()) {
+                    XPathNodeSet ns = item.asNodeSet();
+                    if (ns.size() == 1) {
+                        return ns.iterator().next();
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * Evaluates XPath 2.0 intersect operator.
+     * Returns the intersection of two node sequences.
+     */
+    private XPathValue evaluateIntersect(XPathContext context) throws XPathException {
+        XPathValue leftVal = left.evaluate(context);
+        XPathValue rightVal = right.evaluate(context);
+        
+        if (leftVal == null) leftVal = XPathNodeSet.empty();
+        if (rightVal == null) rightVal = XPathNodeSet.empty();
+        
+        if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
+            throw new XPathException("intersect operator requires node-set operands");
+        }
+        
+        XPathNodeSet leftSet = leftVal.asNodeSet();
+        XPathNodeSet rightSet = rightVal.asNodeSet();
+        
+        // Build set of right nodes for efficient lookup
+        Set<XPathNode> rightNodes = new HashSet<>();
+        for (XPathNode node : rightSet) {
+            rightNodes.add(node);
+        }
+        
+        // Find nodes in both sets
+        List<XPathNode> result = new ArrayList<>();
+        for (XPathNode node : leftSet) {
+            if (rightNodes.contains(node)) {
+                result.add(node);
+            }
+        }
+        
+        return new XPathNodeSet(result);
+    }
+
+    /**
+     * Evaluates XPath 2.0 except operator.
+     * Returns nodes in left set that are not in right set.
+     */
+    private XPathValue evaluateExcept(XPathContext context) throws XPathException {
+        XPathValue leftVal = left.evaluate(context);
+        XPathValue rightVal = right.evaluate(context);
+        
+        if (leftVal == null) leftVal = XPathNodeSet.empty();
+        if (rightVal == null) rightVal = XPathNodeSet.empty();
+        
+        if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
+            throw new XPathException("except operator requires node-set operands");
+        }
+        
+        XPathNodeSet leftSet = leftVal.asNodeSet();
+        XPathNodeSet rightSet = rightVal.asNodeSet();
+        
+        // Build set of right nodes for efficient lookup
+        Set<XPathNode> rightNodes = new HashSet<>();
+        for (XPathNode node : rightSet) {
+            rightNodes.add(node);
+        }
+        
+        // Find nodes in left but not in right
+        List<XPathNode> result = new ArrayList<>();
+        for (XPathNode node : leftSet) {
+            if (!rightNodes.contains(node)) {
+                result.add(node);
+            }
+        }
+        
+        return new XPathNodeSet(result);
+    }
+
+    /**
+     * Evaluates XPath 3.0 string concatenation operator (||).
+     */
+    private XPathValue evaluateStringConcat(XPathContext context) throws XPathException {
+        XPathValue leftVal = left.evaluate(context);
+        XPathValue rightVal = right.evaluate(context);
+        
+        String leftStr = leftVal != null ? leftVal.asString() : "";
+        String rightStr = rightVal != null ? rightVal.asString() : "";
+        
+        return XPathString.of(leftStr + rightStr);
+    }
+
+    /**
+     * Evaluates XPath 3.0 simple map operator (!).
+     * For each item in the left operand, evaluates the right operand
+     * with that item as context and concatenates the results.
+     */
+    private XPathValue evaluateSimpleMap(XPathContext context) throws XPathException {
+        XPathValue leftVal = left.evaluate(context);
+        List<XPathValue> results = new ArrayList<>();
+        
+        // Iterate over left operand items
+        Iterator<XPathValue> iter = leftVal.sequenceIterator();
+        int position = 0;
+        int size = leftVal.sequenceSize();
+        
+        while (iter.hasNext()) {
+            XPathValue item = iter.next();
+            position++;
+            
+            // Create context with current item
+            XPathContext itemContext;
+            if (item.isNodeSet()) {
+                XPathNodeSet ns = item.asNodeSet();
+                if (ns.size() == 1) {
+                    itemContext = context.withContextNode(ns.iterator().next())
+                        .withPositionAndSize(position, size);
+                } else {
+                    itemContext = context.withPositionAndSize(position, size);
+                }
+            } else {
+                itemContext = context.withPositionAndSize(position, size);
+            }
+            
+            // Evaluate right expression
+            XPathValue result = right.evaluate(itemContext);
+            
+            // Add to results (flatten sequences)
+            if (result.isSequence()) {
+                Iterator<XPathValue> resIter = result.sequenceIterator();
+                while (resIter.hasNext()) {
+                    results.add(resIter.next());
+                }
+            } else {
+                results.add(result);
+            }
+        }
+        
+        return XPathSequence.fromList(results);
+    }
+
+    /**
+     * Evaluates XPath 3.0 arrow operator (=>).
+     * expr => func($arg1, $arg2) is equivalent to func(expr, $arg1, $arg2)
+     * 
+     * Note: This is a simplified implementation. Full arrow operator
+     * requires the right operand to be a function call that gets the
+     * left operand inserted as first argument.
+     */
+    private XPathValue evaluateArrow(XPathContext context) throws XPathException {
+        // The arrow operator requires special handling in the parser
+        // to properly transform the function call.
+        // For now, we just evaluate left and apply right as a simple call.
+        XPathValue leftVal = left.evaluate(context);
+        
+        // If right is a function call, we need to insert leftVal as first arg
+        // This is a simplified implementation that evaluates both sides
+        if (right instanceof FunctionCall) {
+            FunctionCall func = (FunctionCall) right;
+            // Create new argument list with left value prepended
+            List<XPathValue> args = new ArrayList<>();
+            args.add(leftVal);
+            
+            // Invoke the function with left value as first argument
+            return context.getFunctionLibrary()
+                .invokeFunction(func.getPrefix(), func.getLocalName(), args, context);
+        }
+        
+        // Fallback: just return left value (shouldn't happen with proper parsing)
+        return leftVal;
     }
 
     /**

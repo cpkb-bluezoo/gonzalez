@@ -373,4 +373,28 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         return "XPathNodeSet[size=" + nodes.size() + "]";
     }
 
+    @Override
+    public int sequenceSize() {
+        return nodes.size();
+    }
+
+    @Override
+    public java.util.Iterator<XPathValue> sequenceIterator() {
+        ensureSorted();
+        // Convert nodes to XPathValue iterator
+        return new java.util.Iterator<XPathValue>() {
+            private final java.util.Iterator<XPathNode> nodeIter = nodes.iterator();
+            
+            @Override
+            public boolean hasNext() {
+                return nodeIter.hasNext();
+            }
+            
+            @Override
+            public XPathValue next() {
+                return XPathNodeSet.of(nodeIter.next());
+            }
+        };
+    }
+
 }

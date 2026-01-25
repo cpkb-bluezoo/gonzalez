@@ -23,7 +23,10 @@ package org.bluezoo.gonzalez.transform;
 
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
+import org.bluezoo.gonzalez.transform.runtime.HTMLOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.TextOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.xml.sax.*;
 import org.xml.sax.helpers.XMLReaderFactory;
 
@@ -111,11 +114,18 @@ public class GonzalezTransformer extends Transformer {
         
         // Create the transformation pipeline
         GonzalezTransformHandler transformHandler = 
-            new GonzalezTransformHandler(stylesheet, parameters, outputHandler);
+            new GonzalezTransformHandler(stylesheet, parameters, outputHandler, errorListener);
         
         // Parse input through the transform
         XMLReader reader = getXMLReader(source);
         reader.setContentHandler(transformHandler);
+        
+        // Set up LexicalHandler to receive comment events
+        try {
+            reader.setProperty("http://xml.org/sax/properties/lexical-handler", transformHandler);
+        } catch (SAXException e) {
+            // LexicalHandler not supported - comments won't be available
+        }
         
         InputSource inputSource = getInputSource(source);
         reader.parse(inputSource);
@@ -141,20 +151,47 @@ public class GonzalezTransformer extends Transformer {
     private InputSource getInputSource(Source source) throws TransformerException {
         if (source instanceof StreamSource) {
             StreamSource ss = (StreamSource) source;
-            InputSource is;
+            InputSource is = new InputSource();
+            
             if (ss.getInputStream() != null) {
-                is = new InputSource(ss.getInputStream());
+                is.setByteStream(ss.getInputStream());
+            } else if (ss.getSystemId() != null) {
+                // Open stream from systemId
+                try {
+                    is.setByteStream(openStream(ss.getSystemId()));
+                } catch (IOException e) {
+                    throw new TransformerException("Failed to open: " + ss.getSystemId(), e);
+                }
             } else if (ss.getReader() != null) {
-                is = new InputSource(ss.getReader());
+                // Gonzalez parser requires byte streams for encoding detection
+                // TODO: Consider adding Reader support via ExternalEntityDecoder
+                throw new TransformerException("StreamSource with Reader not supported - use InputStream or SystemId");
             } else {
-                is = new InputSource(ss.getSystemId());
+                throw new TransformerException("StreamSource has no InputStream or SystemId");
             }
             is.setSystemId(ss.getSystemId());
             return is;
         }
         
         if (source instanceof SAXSource) {
-            return ((SAXSource) source).getInputSource();
+            SAXSource saxSource = (SAXSource) source;
+            InputSource is = saxSource.getInputSource();
+            // Verify byte stream is available for Gonzalez parser
+            if (is != null && is.getByteStream() == null) {
+                if (is.getCharacterStream() != null) {
+                    // TODO: Consider adding Reader support via ExternalEntityDecoder
+                    throw new TransformerException("InputSource with Reader not supported - use byte stream");
+                }
+                // Try to open from systemId
+                if (is.getSystemId() != null) {
+                    try {
+                        is.setByteStream(openStream(is.getSystemId()));
+                    } catch (IOException e) {
+                        throw new TransformerException("Failed to open: " + is.getSystemId(), e);
+                    }
+                }
+            }
+            return is;
         }
         
         if (source instanceof DOMSource) {
@@ -164,30 +201,86 @@ public class GonzalezTransformer extends Transformer {
         throw new TransformerException("Unsupported source: " + source.getClass());
     }
 
+    /**
+     * Opens an input stream from a URI string.
+     */
+    private InputStream openStream(String uri) throws IOException {
+        if (uri.startsWith("file:")) {
+            String path = uri.substring(5);
+            while (path.startsWith("//")) {
+                path = path.substring(1);
+            }
+            if (path.length() > 2 && path.charAt(0) == '/' && path.charAt(2) == ':') {
+                path = path.substring(1);
+            }
+            return new FileInputStream(path);
+        } else {
+            java.net.URL url = new java.net.URL(uri);
+            return url.openStream();
+        }
+    }
+
     private ContentHandler getOutputHandler(Result result) throws TransformerException, IOException {
         if (result instanceof SAXResult) {
+            // SAX result: forward events directly to the ContentHandler
             return ((SAXResult) result).getHandler();
         }
         
         if (result instanceof StreamResult) {
             StreamResult sr = (StreamResult) result;
-            Writer writer;
+            String method = outputProperties.getProperty("method", "xml").toLowerCase();
+            String encoding = outputProperties.getProperty("encoding", "UTF-8");
+            boolean indent = "yes".equals(outputProperties.getProperty("indent"));
+            
+            // Get output target
+            OutputStream outputStream = null;
+            Writer writer = null;
+            
             if (sr.getWriter() != null) {
                 writer = sr.getWriter();
             } else if (sr.getOutputStream() != null) {
-                String encoding = outputProperties.getProperty("encoding", "UTF-8");
-                writer = new OutputStreamWriter(sr.getOutputStream(), encoding);
+                outputStream = sr.getOutputStream();
             } else if (sr.getSystemId() != null) {
                 String systemId = sr.getSystemId();
                 File file = new File(systemId.startsWith("file:") ? 
                     systemId.substring(5) : systemId);
-                String encoding = outputProperties.getProperty("encoding", "UTF-8");
-                writer = new OutputStreamWriter(new FileOutputStream(file), encoding);
+                outputStream = new FileOutputStream(file);
             } else {
                 throw new TransformerException("StreamResult has no output target");
             }
             
-            return new SAXOutputHandler(writer, outputProperties);
+            // Select handler based on output method
+            switch (method) {
+                case "text":
+                    // Text output: only text content, no markup
+                    if (writer != null) {
+                        return new TextOutputHandler(writer);
+                    } else {
+                        return new TextOutputHandler(outputStream, encoding);
+                    }
+                    
+                case "html":
+                    // HTML output: HTML-specific serialization rules
+                    if (writer != null) {
+                        return new HTMLOutputHandler(writer, encoding, indent);
+                    } else {
+                        return new HTMLOutputHandler(outputStream, encoding, indent);
+                    }
+                    
+                case "xml":
+                case "xhtml":
+                default:
+                    // XML/XHTML output: use XMLWriter for streams, SAXOutputHandler for writers
+                    if (outputStream != null) {
+                        // Use XMLWriter for optimal XML serialization
+                        OutputProperties props = stylesheet != null ? 
+                            stylesheet.getOutputProperties() : new OutputProperties();
+                        return new XMLWriterOutputHandler(outputStream, props);
+                    } else {
+                        // Writer provided - use SAXOutputHandler
+                        return new SAXOutputHandler(writer, outputProperties);
+                    }
+            }
         }
         
         throw new TransformerException("Unsupported result: " + result.getClass());

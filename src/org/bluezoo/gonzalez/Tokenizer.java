@@ -808,13 +808,11 @@ class Tokenizer implements Locator2 {
         }
         
         // Validate the character is legal in the current context
-        // Check for literal '<' in attribute values
-        if ((state == TokenizerState.ATTR_VALUE_APOS || state == TokenizerState.ATTR_VALUE_QUOT) &&
-            codePoint == '<') {
-            // WFC: Attribute Values (Production 10)
-            // "Attribute values must not contain literal '<' characters"
-            throw fatalError("Literal '<' character (from character reference) not allowed in attribute values");
-        }
+        // Note: The XML spec only forbids *literal* '<' characters in attribute values.
+        // Character references like &#60; that resolve to '<' ARE allowed.
+        // The restriction is: AttValue ::= '"' ([^<&"] | Reference)* '"'
+        // Where Reference includes both entity refs and character refs.
+        // So we do NOT reject '<' from character references here.
         
         // Encode the code point into the reusable buffer
         charRefBuffer.clear();

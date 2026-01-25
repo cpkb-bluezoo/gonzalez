@@ -95,6 +95,68 @@ public enum XPathToken {
     MOD,
     /** The 'div' operator. */
     DIV,
+    /** The 'to' range operator (XPath 2.0). */
+    TO,
+    
+    // XPath 2.0 value comparison operators
+    /** The 'eq' value equals operator. */
+    EQ,
+    /** The 'ne' value not-equals operator. */
+    NE,
+    /** The 'lt' value less-than operator. */
+    LT,
+    /** The 'le' value less-than-or-equal operator. */
+    LE,
+    /** The 'gt' value greater-than operator. */
+    GT,
+    /** The 'ge' value greater-than-or-equal operator. */
+    GE,
+    
+    // XPath 2.0 node comparison operators
+    /** The 'is' node identity operator. */
+    IS,
+    /** The '<<' node precedes operator. */
+    PRECEDES,
+    /** The '>>' node follows operator. */
+    FOLLOWS,
+    
+    // XPath 2.0 set operators
+    /** The 'intersect' set intersection operator. */
+    INTERSECT,
+    /** The 'except' set difference operator. */
+    EXCEPT,
+    
+    // XPath 2.0 expression keywords
+    /** The 'if' keyword. */
+    IF,
+    /** The 'then' keyword. */
+    THEN,
+    /** The 'else' keyword. */
+    ELSE,
+    /** The 'for' keyword. */
+    FOR,
+    /** The 'let' keyword (XPath 3.0). */
+    LET,
+    /** The 'return' keyword. */
+    RETURN,
+    /** The 'in' keyword. */
+    IN,
+    /** The 'some' keyword. */
+    SOME,
+    /** The 'every' keyword. */
+    EVERY,
+    /** The 'satisfies' keyword. */
+    SATISFIES,
+    /** The ':=' assignment operator. */
+    ASSIGN,
+    
+    // XPath 3.0 operators
+    /** The '||' string concatenation operator. */
+    CONCAT,
+    /** The '!' simple map operator. */
+    BANG,
+    /** The '=>' arrow operator. */
+    ARROW,
     
     /** The '=' operator. */
     EQUALS,

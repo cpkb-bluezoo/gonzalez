@@ -2,8 +2,12 @@
 #
 # extract-xslt10-tests.sh
 #
-# Extracts XSLT 1.0 compatible tests from the W3C XSLT 3.0 test suite
-# into the xsltconf directory for use with Gonzalez XSLT conformance testing.
+# DEPRECATED: Use extract-xslt-tests.sh instead for XSLT 1.0/2.0/3.0 support.
+#
+# This script extracts only XSLT 1.0 compatible tests from the W3C XSLT 3.0 
+# test suite. For comprehensive XSLT 2.0/3.0 and XPath testing, use:
+#
+#   ./tools/extract-xslt-tests.sh /path/to/xslt30-test [/path/to/qt3tests]
 #
 # Usage: ./tools/extract-xslt10-tests.sh /path/to/xslt30-test
 #
@@ -11,6 +15,9 @@
 # Licensed under LGPL v3+
 
 set -e
+
+echo "NOTE: Consider using extract-xslt-tests.sh for XSLT 2.0/3.0 support."
+echo ""
 
 if [ -z "$1" ]; then
     echo "Usage: $0 /path/to/xslt30-test"

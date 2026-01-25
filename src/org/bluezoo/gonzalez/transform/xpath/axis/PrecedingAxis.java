@@ -73,6 +73,7 @@ public final class PrecedingAxis implements Axis {
 
     /**
      * Iterator that traverses preceding nodes in reverse document order.
+     * Reverse document order means closest to context node first.
      */
     private static class PrecedingIterator implements Iterator<XPathNode> {
         private final List<XPathNode> nodes = new ArrayList<>();
@@ -81,13 +82,14 @@ public final class PrecedingAxis implements Axis {
         PrecedingIterator(XPathNode node) {
             // Collect all preceding nodes (not ancestors)
             collectPreceding(node);
-            index = nodes.size() - 1;
+            // Start at beginning since nodes are already in reverse document order
+            index = 0;
         }
 
         private void collectPreceding(XPathNode node) {
             XPathNode parent = node.getParent();
             if (parent != null) {
-                // Collect preceding siblings and their subtrees
+                // Collect preceding siblings and their subtrees (closest first)
                 XPathNode sibling = node.getPrecedingSibling();
                 while (sibling != null) {
                     collectSubtreeReverse(sibling);
@@ -99,28 +101,29 @@ public final class PrecedingAxis implements Axis {
         }
 
         private void collectSubtreeReverse(XPathNode node) {
-            // Collect descendants first (for reverse document order)
+            // For reverse document order: add descendants (closest first), then node
+            // Collect children first
             Iterator<XPathNode> children = node.getChildren();
             List<XPathNode> childList = new ArrayList<>();
             while (children.hasNext()) {
                 childList.add(children.next());
             }
-            // Process children in reverse
+            // Process children in reverse (last child is closest to context)
             for (int i = childList.size() - 1; i >= 0; i--) {
                 collectSubtreeReverse(childList.get(i));
             }
-            // Then add this node
+            // Then add this node (comes after its descendants in reverse order)
             nodes.add(node);
         }
 
         @Override
         public boolean hasNext() {
-            return index >= 0;
+            return index < nodes.size();
         }
 
         @Override
         public XPathNode next() {
-            return nodes.get(index--);
+            return nodes.get(index++);
         }
     }
 

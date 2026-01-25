@@ -97,9 +97,26 @@ parser was in a state ready to process it. Since that would easily lead to
 resource exhaustion, Gonzalez design is to implement external entities as a
 blocking process.
 
+## XSLT Transformer
+
+Gonzalez includes an XSLT 1.0 transformer that follows the same design principles
+as the parser: event-driven processing with predictable resource usage. The
+transformer integrates with standard JAXP APIs (`TransformerFactory`, `Templates`,
+`Transformer`) and can be used as a drop-in replacement for other XSLT processors.
+
+Key features:
+- **JAXP compliant** - Standard `TransformerFactory` interface
+- **Streaming support** - SAX-based transformation pipeline
+- **Iterative XPath parser** - Pratt algorithm with explicit stacks, no recursion
+- **Forward-compatible mode** - Graceful handling of XSLT 2.0+ constructs
+
+See **[XSLT.md](XSLT.md)** for detailed documentation on the transformer design,
+features, test methodology, and performance characteristics.
+
 ## Documentation
 
 - [Javadoc package and class documentation](https://cpkb-bluezoo.github.io/gonzalez/doc/)
+- [XSLT Transformer Documentation](XSLT.md)
 
 ## Usage
 

@@ -22,6 +22,10 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
+import org.bluezoo.gonzalez.transform.ast.XSLTNode;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.xml.sax.SAXException;
 
 import java.util.*;
 
@@ -79,6 +83,63 @@ public final class AttributeSet {
      */
     public SequenceNode getAttributes() {
         return attributes;
+    }
+
+    /**
+     * Merges this attribute set with another.
+     * The other set's attributes take precedence for conflicts.
+     * Used when multiple xsl:attribute-set declarations have the same name.
+     *
+     * @param other the other attribute set (later definition)
+     * @return a new merged attribute set
+     */
+    public AttributeSet mergeWith(AttributeSet other) {
+        // Merge use-attribute-sets
+        List<String> mergedUseSets = new ArrayList<>(this.useAttributeSets);
+        for (String set : other.useAttributeSets) {
+            if (!mergedUseSets.contains(set)) {
+                mergedUseSets.add(set);
+            }
+        }
+        
+        // Merge attributes: this first, then other (other overrides for conflicts)
+        List<org.bluezoo.gonzalez.transform.ast.XSLTNode> mergedNodes = new ArrayList<>();
+        if (this.attributes != null) {
+            mergedNodes.addAll(this.attributes.getChildren());
+        }
+        if (other.attributes != null) {
+            mergedNodes.addAll(other.attributes.getChildren());
+        }
+        SequenceNode mergedAttrs = new SequenceNode(mergedNodes);
+        
+        return new AttributeSet(name, mergedUseSets, mergedAttrs);
+    }
+
+    /**
+     * Applies this attribute set to the current element being constructed.
+     * First applies any included attribute sets, then the attributes defined
+     * directly in this set.
+     *
+     * @param context the transform context
+     * @param output the output handler
+     * @throws SAXException if an error occurs
+     */
+    public void apply(TransformContext context, OutputHandler output) throws SAXException {
+        // First, apply included attribute sets (recursively)
+        if (!useAttributeSets.isEmpty()) {
+            CompiledStylesheet stylesheet = context.getStylesheet();
+            for (String includedName : useAttributeSets) {
+                AttributeSet included = stylesheet.getAttributeSet(includedName);
+                if (included != null) {
+                    included.apply(context, output);
+                }
+            }
+        }
+        
+        // Then apply this set's attributes (can override included ones)
+        if (attributes != null) {
+            attributes.execute(context, output);
+        }
     }
 
     @Override

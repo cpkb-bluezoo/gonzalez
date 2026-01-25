@@ -121,13 +121,19 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
             XMLReader reader = createXMLReader();
             reader.setContentHandler(compiler);
             
-            InputSource inputSource;
+            InputSource inputSource = new InputSource();
             if (ss.getInputStream() != null) {
-                inputSource = new InputSource(ss.getInputStream());
+                inputSource.setByteStream(ss.getInputStream());
+            } else if (ss.getSystemId() != null) {
+                // Open stream from systemId
+                java.io.InputStream byteStream = openStream(ss.getSystemId());
+                inputSource.setByteStream(byteStream);
             } else if (ss.getReader() != null) {
-                inputSource = new InputSource(ss.getReader());
+                // Gonzalez parser requires byte streams for encoding detection
+                // TODO: Consider adding Reader support via ExternalEntityDecoder
+                throw new SAXException("StreamSource with Reader not supported - use InputStream or SystemId");
             } else {
-                inputSource = new InputSource(ss.getSystemId());
+                throw new SAXException("StreamSource has no InputStream or SystemId");
             }
             inputSource.setSystemId(ss.getSystemId());
             reader.parse(inputSource);
@@ -157,6 +163,29 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         }
         
         return compiler.getCompiledStylesheet();
+    }
+
+    /**
+     * Opens an input stream from a URI string.
+     */
+    private java.io.InputStream openStream(String uri) throws IOException {
+        if (uri.startsWith("file:")) {
+            // Handle file: URLs
+            String path = uri.substring(5);
+            // Remove leading slashes for file:// syntax
+            while (path.startsWith("//")) {
+                path = path.substring(1);
+            }
+            // Handle Windows paths
+            if (path.length() > 2 && path.charAt(0) == '/' && path.charAt(2) == ':') {
+                path = path.substring(1);
+            }
+            return new java.io.FileInputStream(path);
+        } else {
+            // Try as URL
+            java.net.URL url = new java.net.URL(uri);
+            return url.openStream();
+        }
     }
 
     private XMLReader createXMLReader() throws SAXException {

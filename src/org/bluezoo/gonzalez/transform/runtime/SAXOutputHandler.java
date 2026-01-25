@@ -29,10 +29,14 @@ import java.io.Writer;
 import java.util.*;
 
 /**
- * ContentHandler that serializes SAX events to a Writer.
+ * ContentHandler that serializes SAX events to a Writer as XML.
  *
- * <p>This handler converts SAX events to XML text output, supporting the
- * various output methods (xml, html, text) and options.
+ * <p>This handler is used for XML/XHTML output when a Writer is provided
+ * (rather than an OutputStream). For stream-based XML output, prefer
+ * {@link XMLWriterOutputHandler} which uses the optimized {@link org.bluezoo.gonzalez.XMLWriter}.
+ *
+ * <p>For HTML output, use {@link HTMLOutputHandler}.
+ * For text output, use {@link TextOutputHandler}.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -40,7 +44,6 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
 
     private final Writer writer;
     private final Properties outputProperties;
-    private final String method;
     private final String encoding;
     private final boolean indent;
     private final boolean omitXmlDeclaration;
@@ -50,9 +53,12 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
     private final AttributesImpl pendingAttributes = new AttributesImpl();
     private boolean inStartTag = false;
     private int depth = 0;
+    
+    // Namespace scope tracking - stack of maps from prefix to URI
+    private final Deque<Map<String, String>> namespaceScopeStack = new ArrayDeque<>();
 
     /**
-     * Creates an output handler.
+     * Creates an XML output handler.
      *
      * @param writer the output writer
      * @param outputProperties output configuration
@@ -60,7 +66,6 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
     public SAXOutputHandler(Writer writer, Properties outputProperties) {
         this.writer = writer;
         this.outputProperties = outputProperties;
-        this.method = outputProperties.getProperty("method", "xml");
         this.encoding = outputProperties.getProperty("encoding", "UTF-8");
         this.indent = "yes".equals(outputProperties.getProperty("indent"));
         this.omitXmlDeclaration = "yes".equals(outputProperties.getProperty("omit-xml-declaration"));
@@ -76,14 +81,30 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
 
     private void closeStartTag() throws SAXException {
         if (inStartTag) {
-            // Output pending namespaces
+            // Get current namespace scope (created by startElement)
+            Map<String, String> currentScope = namespaceScopeStack.peek();
+            
+            // Output pending namespaces (only if not already in scope with same URI)
             for (Map.Entry<String, String> ns : pendingNamespaces.entrySet()) {
                 String prefix = ns.getKey();
                 String uri = ns.getValue();
+                
+                // Check if this namespace is already in scope
+                String inScopeUri = getNamespaceInScope(prefix);
+                if (inScopeUri != null && inScopeUri.equals(uri)) {
+                    continue; // Already in scope, don't output
+                }
+                
+                // Output the namespace declaration
                 if (prefix.isEmpty()) {
                     write(" xmlns=\"" + escapeAttr(uri) + "\"");
                 } else {
                     write(" xmlns:" + prefix + "=\"" + escapeAttr(uri) + "\"");
+                }
+                
+                // Add to current scope
+                if (currentScope != null) {
+                    currentScope.put(prefix, uri);
                 }
             }
             pendingNamespaces.clear();
@@ -120,8 +141,9 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
 
     @Override
     public void startDocument() throws SAXException {
-        if ("xml".equals(method) && !omitXmlDeclaration) {
-            write("<?xml version=\"1.0\" encoding=\"" + encoding + "\"?>");
+        if (!omitXmlDeclaration) {
+            String version = outputProperties.getProperty("version", "1.0");
+            write("<?xml version=\"" + version + "\" encoding=\"" + encoding + "\"?>");
             if (indent) write("\n");
         }
     }
@@ -149,6 +171,9 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
             throws SAXException {
         closeStartTag();
         
+        // Push new namespace scope
+        namespaceScopeStack.push(new LinkedHashMap<>());
+        
         if (indent && depth > 0) {
             write("\n");
             for (int i = 0; i < depth; i++) write("  ");
@@ -174,13 +199,28 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
         
         if (inStartTag) {
             // Empty element - use self-closing tag
+            // Get current namespace scope for checking
+            Map<String, String> currentScope = namespaceScopeStack.peek();
+            
             for (Map.Entry<String, String> ns : pendingNamespaces.entrySet()) {
                 String prefix = ns.getKey();
                 String nsUri = ns.getValue();
+                
+                // Check if namespace is already in scope
+                String inScopeUri = getNamespaceInScope(prefix);
+                if (inScopeUri != null && inScopeUri.equals(nsUri)) {
+                    continue; // Already in scope
+                }
+                
                 if (prefix.isEmpty()) {
                     write(" xmlns=\"" + escapeAttr(nsUri) + "\"");
                 } else {
                     write(" xmlns:" + prefix + "=\"" + escapeAttr(nsUri) + "\"");
+                }
+                
+                // Record in current scope
+                if (currentScope != null) {
+                    currentScope.put(prefix, nsUri);
                 }
             }
             pendingNamespaces.clear();
@@ -193,15 +233,39 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
             
             write("/>");
             inStartTag = false;
+            
+            // Pop namespace scope for empty element
+            if (!namespaceScopeStack.isEmpty()) {
+                namespaceScopeStack.pop();
+            }
         } else {
             if (indent) {
                 write("\n");
                 for (int i = 0; i < depth; i++) write("  ");
             }
             write("</" + qName + ">");
+            
+            // Pop namespace scope for non-empty element
+            if (!namespaceScopeStack.isEmpty()) {
+                namespaceScopeStack.pop();
+            }
         }
         
         elementStack.pop();
+    }
+    
+    /**
+     * Gets the namespace URI bound to a prefix in the current scope stack.
+     * Walks up the stack to find the nearest binding.
+     */
+    private String getNamespaceInScope(String prefix) {
+        for (Map<String, String> scope : namespaceScopeStack) {
+            String uri = scope.get(prefix);
+            if (uri != null) {
+                return uri;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -239,7 +303,32 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
         if (!inStartTag) {
             throw new SAXException("attribute() called outside element start");
         }
-        pendingAttributes.addAttribute(namespaceURI, localName, qName, "CDATA", value);
+        
+        // Check for existing attribute with same name (for duplicate detection)
+        int existingIndex = -1;
+        for (int i = 0; i < pendingAttributes.getLength(); i++) {
+            String existingUri = pendingAttributes.getURI(i);
+            String existingLocal = pendingAttributes.getLocalName(i);
+            
+            // Match by namespace URI + local name
+            boolean uriMatch = (namespaceURI == null || namespaceURI.isEmpty()) 
+                ? (existingUri == null || existingUri.isEmpty())
+                : namespaceURI.equals(existingUri);
+            boolean localMatch = localName.equals(existingLocal);
+            
+            if (uriMatch && localMatch) {
+                existingIndex = i;
+                break;
+            }
+        }
+        
+        if (existingIndex >= 0) {
+            // Update existing attribute value
+            pendingAttributes.setValue(existingIndex, value);
+        } else {
+            // Add new attribute
+            pendingAttributes.addAttribute(namespaceURI, localName, qName, "CDATA", value);
+        }
     }
 
     @Override

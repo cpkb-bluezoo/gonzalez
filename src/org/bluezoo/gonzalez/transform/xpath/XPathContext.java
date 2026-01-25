@@ -50,6 +50,20 @@ public interface XPathContext {
      * @return the current context node
      */
     XPathNode getContextNode();
+    
+    /**
+     * Returns the XSLT current node for the current() function.
+     * 
+     * <p>In XSLT, current() returns the node that was the context node
+     * at the start of the outermost XPath expression evaluation. This is
+     * different from the context node, which changes during predicate
+     * evaluation and other nested expressions.
+     *
+     * @return the XSLT current node, or the context node if not in XSLT context
+     */
+    default XPathNode getXsltCurrentNode() {
+        return getContextNode();
+    }
 
     /**
      * Returns the context position (1-based).
@@ -106,5 +120,37 @@ public interface XPathContext {
      * @return a new context with the given position/size
      */
     XPathContext withPositionAndSize(int position, int size);
+
+    /**
+     * Creates a new context with an additional variable binding.
+     *
+     * @param namespaceURI the variable namespace URI (may be null)
+     * @param localName the variable local name
+     * @param value the variable value
+     * @return a new context with the variable bound
+     */
+    XPathContext withVariable(String namespaceURI, String localName, XPathValue value);
+
+    /**
+     * Returns the accumulator-before value for the named accumulator.
+     * This is the value before processing the current node.
+     *
+     * @param name the accumulator name
+     * @return the accumulator value, or null if not found
+     */
+    default XPathValue getAccumulatorBefore(String name) {
+        return null;
+    }
+
+    /**
+     * Returns the accumulator-after value for the named accumulator.
+     * This is the value after processing the current node.
+     *
+     * @param name the accumulator name
+     * @return the accumulator value, or null if not found
+     */
+    default XPathValue getAccumulatorAfter(String name) {
+        return null;
+    }
 
 }

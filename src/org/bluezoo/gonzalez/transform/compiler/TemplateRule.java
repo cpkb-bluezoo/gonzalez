@@ -50,6 +50,7 @@ public final class TemplateRule {
     private final String mode;
     private final double priority;
     private final int importPrecedence;
+    private final int declarationIndex;
     private final List<TemplateParameter> parameters;
     private final SequenceNode body;
 
@@ -67,11 +68,30 @@ public final class TemplateRule {
     public TemplateRule(Pattern matchPattern, String name, String mode,
                         double priority, int importPrecedence,
                         List<TemplateParameter> parameters, SequenceNode body) {
+        this(matchPattern, name, mode, priority, importPrecedence, 0, parameters, body);
+    }
+
+    /**
+     * Creates a template rule with declaration index.
+     *
+     * @param matchPattern the match pattern (null for named-only templates)
+     * @param name the template name (null for match-only templates)
+     * @param mode the mode (null for default mode)
+     * @param priority the priority
+     * @param importPrecedence the import precedence
+     * @param declarationIndex the declaration order index (later = higher)
+     * @param parameters the template parameters
+     * @param body the template body
+     */
+    public TemplateRule(Pattern matchPattern, String name, String mode,
+                        double priority, int importPrecedence, int declarationIndex,
+                        List<TemplateParameter> parameters, SequenceNode body) {
         this.matchPattern = matchPattern;
         this.name = name;
         this.mode = mode;
         this.priority = priority;
         this.importPrecedence = importPrecedence;
+        this.declarationIndex = declarationIndex;
         this.parameters = parameters != null ? 
             Collections.unmodifiableList(new ArrayList<>(parameters)) : 
             Collections.emptyList();
@@ -121,6 +141,16 @@ public final class TemplateRule {
      */
     public int getImportPrecedence() {
         return importPrecedence;
+    }
+
+    /**
+     * Returns the declaration index (order in which templates were declared).
+     * Higher index means later in the stylesheet.
+     *
+     * @return the declaration index
+     */
+    public int getDeclarationIndex() {
+        return declarationIndex;
     }
 
     /**

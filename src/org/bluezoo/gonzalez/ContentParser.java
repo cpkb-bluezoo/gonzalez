@@ -191,7 +191,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * Namespace scope tracker for managing prefix-URI bindings.
      * Only used when namespacesEnabled is true.
      */
-    private NamespaceScopeTracker namespaceTracker;
+    private NamespaceScopeTracker namespaceTracker = new NamespaceScopeTracker();
     
     /**
      * Flag tracking whether namespace context was pushed for current element.
@@ -2693,9 +2693,23 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         
         // Step 3: If not CDATA, trim and collapse spaces
         if (!"CDATA".equals(attributeType)) {
-            String result = normalized.toString().trim();
-            // Replace sequences of spaces with single space
-            result = result.replaceAll(" +", " ");
+            String trimmed = normalized.toString().trim();
+            // Replace sequences of spaces with single space (no regex)
+            StringBuilder collapsed = new StringBuilder();
+            boolean lastWasSpace = false;
+            for (int i = 0; i < trimmed.length(); i++) {
+                char c = trimmed.charAt(i);
+                if (c == ' ') {
+                    if (!lastWasSpace) {
+                        collapsed.append(c);
+                        lastWasSpace = true;
+                    }
+                } else {
+                    collapsed.append(c);
+                    lastWasSpace = false;
+                }
+            }
+            String result = collapsed.toString();
             
             // VC: Standalone Document Declaration (Section 2.9)
             // If standalone="yes" and the attribute declaration came from external DTD,

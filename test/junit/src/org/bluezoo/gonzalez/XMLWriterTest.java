@@ -22,7 +22,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<root/>", xml);
     }
 
@@ -36,7 +36,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<greeting>Hello, World!</greeting>", xml);
     }
 
@@ -52,7 +52,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<parent><child>text</child></parent>", xml);
     }
 
@@ -69,7 +69,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<container><br/><hr/></container>", xml);
     }
 
@@ -85,7 +85,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<item id=\"123\"/>", xml);
     }
 
@@ -101,7 +101,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<person id=\"1\" name=\"Alice\" age=\"30\"/>", xml);
     }
 
@@ -115,7 +115,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<test value=\"&quot;quotes&quot; &amp; &lt;angles&gt;\"/>", xml);
     }
 
@@ -131,7 +131,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<root xmlns=\"http://example.com/ns\"/>", xml);
     }
 
@@ -145,7 +145,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<ex:root xmlns:ex=\"http://example.com/ns\"/>", xml);
     }
 
@@ -162,7 +162,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<root xmlns=\"http://default.com\" xmlns:other=\"http://other.com\"><other:child/></root>", xml);
     }
 
@@ -177,7 +177,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<root xmlns:xlink=\"http://www.w3.org/1999/xlink\" xlink:href=\"http://example.com\"/>", xml);
     }
 
@@ -225,7 +225,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<text>5 &lt; 10 &amp; 10 &gt; 5</text>", xml);
     }
 
@@ -239,7 +239,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertTrue(xml.contains("Hello 👋 World 🌍 你好"));
     }
 
@@ -254,7 +254,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<text>World</text>", xml);
     }
 
@@ -270,7 +270,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<code><![CDATA[<script>alert('hello');</script>]]></code>", xml);
     }
 
@@ -284,7 +284,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         // Should split the CDATA section at ]]>
         assertEquals("<test><![CDATA[first ]]]]><![CDATA[> second]]></test>", xml);
     }
@@ -301,7 +301,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<root><!-- This is a comment --></root>", xml);
     }
 
@@ -317,7 +317,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<?xml-stylesheet type=\"text/xsl\" href=\"style.xsl\"?><root/>", xml);
     }
 
@@ -331,7 +331,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<root><?page-break?></root>", xml);
     }
 
@@ -349,7 +349,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<text>Copyright &copy; 2025</text>", xml);
     }
 
@@ -367,7 +367,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         String expected = "<root>\n\t<child>text</child>\n</root>";
         assertEquals(expected, xml);
     }
@@ -383,7 +383,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         String expected = "<root>\n  <child/>\n</root>";
         assertEquals(expected, xml);
     }
@@ -402,7 +402,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         String expected = "<a>\n  <b>\n    <c>deep</c>\n  </b>\n</a>";
         assertEquals(expected, xml);
     }
@@ -420,7 +420,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         String expected = "<root>\n  <child1/>\n  <child2/>\n</root>";
         assertEquals(expected, xml);
     }
@@ -439,7 +439,7 @@ public class XMLWriterTest {
         writer.close();
 
         // Empty/null characters should not prevent empty element optimization
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertEquals("<root/>", xml);
     }
 
@@ -488,7 +488,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertTrue(xml.startsWith("<items><item id=\"0\">Item number 0</item>"));
         assertTrue(xml.endsWith("<item id=\"999\">Item number 999</item></items>"));
     }
@@ -527,7 +527,7 @@ public class XMLWriterTest {
         writer.writeEndElement();
         writer.close();
 
-        String xml = out.toString(StandardCharsets.UTF_8);
+        String xml = out.toString("UTF-8");
         assertTrue(xml.contains("xmlns=\"http://www.w3.org/1999/xhtml\""));
         assertTrue(xml.contains("<title>Test Document</title>"));
         assertTrue(xml.contains("<br/>"));

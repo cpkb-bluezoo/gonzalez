@@ -146,35 +146,58 @@ public final class StringFunctions {
             String str = args.get(0).asString();
             double startPos = args.get(1).asNumber();
             
-            // XPath uses 1-based indexing and rounds to nearest integer
-            int start = (int) Math.round(startPos) - 1;
-            
-            int end;
-            if (args.size() > 2) {
-                double length = args.get(2).asNumber();
-                // Length is measured from the rounded start position
-                end = (int) Math.round(startPos + length) - 1;
-            } else {
-                end = str.length();
-            }
-            
-            // Handle edge cases
+            // Handle NaN start position
             if (Double.isNaN(startPos)) {
                 return XPathString.EMPTY;
             }
-            if (start < 0) {
-                // Adjust end if start is before beginning
-                end = end + start;
-                start = 0;
+            
+            // XPath spec for substring(string, startPos, length?):
+            // Returns characters at position P where:
+            //   P >= round(startPos) AND P < round(startPos) + round(length)
+            // Positions are 1-based.
+            
+            // Round start position (XPath uses round(), not floor())
+            long roundedStart = Math.round(startPos);
+            
+            // Determine the ending position (exclusive, 1-based)
+            long roundedEnd;
+            if (args.size() > 2) {
+                double length = args.get(2).asNumber();
+                if (Double.isNaN(length)) {
+                    return XPathString.EMPTY;
+                }
+                if (Double.isInfinite(length)) {
+                    if (length > 0) {
+                        // Positive infinity - go to end of string
+                        roundedEnd = str.length() + 1;
+                    } else {
+                        // Negative infinity - nothing to return
+                        return XPathString.EMPTY;
+                    }
+                } else {
+                    long roundedLength = Math.round(length);
+                    if (roundedLength <= 0) {
+                        return XPathString.EMPTY;
+                    }
+                    roundedEnd = roundedStart + roundedLength;
+                }
+            } else {
+                // No length means to end of string
+                roundedEnd = str.length() + 1;
             }
-            if (start >= str.length()) {
+            
+            // Clamp to valid range [1, length+1] for positions
+            // First position we want (1-based)
+            long firstPos = Math.max(roundedStart, 1);
+            // Last position + 1 (exclusive, 1-based)
+            long lastPosExcl = Math.min(roundedEnd, str.length() + 1);
+            
+            // Convert to 0-based Java indices
+            int start = (int) (firstPos - 1);
+            int end = (int) (lastPosExcl - 1);
+            
+            if (start >= str.length() || end <= start) {
                 return XPathString.EMPTY;
-            }
-            if (end <= start) {
-                return XPathString.EMPTY;
-            }
-            if (end > str.length()) {
-                end = str.length();
             }
             
             return XPathString.of(str.substring(start, end));
@@ -213,8 +236,24 @@ public final class StringFunctions {
             } else {
                 str = args.get(0).asString();
             }
-            // Normalize: strip leading/trailing, collapse internal whitespace
-            return XPathString.of(str.trim().replaceAll("\\s+", " "));
+            // Normalize: strip leading/trailing, collapse internal whitespace (no regex)
+            String trimmed = str.trim();
+            StringBuilder result = new StringBuilder();
+            boolean lastWasWhitespace = false;
+            for (int i = 0; i < trimmed.length(); i++) {
+                char c = trimmed.charAt(i);
+                boolean isWhitespace = (c == ' ' || c == '\t' || c == '\n' || c == '\r');
+                if (isWhitespace) {
+                    if (!lastWasWhitespace) {
+                        result.append(' ');
+                        lastWasWhitespace = true;
+                    }
+                } else {
+                    result.append(c);
+                    lastWasWhitespace = false;
+                }
+            }
+            return XPathString.of(result.toString());
         }
     };
 

@@ -47,6 +47,7 @@ public class StreamingNode implements XPathNode {
     private final List<StreamingNode> attributes;
     private final Map<String, String> namespaceBindings;
     private final long documentOrder;
+    private final String attributeType;  // DTD attribute type (ID, IDREF, CDATA, etc.)
 
     // For element nodes - track children as they're added
     private final List<StreamingNode> children;
@@ -71,9 +72,10 @@ public class StreamingNode implements XPathNode {
         StreamingNode element = new StreamingNode(NodeType.ELEMENT, namespaceURI, localName,
             prefix, null, parent, namespaceBindings, documentOrder);
         
-        // Create attribute nodes
+        // Create attribute nodes - capture DTD attribute type for ID lookup
         if (atts != null) {
             for (int i = 0; i < atts.getLength(); i++) {
+                String attrType = atts.getType(i);  // DTD type: ID, IDREF, CDATA, etc.
                 StreamingNode attr = new StreamingNode(
                     NodeType.ATTRIBUTE,
                     atts.getURI(i),
@@ -82,7 +84,8 @@ public class StreamingNode implements XPathNode {
                     atts.getValue(i),
                     element,
                     Collections.emptyMap(),
-                    documentOrder + i + 1
+                    documentOrder + i + 1,
+                    attrType
                 );
                 element.attributes.add(attr);
             }
@@ -119,6 +122,13 @@ public class StreamingNode implements XPathNode {
     private StreamingNode(NodeType nodeType, String namespaceURI, String localName,
             String prefix, String stringValue, StreamingNode parent,
             Map<String, String> namespaceBindings, long documentOrder) {
+        this(nodeType, namespaceURI, localName, prefix, stringValue, parent, 
+             namespaceBindings, documentOrder, null);
+    }
+    
+    private StreamingNode(NodeType nodeType, String namespaceURI, String localName,
+            String prefix, String stringValue, StreamingNode parent,
+            Map<String, String> namespaceBindings, long documentOrder, String attributeType) {
         this.nodeType = nodeType;
         this.namespaceURI = namespaceURI != null && !namespaceURI.isEmpty() ? namespaceURI : null;
         this.localName = localName;
@@ -127,6 +137,7 @@ public class StreamingNode implements XPathNode {
         this.parent = parent;
         this.namespaceBindings = new HashMap<>(namespaceBindings);
         this.documentOrder = documentOrder;
+        this.attributeType = attributeType;
         this.attributes = new ArrayList<>();
         this.children = new ArrayList<>();
         
@@ -254,6 +265,24 @@ public class StreamingNode implements XPathNode {
     }
 
     /**
+     * Returns the DTD attribute type (ID, IDREF, CDATA, etc.) for attribute nodes.
+     *
+     * @return the attribute type, or null if not an attribute or type unknown
+     */
+    public String getAttributeType() {
+        return attributeType;
+    }
+    
+    /**
+     * Checks if this attribute node has DTD type ID.
+     *
+     * @return true if this is an ID attribute
+     */
+    public boolean isIdAttribute() {
+        return "ID".equals(attributeType);
+    }
+
+    /**
      * Returns the namespace bindings in scope for this element.
      */
     public Map<String, String> getNamespaceBindings() {
@@ -286,6 +315,68 @@ public class StreamingNode implements XPathNode {
             case PROCESSING_INSTRUCTION: return "pi(" + localName + ")";
             default: return nodeType.toString();
         }
+    }
+
+    /**
+     * Returns the parent as a StreamingNode.
+     *
+     * @return the parent node
+     */
+    public StreamingNode getParentNode() {
+        return parent;
+    }
+
+    /**
+     * Adds a child node to this element.
+     *
+     * @param child the child to add
+     */
+    public void addChild(StreamingNode child) {
+        if (!children.isEmpty()) {
+            StreamingNode prevSibling = children.get(children.size() - 1);
+            prevSibling.followingSibling = child;
+            // Note: child.precedingSibling is set in constructor
+        }
+        children.add(child);
+    }
+
+    /**
+     * Adds a namespace mapping to this element.
+     *
+     * @param prefix the namespace prefix
+     * @param uri the namespace URI
+     */
+    public void addNamespaceMapping(String prefix, String uri) {
+        namespaceBindings.put(prefix != null ? prefix : "", uri);
+    }
+
+    /**
+     * Appends text to this element's text content.
+     * Creates or updates a text child node.
+     *
+     * @param text the text to append
+     */
+    public void appendText(String text) {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        // Check if last child is a text node that we can append to
+        if (!children.isEmpty()) {
+            StreamingNode lastChild = children.get(children.size() - 1);
+            if (lastChild.nodeType == NodeType.TEXT) {
+                // Create a new text node with combined content
+                // (stringValue is final, so we need to create new node)
+                StreamingNode combined = createText(
+                    lastChild.stringValue + text, 
+                    this, 
+                    lastChild.documentOrder
+                );
+                children.set(children.size() - 1, combined);
+                return;
+            }
+        }
+        // Add new text node
+        createText(text, this, documentOrder);
     }
 
     /**

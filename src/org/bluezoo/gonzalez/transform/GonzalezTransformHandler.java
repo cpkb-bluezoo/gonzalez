@@ -28,6 +28,7 @@ import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.runtime.*;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.*;
@@ -53,12 +54,14 @@ import java.util.*;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class GonzalezTransformHandler extends DefaultHandler {
+public class GonzalezTransformHandler extends DefaultHandler 
+        implements org.xml.sax.ext.LexicalHandler {
 
     private final CompiledStylesheet stylesheet;
     private final Map<String, Object> parameters;
     private final ContentHandler outputHandler;
     private final TemplateMatcher matcher;
+    private final javax.xml.transform.ErrorListener errorListener;
 
     // Document building state
     private StreamingNode root;
@@ -77,10 +80,26 @@ public class GonzalezTransformHandler extends DefaultHandler {
     public GonzalezTransformHandler(CompiledStylesheet stylesheet, 
                                     Map<String, Object> parameters,
                                     ContentHandler outputHandler) {
+        this(stylesheet, parameters, outputHandler, null);
+    }
+
+    /**
+     * Creates a transform handler with an error listener.
+     *
+     * @param stylesheet the compiled stylesheet
+     * @param parameters transformation parameters
+     * @param outputHandler the output target
+     * @param errorListener the error listener for xsl:message and errors
+     */
+    public GonzalezTransformHandler(CompiledStylesheet stylesheet, 
+                                    Map<String, Object> parameters,
+                                    ContentHandler outputHandler,
+                                    javax.xml.transform.ErrorListener errorListener) {
         this.stylesheet = stylesheet;
         this.parameters = parameters;
         this.outputHandler = outputHandler;
         this.matcher = new TemplateMatcher(stylesheet);
+        this.errorListener = errorListener;
     }
 
     @Override
@@ -171,6 +190,45 @@ public class GonzalezTransformHandler extends DefaultHandler {
         StreamingNode.createPI(target, data, currentNode, documentOrderCounter++);
     }
 
+    // LexicalHandler methods
+    
+    @Override
+    public void comment(char[] ch, int start, int length) throws SAXException {
+        flushTextBuffer();
+        String text = new String(ch, start, length);
+        StreamingNode.createComment(text, currentNode, documentOrderCounter++);
+    }
+    
+    @Override
+    public void startDTD(String name, String publicId, String systemId) throws SAXException {
+        // Not needed for XSLT processing
+    }
+    
+    @Override
+    public void endDTD() throws SAXException {
+        // Not needed for XSLT processing
+    }
+    
+    @Override
+    public void startEntity(String name) throws SAXException {
+        // Not needed for XSLT processing
+    }
+    
+    @Override
+    public void endEntity(String name) throws SAXException {
+        // Not needed for XSLT processing
+    }
+    
+    @Override
+    public void startCDATA() throws SAXException {
+        // CDATA sections are treated as text
+    }
+    
+    @Override
+    public void endCDATA() throws SAXException {
+        // CDATA sections are treated as text
+    }
+
     private void flushTextBuffer() {
         if (textBuffer.length() > 0) {
             String text = textBuffer.toString();
@@ -187,11 +245,84 @@ public class GonzalezTransformHandler extends DefaultHandler {
 
     private boolean shouldStripSpace() {
         // Check stylesheet's strip-space declarations
-        if (currentNode != null && currentNode.isElement()) {
-            // Simplified check - full implementation would match strip-space elements
+        if (currentNode == null || !currentNode.isElement()) {
             return false;
         }
+        
+        String localName = currentNode.getLocalName();
+        String namespaceURI = currentNode.getNamespaceURI();
+        
+        // Check preserve-space first (it takes precedence)
+        for (String pattern : stylesheet.getPreserveSpaceElements()) {
+            if (matchesElementPattern(pattern, localName, namespaceURI)) {
+                return false;
+            }
+        }
+        
+        // Check strip-space
+        for (String pattern : stylesheet.getStripSpaceElements()) {
+            if (matchesElementPattern(pattern, localName, namespaceURI)) {
+                return true;
+            }
+        }
+        
         return false;
+    }
+    
+    /**
+     * Checks if an element matches a strip-space/preserve-space pattern.
+     * Patterns can be: *, {uri}*, {uri}localname, localname
+     * 
+     * The patterns use Clark notation {uri}localname for namespace-qualified names.
+     */
+    private boolean matchesElementPattern(String pattern, String localName, String namespaceURI) {
+        if ("*".equals(pattern)) {
+            return true;
+        }
+        
+        // Check for Clark notation: {uri}localname
+        if (pattern.startsWith("{")) {
+            int closeBrace = pattern.indexOf('}');
+            if (closeBrace > 1) {
+                String patternUri = pattern.substring(1, closeBrace);
+                String patternLocal = pattern.substring(closeBrace + 1);
+                
+                // Check namespace match
+                if (namespaceURI == null || namespaceURI.isEmpty()) {
+                    return false; // Pattern has namespace, element doesn't
+                }
+                if (!patternUri.equals(namespaceURI)) {
+                    return false; // Namespaces don't match
+                }
+                
+                // {uri}* - match any element in namespace
+                if ("*".equals(patternLocal)) {
+                    return true;
+                }
+                
+                // {uri}localname - match specific element
+                return patternLocal.equals(localName);
+            }
+        }
+        
+        // Handle legacy prefix:localname (shouldn't happen after compile-time resolution)
+        int colon = pattern.indexOf(':');
+        if (colon > 0) {
+            String localPart = pattern.substring(colon + 1);
+            // prefix:* - match any element in any namespace
+            if ("*".equals(localPart)) {
+                return namespaceURI != null && !namespaceURI.isEmpty();
+            }
+            // prefix:localname - match specific element (namespace not checked)
+            return localPart.equals(localName);
+        }
+        
+        // Simple localname match (elements in no namespace or default namespace)
+        // Per XSLT, unprefixed names match elements in no namespace
+        if (namespaceURI != null && !namespaceURI.isEmpty()) {
+            return false;
+        }
+        return pattern.equals(localName);
     }
 
     private boolean isWhitespaceOnly(String text) {
@@ -214,7 +345,7 @@ public class GonzalezTransformHandler extends DefaultHandler {
         
         // Create initial context
         BasicTransformContext context = new BasicTransformContext(
-            stylesheet, root, matcher, output);
+            stylesheet, root, matcher, output, errorListener);
         
         // Initialize global variables and parameters
         initializeGlobals(context);
@@ -249,11 +380,11 @@ public class GonzalezTransformHandler extends DefaultHandler {
                     value = var.getSelectExpr().evaluate(context);
                 } else if (var.getContent() != null) {
                     // Execute content and capture as result tree fragment
-                    // For now, convert to string
                     SAXEventBuffer buffer = new SAXEventBuffer();
                     OutputHandler bufferOutput = wrapOutputHandler(buffer);
                     var.getContent().execute(context, bufferOutput);
-                    value = XPathString.of(buffer.toString());
+                    // Store as RTF so xsl:copy-of can access the tree structure
+                    value = new XPathResultTreeFragment(buffer);
                 } else {
                     value = XPathString.of("");
                 }

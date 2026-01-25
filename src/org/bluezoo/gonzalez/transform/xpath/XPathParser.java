@@ -21,7 +21,23 @@
 
 package org.bluezoo.gonzalez.transform.xpath;
 
-import org.bluezoo.gonzalez.transform.xpath.expr.*;
+import org.bluezoo.gonzalez.transform.xpath.expr.BinaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
+import org.bluezoo.gonzalez.transform.xpath.expr.FilterExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.ForExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.FunctionCall;
+import org.bluezoo.gonzalez.transform.xpath.expr.IfExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.LetExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Literal;
+import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
+import org.bluezoo.gonzalez.transform.xpath.expr.Operator;
+import org.bluezoo.gonzalez.transform.xpath.expr.PathExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.QuantifiedExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.SequenceExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+import org.bluezoo.gonzalez.transform.xpath.expr.UnaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.VariableReference;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -31,8 +47,10 @@ import java.util.List;
 /**
  * XPath 1.0 expression parser using the Pratt (operator precedence) algorithm.
  *
- * <p>This parser uses explicit stacks instead of recursion for predictable
- * resource usage and consistency with Gonzalez's state-machine design.
+ * <p>This parser uses explicit stacks and state machines instead of recursion
+ * for predictable resource usage and consistency with Gonzalez's design.
+ * All nested expression parsing (function arguments, predicates, parenthesized
+ * expressions, sequences) is handled by pushing/popping parsing contexts.
  *
  * <p>The parser handles:
  * <ul>
@@ -52,10 +70,6 @@ public final class XPathParser {
     private final XPathLexer lexer;
     private final NamespaceResolver namespaceResolver;
 
-    // Stacks for Pratt parsing
-    private final Deque<Expr> exprStack = new ArrayDeque<>();
-    private final Deque<StackEntry> opStack = new ArrayDeque<>();
-
     /**
      * Interface for resolving namespace prefixes during parsing.
      */
@@ -70,8 +84,34 @@ public final class XPathParser {
         String resolve(String prefix);
     }
 
+    // ========================================================================
+    // State Machine Types
+    // ========================================================================
+
     /**
-     * Entry on the operator stack.
+     * Types of nested parsing contexts.
+     */
+    private enum ContextType {
+        TOP_LEVEL,           // Top-level expression
+        FUNCTION_ARG,        // Function argument (between , and , or ))
+        PREDICATE,           // Predicate expression (between [ and ])
+        PARENTHESIZED,       // Parenthesized expression (after (, before ))
+        SEQUENCE             // Sequence item (between ( and ), with commas)
+    }
+
+    /**
+     * Parsing states within a context.
+     */
+    private enum ParseState {
+        NEED_OPERAND,        // Need to parse an operand (unary check + path expr)
+        HAVE_OPERAND,        // Have operand, looking for operator or context end
+        BUILDING_FUNCTION,   // Building a function call, need to start args
+        BUILDING_FILTER,     // Building a filter expression, need to start predicate
+        PATH_CONTINUATION    // After filter/primary, checking for path continuation
+    }
+
+    /**
+     * Entry on the operator stack for Pratt parsing.
      */
     private static class StackEntry {
         final Operator operator;
@@ -82,6 +122,48 @@ public final class XPathParser {
             this.precedence = precedence;
         }
     }
+
+    /**
+     * Parsing context for managing nested expression parsing without recursion.
+     */
+    private static class ParseContext {
+        final ContextType type;
+        ParseState state;
+        
+        // Pratt parsing stacks (local to each context)
+        final Deque<Expr> exprStack;
+        final Deque<StackEntry> opStack;
+        
+        // Accumulated items (for function args, sequences)
+        List<Expr> items;
+        
+        // Separate list for predicate items (to avoid mixing with function args)
+        List<Expr> predicateItems;
+        
+        // Unary negation count
+        int negationCount;
+        
+        // Function call construction
+        String functionPrefix;
+        String functionName;
+        
+        // Filter expression construction (primary expr waiting for predicates)
+        Expr filterBase;
+        
+        // True if this is a nested function call within another expression
+        boolean nestedInExpression;
+        
+        ParseContext(ContextType type) {
+            this.type = type;
+            this.state = ParseState.NEED_OPERAND;
+            this.exprStack = new ArrayDeque<>();
+            this.opStack = new ArrayDeque<>();
+        }
+    }
+
+    // ========================================================================
+    // Construction
+    // ========================================================================
 
     /**
      * Creates a parser for the given expression.
@@ -103,128 +185,754 @@ public final class XPathParser {
         this.namespaceResolver = namespaceResolver;
     }
 
+    // ========================================================================
+    // Main Parsing Entry Point
+    // ========================================================================
+
     /**
      * Parses the expression and returns the AST.
+     * This is the main iterative parsing loop - no recursive calls.
      *
      * @return the parsed expression
      * @throws XPathSyntaxException if the expression has invalid syntax
      */
     public Expr parse() throws XPathSyntaxException {
-        exprStack.clear();
-        opStack.clear();
+        Deque<ParseContext> contextStack = new ArrayDeque<>();
+        ParseContext ctx = new ParseContext(ContextType.TOP_LEVEL);
+        Expr finalResult = null;
 
-        Expr result = parseExpr();
+        // Main iterative parsing loop
+        mainLoop:
+        while (true) {
+            switch (ctx.state) {
+                case NEED_OPERAND:
+                    ctx = parseOperand(ctx, contextStack);
+                    break;
+
+                case HAVE_OPERAND:
+                    ParseResult parseResult = processOperatorOrEnd(ctx, contextStack);
+                    if (parseResult.done) {
+                        // Parsing complete
+                        finalResult = parseResult.result;
+                        break mainLoop;
+                    }
+                    ctx = parseResult.context;
+                    break;
+
+                case BUILDING_FUNCTION:
+                    ctx = startFunctionArgs(ctx, contextStack);
+                    break;
+
+                case BUILDING_FILTER:
+                    ctx = startPredicate(ctx, contextStack);
+                    break;
+
+                case PATH_CONTINUATION:
+                    ctx = handlePathContinuation(ctx);
+                    break;
+
+                default:
+                    throw new IllegalStateException("Unknown parse state: " + ctx.state);
+            }
+        }
 
         if (lexer.current() != XPathToken.EOF) {
             throw new XPathSyntaxException("Unexpected token: " + lexer.current(),
                 lexer.getExpression(), lexer.tokenStart());
         }
 
-        return result;
+        return finalResult;
     }
-
+    
     /**
-     * Parses an expression using the Pratt algorithm.
+     * Result of processOperatorOrEnd - either continues with new context or is done.
      */
-    private Expr parseExpr() throws XPathSyntaxException {
-        return parseOrExpr();
-    }
-
-    /**
-     * Parses using operator precedence (Pratt-style).
-     */
-    private Expr parseOrExpr() throws XPathSyntaxException {
-        // Parse the first operand
-        exprStack.push(parseUnaryExpr());
-
-        // Process operators
-        while (true) {
-            Operator op = Operator.fromToken(lexer.current());
-            if (op == null) {
-                break;
-            }
-
-            int prec = op.getPrecedence();
-
-            // Reduce operators with higher or equal precedence
-            while (!opStack.isEmpty() && opStack.peek().precedence >= prec) {
-                reduce();
-            }
-
-            // Push the new operator
-            opStack.push(new StackEntry(op, prec));
-            lexer.advance();
-
-            // Parse the next operand
-            exprStack.push(parseUnaryExpr());
+    private static class ParseResult {
+        final boolean done;
+        final Expr result;
+        final ParseContext context;
+        
+        private ParseResult(ParseContext context) {
+            this.done = false;
+            this.result = null;
+            this.context = context;
         }
-
-        // Reduce all remaining operators
-        while (!opStack.isEmpty()) {
-            reduce();
+        
+        private ParseResult(Expr result) {
+            this.done = true;
+            this.result = result;
+            this.context = null;
         }
-
-        return exprStack.pop();
+        
+        static ParseResult continueWith(ParseContext ctx) {
+            return new ParseResult(ctx);
+        }
+        
+        static ParseResult finished(Expr result) {
+            return new ParseResult(result);
+        }
     }
 
-    /**
-     * Reduces the top operator on the stack.
-     */
-    private void reduce() {
-        StackEntry entry = opStack.pop();
-        Expr right = exprStack.pop();
-        Expr left = exprStack.pop();
-        exprStack.push(new BinaryExpr(entry.operator, left, right));
-    }
+    // ========================================================================
+    // State Handlers
+    // ========================================================================
 
     /**
-     * Parses a unary expression (handles leading minus signs).
+     * Parses an operand (unary negation + path expression).
+     * May push new contexts for function args, predicates, or parenthesized expressions.
      */
-    private Expr parseUnaryExpr() throws XPathSyntaxException {
-        int negationCount = 0;
+    private ParseContext parseOperand(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        // Count unary negations
+        ctx.negationCount = 0;
         while (lexer.current() == XPathToken.MINUS) {
-            negationCount++;
+            ctx.negationCount++;
             lexer.advance();
         }
 
-        Expr expr = parsePathExpr();
-
-        if (negationCount > 0) {
-            expr = new UnaryExpr(expr, negationCount);
-        }
-
-        return expr;
+        // Parse path expression (which may involve function calls, predicates, etc.)
+        return parsePathExpr(ctx, contextStack);
     }
 
     /**
-     * Parses a path expression (filter expression optionally followed by location path).
+     * Parses a path expression iteratively.
      */
-    private Expr parsePathExpr() throws XPathSyntaxException {
+    private ParseContext parsePathExpr(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
         XPathToken token = lexer.current();
 
         // Check if this starts a location path
         if (token == XPathToken.SLASH || token == XPathToken.DOUBLE_SLASH) {
-            return parseLocationPath();
+            Expr path = parseLocationPath();
+            finishOperand(ctx, path);
+            return ctx;
         }
 
-        if (token.canStartStep()) {
-            // Could be a location path or a filter expression
-            // Try to determine which based on context
-            if (isLocationPathStart()) {
-                return parseLocationPath();
+        if (token.canStartStep() && isLocationPathStart()) {
+            Expr path = parseLocationPath();
+            finishOperand(ctx, path);
+            return ctx;
+        }
+
+        // Parse as filter expression (primary with optional predicates)
+        return parseFilterExpr(ctx, contextStack);
+    }
+
+    /**
+     * Parses a filter expression (primary with optional predicates).
+     * May push contexts for function args or predicates.
+     */
+    private ParseContext parseFilterExpr(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        // Parse primary expression
+        return parsePrimaryExpr(ctx, contextStack);
+    }
+
+    /**
+     * Parses a primary expression.
+     * May push contexts for function args or parenthesized expressions.
+     */
+    private ParseContext parsePrimaryExpr(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        XPathToken token = lexer.current();
+
+        switch (token) {
+            case STRING_LITERAL: {
+                String strVal = lexer.value();
+                lexer.advance();
+                Expr lit = Literal.string(strVal);
+                ctx.filterBase = lit;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case NUMBER_LITERAL: {
+                String numVal = lexer.value();
+                lexer.advance();
+                Expr lit = Literal.number(numVal);
+                ctx.filterBase = lit;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case DOLLAR: {
+                Expr var = parseVariableReference();
+                ctx.filterBase = var;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case LPAREN:
+                return startParenthesizedExpr(ctx, contextStack);
+
+            // XPath 2.0/3.0 expression keywords
+            case IF: {
+                Expr ifExpr = parseIfExpr();
+                ctx.filterBase = ifExpr;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case FOR: {
+                Expr forExpr = parseForExpr();
+                ctx.filterBase = forExpr;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case LET: {
+                Expr letExpr = parseLetExpr();
+                ctx.filterBase = letExpr;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case SOME: {
+                Expr someExpr = parseQuantifiedExpr(QuantifiedExpr.Quantifier.SOME);
+                ctx.filterBase = someExpr;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case EVERY: {
+                Expr everyExpr = parseQuantifiedExpr(QuantifiedExpr.Quantifier.EVERY);
+                ctx.filterBase = everyExpr;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case NCNAME:
+                // Could be a function call
+                XPathToken next = lexer.peek();
+                if (next == XPathToken.LPAREN) {
+                    return startFunctionCall(ctx, contextStack);
+                }
+                if (next == XPathToken.COLON && isPrefixedFunctionCall()) {
+                    return startFunctionCall(ctx, contextStack);
+                }
+                // Fall through - not a primary expression
+                break;
+
+            default:
+                break;
+        }
+
+        throw new XPathSyntaxException("Expected primary expression, found: " + token,
+            lexer.getExpression(), lexer.tokenStart());
+    }
+
+    // ========================================================================
+    // XPath 2.0/3.0 Expression Parsing
+    // ========================================================================
+
+    /**
+     * Parses an if expression: if (test) then expr else expr
+     */
+    private Expr parseIfExpr() throws XPathSyntaxException {
+        lexer.expect(XPathToken.IF);
+        lexer.expect(XPathToken.LPAREN);
+        
+        // Parse condition
+        Expr condition = parseSubExpression();
+        
+        lexer.expect(XPathToken.RPAREN);
+        lexer.expect(XPathToken.THEN);
+        
+        // Parse then branch
+        Expr thenExpr = parseSubExpression();
+        
+        lexer.expect(XPathToken.ELSE);
+        
+        // Parse else branch
+        Expr elseExpr = parseSubExpression();
+        
+        return new IfExpr(condition, thenExpr, elseExpr);
+    }
+
+    /**
+     * Parses a for expression: for $var in expr (, $var in expr)* return expr
+     */
+    private Expr parseForExpr() throws XPathSyntaxException {
+        lexer.expect(XPathToken.FOR);
+        
+        List<ForExpr.Binding> bindings = new ArrayList<>();
+        
+        do {
+            // Parse $varname
+            lexer.expect(XPathToken.DOLLAR);
+            if (lexer.current() != XPathToken.NCNAME) {
+                throw new XPathSyntaxException("Expected variable name",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+            String varName = lexer.value();
+            lexer.advance();
+            
+            lexer.expect(XPathToken.IN);
+            
+            // Parse sequence expression
+            Expr sequence = parseSubExpression();
+            
+            bindings.add(new ForExpr.Binding(varName, sequence));
+            
+        } while (lexer.match(XPathToken.COMMA));
+        
+        lexer.expect(XPathToken.RETURN);
+        
+        // Parse return expression
+        Expr returnExpr = parseSubExpression();
+        
+        return new ForExpr(bindings, returnExpr);
+    }
+
+    /**
+     * Parses a let expression: let $var := expr (, $var := expr)* return expr
+     */
+    private Expr parseLetExpr() throws XPathSyntaxException {
+        lexer.expect(XPathToken.LET);
+        
+        List<LetExpr.Binding> bindings = new ArrayList<>();
+        
+        do {
+            // Parse $varname
+            lexer.expect(XPathToken.DOLLAR);
+            if (lexer.current() != XPathToken.NCNAME) {
+                throw new XPathSyntaxException("Expected variable name",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+            String varName = lexer.value();
+            lexer.advance();
+            
+            lexer.expect(XPathToken.ASSIGN);
+            
+            // Parse value expression
+            Expr value = parseSubExpression();
+            
+            bindings.add(new LetExpr.Binding(varName, value));
+            
+        } while (lexer.match(XPathToken.COMMA));
+        
+        lexer.expect(XPathToken.RETURN);
+        
+        // Parse return expression
+        Expr returnExpr = parseSubExpression();
+        
+        return new LetExpr(bindings, returnExpr);
+    }
+
+    /**
+     * Parses a quantified expression: some/every $var in expr (, $var in expr)* satisfies expr
+     */
+    private Expr parseQuantifiedExpr(QuantifiedExpr.Quantifier quantifier) 
+            throws XPathSyntaxException {
+        lexer.advance(); // consume SOME or EVERY
+        
+        List<QuantifiedExpr.Binding> bindings = new ArrayList<>();
+        
+        do {
+            // Parse $varname
+            lexer.expect(XPathToken.DOLLAR);
+            if (lexer.current() != XPathToken.NCNAME) {
+                throw new XPathSyntaxException("Expected variable name",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+            String varName = lexer.value();
+            lexer.advance();
+            
+            lexer.expect(XPathToken.IN);
+            
+            // Parse sequence expression
+            Expr sequence = parseSubExpression();
+            
+            bindings.add(new QuantifiedExpr.Binding(varName, sequence));
+            
+        } while (lexer.match(XPathToken.COMMA));
+        
+        lexer.expect(XPathToken.SATISFIES);
+        
+        // Parse satisfies expression
+        Expr satisfiesExpr = parseSubExpression();
+        
+        return new QuantifiedExpr(quantifier, bindings, satisfiesExpr);
+    }
+
+    /**
+     * Parses a sub-expression (complete expression within a larger construct).
+     * Uses a fresh parse context.
+     */
+    private Expr parseSubExpression() throws XPathSyntaxException {
+        Deque<ParseContext> contextStack = new ArrayDeque<>();
+        ParseContext ctx = new ParseContext(ContextType.TOP_LEVEL);
+
+        while (true) {
+            switch (ctx.state) {
+                case NEED_OPERAND:
+                    ctx = parseOperand(ctx, contextStack);
+                    break;
+
+                case HAVE_OPERAND:
+                    // Check for terminating tokens that end a sub-expression
+                    XPathToken t = lexer.current();
+                    if (t == XPathToken.RPAREN || t == XPathToken.RBRACKET ||
+                        t == XPathToken.COMMA || t == XPathToken.THEN ||
+                        t == XPathToken.ELSE || t == XPathToken.RETURN ||
+                        t == XPathToken.IN || t == XPathToken.SATISFIES ||
+                        t == XPathToken.EOF) {
+                        // Reduce all remaining operators
+                        while (!ctx.opStack.isEmpty()) {
+                            reduce(ctx);
+                        }
+                        return ctx.exprStack.pop();
+                    }
+                    
+                    ParseResult parseResult = processOperatorOrEnd(ctx, contextStack);
+                    if (parseResult.done) {
+                        return parseResult.result;
+                    }
+                    ctx = parseResult.context;
+                    break;
+
+                case BUILDING_FUNCTION:
+                    ctx = startFunctionArgs(ctx, contextStack);
+                    break;
+
+                case BUILDING_FILTER:
+                    ctx = startPredicate(ctx, contextStack);
+                    break;
+
+                case PATH_CONTINUATION:
+                    ctx = handlePathContinuation(ctx);
+                    break;
+
+                default:
+                    throw new IllegalStateException("Unknown parse state: " + ctx.state);
             }
         }
+    }
 
-        // Parse as filter expression
-        Expr filter = parseFilterExpr();
-
-        // Check for following path
-        if (lexer.current() == XPathToken.SLASH || lexer.current() == XPathToken.DOUBLE_SLASH) {
-            LocationPath path = parseRelativeLocationPath();
-            return new PathExpr(filter, path);
+    /**
+     * Handles the PATH_CONTINUATION state - checks for predicates and path continuation.
+     */
+    private ParseContext handlePathContinuation(ParseContext ctx) throws XPathSyntaxException {
+        // Check for predicates
+        if (lexer.current() == XPathToken.LBRACKET) {
+            // Use a separate list for predicates to avoid mixing with function arguments
+            ctx.predicateItems = new ArrayList<>();
+            ctx.state = ParseState.BUILDING_FILTER;
+            return ctx;
         }
 
-        return filter;
+        // Check for path continuation
+        if (lexer.current() == XPathToken.SLASH || lexer.current() == XPathToken.DOUBLE_SLASH) {
+            LocationPath path = parseRelativeLocationPath();
+            Expr pathExpr = new PathExpr(ctx.filterBase, path);
+            finishOperand(ctx, pathExpr);
+            return ctx;
+        }
+
+        // No predicates or path - filter base is the operand
+        finishOperand(ctx, ctx.filterBase);
+        return ctx;
+    }
+
+    /**
+     * Finishes an operand by applying unary negation and updating state.
+     */
+    private void finishOperand(ParseContext ctx, Expr operand) {
+        if (ctx.negationCount > 0) {
+            operand = new UnaryExpr(operand, ctx.negationCount);
+            ctx.negationCount = 0;
+        }
+        ctx.exprStack.push(operand);
+        ctx.state = ParseState.HAVE_OPERAND;
+    }
+
+    /**
+     * Processes operator or context end after having an operand.
+     * Returns ParseResult indicating whether parsing is complete.
+     */
+    private ParseResult processOperatorOrEnd(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        Operator op = Operator.fromToken(lexer.current());
+
+        if (op != null) {
+            // We have an operator - use Pratt parsing
+            int prec = op.getPrecedence();
+            while (!ctx.opStack.isEmpty() && ctx.opStack.peek().precedence >= prec) {
+                reduce(ctx);
+            }
+            ctx.opStack.push(new StackEntry(op, prec));
+            lexer.advance();
+            ctx.state = ParseState.NEED_OPERAND;
+            return ParseResult.continueWith(ctx);
+        }
+
+        // No operator - reduce remaining operators and complete this context
+        while (!ctx.opStack.isEmpty()) {
+            reduce(ctx);
+        }
+
+        Expr result = ctx.exprStack.pop();
+
+        // Handle context completion based on type
+        switch (ctx.type) {
+            case TOP_LEVEL:
+                return ParseResult.finished(result);
+
+            case FUNCTION_ARG:
+                return ParseResult.continueWith(completeFunctionArg(ctx, contextStack, result));
+
+            case PREDICATE:
+                return ParseResult.continueWith(completePredicate(ctx, contextStack, result));
+
+            case PARENTHESIZED:
+                return ParseResult.continueWith(completeParenthesized(ctx, contextStack, result));
+
+            case SEQUENCE:
+                return ParseResult.continueWith(completeSequenceItem(ctx, contextStack, result));
+
+            default:
+                throw new IllegalStateException("Unknown context type: " + ctx.type);
+        }
+    }
+
+    // ========================================================================
+    // Context Starters
+    // ========================================================================
+
+    /**
+     * Starts parsing function call arguments.
+     * 
+     * <p>When parsing a nested function call (e.g., string(number(.)) inside contains()),
+     * we must create a new context for the nested function rather than reusing the
+     * current argument context, to avoid overwriting the parent function's argument list.
+     */
+    private ParseContext startFunctionCall(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        String prefix = null;
+        String localName = lexer.value();
+        lexer.advance();
+
+        // Check for prefix
+        if (lexer.current() == XPathToken.COLON) {
+            prefix = localName;
+            lexer.advance();
+            if (lexer.current() != XPathToken.NCNAME) {
+                throw new XPathSyntaxException("Expected function name after prefix",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+            localName = lexer.value();
+            lexer.advance();
+        }
+
+        lexer.expect(XPathToken.LPAREN);
+
+        // Check for empty argument list
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+            Expr func = new FunctionCall(prefix, localName, new ArrayList<>());
+            ctx.filterBase = func;
+            ctx.state = ParseState.PATH_CONTINUATION;
+            return ctx;
+        }
+
+        // For nested function calls (when ctx is already parsing an argument),
+        // we need to push the current context and create a new one for this function
+        if (ctx.type == ContextType.FUNCTION_ARG || ctx.type == ContextType.PREDICATE 
+                || ctx.type == ContextType.PARENTHESIZED || ctx.type == ContextType.SEQUENCE) {
+            // Save current context - we'll return to it after the function is complete
+            contextStack.push(ctx);
+            
+            // Create new context for this function call
+            ParseContext funcCtx = new ParseContext(ContextType.TOP_LEVEL);
+            funcCtx.functionPrefix = prefix;
+            funcCtx.functionName = localName;
+            funcCtx.items = new ArrayList<>();
+            funcCtx.state = ParseState.BUILDING_FUNCTION;
+            funcCtx.nestedInExpression = true;  // Mark as nested
+            return funcCtx;
+        }
+
+        // Top-level function call - use current context
+        ctx.functionPrefix = prefix;
+        ctx.functionName = localName;
+        ctx.items = new ArrayList<>();
+        ctx.state = ParseState.BUILDING_FUNCTION;
+        return ctx;
+    }
+
+    /**
+     * Starts parsing function arguments (pushes new context).
+     */
+    private ParseContext startFunctionArgs(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        contextStack.push(ctx);
+        ParseContext argCtx = new ParseContext(ContextType.FUNCTION_ARG);
+        argCtx.items = ctx.items;
+        return argCtx;
+    }
+
+    /**
+     * Starts parsing a predicate (pushes new context).
+     */
+    private ParseContext startPredicate(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        lexer.expect(XPathToken.LBRACKET);
+        contextStack.push(ctx);
+        ParseContext predCtx = new ParseContext(ContextType.PREDICATE);
+        // Use predicateItems for predicates, separate from function args
+        predCtx.predicateItems = ctx.predicateItems;
+        return predCtx;
+    }
+
+    /**
+     * Starts parsing a parenthesized expression or sequence.
+     */
+    private ParseContext startParenthesizedExpr(ParseContext ctx, Deque<ParseContext> contextStack) 
+            throws XPathSyntaxException {
+        lexer.expect(XPathToken.LPAREN);
+
+        // Check for empty sequence ()
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+            Expr empty = new SequenceExpr(new ArrayList<>());
+            ctx.filterBase = empty;
+            ctx.state = ParseState.PATH_CONTINUATION;
+            return ctx;
+        }
+
+        // Push current context and start parsing the expression
+        contextStack.push(ctx);
+        ParseContext parenCtx = new ParseContext(ContextType.PARENTHESIZED);
+        return parenCtx;
+    }
+
+    // ========================================================================
+    // Context Completers
+    // ========================================================================
+
+    /**
+     * Completes a function argument.
+     */
+    private ParseContext completeFunctionArg(ParseContext ctx, Deque<ParseContext> contextStack, Expr result) 
+            throws XPathSyntaxException {
+        ctx.items.add(result);
+
+        // Check for more arguments
+        if (lexer.current() == XPathToken.COMMA) {
+            lexer.advance();
+            // Continue with next argument in a fresh context
+            ParseContext argCtx = new ParseContext(ContextType.FUNCTION_ARG);
+            argCtx.items = ctx.items;
+            return argCtx;
+        }
+
+        // End of arguments
+        lexer.expect(XPathToken.RPAREN);
+
+        // Pop back to parent context
+        ParseContext parent = contextStack.pop();
+        Expr func = new FunctionCall(parent.functionPrefix, parent.functionName, ctx.items);
+        
+        // Check if this was a nested function call within another expression
+        if (parent.nestedInExpression) {
+            // Pop the original expression context and return the function as its operand
+            ParseContext exprCtx = contextStack.pop();
+            exprCtx.filterBase = func;
+            exprCtx.state = ParseState.PATH_CONTINUATION;
+            return exprCtx;
+        }
+        
+        parent.filterBase = func;
+        parent.state = ParseState.PATH_CONTINUATION;
+        return parent;
+    }
+
+    /**
+     * Completes a predicate.
+     */
+    private ParseContext completePredicate(ParseContext ctx, Deque<ParseContext> contextStack, Expr result) 
+            throws XPathSyntaxException {
+        ctx.predicateItems.add(result);
+        lexer.expect(XPathToken.RBRACKET);
+
+        // Pop back to parent context
+        ParseContext parent = contextStack.pop();
+
+        // Check for more predicates
+        if (lexer.current() == XPathToken.LBRACKET) {
+            parent.state = ParseState.BUILDING_FILTER;
+            return parent;
+        }
+
+        // Create filter expression using predicateItems
+        Expr filter = new FilterExpr(parent.filterBase, ctx.predicateItems);
+        parent.filterBase = filter;
+        parent.state = ParseState.PATH_CONTINUATION;
+        return parent;
+    }
+
+    /**
+     * Completes a parenthesized expression.
+     */
+    private ParseContext completeParenthesized(ParseContext ctx, Deque<ParseContext> contextStack, Expr result) 
+            throws XPathSyntaxException {
+        // Check for comma - if present, it's a sequence
+        if (lexer.current() == XPathToken.COMMA) {
+            ctx.items = new ArrayList<>();
+            ctx.items.add(result);
+            lexer.advance();
+            // Convert to sequence context
+            ParseContext seqCtx = new ParseContext(ContextType.SEQUENCE);
+            seqCtx.items = ctx.items;
+            return seqCtx;
+        }
+
+        lexer.expect(XPathToken.RPAREN);
+
+        // Pop back to parent context
+        ParseContext parent = contextStack.pop();
+        parent.filterBase = result;
+        parent.state = ParseState.PATH_CONTINUATION;
+        return parent;
+    }
+
+    /**
+     * Completes a sequence item.
+     */
+    private ParseContext completeSequenceItem(ParseContext ctx, Deque<ParseContext> contextStack, Expr result) 
+            throws XPathSyntaxException {
+        ctx.items.add(result);
+
+        // Check for more items
+        if (lexer.current() == XPathToken.COMMA) {
+            lexer.advance();
+            ParseContext seqCtx = new ParseContext(ContextType.SEQUENCE);
+            seqCtx.items = ctx.items;
+            return seqCtx;
+        }
+
+        lexer.expect(XPathToken.RPAREN);
+
+        // Pop back to parent context
+        ParseContext parent = contextStack.pop();
+        Expr seq = new SequenceExpr(ctx.items);
+        parent.filterBase = seq;
+        parent.state = ParseState.PATH_CONTINUATION;
+        return parent;
+    }
+
+    // ========================================================================
+    // Helper Methods
+    // ========================================================================
+
+    /**
+     * Reduces the top operator on the context's stacks.
+     */
+    private void reduce(ParseContext ctx) {
+        StackEntry entry = ctx.opStack.pop();
+        Expr right = ctx.exprStack.pop();
+        Expr left = ctx.exprStack.pop();
+        ctx.exprStack.push(new BinaryExpr(entry.operator, left, right));
     }
 
     /**
@@ -244,7 +952,6 @@ public final class XPathParser {
         }
 
         // NCName could be element name or function name
-        // It's a function call if followed by '('
         if (token == XPathToken.NCNAME) {
             XPathToken next = lexer.peek();
             if (next == XPathToken.LPAREN) {
@@ -257,7 +964,14 @@ public final class XPathParser {
                 // Otherwise it's a function call
                 return false;
             }
-            // No paren follows - it's an element name (step)
+            // Check for prefixed function call: prefix:name(
+            if (next == XPathToken.COLON) {
+                if (isPrefixedFunctionCall()) {
+                    return false;  // It's a function call, not a location path
+                }
+                return true;
+            }
+            // No paren or colon follows - it's an element name (step)
             return true;
         }
 
@@ -275,68 +989,39 @@ public final class XPathParser {
     }
 
     /**
-     * Parses a filter expression (primary with optional predicates).
+     * Checks if the current position starts a prefixed function call: prefix:name(
      */
-    private Expr parseFilterExpr() throws XPathSyntaxException {
-        Expr primary = parsePrimaryExpr();
-
-        // Parse predicates
-        List<Expr> predicates = null;
-        while (lexer.current() == XPathToken.LBRACKET) {
-            if (predicates == null) {
-                predicates = new ArrayList<>();
+    private boolean isPrefixedFunctionCall() {
+        // Save lexer state
+        int savedPos = lexer.getPosition();
+        XPathToken savedCurrent = lexer.current();
+        String savedValue = lexer.value();
+        int savedStart = lexer.tokenStart();
+        
+        try {
+            if (lexer.current() != XPathToken.NCNAME) {
+                return false;
             }
-            predicates.add(parsePredicate());
+            lexer.advance();
+            
+            if (lexer.current() != XPathToken.COLON) {
+                return false;
+            }
+            lexer.advance();
+            
+            if (lexer.current() != XPathToken.NCNAME) {
+                return false;
+            }
+            lexer.advance();
+            
+            return lexer.current() == XPathToken.LPAREN;
+        } finally {
+            lexer.restore(savedPos, savedCurrent, savedValue, savedStart);
         }
-
-        if (predicates != null && !predicates.isEmpty()) {
-            return new FilterExpr(primary, predicates);
-        }
-
-        return primary;
     }
 
     /**
-     * Parses a primary expression (literal, variable, function call, or parenthesized).
-     */
-    private Expr parsePrimaryExpr() throws XPathSyntaxException {
-        XPathToken token = lexer.current();
-
-        switch (token) {
-            case STRING_LITERAL:
-                String strVal = lexer.value();
-                lexer.advance();
-                return Literal.string(strVal);
-
-            case NUMBER_LITERAL:
-                String numVal = lexer.value();
-                lexer.advance();
-                return Literal.number(numVal);
-
-            case DOLLAR:
-                return parseVariableReference();
-
-            case LPAREN:
-                return parseParenthesizedExpr();
-
-            case NCNAME:
-                // Could be a function call - check for '('
-                if (lexer.peek() == XPathToken.LPAREN) {
-                    return parseFunctionCall();
-                }
-                // Fall through - not a primary expression
-                break;
-
-            default:
-                break;
-        }
-
-        throw new XPathSyntaxException("Expected primary expression, found: " + token,
-            lexer.getExpression(), lexer.tokenStart());
-    }
-
-    /**
-     * Parses a variable reference ($name).
+     * Parses a variable reference ($name). This is leaf-level, no nested expressions.
      */
     private Expr parseVariableReference() throws XPathSyntaxException {
         lexer.expect(XPathToken.DOLLAR);
@@ -365,63 +1050,8 @@ public final class XPathParser {
     }
 
     /**
-     * Parses a parenthesized expression.
-     */
-    private Expr parseParenthesizedExpr() throws XPathSyntaxException {
-        lexer.expect(XPathToken.LPAREN);
-        Expr expr = parseExpr();
-        lexer.expect(XPathToken.RPAREN);
-        return expr;
-    }
-
-    /**
-     * Parses a function call.
-     */
-    private Expr parseFunctionCall() throws XPathSyntaxException {
-        String prefix = null;
-        String localName = lexer.value();
-        lexer.advance();
-
-        // Check for prefix
-        if (lexer.current() == XPathToken.COLON) {
-            prefix = localName;
-            lexer.advance();
-            if (lexer.current() != XPathToken.NCNAME) {
-                throw new XPathSyntaxException("Expected function name after prefix",
-                    lexer.getExpression(), lexer.tokenStart());
-            }
-            localName = lexer.value();
-            lexer.advance();
-        }
-
-        lexer.expect(XPathToken.LPAREN);
-
-        List<Expr> args = new ArrayList<>();
-        if (lexer.current() != XPathToken.RPAREN) {
-            args.add(parseExpr());
-            while (lexer.current() == XPathToken.COMMA) {
-                lexer.advance();
-                args.add(parseExpr());
-            }
-        }
-
-        lexer.expect(XPathToken.RPAREN);
-
-        return new FunctionCall(prefix, localName, args);
-    }
-
-    /**
-     * Parses a predicate ([expr]).
-     */
-    private Expr parsePredicate() throws XPathSyntaxException {
-        lexer.expect(XPathToken.LBRACKET);
-        Expr expr = parseExpr();
-        lexer.expect(XPathToken.RBRACKET);
-        return expr;
-    }
-
-    /**
-     * Parses a location path (absolute or relative).
+     * Parses a location path (absolute or relative). This is leaf-level for expressions.
+     * Predicates within steps are parsed inline since they're step-local.
      */
     private Expr parseLocationPath() throws XPathSyntaxException {
         boolean absolute = false;
@@ -439,19 +1069,17 @@ public final class XPathParser {
         } else if (lexer.current() == XPathToken.DOUBLE_SLASH) {
             absolute = true;
             lexer.advance();
-
-            // "//" is abbreviation for /descendant-or-self::node()/
             steps.add(new Step(Step.Axis.DESCENDANT_OR_SELF, Step.NodeTestType.NODE));
         }
 
-        // Parse relative location path
-        steps.addAll(parseRelativeSteps());
+        // Parse relative location path steps
+        parseRelativeSteps(steps);
 
         return new LocationPath(absolute, steps);
     }
 
     /**
-     * Parses a relative location path (returns the path itself, not wrapped).
+     * Parses a relative location path (returns the path itself).
      */
     private LocationPath parseRelativeLocationPath() throws XPathSyntaxException {
         List<Step> steps = new ArrayList<>();
@@ -463,16 +1091,15 @@ public final class XPathParser {
             steps.add(new Step(Step.Axis.DESCENDANT_OR_SELF, Step.NodeTestType.NODE));
         }
 
-        steps.addAll(parseRelativeSteps());
+        parseRelativeSteps(steps);
         return new LocationPath(false, steps);
     }
 
     /**
      * Parses the steps of a relative location path.
+     * Predicates are parsed inline using a local iterative approach.
      */
-    private List<Step> parseRelativeSteps() throws XPathSyntaxException {
-        List<Step> steps = new ArrayList<>();
-
+    private void parseRelativeSteps(List<Step> steps) throws XPathSyntaxException {
         // First step
         steps.add(parseStep());
 
@@ -486,27 +1113,28 @@ public final class XPathParser {
             }
             steps.add(parseStep());
         }
-
-        return steps;
     }
 
     /**
-     * Parses a single step.
+     * Parses a single step with its predicates.
+     * Predicates within steps use a local iterative approach since they're step-local.
      */
     private Step parseStep() throws XPathSyntaxException {
         // Handle abbreviations first
         if (lexer.current() == XPathToken.DOT) {
             lexer.advance();
-            return new Step(Step.Axis.SELF, Step.NodeTestType.NODE);
+            Step step = new Step(Step.Axis.SELF, Step.NodeTestType.NODE);
+            return parseStepPredicates(step);
         }
 
         if (lexer.current() == XPathToken.DOUBLE_DOT) {
             lexer.advance();
-            return new Step(Step.Axis.PARENT, Step.NodeTestType.NODE);
+            Step step = new Step(Step.Axis.PARENT, Step.NodeTestType.NODE);
+            return parseStepPredicates(step);
         }
 
         // Determine axis
-        Step.Axis axis = Step.Axis.CHILD; // default
+        Step.Axis axis = Step.Axis.CHILD;
 
         if (lexer.current() == XPathToken.AT) {
             axis = Step.Axis.ATTRIBUTE;
@@ -514,23 +1142,87 @@ public final class XPathParser {
         } else if (lexer.current().isAxis()) {
             axis = tokenToAxis(lexer.current());
             lexer.advance();
-            // The :: was already consumed by the lexer
         }
 
         // Parse node test
         Step step = parseNodeTest(axis);
 
         // Parse predicates
-        List<Expr> predicates = new ArrayList<>();
+        return parseStepPredicates(step);
+    }
+
+    /**
+     * Parses predicates for a step using iterative approach.
+     * Step predicates don't need the full context stack since they can't
+     * contain function calls with arguments that would nest further.
+     * Actually, they CAN contain arbitrary expressions, so we need to use
+     * a local iterative sub-parser here.
+     */
+    private Step parseStepPredicates(Step step) throws XPathSyntaxException {
+        List<Expr> predicates = null;
+        
         while (lexer.current() == XPathToken.LBRACKET) {
-            predicates.add(parsePredicate());
+            if (predicates == null) {
+                predicates = new ArrayList<>();
+            }
+            lexer.advance(); // consume [
+            
+            // Parse predicate expression using iterative approach
+            Expr predExpr = parsePredicateExpr();
+            predicates.add(predExpr);
+            
+            lexer.expect(XPathToken.RBRACKET);
         }
 
-        if (!predicates.isEmpty()) {
-            step = step.withPredicates(predicates);
+        if (predicates != null && !predicates.isEmpty()) {
+            return step.withPredicates(predicates);
         }
 
         return step;
+    }
+
+    /**
+     * Parses a predicate expression iteratively.
+     * This creates a fresh parsing context and runs to completion.
+     */
+    private Expr parsePredicateExpr() throws XPathSyntaxException {
+        // Create a fresh parse context for the predicate
+        Deque<ParseContext> contextStack = new ArrayDeque<>();
+        ParseContext ctx = new ParseContext(ContextType.TOP_LEVEL);
+
+        // Run the iterative parsing loop
+        while (true) {
+            switch (ctx.state) {
+                case NEED_OPERAND:
+                    ctx = parseOperand(ctx, contextStack);
+                    break;
+
+                case HAVE_OPERAND:
+                    ParseResult parseResult = processOperatorOrEnd(ctx, contextStack);
+                    if (parseResult.done) {
+                        // We're done - return the result
+                        // Note: don't consume RBRACKET, caller does that
+                        return parseResult.result;
+                    }
+                    ctx = parseResult.context;
+                    break;
+
+                case BUILDING_FUNCTION:
+                    ctx = startFunctionArgs(ctx, contextStack);
+                    break;
+
+                case BUILDING_FILTER:
+                    ctx = startPredicate(ctx, contextStack);
+                    break;
+
+                case PATH_CONTINUATION:
+                    ctx = handlePathContinuation(ctx);
+                    break;
+
+                default:
+                    throw new IllegalStateException("Unknown parse state: " + ctx.state);
+            }
+        }
     }
 
     /**
@@ -595,7 +1287,6 @@ public final class XPathParser {
                 lexer.advance();
 
                 if (lexer.current() == XPathToken.STAR) {
-                    // prefix:* - namespace wildcard
                     lexer.advance();
                     String nsUri = resolvePrefix(name);
                     return Step.namespaceWildcard(axis, nsUri);
@@ -661,7 +1352,6 @@ public final class XPathParser {
                 return uri;
             }
         }
-        // Return the prefix itself if no resolver - will be resolved at runtime
         return prefix;
     }
 
