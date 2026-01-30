@@ -90,6 +90,7 @@
       <!-- Include service provider configuration for JAXP discovery -->
       <fileset dir='${src}'>
         <include name='META-INF/services/*'/>
+        <include name='META-INF/*.xsd'/>
       </fileset>
     </jar>
   </target>

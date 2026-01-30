@@ -165,6 +165,10 @@ public final class BinaryExpr implements Expr {
         if (rightVal == null) {
             rightVal = XPathString.EMPTY;
         }
+        
+        // Note: We don't do strict type checking for comparisons because XSLT 2.0
+        // supports backwards-compatible mode (xsl:version="1.0") at the element level,
+        // which is complex to track. Function argument type checking is still done.
 
         // XPath 2.0: General comparison uses existential semantics
         // If either operand is a sequence, iterate and check if any pair matches
@@ -309,7 +313,8 @@ public final class BinaryExpr implements Expr {
         return XPathBoolean.FALSE;
     }
 
-    private XPathValue evaluateValueComparison(XPathValue leftVal, XPathValue rightVal) {
+    private XPathValue evaluateValueComparison(XPathValue leftVal, XPathValue rightVal) 
+            throws XPathException {
         // XPath 1.0 Section 3.4 comparison rules:
         // 1. If at least one is boolean, compare as booleans
         // 2. If at least one is number, compare as numbers
@@ -380,6 +385,10 @@ public final class BinaryExpr implements Expr {
         if (rightVal == null) {
             rightVal = XPathNumber.of(Double.NaN);
         }
+        
+        // Note: We don't do strict type checking for arithmetic because XSLT 2.0
+        // supports backwards-compatible mode (xsl:version="1.0") at the element level,
+        // which is complex to track. Function argument type checking is still done.
         
         // Check for date/time arithmetic
         if (leftVal instanceof XPathDateTime || rightVal instanceof XPathDateTime) {
@@ -490,7 +499,8 @@ public final class BinaryExpr implements Expr {
         }
 
         if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
-            throw new XPathException("Union operator requires node-set operands");
+            throw new XPathException("XPTY0004: Union operator requires node-set operands, got " +
+                leftVal.getType() + " and " + rightVal.getType());
         }
 
         return leftVal.asNodeSet().union(rightVal.asNodeSet());
@@ -657,7 +667,7 @@ public final class BinaryExpr implements Expr {
         }
         
         if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
-            throw new XPathException("intersect operator requires node-set operands");
+            throw new XPathException("XPTY0004: intersect operator requires node-set operands");
         }
         
         XPathNodeSet leftSet = leftVal.asNodeSet();
@@ -696,7 +706,7 @@ public final class BinaryExpr implements Expr {
         }
         
         if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
-            throw new XPathException("except operator requires node-set operands");
+            throw new XPathException("XPTY0004: except operator requires node-set operands");
         }
         
         XPathNodeSet leftSet = leftVal.asNodeSet();

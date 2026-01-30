@@ -63,6 +63,7 @@ import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TemplateMatcher;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -783,9 +784,43 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     /**
+     * Validates that an XSLT element only has allowed attributes (XTSE0090).
+     * Also validates QName attribute values (XTSE0020).
+     */
+    private void validateAllowedAttributes(ElementContext ctx) throws SAXException {
+        // Get the appropriate validator based on version
+        XSLTSchemaValidator validator = stylesheetVersion >= 3.0 
+            ? XSLTSchemaValidator.getInstance30()
+            : XSLTSchemaValidator.getInstance20();
+        
+        for (Map.Entry<String, String> attr : ctx.attributes.entrySet()) {
+            String attrName = attr.getKey();
+            String attrValue = attr.getValue();
+            
+            // XTSE0090: Check if attribute is allowed (using schema)
+            validator.validateAttribute(ctx.localName, attrName);
+            
+            // XTSE0020: Validate QName attributes
+            if (isQNameAttribute(attrName) && attrValue != null && !attrValue.isEmpty()) {
+                XSLTSchemaValidator.validateQName(attrName, attrValue);
+            }
+        }
+    }
+    
+    /**
+     * Checks if an attribute expects a QName value.
+     */
+    private boolean isQNameAttribute(String attrName) {
+        return "name".equals(attrName) || "mode".equals(attrName);
+    }
+
+    /**
      * Compiles an XSLT instruction element.
      */
     private XSLTNode compileXSLTElement(ElementContext ctx) throws SAXException {
+        // XTSE0090: Validate attributes are allowed on this element
+        validateAllowedAttributes(ctx);
+        
         switch (ctx.localName) {
             case "stylesheet":
             case "transform":
@@ -794,6 +829,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return null;
                 
             case "import":
+                // XTSE0010: xsl:import must be a top-level element
+                if (!isTopLevel()) {
+                    throw new SAXException("XTSE0010: xsl:import is only allowed at the top level");
+                }
                 processImport(ctx);
                 return null;
                 
@@ -806,6 +845,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return null;
                 
             case "template":
+                // XTSE0010: xsl:template must be a top-level element
+                if (!isTopLevel()) {
+                    throw new SAXException("XTSE0010: xsl:template is only allowed at the top level");
+                }
                 processTemplateElement(ctx);
                 return null;
                 
@@ -1501,7 +1544,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         String href = ctx.attributes.get("href");
         if (href == null || href.isEmpty()) {
-            throw new SAXException("xsl:import requires an href attribute");
+            throw new SAXException("XTSE0010: xsl:import requires href attribute");
         }
         
         if (resolver == null) {
@@ -1530,6 +1573,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * stylesheets have the same import precedence as the including stylesheet.
      */
     private void processInclude(ElementContext ctx) throws SAXException {
+        // XTSE0010: xsl:include must be top-level
+        if (!isTopLevel()) {
+            throw new SAXException("XTSE0010: xsl:include is only allowed at the top level");
+        }
+        
         // Include is allowed anywhere in top-level, but once we see a non-import
         // element, no more imports are allowed
         importsAllowed = false;
@@ -1537,7 +1585,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         String href = ctx.attributes.get("href");
         if (href == null || href.isEmpty()) {
-            throw new SAXException("xsl:include requires an href attribute");
+            throw new SAXException("XTSE0010: xsl:include requires href attribute");
         }
         
         if (resolver == null) {
@@ -1648,14 +1696,26 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         // Extract parameters from children
+        // XTSE0010: xsl:param must come before any other content
         List<TemplateParameter> params = new ArrayList<>();
         List<XSLTNode> bodyNodes = new ArrayList<>();
+        boolean foundNonParam = false;
         
         for (XSLTNode child : ctx.children) {
             if (child instanceof ParamNode) {
+                if (foundNonParam) {
+                    throw new SAXException("XTSE0010: xsl:param must come before any other content in template");
+                }
                 ParamNode pn = (ParamNode) child;
                 params.add(new TemplateParameter(pn.getName(), pn.getSelectExpr(), pn.getContent()));
+            } else if (child instanceof WithParamNode) {
+                // XTSE0010: xsl:with-param not allowed directly in template
+                throw new SAXException("XTSE0010: xsl:with-param is not allowed directly in xsl:template");
+            } else if (child instanceof SortSpecNode) {
+                // XTSE0010: xsl:sort not allowed directly in template
+                throw new SAXException("XTSE0010: xsl:sort is not allowed directly in xsl:template");
             } else {
+                foundNonParam = true;
                 bodyNodes.add(child);
             }
         }
@@ -1724,13 +1784,26 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private void processKeyElement(ElementContext ctx) throws SAXException {
+        // XTSE0010: xsl:key must be top-level
+        if (!isTopLevel()) {
+            throw new SAXException("XTSE0010: xsl:key is only allowed at the top level");
+        }
+        
         importsAllowed = false;
         String name = ctx.attributes.get("name");
         String match = ctx.attributes.get("match");
         String use = ctx.attributes.get("use");
         
-        if (name == null || match == null || use == null) {
-            throw new SAXException("xsl:key requires name, match, and use attributes");
+        // XTSE0010: name and match are required
+        if (name == null || name.isEmpty()) {
+            throw new SAXException("XTSE0010: xsl:key requires name attribute");
+        }
+        if (match == null || match.isEmpty()) {
+            throw new SAXException("XTSE0010: xsl:key requires match attribute");
+        }
+        // Note: use is optional in XSLT 2.0+ (can have content instead)
+        if (use == null && ctx.children.isEmpty()) {
+            throw new SAXException("XTSE0010: xsl:key requires use attribute or content");
         }
         
         // Parse key name to a QName with resolved namespace
@@ -1972,6 +2045,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     private XSLTNode compileVariable(ElementContext ctx, boolean isTopLevel) throws SAXException {
         String name = ctx.attributes.get("name");
+        if (name == null || name.isEmpty()) {
+            throw new SAXException("XTSE0010: xsl:variable requires name attribute");
+        }
+        
         String select = ctx.attributes.get("select");
         String staticAttr = ctx.attributes.get("static");
         String asType = ctx.attributes.get("as"); // XSLT 2.0 type annotation
@@ -2006,6 +2083,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     private XSLTNode compileParam(ElementContext ctx, boolean isTopLevel) throws SAXException {
         String name = ctx.attributes.get("name");
+        if (name == null || name.isEmpty()) {
+            throw new SAXException("XTSE0010: xsl:param requires name attribute");
+        }
+        
         String select = ctx.attributes.get("select");
         String asType = ctx.attributes.get("as"); // XSLT 2.0 type annotation
         String staticAttr = ctx.attributes.get("static");
@@ -2394,6 +2475,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private XSLTNode compileApplyTemplates(ElementContext ctx) throws SAXException {
+        // XTSE0010: xsl:apply-templates must not be at top level
+        if (isTopLevel()) {
+            throw new SAXException("XTSE0010: xsl:apply-templates is not allowed at the top level");
+        }
+        
         String select = ctx.attributes.get("select");
         String mode = ctx.attributes.get("mode");
         
@@ -2403,14 +2489,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         XPathExpression selectExpr = select != null ? compileExpression(select) : null;
         
         // Extract sorts and with-params from children
+        // XTSE0010: Only xsl:sort and xsl:with-param are allowed as children
         List<SortSpec> sorts = new ArrayList<>();
         List<WithParamNode> params = new ArrayList<>();
+        boolean foundNonSort = false;
         
         for (XSLTNode child : ctx.children) {
             if (child instanceof SortSpecNode) {
+                if (foundNonSort) {
+                    throw new SAXException("XTSE0010: xsl:sort must come before xsl:with-param in xsl:apply-templates");
+                }
                 sorts.add(((SortSpecNode) child).getSortSpec());
             } else if (child instanceof WithParamNode) {
+                foundNonSort = true;
                 params.add((WithParamNode) child);
+            } else {
+                throw new SAXException("XTSE0010: Only xsl:sort and xsl:with-param are allowed in xsl:apply-templates");
             }
         }
         
@@ -2418,15 +2512,23 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private XSLTNode compileCallTemplate(ElementContext ctx) throws SAXException {
-        String name = ctx.attributes.get("name");
-        if (name == null) {
-            throw new SAXException("xsl:call-template requires name attribute");
+        // XTSE0010: xsl:call-template must not be at top level
+        if (isTopLevel()) {
+            throw new SAXException("XTSE0010: xsl:call-template is not allowed at the top level");
         }
         
+        String name = ctx.attributes.get("name");
+        if (name == null) {
+            throw new SAXException("XTSE0010: xsl:call-template requires name attribute");
+        }
+        
+        // XTSE0010: Only xsl:with-param is allowed as a child
         List<WithParamNode> params = new ArrayList<>();
         for (XSLTNode child : ctx.children) {
             if (child instanceof WithParamNode) {
                 params.add((WithParamNode) child);
+            } else {
+                throw new SAXException("XTSE0010: Only xsl:with-param is allowed in xsl:call-template");
             }
         }
         
@@ -2460,17 +2562,23 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private XSLTNode compileForEach(ElementContext ctx) throws SAXException {
         String select = ctx.attributes.get("select");
         if (select == null) {
-            throw new SAXException("xsl:for-each requires select attribute");
+            throw new SAXException("XTSE0010: xsl:for-each requires select attribute");
         }
         
         // Extract sorts from children
+        // XTSE0010: xsl:sort must come before any other content
         List<SortSpec> sorts = new ArrayList<>();
         List<XSLTNode> bodyNodes = new ArrayList<>();
+        boolean foundNonSort = false;
         
         for (XSLTNode child : ctx.children) {
             if (child instanceof SortSpecNode) {
+                if (foundNonSort) {
+                    throw new SAXException("XTSE0010: xsl:sort must come before other content in xsl:for-each");
+                }
                 sorts.add(((SortSpecNode) child).getSortSpec());
             } else {
+                foundNonSort = true;
                 bodyNodes.add(child);
             }
         }
@@ -3589,8 +3697,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     output.setElementType(typeNamespaceURI, typeLocalName);
                 } else if (effectiveValidation == ValidationMode.STRICT || 
                            effectiveValidation == ValidationMode.LAX) {
-                    // TODO: Implement runtime schema validation to derive type
-                    // For now, skip - will be implemented when we add runtime validation
+                    // Use runtime schema validation to derive type
+                    RuntimeSchemaValidator validator = context.getRuntimeValidator();
+                    if (validator != null) {
+                        RuntimeSchemaValidator.ValidationResult valResult =
+                            validator.startElement(namespace, localName, effectiveValidation);
+                        // Note: Full content model validation happens during content execution
+                        // For now, we validate the element exists and get its type
+                        if (valResult.hasTypeAnnotation()) {
+                            output.setElementType(valResult.getTypeNamespaceURI(),
+                                                  valResult.getTypeLocalName());
+                        }
+                    }
                 } else if (effectiveValidation == ValidationMode.STRIP) {
                     // Strip mode - don't set any type annotation (no-op since we haven't set one)
                 }
@@ -3772,7 +3890,17 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     output.setAttributeType(typeNamespaceURI, typeLocalName);
                 } else if (effectiveValidation == ValidationMode.STRICT || 
                            effectiveValidation == ValidationMode.LAX) {
-                    // TODO: Implement runtime schema validation to derive type
+                    // Use runtime schema validation to derive type
+                    RuntimeSchemaValidator validator = context.getRuntimeValidator();
+                    if (validator != null) {
+                        RuntimeSchemaValidator.ValidationResult valResult =
+                            validator.validateStandaloneAttribute(namespace, localName, 
+                                                                   value, effectiveValidation);
+                        if (valResult.hasTypeAnnotation()) {
+                            output.setAttributeType(valResult.getTypeNamespaceURI(),
+                                                    valResult.getTypeLocalName());
+                        }
+                    }
                 } else if (effectiveValidation == ValidationMode.STRIP) {
                     // Strip mode - don't set any type annotation
                 }
@@ -3921,7 +4049,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         }
                     } else if (effectiveValidation == ValidationMode.STRICT || 
                                effectiveValidation == ValidationMode.LAX) {
-                        // TODO: Runtime schema validation
+                        // Use runtime schema validation to derive type
+                        RuntimeSchemaValidator validator = context.getRuntimeValidator();
+                        if (validator != null) {
+                            try {
+                                RuntimeSchemaValidator.ValidationResult valResult =
+                                    validator.startElement(uri, localName, effectiveValidation);
+                                if (valResult.hasTypeAnnotation()) {
+                                    output.setElementType(valResult.getTypeNamespaceURI(),
+                                                          valResult.getTypeLocalName());
+                                }
+                            } catch (XPathException e) {
+                                throw new SAXException("Validation error in xsl:copy", e);
+                            }
+                        }
                     }
                     // STRIP mode - don't set any type annotation
                     
@@ -4096,7 +4237,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         }
                     } else if (effectiveValidation == ValidationMode.STRICT || 
                                effectiveValidation == ValidationMode.LAX) {
-                        // TODO: Runtime schema validation
+                        // Note: For copy-of, we would need the context to do runtime validation
+                        // For now, preserve source type annotation if available
+                        String srcTypeNs = node.getTypeNamespaceURI();
+                        String srcTypeLocal = node.getTypeLocalName();
+                        if (srcTypeLocal != null) {
+                            output.setElementType(srcTypeNs, srcTypeLocal);
+                        }
                     }
                     // STRIP mode - don't set any type annotation
                     

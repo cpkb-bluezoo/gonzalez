@@ -415,13 +415,14 @@ public class XSDSchemaParser extends DefaultHandler {
         
         XSDAttribute attribute = (XSDAttribute) top;
         
-        // Add to appropriate container
-        if (!stack.isEmpty()) {
-            Object parent = stack.peek();
-            if (parent instanceof XSDComplexType) {
-                ((XSDComplexType) parent).addAttribute(attribute);
-            } else if (parent instanceof XSDSchema) {
+        // Add to appropriate container - look past string markers (complexContent, etc.)
+        for (Object item : stack) {
+            if (item instanceof XSDComplexType) {
+                ((XSDComplexType) item).addAttribute(attribute);
+                return;
+            } else if (item instanceof XSDSchema) {
                 schema.addAttribute(attribute);
+                return;
             }
         }
     }

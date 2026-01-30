@@ -148,7 +148,7 @@ public final class XPathExpression {
     public XPathNodeSet evaluateAsNodeSet(XPathNode contextNode) throws XPathException {
         XPathValue result = evaluate(contextNode);
         if (!result.isNodeSet()) {
-            throw new XPathException("Expression result is not a node-set: " + expressionString);
+            throw new XPathException("XPTY0004: Expression result is not a node-set: " + expressionString);
         }
         return result.asNodeSet();
     }

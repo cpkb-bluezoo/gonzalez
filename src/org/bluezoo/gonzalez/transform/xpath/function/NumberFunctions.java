@@ -76,7 +76,7 @@ public final class NumberFunctions {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue arg = args.get(0);
             if (!arg.isNodeSet()) {
-                throw new XPathException("sum() requires a node-set argument");
+                throw new XPathException("XPTY0004: sum() requires a node-set argument");
             }
             
             XPathNodeSet nodeSet = arg.asNodeSet();
@@ -100,6 +100,7 @@ public final class NumberFunctions {
         @Override public String getName() { return "floor"; }
         @Override public int getMinArgs() { return 1; }
         @Override public int getMaxArgs() { return 1; }
+        @Override public ArgType[] getArgumentTypes() { return new ArgType[] { ArgType.NUMERIC }; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
@@ -113,6 +114,7 @@ public final class NumberFunctions {
         @Override public String getName() { return "ceiling"; }
         @Override public int getMinArgs() { return 1; }
         @Override public int getMaxArgs() { return 1; }
+        @Override public ArgType[] getArgumentTypes() { return new ArgType[] { ArgType.NUMERIC }; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
@@ -126,6 +128,7 @@ public final class NumberFunctions {
         @Override public String getName() { return "round"; }
         @Override public int getMinArgs() { return 1; }
         @Override public int getMaxArgs() { return 1; }
+        @Override public ArgType[] getArgumentTypes() { return new ArgType[] { ArgType.NUMERIC }; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
@@ -154,6 +157,7 @@ public final class NumberFunctions {
         @Override public String getName() { return "abs"; }
         @Override public int getMinArgs() { return 1; }
         @Override public int getMaxArgs() { return 1; }
+        @Override public ArgType[] getArgumentTypes() { return new ArgType[] { ArgType.NUMERIC }; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
@@ -171,6 +175,7 @@ public final class NumberFunctions {
         @Override public String getName() { return "round-half-to-even"; }
         @Override public int getMinArgs() { return 1; }
         @Override public int getMaxArgs() { return 2; }
+        @Override public ArgType[] getArgumentTypes() { return new ArgType[] { ArgType.NUMERIC, ArgType.NUMERIC }; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {

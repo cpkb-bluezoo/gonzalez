@@ -58,6 +58,7 @@ public class BasicTransformContext implements TransformContext {
     private final javax.xml.transform.ErrorListener errorListener;
     private final TemplateRule currentTemplateRule;  // For xsl:next-match
     private final String staticBaseURI;  // Override for static-base-uri() (from xml:base)
+    private final RuntimeSchemaValidator runtimeValidator;  // For output validation
 
     /**
      * Creates a new transform context.
@@ -65,7 +66,8 @@ public class BasicTransformContext implements TransformContext {
     public BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
             TemplateMatcher matcher, OutputHandler outputHandler) {
         this(stylesheet, contextNode, contextNode, null, 1, 1, null, new VariableScope(), 
-             XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, null, null, null);
+             XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, null, null, null,
+             stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null);
     }
 
     /**
@@ -75,7 +77,8 @@ public class BasicTransformContext implements TransformContext {
             TemplateMatcher matcher, OutputHandler outputHandler,
             javax.xml.transform.ErrorListener errorListener) {
         this(stylesheet, contextNode, contextNode, null, 1, 1, null, new VariableScope(), 
-             XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, errorListener, null, null);
+             XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, errorListener, null, null,
+             stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null);
     }
 
     private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
@@ -83,7 +86,8 @@ public class BasicTransformContext implements TransformContext {
             VariableScope variableScope, XPathFunctionLibrary functionLibrary, 
             TemplateMatcher matcher, OutputHandler outputHandler, 
             AccumulatorManager accumulatorManager, javax.xml.transform.ErrorListener errorListener,
-            TemplateRule currentTemplateRule, String staticBaseURI) {
+            TemplateRule currentTemplateRule, String staticBaseURI,
+            RuntimeSchemaValidator runtimeValidator) {
         this.stylesheet = stylesheet;
         this.contextNode = contextNode;
         this.xsltCurrentNode = xsltCurrentNode;
@@ -99,6 +103,7 @@ public class BasicTransformContext implements TransformContext {
         this.errorListener = errorListener;
         this.currentTemplateRule = currentTemplateRule;
         this.staticBaseURI = staticBaseURI;
+        this.runtimeValidator = runtimeValidator;
     }
 
     @Override
@@ -129,14 +134,16 @@ public class BasicTransformContext implements TransformContext {
     public TransformContext pushVariableScope() {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope.push(), functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
 
     @Override
     public TransformContext withMode(String mode) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             mode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
 
     @Override
@@ -145,7 +152,8 @@ public class BasicTransformContext implements TransformContext {
         // the XSLT current node stays the same. Use withXsltCurrentNode to update it.
         return new BasicTransformContext(stylesheet, node, xsltCurrentNode, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
     
     /**
@@ -155,7 +163,8 @@ public class BasicTransformContext implements TransformContext {
     public TransformContext withXsltCurrentNode(XPathNode node) {
         return new BasicTransformContext(stylesheet, node, node, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
     
     /**
@@ -171,7 +180,8 @@ public class BasicTransformContext implements TransformContext {
     public BasicTransformContext withContextAndCurrentNodes(XPathNode contextNode, XPathNode xsltCurrent) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrent, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
     
     /**
@@ -183,7 +193,8 @@ public class BasicTransformContext implements TransformContext {
         XPathNode node = (item instanceof XPathNode) ? (XPathNode) item : contextNode;
         return new BasicTransformContext(stylesheet, node, xsltCurrentNode, item, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
     
     /**
@@ -198,7 +209,8 @@ public class BasicTransformContext implements TransformContext {
     public TransformContext withPositionAndSize(int position, int size) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
 
     @Override
@@ -208,7 +220,8 @@ public class BasicTransformContext implements TransformContext {
         newScope.bind(localName, value);
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, newScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator);
     }
 
     @Override
@@ -220,14 +233,21 @@ public class BasicTransformContext implements TransformContext {
     public TransformContext withCurrentTemplateRule(TemplateRule rule) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, rule, staticBaseURI);
+            outputHandler, accumulatorManager, errorListener, rule, staticBaseURI,
+            runtimeValidator);
     }
 
     @Override
     public TransformContext withStaticBaseURI(String baseURI) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
-            outputHandler, accumulatorManager, errorListener, currentTemplateRule, baseURI);
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, baseURI,
+            runtimeValidator);
+    }
+
+    @Override
+    public RuntimeSchemaValidator getRuntimeValidator() {
+        return runtimeValidator;
     }
 
     @Override

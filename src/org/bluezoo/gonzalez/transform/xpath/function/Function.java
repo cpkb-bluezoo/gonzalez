@@ -35,6 +35,24 @@ import java.util.List;
 public interface Function {
 
     /**
+     * Argument type constraint for XPath 2.0+ strict type checking.
+     */
+    enum ArgType {
+        /** Any type allowed (XPath 1.0 compatible) */
+        ANY,
+        /** Numeric type required (xs:integer, xs:decimal, xs:float, xs:double) */
+        NUMERIC,
+        /** String type required */
+        STRING,
+        /** Boolean type required */
+        BOOLEAN,
+        /** Node-set required */
+        NODESET,
+        /** Sequence of atomic values */
+        SEQUENCE
+    }
+
+    /**
      * Returns the function name.
      *
      * @return the local name of the function
@@ -55,6 +73,19 @@ public interface Function {
      * @return maximum argument count
      */
     int getMaxArgs();
+
+    /**
+     * Returns the expected argument types for XPath 2.0+ strict type checking.
+     * 
+     * <p>Returns null for XPath 1.0 compatible functions that accept any type.
+     * The array length should match getMaxArgs(). For variable argument functions,
+     * the last type applies to all remaining arguments.
+     *
+     * @return array of expected argument types, or null for any type
+     */
+    default ArgType[] getArgumentTypes() {
+        return null;  // Default: no strict type checking (XPath 1.0 compatible)
+    }
 
     /**
      * Evaluates the function with the given arguments.

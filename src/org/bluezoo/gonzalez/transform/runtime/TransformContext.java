@@ -143,6 +143,16 @@ public interface TransformContext extends XPathContext {
     TemplateMatcher getTemplateMatcher();
 
     /**
+     * Returns the runtime schema validator for output validation.
+     *
+     * <p>The validator is used when validation="strict" or validation="lax"
+     * is specified on xsl:element, xsl:copy, xsl:copy-of, or literal result elements.
+     *
+     * @return the runtime validator, or null if not available
+     */
+    RuntimeSchemaValidator getRuntimeValidator();
+
+    /**
      * Creates a new context with the specified static base URI.
      *
      * <p>This is used when executing instructions that have an xml:base

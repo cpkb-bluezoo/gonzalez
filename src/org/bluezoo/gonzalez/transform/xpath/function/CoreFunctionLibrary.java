@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.Collections;
@@ -112,7 +113,70 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
                 function.getMaxArgs() + " argument(s), got " + argCount);
         }
         
+        // XPath 2.0+ strict type checking
+        if (context.getXsltVersion() >= 2.0) {
+            validateArgumentTypes(function, args);
+        }
+        
         return function.evaluate(args, context);
+    }
+    
+    /**
+     * Validates argument types for XPath 2.0+ strict type checking.
+     */
+    private void validateArgumentTypes(Function function, List<XPathValue> args) throws XPathException {
+        Function.ArgType[] expectedTypes = function.getArgumentTypes();
+        if (expectedTypes == null || expectedTypes.length == 0) {
+            return;  // No type constraints
+        }
+        
+        for (int i = 0; i < args.size(); i++) {
+            XPathValue arg = args.get(i);
+            // Use last type for variable args
+            int typeIndex = Math.min(i, expectedTypes.length - 1);
+            Function.ArgType expected = expectedTypes[typeIndex];
+            
+            if (!isTypeCompatible(arg, expected)) {
+                throw new XPathException("XPTY0004: " + function.getName() + 
+                    "() argument " + (i + 1) + " requires " + expected.name().toLowerCase() +
+                    " type, got " + arg.getType().name().toLowerCase());
+            }
+        }
+    }
+    
+    /**
+     * Checks if a value is compatible with the expected type.
+     */
+    private boolean isTypeCompatible(XPathValue value, Function.ArgType expected) {
+        if (expected == Function.ArgType.ANY) {
+            return true;
+        }
+        
+        XPathValue.Type actual = value.getType();
+        
+        switch (expected) {
+            case NUMERIC:
+                // Numeric accepts NUMBER, NODESET (atomized), ATOMIC, or empty sequence
+                // NODESET is allowed because nodes are atomized to strings then converted to numbers
+                return actual == XPathValue.Type.NUMBER || 
+                       actual == XPathValue.Type.NODESET ||
+                       actual == XPathValue.Type.ATOMIC ||
+                       (value instanceof XPathSequence && ((XPathSequence)value).isEmpty());
+            case STRING:
+                return actual == XPathValue.Type.STRING ||
+                       actual == XPathValue.Type.NODESET ||  // Atomized
+                       actual == XPathValue.Type.ATOMIC;
+            case BOOLEAN:
+                return actual == XPathValue.Type.BOOLEAN;
+            case NODESET:
+                return actual == XPathValue.Type.NODESET;
+            case SEQUENCE:
+                return actual == XPathValue.Type.SEQUENCE || 
+                       actual == XPathValue.Type.NODESET ||
+                       actual == XPathValue.Type.ATOMIC;
+            default:
+                return true;
+        }
     }
 
     @Override

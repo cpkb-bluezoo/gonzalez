@@ -125,17 +125,37 @@ public class XSDComplexType extends XSDType {
     }
     
     /**
-     * Gets an attribute by name.
+     * Gets an attribute by name, including inherited attributes.
      */
     public XSDAttribute getAttribute(String name) {
-        return attributes.get(name);
+        XSDAttribute attr = attributes.get(name);
+        if (attr != null) {
+            return attr;
+        }
+        // Check base type
+        if (baseType instanceof XSDComplexType) {
+            return ((XSDComplexType) baseType).getAttribute(name);
+        }
+        return null;
     }
     
     /**
-     * Returns all attribute declarations.
+     * Returns all attribute declarations, including inherited ones.
+     * 
+     * <p>Attributes from base types are collected first, then overlaid with
+     * attributes from this type (allowing derived types to override).
      */
     public Map<String, XSDAttribute> getAttributes() {
-        return Collections.unmodifiableMap(attributes);
+        // If no base type, just return local attributes
+        if (baseType == null || !(baseType instanceof XSDComplexType)) {
+            return Collections.unmodifiableMap(attributes);
+        }
+        
+        // Collect inherited attributes first, then overlay with local ones
+        Map<String, XSDAttribute> allAttrs = new LinkedHashMap<>();
+        allAttrs.putAll(((XSDComplexType) baseType).getAttributes());
+        allAttrs.putAll(attributes);
+        return Collections.unmodifiableMap(allAttrs);
     }
     
     /**
