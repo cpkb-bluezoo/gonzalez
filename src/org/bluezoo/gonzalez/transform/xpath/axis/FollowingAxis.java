@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.xpath.axis;
 
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 import java.util.ArrayList;
@@ -74,16 +75,41 @@ public final class FollowingAxis implements Axis {
         private XPathNode next;
 
         FollowingIterator(XPathNode node) {
-            // Find the first following node by going up to an ancestor
-            // that has a following sibling
-            XPathNode current = node;
-            while (current != null) {
-                XPathNode sibling = current.getFollowingSibling();
-                if (sibling != null) {
-                    pending.add(sibling);
-                    break;
+            // Special handling for attribute and namespace nodes:
+            // For these, "following" includes the children of the parent element
+            // (they come after the attribute in document order) plus all nodes
+            // that follow the parent element
+            if (node.isAttribute() || node.getNodeType() == org.bluezoo.gonzalez.transform.xpath.type.NodeType.NAMESPACE) {
+                XPathNode parent = node.getParent();
+                if (parent != null) {
+                    // Add all children of parent element
+                    Iterator<XPathNode> children = parent.getChildren();
+                    while (children.hasNext()) {
+                        pending.add(children.next());
+                    }
+                    // Then add following siblings of parent and ancestors
+                    XPathNode current = parent;
+                    while (current != null) {
+                        XPathNode sibling = current.getFollowingSibling();
+                        if (sibling != null) {
+                            pending.add(sibling);
+                            break;
+                        }
+                        current = current.getParent();
+                    }
                 }
-                current = current.getParent();
+            } else {
+                // For regular nodes, find the first following node by going up to 
+                // an ancestor that has a following sibling
+                XPathNode current = node;
+                while (current != null) {
+                    XPathNode sibling = current.getFollowingSibling();
+                    if (sibling != null) {
+                        pending.add(sibling);
+                        break;
+                    }
+                    current = current.getParent();
+                }
             }
             advance();
         }

@@ -205,7 +205,9 @@ public final class TemplateRule {
             sb.append("name=").append(name);
         }
         if (matchPattern != null) {
-            if (name != null) sb.append(", ");
+            if (name != null) {
+                sb.append(", ");
+            }
             sb.append("match=").append(matchPattern);
         }
         if (mode != null) {

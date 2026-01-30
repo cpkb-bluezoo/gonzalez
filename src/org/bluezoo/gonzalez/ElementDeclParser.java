@@ -24,6 +24,8 @@ package org.bluezoo.gonzalez;
 import java.nio.CharBuffer;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashSet;
+import java.util.Set;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
@@ -607,7 +609,7 @@ class ElementDeclParser {
             // VC: No Duplicate Types (Section 3.2.1)
             // Check for duplicate element types in mixed content
             if (dtdParser.getValidationEnabled() && model.children != null) {
-                java.util.Set<String> seenElements = new java.util.HashSet<>();
+                Set<String> seenElements = new HashSet<>();
                 for (ElementDeclaration.ContentModel child : model.children) {
                     if (child.type == ElementDeclaration.ContentModel.NodeType.ELEMENT && child.elementName != null) {
                         if (seenElements.contains(child.elementName)) {
@@ -726,7 +728,7 @@ class ElementDeclParser {
             case CHOICE:
                 // For choices, check for duplicate element names in the same choice group
                 if (model.children != null) {
-                    java.util.Set<String> seenElementNames = new java.util.HashSet<>();
+                    Set<String> seenElementNames = new HashSet<>();
                     for (ElementDeclaration.ContentModel child : model.children) {
                         if (child.type == ElementDeclaration.ContentModel.NodeType.ELEMENT) {
                             String elementName = child.elementName;

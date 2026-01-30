@@ -70,6 +70,12 @@
            release='9'>
       <include name='module-info.java'/>
     </javac>
+    <!-- Copy resource files (properties, etc.) -->
+    <copy todir='${build}'>
+      <fileset dir='${src}'>
+        <include name='**/*.properties'/>
+      </fileset>
+    </copy>
   </target>
 
   <!-- Create JAR file -->
@@ -150,13 +156,17 @@
   
   <!-- XSLT Conformance Tests -->
   <target name='test-xslt' depends='junit-build' description='Run XSLT conformance tests'>
-    <available file='xsltconf/catalog.xml' property='xsltconf.exists'/>
-    <fail unless='xsltconf.exists' 
-          message='XSLT test suite not found. Run: ./tools/extract-xslt10-tests.sh /path/to/xslt30-test'/>
+    <available file='../xslt30-test/catalog.xml' property='xslt30test.exists'/>
+    <fail unless='xslt30test.exists' 
+          message='XSLT test suite not found. Clone: cd .. &amp;&amp; git clone https://github.com/w3c/xslt30-test.git'/>
     
     <mkdir dir='${test}/junit/results'/>
     <mkdir dir='${test}/output'/>
-    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'>
+    <!-- Create temp directory for transformation output files -->
+    <mkdir dir='${test}/output/xslt-temp'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
+           dir='${test}/output/xslt-temp'>
+      <sysproperty key="project.basedir" value="${basedir}"/>
       <classpath>
         <pathelement location='${build}'/>
         <pathelement location='${test}/junit/classes'/>
@@ -171,6 +181,8 @@
         </fileset>
       </batchtest>
     </junit>
+    <!-- Clean up temp transformation output files -->
+    <delete dir='${test}/output/xslt-temp' quiet='true'/>
     
     <!-- Display results summary -->
     <echo message=''/>
@@ -180,6 +192,121 @@
     <loadfile property='xslt.stats.content' srcFile='${test}/output/xslt-conformance-statistics.txt' 
               failonerror='false' quiet='true'/>
     <echo message='${xslt.stats.content}'/>
+  </target>
+  
+  <!-- Filtered XSLT tests - use these for quick targeted testing -->
+  <!-- Usage: ant test-xslt10, ant test-xslt20, ant test-xslt30 -->
+  <!-- Or: ant test-xslt-filter -Dxslt.filter=namespace -Dxslt.version=1.0 -->
+  
+  <target name='test-xslt10' depends='junit-build' description='Run XSLT 1.0 tests only'>
+    <mkdir dir='${test}/junit/results'/>
+    <mkdir dir='${test}/output'/>
+    <!-- Create temp directory for transformation output files -->
+    <mkdir dir='${test}/output/xslt-temp'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
+           dir='${test}/output/xslt-temp'>
+      <sysproperty key="xslt.version" value="1.0"/>
+      <sysproperty key="project.basedir" value="${basedir}"/>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='${test}/junit/classes'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+      <formatter type='plain' usefile='false'/>
+      <batchtest fork='yes' todir='${test}/junit/results'>
+        <fileset dir='${test}/junit/src'>
+          <include name='**/XSLTConformanceTest.java'/>
+        </fileset>
+      </batchtest>
+    </junit>
+    <!-- Clean up temp transformation output files -->
+    <delete dir='${test}/output/xslt-temp' quiet='true'/>
+    <echo message='Report: ${test}/output/xslt-conformance-report.txt'/>
+  </target>
+  
+  <target name='test-xslt20' depends='junit-build' description='Run XSLT 2.0 tests only'>
+    <mkdir dir='${test}/junit/results'/>
+    <mkdir dir='${test}/output'/>
+    <!-- Create temp directory for transformation output files -->
+    <mkdir dir='${test}/output/xslt-temp'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
+           dir='${test}/output/xslt-temp'>
+      <sysproperty key="xslt.version" value="2.0"/>
+      <sysproperty key="project.basedir" value="${basedir}"/>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='${test}/junit/classes'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+      <formatter type='plain' usefile='false'/>
+      <batchtest fork='yes' todir='${test}/junit/results'>
+        <fileset dir='${test}/junit/src'>
+          <include name='**/XSLTConformanceTest.java'/>
+        </fileset>
+      </batchtest>
+    </junit>
+    <!-- Clean up temp transformation output files -->
+    <delete dir='${test}/output/xslt-temp' quiet='true'/>
+    <echo message='Report: ${test}/output/xslt-conformance-report.txt'/>
+  </target>
+  
+  <target name='test-xslt30' depends='junit-build' description='Run XSLT 3.0 tests only'>
+    <mkdir dir='${test}/junit/results'/>
+    <mkdir dir='${test}/output'/>
+    <!-- Create temp directory for transformation output files -->
+    <mkdir dir='${test}/output/xslt-temp'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
+           dir='${test}/output/xslt-temp'>
+      <sysproperty key="xslt.version" value="3.0"/>
+      <sysproperty key="project.basedir" value="${basedir}"/>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='${test}/junit/classes'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+      <formatter type='plain' usefile='false'/>
+      <batchtest fork='yes' todir='${test}/junit/results'>
+        <fileset dir='${test}/junit/src'>
+          <include name='**/XSLTConformanceTest.java'/>
+        </fileset>
+      </batchtest>
+    </junit>
+    <!-- Clean up temp transformation output files -->
+    <delete dir='${test}/output/xslt-temp' quiet='true'/>
+    <echo message='Report: ${test}/output/xslt-conformance-report.txt'/>
+  </target>
+  
+  <target name='test-xslt-filter' depends='junit-build' description='Run filtered XSLT tests'>
+    <fail unless='xslt.filter' message='Usage: ant test-xslt-filter -Dxslt.filter=name [-Dxslt.version=1.0|2.0|3.0] [-Dxslt.category=fn|insn|decl]'/>
+    <mkdir dir='${test}/junit/results'/>
+    <mkdir dir='${test}/output'/>
+    <!-- Create temp directory for transformation output files -->
+    <mkdir dir='${test}/output/xslt-temp'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
+           dir='${test}/output/xslt-temp'>
+      <sysproperty key="xslt.filter" value="${xslt.filter}"/>
+      <sysproperty key="xslt.version" value="${xslt.version}"/>
+      <sysproperty key="xslt.category" value="${xslt.category}"/>
+      <sysproperty key="project.basedir" value="${basedir}"/>
+      <classpath>
+        <pathelement location='${build}'/>
+        <pathelement location='${test}/junit/classes'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+      <formatter type='plain' usefile='false'/>
+      <batchtest fork='yes' todir='${test}/junit/results'>
+        <fileset dir='${test}/junit/src'>
+          <include name='**/XSLTConformanceTest.java'/>
+        </fileset>
+      </batchtest>
+    </junit>
+    <!-- Clean up temp transformation output files -->
+    <delete dir='${test}/output/xslt-temp' quiet='true'/>
+    <echo message='Report: ${test}/output/xslt-conformance-report.txt'/>
   </target>
   
   <!-- Simple parse test (no JUnit) -->

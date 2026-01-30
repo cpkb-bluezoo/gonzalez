@@ -15,13 +15,14 @@ package org.bluezoo.gonzalez.transform;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileWriter;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
-import java.io.StringWriter;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -46,23 +47,24 @@ import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.transform.GonzalezTransformer;
 
 import static org.junit.Assert.*;
 
 /**
  * W3C XSLT Conformance Test Suite runner.
  *
- * <p>Runs XSLT 1.0 compatible tests extracted from the W3C XSLT 3.0 test suite.
- * Tests are filtered to include only those with:
+ * <p>Runs tests from the W3C XSLT 3.0 test suite (xslt30-test).
+ * Tests are filtered by version:
  * <ul>
- *   <li>{@code <spec value="XSLT10+"/>} - Compatible with XSLT 1.0 and later</li>
- *   <li>{@code <spec value="XSLT10"/>} - XSLT 1.0 only</li>
- *   <li>{@code <spec value="XSLT10 XSLT20"/>} - XSLT 1.0 and 2.0</li>
+ *   <li>{@code -Dxslt.version=1.0} - Tests compatible with XSLT 1.0+</li>
+ *   <li>{@code -Dxslt.version=2.0} - Tests compatible with XSLT 2.0+</li>
+ *   <li>{@code -Dxslt.version=3.0} - All XSLT 3.0 tests</li>
  * </ul>
  *
- * <p>The test suite must be extracted first using:
+ * <p>The test suite repository must be checked out at ../xslt30-test:
  * <pre>
- * ./tools/extract-xslt10-tests.sh /path/to/xslt30-test
+ * cd .. && git clone https://github.com/w3c/xslt30-test.git
  * </pre>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
@@ -70,12 +72,53 @@ import static org.junit.Assert.*;
 @RunWith(Parameterized.class)
 public class XSLTConformanceTest {
 
-    private static final File XSLTCONF_DIR = new File("xsltconf");
-    private static final File OUTPUT_DIR = new File("test/output");
+    // Base directory for resolving relative paths (when running from temp dir)
+    private static final File PROJECT_BASEDIR = getProjectBasedir();
+    private static final File XSLT30_TEST_DIR = new File(PROJECT_BASEDIR, "../xslt30-test");
+    private static final File OUTPUT_DIR = new File(PROJECT_BASEDIR, "test/output");
     private static final File REPORT_FILE = new File(OUTPUT_DIR, "xslt-conformance-report.txt");
     private static final File STATS_FILE = new File(OUTPUT_DIR, "xslt-conformance-statistics.txt");
+    
+    private static File getProjectBasedir() {
+        String basedir = System.getProperty("project.basedir");
+        if (basedir != null && !basedir.isEmpty() && !basedir.startsWith("${")) {
+            return new File(basedir);
+        }
+        // Fallback to current directory if not set
+        return new File(".");
+    }
 
     private static final String XSLT_TEST_NS = "http://www.w3.org/2012/10/xslt-test-catalog";
+    
+    // Filter properties - set via -Dxslt.version=1.0 or -Dxslt.filter=namespace
+    private static final String VERSION_FILTER = normalizeProperty(System.getProperty("xslt.version"));  // "1.0", "2.0", "3.0"
+    private static final String NAME_FILTER = normalizeProperty(System.getProperty("xslt.filter"));      // substring of test-set name
+    private static final String CATEGORY_FILTER = normalizeProperty(System.getProperty("xslt.category")); // "fn", "insn", "decl", etc.
+    private static final String SKIP_FILTER = normalizeProperty(System.getProperty("xslt.skip"));        // comma-separated patterns to skip
+    
+    // Default heavy test sets to skip (regex, unicode - thousands of tests each)
+    private static final String DEFAULT_SKIP = "regex,unicode";
+    
+    private static String normalizeProperty(String value) {
+        // Handle unset ant properties that come through as "${prop.name}"
+        if (value == null || value.isEmpty() || value.startsWith("${")) {
+            return null;
+        }
+        return value;
+    }
+    
+    private static boolean shouldSkip(String name) {
+        String skipPatterns = SKIP_FILTER != null ? SKIP_FILTER : DEFAULT_SKIP;
+        if ("none".equalsIgnoreCase(skipPatterns)) {
+            return false;  // Skip nothing
+        }
+        for (String pattern : skipPatterns.split(",")) {
+            if (name.toLowerCase().contains(pattern.trim().toLowerCase())) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static List<XSLTTestCase> allTests;
     private static List<TestResult> results = new ArrayList<>();
@@ -92,14 +135,14 @@ public class XSLTConformanceTest {
         allTests = new ArrayList<>();
         factory = new GonzalezTransformerFactory();
 
-        File catalogFile = new File(XSLTCONF_DIR, "catalog.xml");
+        File catalogFile = new File(XSLT30_TEST_DIR, "catalog.xml");
         if (!catalogFile.exists()) {
-            System.err.println("XSLT conformance test suite not found at: " + XSLTCONF_DIR);
-            System.err.println("Run: ./tools/extract-xslt10-tests.sh /path/to/xslt30-test");
+            System.err.println("XSLT conformance test suite not found at: " + XSLT30_TEST_DIR);
+            System.err.println("Clone the test suite: cd .. && git clone https://github.com/w3c/xslt30-test.git");
             return new ArrayList<>();
         }
 
-        System.out.println("Loading XSLT conformance tests from: " + XSLTCONF_DIR);
+        System.out.println("Loading XSLT conformance tests from: " + XSLT30_TEST_DIR);
 
         // Parse catalog to get test-set references
         List<String> testSetFiles = parseCatalog(catalogFile);
@@ -107,7 +150,7 @@ public class XSLTConformanceTest {
 
         // Parse each test set
         for (String testSetPath : testSetFiles) {
-            File testSetFile = new File(XSLTCONF_DIR, testSetPath);
+            File testSetFile = new File(XSLT30_TEST_DIR, testSetPath);
             if (!testSetFile.exists()) {
                 System.err.println("  WARNING: Test set file not found: " + testSetFile);
                 continue;
@@ -128,7 +171,12 @@ public class XSLTConformanceTest {
             params.add(new Object[]{test});
         }
 
-        System.out.println("\n=== Total: " + allTests.size() + " XSLT 1.0 tests ===\n");
+        String filterDesc = "";
+        if (VERSION_FILTER != null) filterDesc += " XSLT " + VERSION_FILTER;
+        if (NAME_FILTER != null) filterDesc += " matching '" + NAME_FILTER + "'";
+        if (CATEGORY_FILTER != null) filterDesc += " in " + CATEGORY_FILTER;
+        if (filterDesc.isEmpty()) filterDesc = " (all versions)";
+        System.out.println("\n=== Total: " + allTests.size() + " tests" + filterDesc + " ===\n");
 
         OUTPUT_DIR.mkdirs();
 
@@ -137,9 +185,28 @@ public class XSLTConformanceTest {
 
     /**
      * Parses the catalog.xml to get test-set file paths.
+     * Supports filtering via system properties:
+     *   -Dxslt.version=1.0|2.0|3.0  - Filter by XSLT version
+     *   -Dxslt.filter=substring     - Filter test-set names containing substring
+     *   -Dxslt.category=fn|insn|... - Filter by category (path component)
      */
     private static List<String> parseCatalog(File catalogFile) throws Exception {
         List<String> testSetFiles = new ArrayList<>();
+        
+        // Log active filters
+        if (VERSION_FILTER != null) {
+            System.out.println("  Filter: XSLT version = " + VERSION_FILTER);
+        }
+        if (NAME_FILTER != null) {
+            System.out.println("  Filter: name contains '" + NAME_FILTER + "'");
+        }
+        if (CATEGORY_FILTER != null) {
+            System.out.println("  Filter: category = " + CATEGORY_FILTER);
+        }
+        String skipPatterns = SKIP_FILTER != null ? SKIP_FILTER : DEFAULT_SKIP;
+        if (!"none".equalsIgnoreCase(skipPatterns)) {
+            System.out.println("  Skipping: " + skipPatterns + " (use -Dxslt.skip=none to include all)");
+        }
 
         Parser parser = new Parser();
         parser.setFeature("http://xml.org/sax/features/namespaces", true);
@@ -148,17 +215,45 @@ public class XSLTConformanceTest {
             public void startElement(String uri, String localName, String qName,
                                      Attributes attrs) {
                 if ("test-set".equals(localName) && XSLT_TEST_NS.equals(uri)) {
+                    String name = attrs.getValue("name");
                     String file = attrs.getValue("file");
-                    if (file != null) {
-                        testSetFiles.add(file);
+                    
+                    if (file == null) return;
+                    
+                    // Note: Version filtering now happens at the test-case level in parseTestSet()
+                    // The catalog.xml doesn't have spec attributes - those are in individual test-cases
+                    
+                    // Apply name filter
+                    if (NAME_FILTER != null) {
+                        if (name == null || !name.toLowerCase().contains(NAME_FILTER.toLowerCase())) {
+                            return;
+                        }
                     }
+                    
+                    // Apply category filter (based on path: tests/fn/, tests/insn/, etc.)
+                    if (CATEGORY_FILTER != null) {
+                        if (!file.contains("/" + CATEGORY_FILTER + "/") && 
+                            !file.contains("/" + CATEGORY_FILTER + "-")) {
+                            return;
+                        }
+                    }
+                    
+                    // Apply skip filter (heavy tests like regex, unicode)
+                    if (shouldSkip(name)) {
+                        return;
+                    }
+                    
+                    testSetFiles.add(file);
                 }
             }
         });
 
-        InputSource source = new InputSource(new FileInputStream(catalogFile));
+        // Use FileChannel for NIO-native input
+        FileChannel channel = FileChannel.open(catalogFile.toPath(), StandardOpenOption.READ);
+        InputSource source = new InputSource(Channels.newInputStream(channel));
         source.setSystemId(catalogFile.toURI().toString());
         parser.parse(source);
+        channel.close();
 
         return testSetFiles;
     }
@@ -177,9 +272,12 @@ public class XSLTConformanceTest {
         parser.setFeature("http://xml.org/sax/features/namespaces", true);
         parser.setContentHandler(new TestSetHandler(testDir, environments, tests));
 
-        InputSource source = new InputSource(new FileInputStream(testSetFile));
+        // Use FileChannel for NIO-native input
+        FileChannel channel = FileChannel.open(testSetFile.toPath(), StandardOpenOption.READ);
+        InputSource source = new InputSource(Channels.newInputStream(channel));
         source.setSystemId(testSetFile.toURI().toString());
         parser.parse(source);
+        channel.close();
 
         return tests;
     }
@@ -340,7 +438,7 @@ public class XSLTConformanceTest {
                 inResult = false;
             } else if ("test-case".equals(localName)) {
                 // Finalize test case
-                if (currentTest != null && isXslt10Compatible(specValue)) {
+                if (currentTest != null && matchesVersionFilter(specValue)) {
                     if (!stylesheetFiles.isEmpty()) {
                         currentTest.stylesheetFile = new File(testDir, stylesheetFiles.get(0));
                     }
@@ -358,28 +456,83 @@ public class XSLTConformanceTest {
             }
         }
 
-        private boolean isXslt10Compatible(String spec) {
+        /**
+         * Checks if a test case matches the version filter.
+         * If no version filter is set, accepts all tests.
+         * Version matching:
+         *   - XSLT10+ means 1.0 and later (matches 1.0, 2.0, 3.0)
+         *   - XSLT20+ means 2.0 and later (matches 2.0, 3.0)
+         *   - XSLT30 means 3.0 only
+         *   - "XSLT10 XSLT20" means 1.0 or 2.0
+         */
+        private boolean matchesVersionFilter(String spec) {
             if (spec == null) {
                 return false;
             }
-            return spec.equals("XSLT10+") ||
-                   spec.equals("XSLT10") ||
-                   spec.equals("XSLT10 XSLT20");
+            
+            // No version filter - accept all tests
+            if (VERSION_FILTER == null) {
+                return true;
+            }
+            
+            // Parse version filter (e.g., "1.0" -> 10, "2.0" -> 20, "3.0" -> 30)
+            int filterVersion = parseVersion(VERSION_FILTER);
+            
+            // Check for "+" suffix (compatible with this version and later)
+            if (spec.contains("+")) {
+                // XSLT10+ compatible with 1.0, 2.0, 3.0
+                // XSLT20+ compatible with 2.0, 3.0
+                // XSLT30+ compatible with 3.0
+                int specMinVersion = parseSpecVersion(spec.replace("+", "").trim());
+                return filterVersion >= specMinVersion;
+            }
+            
+            // Handle space-separated list (e.g., "XSLT10 XSLT20")
+            for (String part : spec.split("\\s+")) {
+                int specVersion = parseSpecVersion(part.trim());
+                if (specVersion == filterVersion) {
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+        
+        private int parseVersion(String version) {
+            // "1.0" -> 10, "2.0" -> 20, "3.0" -> 30
+            try {
+                return (int) (Double.parseDouble(version) * 10);
+            } catch (NumberFormatException e) {
+                return 0;
+            }
+        }
+        
+        private int parseSpecVersion(String spec) {
+            // "XSLT10" -> 10, "XSLT20" -> 20, "XSLT30" -> 30
+            if (spec.startsWith("XSLT")) {
+                try {
+                    return Integer.parseInt(spec.substring(4));
+                } catch (NumberFormatException e) {
+                    return 0;
+                }
+            }
+            return 0;
         }
     }
 
     @Test
     public void runTest() {
-        System.out.println("[TEST] " + testCase.name + " - " + testCase.stylesheetFile.getName());
 
         TestResult result = new TestResult();
         result.name = testCase.name;
         result.stylesheetFile = testCase.stylesheetFile;
 
+        FileChannel stylesheetChannel = null;
+        FileChannel sourceChannel = null;
         try {
-            // Compile stylesheet
-            StreamSource stylesheetSource = new StreamSource(
-                new FileInputStream(testCase.stylesheetFile));
+            // Compile stylesheet - use FileChannel for NIO-native input
+            stylesheetChannel = FileChannel.open(testCase.stylesheetFile.toPath(), StandardOpenOption.READ);
+            StreamSource stylesheetSource = new StreamSource(Channels.newInputStream(stylesheetChannel));
             stylesheetSource.setSystemId(testCase.stylesheetFile.toURI().toString());
 
             Templates templates;
@@ -403,13 +556,19 @@ public class XSLTConformanceTest {
 
             Transformer transformer = templates.newTransformer();
 
-            // Prepare source
+            // Set initial template if specified (XSLT 2.0+ feature)
+            if (testCase.initialTemplate != null && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setInitialTemplate(testCase.initialTemplate);
+            }
+
+            // Prepare source - use FileChannel for NIO-native input
             StreamSource source;
             if (testCase.sourceFile != null && testCase.sourceFile.exists()) {
-                source = new StreamSource(new FileInputStream(testCase.sourceFile));
+                sourceChannel = FileChannel.open(testCase.sourceFile.toPath(), StandardOpenOption.READ);
+                source = new StreamSource(Channels.newInputStream(sourceChannel));
                 source.setSystemId(testCase.sourceFile.toURI().toString());
             } else if (testCase.sourceContent != null) {
-                // Use ByteArrayInputStream since Gonzalez parser requires byte streams
+                // Use ByteArrayInputStream for inline content (byte stream, not Reader)
                 byte[] contentBytes = testCase.sourceContent.getBytes(StandardCharsets.UTF_8);
                 source = new StreamSource(new ByteArrayInputStream(contentBytes));
             } else {
@@ -418,9 +577,9 @@ public class XSLTConformanceTest {
                 source = new StreamSource(new ByteArrayInputStream(dummyBytes));
             }
 
-            // Transform
-            StringWriter outputWriter = new StringWriter();
-            StreamResult streamResult = new StreamResult(outputWriter);
+            // Transform - use ByteArrayOutputStream (Gonzalez requires byte streams)
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            StreamResult streamResult = new StreamResult(outputStream);
 
             try {
                 transformer.transform(source, streamResult);
@@ -430,7 +589,7 @@ public class XSLTConformanceTest {
                     result.actualResult = "No error (expected error)";
                     result.message = "Expected error but transformation succeeded";
                 } else {
-                    String actualOutput = outputWriter.toString();
+                    String actualOutput = outputStream.toString(StandardCharsets.UTF_8.name());
                     result.actualResult = actualOutput;
 
                     if (testCase.expectedXml != null) {
@@ -461,6 +620,14 @@ public class XSLTConformanceTest {
             result.passed = false;
             result.actualResult = "Exception";
             result.message = e.getClass().getSimpleName() + ": " + e.getMessage();
+        } finally {
+            // Clean up NIO channels
+            if (stylesheetChannel != null) {
+                try { stylesheetChannel.close(); } catch (IOException ignored) {}
+            }
+            if (sourceChannel != null) {
+                try { sourceChannel.close(); } catch (IOException ignored) {}
+            }
         }
 
         results.add(result);
@@ -517,8 +684,10 @@ public class XSLTConformanceTest {
         System.out.printf("Passed: %d / %d (%.1f%%)%n", passed, results.size(), passRate);
         System.out.printf("Failed: %d%n", failed);
 
-        // Write detailed report
-        try (PrintWriter out = new PrintWriter(new FileWriter(REPORT_FILE))) {
+        // Write detailed report - use FileChannel for NIO-native output
+        try (FileChannel reportChannel = FileChannel.open(REPORT_FILE.toPath(), 
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+             PrintWriter out = new PrintWriter(Channels.newOutputStream(reportChannel))) {
             out.println("XSLT Conformance Test Report");
             out.println("=============================");
             out.println();
@@ -542,8 +711,10 @@ public class XSLTConformanceTest {
             }
         }
 
-        // Write statistics
-        try (PrintWriter out = new PrintWriter(new FileWriter(STATS_FILE))) {
+        // Write statistics - use FileChannel for NIO-native output
+        try (FileChannel statsChannel = FileChannel.open(STATS_FILE.toPath(),
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+             PrintWriter out = new PrintWriter(Channels.newOutputStream(statsChannel))) {
             out.println("=== XSLT Conformance Test Statistics ===");
             out.println();
             out.printf("Total:  %d%n", results.size());

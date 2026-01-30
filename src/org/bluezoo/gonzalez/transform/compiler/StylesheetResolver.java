@@ -21,9 +21,14 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -53,6 +58,10 @@ public class StylesheetResolver {
 
     private final URIResolver uriResolver;
     private final Set<String> loadedStylesheets;
+    
+    // Global precedence counter - increments each time an import is processed
+    // Shared across the entire import tree via the precedenceCounter array
+    private final int[] precedenceCounter;
 
     /**
      * Creates a new stylesheet resolver with no custom URI resolver.
@@ -69,18 +78,45 @@ public class StylesheetResolver {
     public StylesheetResolver(URIResolver uriResolver) {
         this.uriResolver = uriResolver;
         this.loadedStylesheets = new HashSet<>();
+        this.precedenceCounter = new int[] { 0 };  // Shared mutable counter
+    }
+    
+    /**
+     * Private constructor for child resolvers that share state.
+     */
+    private StylesheetResolver(URIResolver uriResolver, Set<String> loadedStylesheets, int[] precedenceCounter) {
+        this.uriResolver = uriResolver;
+        this.loadedStylesheets = loadedStylesheets;
+        this.precedenceCounter = precedenceCounter;
     }
 
     /**
-     * Creates a child resolver that shares the loaded stylesheet tracking.
-     * Used when compiling imported/included stylesheets.
+     * Creates a child resolver that shares the loaded stylesheet tracking
+     * and precedence counter. Used when compiling imported/included stylesheets.
      *
-     * @return a new resolver sharing the loaded set
+     * @return a new resolver sharing the loaded set and counter
      */
     StylesheetResolver createChild() {
-        StylesheetResolver child = new StylesheetResolver(uriResolver);
-        child.loadedStylesheets.addAll(this.loadedStylesheets);
-        return child;
+        return new StylesheetResolver(uriResolver, loadedStylesheets, precedenceCounter);
+    }
+    
+    /**
+     * Gets the next import precedence value and increments the counter.
+     * Called when an imported stylesheet's templates are about to be created.
+     *
+     * @return the next precedence value
+     */
+    int nextPrecedence() {
+        return precedenceCounter[0]++;
+    }
+    
+    /**
+     * Gets the current precedence value without incrementing.
+     *
+     * @return the current precedence value
+     */
+    int currentPrecedence() {
+        return precedenceCounter[0];
     }
 
     /**
@@ -146,7 +182,11 @@ public class StylesheetResolver {
         reader.setContentHandler(compiler);
         reader.parse(inputSource);
         
-        return compiler.getCompiledStylesheet();
+        try {
+            return compiler.getCompiledStylesheet();
+        } catch (javax.xml.transform.TransformerConfigurationException e) {
+            throw new SAXException(e.getMessage(), e);
+        }
     }
 
     /**
@@ -215,9 +255,9 @@ public class StylesheetResolver {
         inputSource.setSystemId(resolvedUri);
         
         // Open the byte stream since Gonzalez parser requires it
-        java.io.InputStream byteStream = null;
+        InputStream byteStream = null;
         try {
-            java.net.URL url = new java.net.URL(resolvedUri);
+            URL url = new URL(resolvedUri);
             byteStream = url.openStream();
         } catch (Exception e) {
             // URL open failed, try as a file path
@@ -230,9 +270,9 @@ public class StylesheetResolver {
                     filePath = filePath.substring(2);
                 }
             }
-            java.io.File file = new java.io.File(filePath);
+            File file = new File(filePath);
             if (file.exists()) {
-                byteStream = new java.io.FileInputStream(file);
+                byteStream = new FileInputStream(file);
             }
         }
         
@@ -259,12 +299,12 @@ public class StylesheetResolver {
             } else if (ss.getSystemId() != null) {
                 // Open the stream
                 try {
-                    java.net.URL url = new java.net.URL(ss.getSystemId());
+                    URL url = new URL(ss.getSystemId());
                     is.setByteStream(url.openStream());
-                } catch (java.net.MalformedURLException e) {
-                    java.io.File file = new java.io.File(ss.getSystemId());
+                } catch (MalformedURLException e) {
+                    File file = new File(ss.getSystemId());
                     if (file.exists()) {
-                        is.setByteStream(new java.io.FileInputStream(file));
+                        is.setByteStream(new FileInputStream(file));
                     }
                 }
             }
@@ -277,12 +317,12 @@ public class StylesheetResolver {
         is.setSystemId(systemId);
         if (systemId != null) {
             try {
-                java.net.URL url = new java.net.URL(systemId);
+                URL url = new URL(systemId);
                 is.setByteStream(url.openStream());
-            } catch (java.net.MalformedURLException e) {
-                java.io.File file = new java.io.File(systemId);
+            } catch (MalformedURLException e) {
+                File file = new File(systemId);
                 if (file.exists()) {
-                    is.setByteStream(new java.io.FileInputStream(file));
+                    is.setByteStream(new FileInputStream(file));
                 }
             }
         }

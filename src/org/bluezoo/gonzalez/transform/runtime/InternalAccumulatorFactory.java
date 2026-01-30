@@ -187,7 +187,9 @@ public final class InternalAccumulatorFactory {
      * Sanitizes a string for use in an ID.
      */
     private String sanitize(String s) {
-        if (s == null) return "null";
+        if (s == null) {
+            return "null";
+        }
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
@@ -204,7 +206,9 @@ public final class InternalAccumulatorFactory {
      * Checks if a pattern is a simple element match (no predicates).
      */
     private boolean isSimpleElementPattern(String patternStr) {
-        if (patternStr == null) return false;
+        if (patternStr == null) {
+            return false;
+        }
         // Simple patterns don't contain predicates or complex paths
         return !patternStr.contains("[") && 
                !patternStr.contains("/") && 
@@ -218,7 +222,9 @@ public final class InternalAccumulatorFactory {
     private String extractNodeTest(String expr, String axis) {
         String search = axis + "::";
         int idx = expr.indexOf(search);
-        if (idx < 0) return null;
+        if (idx < 0) {
+            return null;
+        }
         
         int start = idx + search.length();
         int end = start;
@@ -246,7 +252,9 @@ public final class InternalAccumulatorFactory {
             @Override
             public boolean matches(org.bluezoo.gonzalez.transform.xpath.type.XPathNode node,
                                    TransformContext context) {
-                if (node == null) return false;
+                if (node == null) {
+                    return false;
+                }
                 if ("*".equals(nodeTest)) {
                     return node.getNodeType() == org.bluezoo.gonzalez.transform.xpath.type.NodeType.ELEMENT;
                 }

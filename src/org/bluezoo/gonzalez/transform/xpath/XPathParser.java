@@ -35,9 +35,11 @@ import org.bluezoo.gonzalez.transform.xpath.expr.PathExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.QuantifiedExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.SequenceExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+import org.bluezoo.gonzalez.transform.xpath.expr.TypeExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.UnaryExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.VariableReference;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -436,12 +438,15 @@ public final class XPathParser {
         Expr condition = parseSubExpression();
         
         lexer.expect(XPathToken.RPAREN);
-        lexer.expect(XPathToken.THEN);
+        // Use expectKeyword for THEN/ELSE since they may be tokenized as NCNAME
+        // when following certain expressions (e.g., function calls, predicates)
+        lexer.expectKeyword(XPathToken.THEN, "then");
         
         // Parse then branch
         Expr thenExpr = parseSubExpression();
         
-        lexer.expect(XPathToken.ELSE);
+        // ELSE may be tokenized as NCNAME when following literals like 'then "value"'
+        lexer.expectKeyword(XPathToken.ELSE, "else");
         
         // Parse else branch
         Expr elseExpr = parseSubExpression();
@@ -571,12 +576,25 @@ public final class XPathParser {
 
                 case HAVE_OPERAND:
                     // Check for terminating tokens that end a sub-expression
+                    // Note: We only terminate on COMMA at the top-level; inside parenthesized
+                    // expressions, comma is handled by the context machinery to build sequences
                     XPathToken t = lexer.current();
-                    if (t == XPathToken.RPAREN || t == XPathToken.RBRACKET ||
-                        t == XPathToken.COMMA || t == XPathToken.THEN ||
-                        t == XPathToken.ELSE || t == XPathToken.RETURN ||
-                        t == XPathToken.IN || t == XPathToken.SATISFIES ||
-                        t == XPathToken.EOF) {
+                    boolean isTerminator = false;
+                    
+                    if (t == XPathToken.THEN || t == XPathToken.ELSE || 
+                        t == XPathToken.RETURN || t == XPathToken.IN || 
+                        t == XPathToken.SATISFIES || t == XPathToken.EOF) {
+                        // These always terminate
+                        isTerminator = true;
+                    } else if (t == XPathToken.RPAREN || t == XPathToken.RBRACKET || 
+                               t == XPathToken.COMMA) {
+                        // These only terminate at top-level (when context stack is empty)
+                        // Inside parenthesized/sequence contexts, these are handled by
+                        // processOperatorOrEnd -> completeParenthesized/completeSequenceItem
+                        isTerminator = contextStack.isEmpty();
+                    }
+                    
+                    if (isTerminator) {
                         // Reduce all remaining operators
                         while (!ctx.opStack.isEmpty()) {
                             reduce(ctx);
@@ -652,6 +670,25 @@ public final class XPathParser {
      */
     private ParseResult processOperatorOrEnd(ParseContext ctx, Deque<ParseContext> contextStack) 
             throws XPathSyntaxException {
+        
+        // Check for type expression keywords first
+        TypeExpr.Kind typeKind = getTypeExprKind(lexer.current());
+        if (typeKind != null) {
+            // Reduce any higher-precedence operators first
+            Operator typeOp = getTypeOperator(typeKind);
+            int prec = typeOp.getPrecedence();
+            while (!ctx.opStack.isEmpty() && ctx.opStack.peek().precedence >= prec) {
+                reduce(ctx);
+            }
+            
+            // Parse the type expression
+            Expr operand = ctx.exprStack.pop();
+            Expr typeExpr = parseTypeExpr(typeKind, operand);
+            ctx.exprStack.push(typeExpr);
+            ctx.state = ParseState.HAVE_OPERAND;
+            return ParseResult.continueWith(ctx);
+        }
+        
         Operator op = Operator.fromToken(lexer.current());
 
         if (op != null) {
@@ -676,6 +713,16 @@ public final class XPathParser {
         // Handle context completion based on type
         switch (ctx.type) {
             case TOP_LEVEL:
+                // Check for comma - top-level sequence expression (XPath 2.0+)
+                if (lexer.current() == XPathToken.COMMA) {
+                    List<Expr> items = new ArrayList<Expr>();
+                    items.add(result);
+                    lexer.advance();
+                    // Create a sequence context (no parent on stack = top-level sequence)
+                    ParseContext seqCtx = new ParseContext(ContextType.SEQUENCE);
+                    seqCtx.items = items;
+                    return ParseResult.continueWith(seqCtx);
+                }
                 return ParseResult.finished(result);
 
             case FUNCTION_ARG:
@@ -911,6 +958,17 @@ public final class XPathParser {
             return seqCtx;
         }
 
+        // Check if this is a top-level sequence (no parent context)
+        if (contextStack.isEmpty()) {
+            // Top-level sequence - return finished with SequenceExpr
+            Expr seq = new SequenceExpr(ctx.items);
+            // Create a new TOP_LEVEL context with the sequence as result
+            ParseContext topCtx = new ParseContext(ContextType.TOP_LEVEL);
+            topCtx.exprStack.push(seq);
+            topCtx.state = ParseState.HAVE_OPERAND;
+            return topCtx;
+        }
+
         lexer.expect(XPathToken.RPAREN);
 
         // Pop back to parent context
@@ -1133,6 +1191,25 @@ public final class XPathParser {
             return parseStepPredicates(step);
         }
 
+        // XPath 3.0: Parenthesized expression as a step (simple mapping operator)
+        // e.g., /(if (...) then . else foo) or /(1 to 10)
+        if (lexer.current() == XPathToken.LPAREN) {
+            lexer.advance();
+            Expr expr = parseSubExpression();
+            lexer.expect(XPathToken.RPAREN);
+            Step step = Step.expression(expr);
+            return parseStepPredicates(step);
+        }
+
+        // Check for function call as a step (e.g., $tree/id('A004'))
+        // A function call step is name followed by '(' - not an axis specifier
+        if (lexer.current() == XPathToken.NCNAME && lexer.peek() == XPathToken.LPAREN) {
+            // This is a function call, not a step with an axis
+            Expr funcExpr = parseFunctionCallAsStep();
+            Step step = Step.expression(funcExpr);
+            return parseStepPredicates(step);
+        }
+
         // Determine axis
         Step.Axis axis = Step.Axis.CHILD;
 
@@ -1149,6 +1226,29 @@ public final class XPathParser {
 
         // Parse predicates
         return parseStepPredicates(step);
+    }
+    
+    /**
+     * Parses a function call when it appears as a step in a path expression.
+     * e.g., $tree/id('A004') - the id('A004') part
+     */
+    private Expr parseFunctionCallAsStep() throws XPathSyntaxException {
+        String funcName = lexer.value();
+        lexer.advance(); // consume function name
+        lexer.advance(); // consume LPAREN
+        
+        // Parse arguments
+        List<Expr> args = new ArrayList<>();
+        if (lexer.current() != XPathToken.RPAREN) {
+            args.add(parseSubExpression());
+            while (lexer.current() == XPathToken.COMMA) {
+                lexer.advance();
+                args.add(parseSubExpression());
+            }
+        }
+        lexer.expect(XPathToken.RPAREN);
+        
+        return new FunctionCall(null, funcName, args);
     }
 
     /**
@@ -1364,6 +1464,334 @@ public final class XPathParser {
      */
     public static Expr parseExpression(String expression) throws XPathSyntaxException {
         return new XPathParser(expression).parse();
+    }
+
+    // ========================================================================
+    // Type Expression Parsing
+    // ========================================================================
+    
+    /**
+     * Returns the type expression kind for the current token, or null if not a type keyword.
+     */
+    private TypeExpr.Kind getTypeExprKind(XPathToken token) {
+        switch (token) {
+            case INSTANCE: return TypeExpr.Kind.INSTANCE_OF;
+            case CAST: return TypeExpr.Kind.CAST_AS;
+            case CASTABLE: return TypeExpr.Kind.CASTABLE_AS;
+            case TREAT: return TypeExpr.Kind.TREAT_AS;
+            default: return null;
+        }
+    }
+    
+    /**
+     * Returns the operator for a type expression kind.
+     */
+    private Operator getTypeOperator(TypeExpr.Kind kind) {
+        switch (kind) {
+            case INSTANCE_OF: return Operator.INSTANCE_OF;
+            case CAST_AS: return Operator.CAST_AS;
+            case CASTABLE_AS: return Operator.CASTABLE_AS;
+            case TREAT_AS: return Operator.TREAT_AS;
+            default: throw new IllegalArgumentException("Unknown type kind: " + kind);
+        }
+    }
+    
+    /**
+     * Parses a type expression after the operand and type keyword have been identified.
+     */
+    private Expr parseTypeExpr(TypeExpr.Kind kind, Expr operand) throws XPathSyntaxException {
+        // Advance past the first keyword (instance, cast, castable, treat)
+        lexer.advance();
+        
+        // Expect 'of' for instance, 'as' for cast/castable/treat
+        if (kind == TypeExpr.Kind.INSTANCE_OF) {
+            if (lexer.current() != XPathToken.OF) {
+                throw new XPathSyntaxException("Expected 'of' after 'instance'",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+        } else {
+            if (lexer.current() != XPathToken.AS) {
+                throw new XPathSyntaxException("Expected 'as' after '" + 
+                    kind.name().toLowerCase().replace("_as", "") + "'",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+        }
+        lexer.advance();
+        
+        // Parse the sequence type
+        SequenceType seqType = parseSequenceType();
+        
+        return new TypeExpr(kind, operand, seqType);
+    }
+    
+    /**
+     * Parses a sequence type.
+     * 
+     * <p>Handles:
+     * <ul>
+     *   <li>empty-sequence()</li>
+     *   <li>item()</li>
+     *   <li>node(), element(), attribute(), text(), comment(), processing-instruction()</li>
+     *   <li>document-node()</li>
+     *   <li>schema-element(name), schema-attribute(name)</li>
+     *   <li>QName (atomic type reference like xs:integer)</li>
+     * </ul>
+     * Plus occurrence indicators: ?, *, +
+     */
+    private SequenceType parseSequenceType() throws XPathSyntaxException {
+        SequenceType.ItemKind itemKind;
+        String namespaceURI = null;
+        String localName = null;
+        String typeName = null;  // For element(name, type) or attribute(name, type)
+        
+        XPathToken token = lexer.current();
+        
+        switch (token) {
+            case EMPTY_SEQUENCE:
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                expectToken(XPathToken.RPAREN, ")");
+                return SequenceType.EMPTY;
+                
+            case ITEM:
+                itemKind = SequenceType.ItemKind.ITEM;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case NODE_TYPE_NODE:
+                itemKind = SequenceType.ItemKind.NODE;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case NODE_TYPE_TEXT:
+                itemKind = SequenceType.ItemKind.TEXT;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case NODE_TYPE_COMMENT:
+                itemKind = SequenceType.ItemKind.COMMENT;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case NODE_TYPE_PI:
+                itemKind = SequenceType.ItemKind.PROCESSING_INSTRUCTION;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                // Optional PI target name
+                if (lexer.current() == XPathToken.NCNAME || lexer.current() == XPathToken.STRING_LITERAL) {
+                    localName = lexer.value();
+                    lexer.advance();
+                }
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case ELEMENT:
+                itemKind = SequenceType.ItemKind.ELEMENT;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                // Optional element name and type: element(), element(name), element(*, type), element(name, type)
+                if (lexer.current() != XPathToken.RPAREN) {
+                    if (lexer.current() == XPathToken.STAR) {
+                        lexer.advance();
+                    } else {
+                        localName = parseQNameForType();
+                    }
+                    // Optional type argument after comma
+                    if (lexer.current() == XPathToken.COMMA) {
+                        lexer.advance();
+                        String[] typeQName = parseAtomicTypeName();
+                        // Store prefixed type name for matching (e.g., "xs:string")
+                        if (typeQName[0] != null) {
+                            typeName = "{" + typeQName[0] + "}" + typeQName[1];
+                        } else {
+                            typeName = typeQName[1];
+                        }
+                        // Optional '?' for nillable types (e.g., xs:untyped?)
+                        if (lexer.current() == XPathToken.QUESTION) {
+                            lexer.advance();
+                            // Note: nillable flag not currently tracked, just consume the '?'
+                        }
+                    }
+                }
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case ATTRIBUTE:
+                itemKind = SequenceType.ItemKind.ATTRIBUTE;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                // Optional attribute name and type: attribute(), attribute(name), attribute(*, type), attribute(name, type)
+                if (lexer.current() != XPathToken.RPAREN) {
+                    if (lexer.current() == XPathToken.STAR) {
+                        lexer.advance();
+                    } else {
+                        localName = parseQNameForType();
+                    }
+                    // Optional type argument after comma
+                    if (lexer.current() == XPathToken.COMMA) {
+                        lexer.advance();
+                        String[] typeQName = parseAtomicTypeName();
+                        // Store prefixed type name for matching (e.g., "xs:string")
+                        if (typeQName[0] != null) {
+                            typeName = "{" + typeQName[0] + "}" + typeQName[1];
+                        } else {
+                            typeName = typeQName[1];
+                        }
+                        // Optional '?' for nillable types
+                        if (lexer.current() == XPathToken.QUESTION) {
+                            lexer.advance();
+                        }
+                    }
+                }
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case DOCUMENT_NODE:
+                itemKind = SequenceType.ItemKind.DOCUMENT_NODE;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                // Could have element() inside, but we simplify
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case SCHEMA_ELEMENT:
+                itemKind = SequenceType.ItemKind.SCHEMA_ELEMENT;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                localName = parseQNameForType();
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case SCHEMA_ATTRIBUTE:
+                itemKind = SequenceType.ItemKind.SCHEMA_ATTRIBUTE;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
+                localName = parseQNameForType();
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case NCNAME:
+            case PREFIX:
+                // Atomic type reference (e.g., xs:integer, xs:string)
+                itemKind = SequenceType.ItemKind.ATOMIC;
+                String[] qname = parseAtomicTypeName();
+                namespaceURI = qname[0];
+                localName = qname[1];
+                break;
+                
+            default:
+                throw new XPathSyntaxException("Expected sequence type, found: " + token,
+                    lexer.getExpression(), lexer.tokenStart());
+        }
+        
+        // Parse occurrence indicator
+        SequenceType.Occurrence occurrence = SequenceType.Occurrence.ONE;
+        switch (lexer.current()) {
+            case QUESTION:
+                occurrence = SequenceType.Occurrence.ZERO_OR_ONE;
+                lexer.advance();
+                break;
+            case STAR:
+                occurrence = SequenceType.Occurrence.ZERO_OR_MORE;
+                lexer.advance();
+                break;
+            case PLUS:
+                occurrence = SequenceType.Occurrence.ONE_OR_MORE;
+                lexer.advance();
+                break;
+            default:
+                // No occurrence indicator
+                break;
+        }
+        
+        return new SequenceType(itemKind, namespaceURI, localName, typeName, occurrence);
+    }
+    
+    /**
+     * Parses a QName for use in type declarations.
+     */
+    private String parseQNameForType() throws XPathSyntaxException {
+        if (lexer.current() != XPathToken.NCNAME) {
+            throw new XPathSyntaxException("Expected QName",
+                lexer.getExpression(), lexer.tokenStart());
+        }
+        
+        StringBuilder qname = new StringBuilder();
+        qname.append(lexer.value());
+        lexer.advance();
+        
+        // Check for colon (prefix:localname)
+        if (lexer.current() == XPathToken.COLON) {
+            qname.append(":");
+            lexer.advance();
+            if (lexer.current() == XPathToken.NCNAME) {
+                qname.append(lexer.value());
+                lexer.advance();
+            }
+        }
+        
+        return qname.toString();
+    }
+    
+    /**
+     * Parses an atomic type name (QName), returning [namespaceURI, localName].
+     * Handles both "prefix:local" and plain "local" names.
+     */
+    private String[] parseAtomicTypeName() throws XPathSyntaxException {
+        String namespaceURI = null;
+        String localName;
+        
+        if (lexer.current() != XPathToken.NCNAME) {
+            throw new XPathSyntaxException("Expected type name",
+                lexer.getExpression(), lexer.tokenStart());
+        }
+        
+        String firstPart = lexer.value();
+        lexer.advance();
+        
+        // Check for colon (prefix:localname)
+        if (lexer.current() == XPathToken.COLON) {
+            lexer.advance();
+            
+            // Resolve prefix to namespace
+            String prefix = firstPart;
+            if ("xs".equals(prefix) || "xsd".equals(prefix)) {
+                namespaceURI = SequenceType.XS_NAMESPACE;
+            } else if (namespaceResolver != null) {
+                namespaceURI = namespaceResolver.resolve(prefix);
+            }
+            
+            if (lexer.current() != XPathToken.NCNAME) {
+                throw new XPathSyntaxException("Expected local name after prefix '" + prefix + ":'",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+            localName = lexer.value();
+            lexer.advance();
+        } else {
+            // No prefix - just a local name
+            localName = firstPart;
+        }
+        
+        return new String[] { namespaceURI, localName };
+    }
+    
+    /**
+     * Expects and consumes a specific token.
+     */
+    private void expectToken(XPathToken expected, String description) throws XPathSyntaxException {
+        if (lexer.current() != expected) {
+            throw new XPathSyntaxException("Expected '" + description + "' but found: " + lexer.current(),
+                lexer.getExpression(), lexer.tokenStart());
+        }
+        lexer.advance();
     }
 
 }

@@ -146,4 +146,44 @@ public interface OutputHandler {
      */
     void flush() throws SAXException;
 
+    /**
+     * Marks a boundary between sequence items.
+     * 
+     * <p>In sequence construction mode (variables with as="item()*"), 
+     * this signals that the current item is complete and the next
+     * item should be separate. For normal output, this is a no-op.
+     *
+     * @throws SAXException if an error occurs
+     */
+    default void itemBoundary() throws SAXException {
+        // Default implementation does nothing - only meaningful for sequence builders
+    }
+
+    /**
+     * Sets the type annotation for the current element.
+     *
+     * <p>Must be called after startElement and before any content.
+     * This is used for schema-aware processing with xsl:type.
+     *
+     * @param namespaceURI the type namespace URI
+     * @param localName the type local name
+     * @throws SAXException if an error occurs
+     */
+    default void setElementType(String namespaceURI, String localName) throws SAXException {
+        // Default implementation does nothing - subclasses override as needed
+    }
+
+    /**
+     * Sets the type annotation for an attribute being added.
+     *
+     * <p>Should be called immediately after the attribute() call.
+     *
+     * @param namespaceURI the type namespace URI
+     * @param localName the type local name
+     * @throws SAXException if an error occurs
+     */
+    default void setAttributeType(String namespaceURI, String localName) throws SAXException {
+        // Default implementation does nothing - subclasses override as needed
+    }
+
 }

@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
+import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
@@ -211,6 +212,15 @@ public final class StreamingContext {
 
         @Override
         public String resolveNamespacePrefix(String prefix) {
+            // First, check the stylesheet's namespace bindings
+            // This is needed for namespace-prefixed variable names ($ns:var)
+            if (stylesheet != null) {
+                String uri = stylesheet.resolveNamespacePrefix(prefix);
+                if (uri != null) {
+                    return uri;
+                }
+            }
+            // Fall back to the source document's namespace bindings
             if (currentNode instanceof StreamingNode) {
                 return ((StreamingNode) currentNode).lookupNamespaceURI(prefix);
             }
@@ -255,6 +265,14 @@ public final class StreamingContext {
         public XPathValue getAccumulatorAfter(String name) {
             if (accumulatorManager != null) {
                 return accumulatorManager.getAccumulatorAfter(name);
+            }
+            return null;
+        }
+
+        @Override
+        public XSDSimpleType getSchemaType(String namespaceURI, String localName) {
+            if (stylesheet != null) {
+                return stylesheet.getImportedSimpleType(namespaceURI, localName);
             }
             return null;
         }

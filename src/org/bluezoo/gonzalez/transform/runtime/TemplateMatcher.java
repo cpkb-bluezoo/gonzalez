@@ -30,6 +30,7 @@ import java.util.Map;
 
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.ModeDeclaration;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -139,7 +140,8 @@ public final class TemplateMatcher {
     /**
      * Returns the built-in template rule for a node.
      *
-     * <p>Built-in rules are:
+     * <p>XSLT 3.0 built-in behavior is determined by xsl:mode/@on-no-match.
+     * Default behaviors (XSLT 1.0/2.0):
      * <ul>
      *   <li>For root and elements: apply-templates to children</li>
      *   <li>For text and attributes: copy the string value</li>
@@ -151,7 +153,13 @@ public final class TemplateMatcher {
      * @return the built-in rule
      */
     private TemplateRule getBuiltInRule(XPathNode node, String mode) {
-        // Built-in rules apply regardless of mode
+        // Check for XSLT 3.0 mode declaration
+        ModeDeclaration modeDecl = stylesheet.getModeDeclaration(mode);
+        if (modeDecl != null) {
+            return getBuiltInRuleForMode(node, modeDecl);
+        }
+        
+        // Default XSLT 1.0/2.0 behavior
         if (node.isElement() || node.getNodeType() == NodeType.ROOT) {
             return BUILTIN_ELEMENT_RULE;
         }
@@ -161,11 +169,64 @@ public final class TemplateMatcher {
         // Comments and PIs - do nothing
         return BUILTIN_EMPTY_RULE;
     }
+    
+    /**
+     * Returns the built-in rule based on the mode's on-no-match setting.
+     */
+    private TemplateRule getBuiltInRuleForMode(XPathNode node, ModeDeclaration modeDecl) {
+        ModeDeclaration.OnNoMatch onNoMatch = modeDecl.getOnNoMatch();
+        
+        switch (onNoMatch) {
+            case SHALLOW_COPY:
+                // Copy the node (without content) and apply-templates to children
+                return BUILTIN_SHALLOW_COPY_RULE;
+                
+            case DEEP_COPY:
+                // Copy the entire subtree
+                return BUILTIN_DEEP_COPY_RULE;
+                
+            case TEXT_ONLY_COPY:
+                // Default XSLT 1.0/2.0 behavior
+                if (node.isElement() || node.getNodeType() == NodeType.ROOT) {
+                    return BUILTIN_ELEMENT_RULE;
+                }
+                if (node.isText() || node.isAttribute()) {
+                    return BUILTIN_TEXT_RULE;
+                }
+                return BUILTIN_EMPTY_RULE;
+                
+            case SHALLOW_SKIP:
+                // Skip the node but apply-templates to children
+                return BUILTIN_SHALLOW_SKIP_RULE;
+                
+            case DEEP_SKIP:
+                // Skip the entire subtree (do nothing)
+                return BUILTIN_EMPTY_RULE;
+                
+            case FAIL:
+                // Raise an error
+                return BUILTIN_FAIL_RULE;
+                
+            default:
+                // Fall back to default behavior
+                if (node.isElement() || node.getNodeType() == NodeType.ROOT) {
+                    return BUILTIN_ELEMENT_RULE;
+                }
+                if (node.isText() || node.isAttribute()) {
+                    return BUILTIN_TEXT_RULE;
+                }
+                return BUILTIN_EMPTY_RULE;
+        }
+    }
 
     // Built-in template rules
     private static final TemplateRule BUILTIN_ELEMENT_RULE = createBuiltInRule("element-or-root");
     private static final TemplateRule BUILTIN_TEXT_RULE = createBuiltInRule("text-or-attribute");
     private static final TemplateRule BUILTIN_EMPTY_RULE = createBuiltInRule("empty");
+    private static final TemplateRule BUILTIN_SHALLOW_COPY_RULE = createBuiltInRule("shallow-copy");
+    private static final TemplateRule BUILTIN_DEEP_COPY_RULE = createBuiltInRule("deep-copy");
+    private static final TemplateRule BUILTIN_SHALLOW_SKIP_RULE = createBuiltInRule("shallow-skip");
+    private static final TemplateRule BUILTIN_FAIL_RULE = createBuiltInRule("fail");
 
     private static TemplateRule createBuiltInRule(String type) {
         // Built-in rules are created with placeholder bodies
@@ -194,6 +255,95 @@ public final class TemplateMatcher {
     public static String getBuiltInType(TemplateRule rule) {
         if (!isBuiltIn(rule)) return null;
         return rule.getName().substring("__builtin__".length());
+    }
+
+    /**
+     * Finds the next matching template after the current one.
+     *
+     * <p>This is used by xsl:next-match to invoke the next template
+     * in precedence/priority order that matches the current node.
+     *
+     * @param node the node to match
+     * @param mode the current mode (null for default)
+     * @param currentRule the currently executing template rule
+     * @param context the transformation context
+     * @return the next matching rule, or null if no more matches
+     */
+    public TemplateRule findNextMatch(XPathNode node, String mode, 
+                                       TemplateRule currentRule, TransformContext context) {
+        String modeKey = mode != null ? mode : "";
+        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        
+        // Find the current rule in the sorted list, then return the next match
+        boolean foundCurrent = false;
+        for (TemplateRule rule : candidates) {
+            if (foundCurrent) {
+                if (rule.getMatchPattern().matches(node, context)) {
+                    return rule;
+                }
+            } else if (rule == currentRule) {
+                foundCurrent = true;
+            }
+        }
+        
+        // If we found and passed the current rule but no more matches,
+        // fall through to built-in rules
+        if (foundCurrent) {
+            return getBuiltInRule(node, mode);
+        }
+        
+        return null;
+    }
+
+    /**
+     * Finds the highest-precedence matching template from imported stylesheets.
+     *
+     * <p>This is used by xsl:apply-imports to invoke template rules from
+     * stylesheets that were imported by the stylesheet containing the
+     * currently executing template. Only templates with LOWER import precedence
+     * than the current template are considered.
+     *
+     * @param node the node to match
+     * @param mode the current mode (null for default)
+     * @param currentRule the currently executing template rule
+     * @param context the transformation context
+     * @return the matching rule from imports, or null if no import matches
+     */
+    public TemplateRule findImportMatch(XPathNode node, String mode, 
+                                         TemplateRule currentRule, TransformContext context) {
+        if (currentRule == null) {
+            return null;
+        }
+        
+        String modeKey = mode != null ? mode : "";
+        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        
+        if (candidates == null || candidates.isEmpty()) {
+            // No templates in this mode - fall back to built-in
+            return getBuiltInRule(node, mode);
+        }
+        
+        int currentPrecedence = currentRule.getImportPrecedence();
+        
+        // Find the highest-precedence template that:
+        // 1. Has LOWER import precedence than the current template
+        // 2. Matches the node
+        // Since candidates are sorted by precedence (highest first), we scan
+        // until we find one with lower precedence that matches
+        for (TemplateRule rule : candidates) {
+            if (rule.getImportPrecedence() < currentPrecedence) {
+                if (rule.getMatchPattern().matches(node, context)) {
+                    return rule;
+                }
+            }
+        }
+        
+        // No matching template from imports - fall through to built-in rules
+        return getBuiltInRule(node, mode);
     }
 
 }

@@ -24,7 +24,10 @@ package org.bluezoo.gonzalez;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -90,6 +93,7 @@ public class XMLWriter {
     private ByteBuffer buffer;
     private final int sendThreshold;
     private final IndentConfig indentConfig;
+    private final Charset charset;
 
     // Element stack for tracking open elements
     private final Deque<ElementInfo> elementStack = new ArrayDeque<>();
@@ -181,10 +185,23 @@ public class XMLWriter {
      * @param indentConfig the indentation configuration, or null for no indentation
      */
     public XMLWriter(WritableByteChannel channel, int bufferCapacity, IndentConfig indentConfig) {
+        this(channel, bufferCapacity, indentConfig, null);
+    }
+
+    /**
+     * Creates a new XML writer with specified buffer capacity, indentation, and character encoding.
+     *
+     * @param channel the channel to write to
+     * @param bufferCapacity initial buffer capacity in bytes
+     * @param indentConfig the indentation configuration, or null for no indentation
+     * @param charset the character encoding to use, or null for UTF-8
+     */
+    public XMLWriter(WritableByteChannel channel, int bufferCapacity, IndentConfig indentConfig, Charset charset) {
         this.channel = channel;
         this.buffer = ByteBuffer.allocate(bufferCapacity);
         this.sendThreshold = (int) (bufferCapacity * SEND_THRESHOLD);
         this.indentConfig = indentConfig;
+        this.charset = charset != null ? charset : StandardCharsets.UTF_8;
         // Initialize root namespace scope
         namespaceStack.push(new HashMap<>());
     }
@@ -378,6 +395,9 @@ public class XMLWriter {
 
     /**
      * Writes a namespace declaration.
+     * <p>
+     * If the same prefix is already bound to the same URI in an ancestor scope,
+     * the declaration is skipped to avoid redundant xmlns attributes.
      *
      * @param prefix the namespace prefix
      * @param namespaceURI the namespace URI
@@ -387,6 +407,18 @@ public class XMLWriter {
     public void writeNamespace(String prefix, String namespaceURI) throws IOException {
         if (!pendingStartTag) {
             throw new IllegalStateException("Namespace declarations must be written immediately after writeStartElement");
+        }
+        
+        // Check if this binding already exists in an ancestor scope (not current scope)
+        // If so, we don't need to redeclare it
+        String existingUri = getNamespaceURIFromAncestors(prefix);
+        if (namespaceURI.equals(existingUri)) {
+            // Binding already in scope from ancestor - skip redundant declaration
+            // But still record it in current scope for proper tracking
+            if (!namespaceStack.isEmpty()) {
+                namespaceStack.peek().put(prefix, namespaceURI);
+            }
+            return;
         }
         
         // Record the binding in current scope
@@ -415,6 +447,9 @@ public class XMLWriter {
 
     /**
      * Writes a default namespace declaration.
+     * <p>
+     * If the default namespace is already bound to the same URI in an ancestor scope,
+     * the declaration is skipped to avoid redundant xmlns attributes.
      *
      * @param namespaceURI the namespace URI
      * @throws IOException if there is an error writing data
@@ -423,6 +458,19 @@ public class XMLWriter {
     public void writeDefaultNamespace(String namespaceURI) throws IOException {
         if (!pendingStartTag) {
             throw new IllegalStateException("Namespace declarations must be written immediately after writeStartElement");
+        }
+        
+        // Check if this binding already exists in an ancestor scope (not current scope)
+        // For default namespace, null (no binding) is equivalent to "" (no namespace)
+        String existingUri = getNamespaceURIFromAncestors("");
+        boolean alreadyInScope = namespaceURI.equals(existingUri) ||
+            (namespaceURI.isEmpty() && existingUri == null);
+        if (alreadyInScope) {
+            // Binding already in scope from ancestor - skip redundant declaration
+            if (!namespaceStack.isEmpty()) {
+                namespaceStack.peek().put("", namespaceURI);
+            }
+            return;
         }
         
         // Record the binding in current scope (empty string = default namespace)
@@ -479,6 +527,32 @@ public class XMLWriter {
         }
         // Search from innermost scope outward
         for (Map<String, String> scope : namespaceStack) {
+            String uri = scope.get(prefix);
+            if (uri != null) {
+                return uri;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Gets the namespace URI bound to a prefix from ancestor scopes only.
+     * This excludes the current (innermost) scope, checking only parent elements.
+     *
+     * @param prefix the namespace prefix (empty string for default namespace)
+     * @return the namespace URI from ancestors, or null if not bound
+     */
+    private String getNamespaceURIFromAncestors(String prefix) {
+        if (prefix == null) {
+            prefix = "";
+        }
+        // Skip first scope (current element), search ancestors only
+        boolean first = true;
+        for (Map<String, String> scope : namespaceStack) {
+            if (first) {
+                first = false;
+                continue; // Skip current scope
+            }
             String uri = scope.get(prefix);
             if (uri != null) {
                 return uri;
@@ -737,10 +811,10 @@ public class XMLWriter {
     }
 
     /**
-     * Writes a raw string as UTF-8 bytes without escaping.
+     * Writes a raw string as bytes without escaping, using the configured charset.
      */
     private void writeRawString(String s) throws IOException {
-        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        byte[] bytes = s.getBytes(charset);
         ensureCapacity(bytes.length);
         buffer.put(bytes);
     }
@@ -779,7 +853,7 @@ public class XMLWriter {
             } else if (codePoint < 0x80) {
                 buffer.put((byte) codePoint);
             } else {
-                writeUtf8CodePoint(codePoint);
+                writeEncodedCodePoint(codePoint);
             }
             
             i += charCount;
@@ -835,7 +909,7 @@ public class XMLWriter {
             } else if (codePoint < 0x80) {
                 buffer.put((byte) codePoint);
             } else {
-                writeUtf8CodePoint(codePoint);
+                writeEncodedCodePoint(codePoint);
             }
             
             i += charCount;
@@ -843,16 +917,58 @@ public class XMLWriter {
     }
 
     /**
-     * Writes a character reference (&#xHH; format).
+     * Writes a code point using the target charset encoding.
+     * If the character cannot be encoded, uses a numeric character reference.
+     */
+    private void writeEncodedCodePoint(int codePoint) throws IOException {
+        // For UTF-8, always encode as UTF-8 bytes
+        if (charset == StandardCharsets.UTF_8) {
+            writeUtf8CodePoint(codePoint);
+            return;
+        }
+        
+        // For ISO-8859-1, check if character is in range
+        if (charset == StandardCharsets.ISO_8859_1) {
+            if (codePoint <= 0xFF) {
+                buffer.put((byte) codePoint);
+            } else {
+                // Character not in ISO-8859-1 - use character reference
+                writeCharacterReference(codePoint);
+            }
+            return;
+        }
+        
+        // For US-ASCII, only 0-127 are valid
+        if (charset == StandardCharsets.US_ASCII) {
+            // codePoint is already >= 0x80 at this point, so always escape
+            writeCharacterReference(codePoint);
+            return;
+        }
+        
+        // For other charsets, try to encode
+        // Fall back to character reference if encoding fails
+        CharBuffer cb = CharBuffer.wrap(Character.toChars(codePoint));
+        CharsetEncoder encoder = charset.newEncoder();
+        if (encoder.canEncode(cb)) {
+            ByteBuffer encoded = encoder.encode(cb);
+            while (encoded.hasRemaining()) {
+                buffer.put(encoded.get());
+            }
+        } else {
+            writeCharacterReference(codePoint);
+        }
+    }
+
+    /**
+     * Writes a character reference (&#nnnn; format - decimal).
      */
     private void writeCharacterReference(int codePoint) throws IOException {
-        ensureCapacity(8); // &#xHHHH;
+        ensureCapacity(12); // &#nnnnnnnn; (up to 10 digits for large codepoints)
         buffer.put((byte) '&');
         buffer.put((byte) '#');
-        buffer.put((byte) 'x');
-        String hex = Integer.toHexString(codePoint).toUpperCase();
-        for (int i = 0; i < hex.length(); i++) {
-            buffer.put((byte) hex.charAt(i));
+        String decimal = Integer.toString(codePoint);
+        for (int i = 0; i < decimal.length(); i++) {
+            buffer.put((byte) decimal.charAt(i));
         }
         buffer.put((byte) ';');
     }

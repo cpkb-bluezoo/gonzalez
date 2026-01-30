@@ -15,6 +15,8 @@
 module org.bluezoo.gonzalez {
     requires java.xml;
     exports org.bluezoo.gonzalez;
+    exports org.bluezoo.gonzalez.schema;
+    exports org.bluezoo.gonzalez.schema.xsd;
     
     provides javax.xml.parsers.SAXParserFactory
         with org.bluezoo.gonzalez.GonzalezSAXParserFactory;

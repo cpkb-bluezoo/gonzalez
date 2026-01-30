@@ -21,9 +21,19 @@
 
 package org.bluezoo.gonzalez;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.charset.Charset;
+import java.nio.charset.IllegalCharsetNameException;
+import java.nio.charset.UnsupportedCharsetException;
+import org.bluezoo.gonzalez.schema.PSVIProvider;
+import org.bluezoo.gonzalez.schema.TypedValue;
+import org.bluezoo.gonzalez.schema.Validity;
+import org.bluezoo.gonzalez.schema.ValidationSource;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
 import org.xml.sax.EntityResolver;
@@ -75,7 +85,7 @@ import org.xml.sax.ext.LexicalHandler;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class Parser implements XMLReader {
+public class Parser implements XMLReader, PSVIProvider {
 
     /**
      * The tokenizer that converts characters to tokens.
@@ -151,9 +161,9 @@ public class Parser implements XMLReader {
         // Set initial encoding from InputSource if specified
         if (input.getEncoding() != null) {
             try {
-                java.nio.charset.Charset charset = java.nio.charset.Charset.forName(input.getEncoding());
+                Charset charset = Charset.forName(input.getEncoding());
                 decoder.setInitialCharset(charset);
-            } catch (java.nio.charset.IllegalCharsetNameException | java.nio.charset.UnsupportedCharsetException e) {
+            } catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
                 // Invalid encoding name - ignore and use default (UTF-8)
                 // The XML declaration will override if needed
             }
@@ -249,6 +259,58 @@ public class Parser implements XMLReader {
         
         // This should not happen (default resolver should always return something)
         throw new SAXException("Could not resolve system ID: " + systemId);
+    }
+
+    // ========================================================================
+    // NIO Channel-Based Parsing (Native API)
+    // ========================================================================
+
+    /**
+     * Parses an XML document from a ReadableByteChannel.
+     *
+     * <p>This is the native NIO parsing method. It reads data from the channel
+     * in chunks and feeds them to the streaming parser. This method blocks
+     * until the entire document has been parsed.
+     *
+     * <p>This is the most efficient way to parse from files when using
+     * {@link java.nio.channels.FileChannel}, as it avoids the overhead of
+     * InputStream bridging.
+     *
+     * <p><b>Example with FileChannel:</b>
+     * <pre>
+     * Parser parser = new Parser();
+     * parser.setContentHandler(myHandler);
+     * try (FileChannel channel = FileChannel.open(path, StandardOpenOption.READ)) {
+     *     parser.setSystemId(path.toUri().toString());
+     *     parser.parse(channel);
+     * }
+     * </pre>
+     *
+     * <p><b>Note:</b> The channel is not closed by this method. The caller
+     * is responsible for closing the channel after parsing completes.
+     *
+     * @param channel the channel to read from
+     * @throws IOException if an I/O error occurs reading from the channel
+     * @throws SAXException if a parsing error occurs
+     * @throws IllegalArgumentException if channel is null
+     */
+    public void parse(ReadableByteChannel channel) throws IOException, SAXException {
+        if (channel == null) {
+            throw new IllegalArgumentException("Channel cannot be null");
+        }
+
+        // Use larger buffer for channel I/O (typically file-based)
+        ByteBuffer buffer = ByteBuffer.allocate(8192);
+        
+        // Standard NIO read loop: read, flip, process, compact
+        while (channel.read(buffer) != -1 || buffer.position() > 0) {
+            buffer.flip();
+            receive(buffer);
+            buffer.compact();
+        }
+        
+        // Signal end of document
+        close();
     }
 
     /**
@@ -754,6 +816,126 @@ public class Parser implements XMLReader {
         return tokenizer.systemId;
     }
 
+    // ========================================================================
+    // PSVIProvider Implementation
+    // ========================================================================
+    
+    /**
+     * Returns the validation status of the current element.
+     *
+     * <p>Currently returns {@link Validity#NOT_KNOWN} since Gonzalez does not
+     * perform full schema validation. DTD validation (when enabled) validates
+     * content models but does not set element-level validity status.
+     *
+     * @return the validity status, always {@code NOT_KNOWN} currently
+     */
+    @Override
+    public Validity getValidity() {
+        // Full validity tracking requires schema validation
+        // DTD validation validates constraints but doesn't set validity per-element
+        return Validity.NOT_KNOWN;
+    }
+    
+    /**
+     * Returns the schema language used for validation.
+     *
+     * <p>Returns {@link ValidationSource#DTD} if a DOCTYPE declaration was
+     * encountered (regardless of whether validation is enabled), otherwise
+     * returns {@link ValidationSource#NONE}.
+     *
+     * @return the validation source
+     */
+    @Override
+    public ValidationSource getValidationSource() {
+        return xmlParser.getDTDParser() != null 
+            ? ValidationSource.DTD 
+            : ValidationSource.NONE;
+    }
+    
+    /**
+     * Returns the DTD-declared type for an attribute.
+     *
+     * <p>This method can be called during {@code startElement} callbacks to
+     * retrieve the DTD type (ID, IDREF, IDREFS, NMTOKEN, NMTOKENS, ENTITY,
+     * ENTITIES, NOTATION, CDATA, or enumeration) for an attribute.
+     *
+     * <p>If no DTD was declared or the attribute is not declared in the DTD,
+     * returns "CDATA" as per SAX specification.
+     *
+     * @param attrIndex the attribute index (0-based)
+     * @return the attribute type string, or "CDATA" if not declared
+     */
+    @Override
+    public String getDTDAttributeType(int attrIndex) {
+        SAXAttributes attrs = xmlParser.getCurrentAttributes();
+        if (attrs != null && attrIndex >= 0 && attrIndex < attrs.getLength()) {
+            return attrs.getType(attrIndex);
+        }
+        return "CDATA";
+    }
+    
+    /**
+     * Returns the typed value of the current element.
+     *
+     * <p>Currently returns {@code null} since DTD does not provide element
+     * type information. This would be populated when XSD validation is active.
+     *
+     * @return the typed value, or null if not available
+     */
+    @Override
+    public TypedValue getElementTypedValue() {
+        // DTD does not provide element type information
+        // XSD implementation would populate this
+        return null;
+    }
+    
+    /**
+     * Returns the typed value of an attribute.
+     *
+     * <p>Currently returns {@code null}. Future XSD implementation would
+     * convert attribute values to their typed representations based on
+     * schema type declarations.
+     *
+     * @param attrIndex the attribute index (0-based)
+     * @return the typed value, or null if not available
+     */
+    @Override
+    public TypedValue getAttributeTypedValue(int attrIndex) {
+        // DTD types don't map cleanly to typed values
+        // XSD implementation would populate this
+        return null;
+    }
+    
+    /**
+     * Returns the XSD type definition for the current element.
+     *
+     * <p>Currently returns {@code null} since XSD validation is not yet
+     * implemented. When XSD validation is active, this would return the
+     * Xerces XSTypeDefinition object.
+     *
+     * @return the XSD type definition, or null if not available
+     */
+    @Override
+    public Object getXSDTypeDefinition() {
+        // XSD validation not implemented yet
+        return null;
+    }
+    
+    /**
+     * Returns whether the current element has xsi:nil="true".
+     *
+     * <p>Currently returns {@code null} since XSD validation is not yet
+     * implemented. When XSD validation is active, this would return
+     * {@code true} or {@code false} based on the xsi:nil attribute.
+     *
+     * @return true if nilled, false if not nilled, null if unknown
+     */
+    @Override
+    public Boolean isNil() {
+        // xsi:nil handling requires XSD validation
+        return null;
+    }
+    
     /**
      * Command-line entry point for testing the parser.
      *
@@ -770,8 +952,8 @@ public class Parser implements XMLReader {
         Parser parser = new Parser();
         parser.setContentHandler(new org.xml.sax.helpers.DefaultHandler());
         for (String arg : args) {
-            java.io.File file = new java.io.File(arg);
-            try (java.io.InputStream in = new java.io.FileInputStream(file)) {
+            File file = new File(arg);
+            try (InputStream in = new FileInputStream(file)) {
                 InputSource src = new InputSource(in);
                 src.setSystemId(file.toURI().toString());
                 parser.parse(src);

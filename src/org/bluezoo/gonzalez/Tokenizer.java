@@ -779,18 +779,22 @@ class Tokenizer implements Locator2 {
             char c = charBuffer.get(i);
             int digit;
             if (isHex) {
-                if (c >= '0' && c <= '9') digit = c - '0';
-                else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
-                else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
-                else {
+                if (c >= '0' && c <= '9') {
+                    digit = c - '0';
+                } else if (c >= 'a' && c <= 'f') {
+                    digit = c - 'a' + 10;
+                } else if (c >= 'A' && c <= 'F') {
+                    digit = c - 'A' + 10;
+                } else {
                     // WFC: Character Reference (Production 66)
                     // "Hexadecimal character references must contain only valid hex digits"
                     throw fatalError("Invalid hexadecimal character reference");
                 }
                 codePoint = codePoint * 16 + digit;
             } else {
-                if (c >= '0' && c <= '9') digit = c - '0';
-                else {
+                if (c >= '0' && c <= '9') {
+                    digit = c - '0';
+                } else {
                     // WFC: Character Reference (Production 66)
                     // "Decimal character references must contain only valid decimal digits"
                     throw fatalError("Invalid decimal character reference");

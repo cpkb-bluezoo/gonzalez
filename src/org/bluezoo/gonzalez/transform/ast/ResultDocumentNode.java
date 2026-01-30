@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
+import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.ValidationMode;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.ResultDocumentHandler;
@@ -71,6 +72,9 @@ public final class ResultDocumentNode implements XSLTNode {
     private final String encoding;
     private final String indent;
     private final XSLTNode content;
+    private final String typeNamespaceURI;
+    private final String typeLocalName;
+    private final ValidationMode validation;
 
     /**
      * Creates a new result-document instruction.
@@ -85,12 +89,35 @@ public final class ResultDocumentNode implements XSLTNode {
     public ResultDocumentNode(AttributeValueTemplate hrefAvt, String format,
                                String method, String encoding, String indent,
                                XSLTNode content) {
+        this(hrefAvt, format, method, encoding, indent, content, null, null, null);
+    }
+
+    /**
+     * Creates a new result-document instruction with validation.
+     *
+     * @param hrefAvt the href AVT (may be null for principal output)
+     * @param format the named format (may be null)
+     * @param method the output method (may be null)
+     * @param encoding the encoding (may be null)
+     * @param indent indent setting (may be null)
+     * @param content the content to output
+     * @param typeNamespaceURI the type annotation namespace (may be null)
+     * @param typeLocalName the type annotation local name (may be null)
+     * @param validation the validation mode (may be null for default)
+     */
+    public ResultDocumentNode(AttributeValueTemplate hrefAvt, String format,
+                               String method, String encoding, String indent,
+                               XSLTNode content, String typeNamespaceURI,
+                               String typeLocalName, ValidationMode validation) {
         this.hrefAvt = hrefAvt;
         this.format = format;
         this.method = method;
         this.encoding = encoding;
         this.indent = indent;
         this.content = content;
+        this.typeNamespaceURI = typeNamespaceURI;
+        this.typeLocalName = typeLocalName;
+        this.validation = validation;
     }
 
     @Override
@@ -111,6 +138,7 @@ public final class ResultDocumentNode implements XSLTNode {
         // Create output handler for secondary document
         OutputHandler secondaryOutput;
         OutputStream outputStream = null;
+        boolean usingPrincipalOutput = false;
         
         try {
             if (href != null && !href.isEmpty()) {
@@ -119,20 +147,25 @@ public final class ResultDocumentNode implements XSLTNode {
                 outputStream = new FileOutputStream(uri.getPath());
                 secondaryOutput = new ResultDocumentHandler(outputStream, props);
             } else {
-                // No href - use principal output
+                // No href - use principal output (don't start new document)
                 secondaryOutput = output;
+                usingPrincipalOutput = true;
             }
 
-            // Start document
-            secondaryOutput.startDocument();
+            // Only start a new document for secondary outputs
+            if (!usingPrincipalOutput) {
+                secondaryOutput.startDocument();
+            }
 
             // Execute content
             if (content != null) {
                 content.execute(context, secondaryOutput);
             }
 
-            // End document
-            secondaryOutput.endDocument();
+            // Only end document for secondary outputs
+            if (!usingPrincipalOutput) {
+                secondaryOutput.endDocument();
+            }
 
         } catch (IOException e) {
             throw new SAXException("Error creating result document: " + href, e);

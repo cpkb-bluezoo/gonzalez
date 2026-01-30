@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.GroupingContext;
@@ -83,7 +84,8 @@ public final class ForEachGroupNode implements XSLTNode {
     private final XPathExpression select;
     private final XPathExpression groupByExpr;
     private final XPathExpression groupAdjacentExpr;
-    // group-starting-with and group-ending-with use patterns (not implemented fully)
+    private final Pattern groupStartingPattern;
+    private final Pattern groupEndingPattern;
     private final GroupingMethod method;
     private final XSLTNode body;
 
@@ -92,7 +94,8 @@ public final class ForEachGroupNode implements XSLTNode {
      */
     public static ForEachGroupNode groupBy(XPathExpression select, XPathExpression groupByExpr,
                                             XSLTNode body) {
-        return new ForEachGroupNode(select, groupByExpr, null, GroupingMethod.GROUP_BY, body);
+        return new ForEachGroupNode(select, groupByExpr, null, null, null, 
+                                    GroupingMethod.GROUP_BY, body);
     }
 
     /**
@@ -101,16 +104,39 @@ public final class ForEachGroupNode implements XSLTNode {
     public static ForEachGroupNode groupAdjacent(XPathExpression select, 
                                                   XPathExpression groupAdjacentExpr,
                                                   XSLTNode body) {
-        return new ForEachGroupNode(select, null, groupAdjacentExpr, 
+        return new ForEachGroupNode(select, null, groupAdjacentExpr, null, null, 
                                     GroupingMethod.GROUP_ADJACENT, body);
     }
 
+    /**
+     * Creates a group-starting-with grouping node.
+     */
+    public static ForEachGroupNode groupStartingWith(XPathExpression select, 
+                                                      Pattern pattern,
+                                                      XSLTNode body) {
+        return new ForEachGroupNode(select, null, null, pattern, null, 
+                                    GroupingMethod.GROUP_STARTING_WITH, body);
+    }
+
+    /**
+     * Creates a group-ending-with grouping node.
+     */
+    public static ForEachGroupNode groupEndingWith(XPathExpression select, 
+                                                    Pattern pattern,
+                                                    XSLTNode body) {
+        return new ForEachGroupNode(select, null, null, null, pattern, 
+                                    GroupingMethod.GROUP_ENDING_WITH, body);
+    }
+
     private ForEachGroupNode(XPathExpression select, XPathExpression groupByExpr,
-                              XPathExpression groupAdjacentExpr, GroupingMethod method,
+                              XPathExpression groupAdjacentExpr, Pattern startingPattern,
+                              Pattern endingPattern, GroupingMethod method,
                               XSLTNode body) {
         this.select = select;
         this.groupByExpr = groupByExpr;
         this.groupAdjacentExpr = groupAdjacentExpr;
+        this.groupStartingPattern = startingPattern;
+        this.groupEndingPattern = endingPattern;
         this.method = method;
         this.body = body;
     }
@@ -188,8 +214,13 @@ public final class ForEachGroupNode implements XSLTNode {
             case GROUP_ADJACENT:
                 return groupAdjacent(items, groupAdjacentExpr, context);
                 
+            case GROUP_STARTING_WITH:
+                return groupStartingWith(items, groupStartingPattern, context);
+                
+            case GROUP_ENDING_WITH:
+                return groupEndingWith(items, groupEndingPattern, context);
+                
             default:
-                // For now, treat as group-by
                 return groupByKey(items, groupByExpr, context);
         }
     }
@@ -212,7 +243,12 @@ public final class ForEachGroupNode implements XSLTNode {
             String key = keyValue.asString();
             
             // Add to group
-            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(item);
+            List<XPathNode> group = groups.get(key);
+            if (group == null) {
+                group = new ArrayList<>();
+                groups.put(key, group);
+            }
+            group.add(item);
         }
         
         return groups;
@@ -247,7 +283,80 @@ public final class ForEachGroupNode implements XSLTNode {
             }
             
             // Add to current group
-            groups.computeIfAbsent(groupKey, k -> new ArrayList<>()).add(item);
+            List<XPathNode> group = groups.get(groupKey);
+            if (group == null) {
+                group = new ArrayList<>();
+                groups.put(groupKey, group);
+            }
+            group.add(item);
+        }
+        
+        return groups;
+    }
+
+    /**
+     * Groups items starting with each item that matches the pattern.
+     * Each group starts at a matching item and continues until the next match.
+     */
+    private Map<String, List<XPathNode>> groupStartingWith(List<XPathNode> items,
+                                                            Pattern pattern,
+                                                            TransformContext context)
+            throws XPathException {
+        
+        Map<String, List<XPathNode>> groups = new LinkedHashMap<>();
+        List<XPathNode> currentGroup = null;
+        int groupIndex = 0;
+        
+        for (XPathNode item : items) {
+            // Check if this item matches the pattern
+            boolean matches = pattern.matches(item, context);
+            
+            if (matches || currentGroup == null) {
+                // Start a new group
+                groupIndex++;
+                currentGroup = new ArrayList<>();
+                groups.put("group_" + groupIndex, currentGroup);
+            }
+            
+            // Add item to current group
+            currentGroup.add(item);
+        }
+        
+        return groups;
+    }
+
+    /**
+     * Groups items ending with each item that matches the pattern.
+     * Each group ends at a matching item.
+     */
+    private Map<String, List<XPathNode>> groupEndingWith(List<XPathNode> items,
+                                                          Pattern pattern,
+                                                          TransformContext context)
+            throws XPathException {
+        
+        Map<String, List<XPathNode>> groups = new LinkedHashMap<>();
+        List<XPathNode> currentGroup = new ArrayList<>();
+        int groupIndex = 0;
+        
+        for (XPathNode item : items) {
+            // Add item to current group
+            currentGroup.add(item);
+            
+            // Check if this item matches the pattern (ends the group)
+            boolean matches = pattern.matches(item, context);
+            
+            if (matches) {
+                // End the group
+                groupIndex++;
+                groups.put("group_" + groupIndex, currentGroup);
+                currentGroup = new ArrayList<>();
+            }
+        }
+        
+        // Add any remaining items as a final group
+        if (!currentGroup.isEmpty()) {
+            groupIndex++;
+            groups.put("group_" + groupIndex, currentGroup);
         }
         
         return groups;

@@ -27,8 +27,10 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
 import org.xml.sax.ErrorHandler;
@@ -129,7 +131,7 @@ class DTDParser implements TokenConsumer {
      * and its locator is set. We maintain this stack so we can notify the
      * parent Tokenizer when conditional keywords are seen in nested expansions.
      */
-    private java.util.ArrayDeque<Tokenizer> tokenizerStack = new java.util.ArrayDeque<>();
+    private ArrayDeque<Tokenizer> tokenizerStack = new ArrayDeque<>();
     
     /**
      * Reference to the parent ContentParser for processing external entities.
@@ -272,7 +274,7 @@ class DTDParser implements TokenConsumer {
      * When this set is non-empty, we're in buffering mode.
      * When it becomes empty, we process the buffered tokens and resume normal processing.
      */
-    private java.util.Set<String> unresolvedParameterEntities;
+    private Set<String> unresolvedParameterEntities;
     
     /**
      * Sub-states for parsing conditional sections.
@@ -1726,7 +1728,7 @@ class DTDParser implements TokenConsumer {
      * 
      * @return set of notation names, or null if no notations declared
      */
-    public java.util.Set<String> getNotationNames() {
+    public Set<String> getNotationNames() {
         if (notations == null) {
             return null;
         }
@@ -2185,7 +2187,7 @@ class DTDParser implements TokenConsumer {
         if (entity == null && xmlParser.isProcessingExternalEntity()) {
             // Forward reference in external subset - enter buffering mode
             if (unresolvedParameterEntities == null) {
-                unresolvedParameterEntities = new java.util.HashSet<>();
+                unresolvedParameterEntities = new HashSet<>();
             }
             unresolvedParameterEntities.add(entityName.intern());
             

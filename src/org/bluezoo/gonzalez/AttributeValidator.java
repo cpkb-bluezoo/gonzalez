@@ -22,10 +22,11 @@
 package org.bluezoo.gonzalez;
 
 import org.xml.sax.Attributes;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Validates attribute values against DTD-declared types.
@@ -88,7 +89,7 @@ class AttributeValidator {
         }
         
         // Get all attribute declarations for this element
-        java.util.Map<String, AttributeDeclaration> declarations = dtdParser.getAttributeDeclarations(elementName);
+        Map<String, AttributeDeclaration> declarations = dtdParser.getAttributeDeclarations(elementName);
         if (declarations == null || declarations.isEmpty()) {
             // No declarations, check if there are any attributes (undeclared attributes are errors)
             if (attributes.getLength() > 0) {

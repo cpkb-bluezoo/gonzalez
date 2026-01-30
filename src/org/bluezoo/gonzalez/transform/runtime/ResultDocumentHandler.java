@@ -277,7 +277,9 @@ public final class ResultDocumentHandler implements OutputHandler {
      * Writes text with XML escaping.
      */
     private void writeEscaped(String text, boolean isAttribute) throws IOException {
-        if (text == null) return;
+        if (text == null) {
+            return;
+        }
         
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);
@@ -308,7 +310,9 @@ public final class ResultDocumentHandler implements OutputHandler {
      * Appends text with XML escaping to a StringBuilder.
      */
     private void appendEscaped(StringBuilder sb, String text, boolean isAttribute) {
-        if (text == null) return;
+        if (text == null) {
+            return;
+        }
         
         for (int i = 0; i < text.length(); i++) {
             char c = text.charAt(i);

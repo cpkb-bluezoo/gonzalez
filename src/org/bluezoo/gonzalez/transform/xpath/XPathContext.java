@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath;
 
+import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -50,6 +52,18 @@ public interface XPathContext {
      * @return the current context node
      */
     XPathNode getContextNode();
+    
+    /**
+     * Returns the context item (XPath 2.0+).
+     * 
+     * <p>In XPath 2.0+, the context item can be any item, not just a node.
+     * If this returns null, getContextNode() should be used instead.
+     *
+     * @return the context item, or null if context is a node
+     */
+    default XPathValue getContextItem() {
+        return null;
+    }
     
     /**
      * Returns the XSLT current node for the current() function.
@@ -111,6 +125,26 @@ public interface XPathContext {
      * @return a new context with the given node
      */
     XPathContext withContextNode(XPathNode node);
+    
+    /**
+     * Creates a new context with a different context item (XPath 2.0+).
+     *
+     * <p>This allows non-node items to be used as the context item
+     * for predicate evaluation in sequences.
+     *
+     * @param item the new context item
+     * @return a new context with the given item
+     */
+    default XPathContext withContextItem(XPathValue item) {
+        // Default: if item is a node, use withContextNode
+        if (item != null && item.isNodeSet()) {
+            XPathNodeSet ns = item.asNodeSet();
+            if (!ns.isEmpty()) {
+                return withContextNode(ns.iterator().next());
+            }
+        }
+        return this;
+    }
 
     /**
      * Creates a new context with different position and size.
@@ -151,6 +185,44 @@ public interface XPathContext {
      */
     default XPathValue getAccumulatorAfter(String name) {
         return null;
+    }
+
+    /**
+     * Looks up a schema type by namespace and local name.
+     *
+     * <p>This is used for schema-aware type operations like
+     * {@code cast as} and {@code castable as} with user-defined types.
+     *
+     * @param namespaceURI the type namespace URI
+     * @param localName the type local name
+     * @return the schema type, or null if not found
+     */
+    default XSDSimpleType getSchemaType(String namespaceURI, String localName) {
+        return null;
+    }
+
+    /**
+     * Returns the static base URI from the expression context.
+     *
+     * <p>In XSLT, this is typically the base URI of the stylesheet element
+     * containing the expression, which can be set via xml:base attributes.
+     *
+     * @return the static base URI, or null if not set
+     */
+    default String getStaticBaseURI() {
+        return null;
+    }
+
+    /**
+     * Returns the XSLT version of the stylesheet.
+     *
+     * <p>This is used by system-property('xsl:version') to return the
+     * effective version of the stylesheet being executed.
+     *
+     * @return the XSLT version (e.g., 1.0, 2.0, 3.0), or 1.0 as default
+     */
+    default double getXsltVersion() {
+        return 1.0;
     }
 
 }

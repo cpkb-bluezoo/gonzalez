@@ -22,6 +22,15 @@
 package org.bluezoo.gonzalez.transform;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.URL;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -126,7 +135,7 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
                 inputSource.setByteStream(ss.getInputStream());
             } else if (ss.getSystemId() != null) {
                 // Open stream from systemId
-                java.io.InputStream byteStream = openStream(ss.getSystemId());
+                InputStream byteStream = openStream(ss.getSystemId());
                 inputSource.setByteStream(byteStream);
             } else if (ss.getReader() != null) {
                 // Gonzalez parser requires byte streams for encoding detection
@@ -162,30 +171,50 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
             throw new SAXException("Unsupported source type: " + source.getClass().getName());
         }
         
-        return compiler.getCompiledStylesheet();
+        try {
+            return compiler.getCompiledStylesheet();
+        } catch (TransformerConfigurationException e) {
+            throw new SAXException(e.getMessage(), e);
+        }
     }
 
     /**
-     * Opens an input stream from a URI string.
+     * Opens a ReadableByteChannel from a URI string.
+     *
+     * <p>For file: URLs, this opens a FileChannel directly for optimal
+     * performance. For other protocols, this wraps the URL's input stream.
+     *
+     * @param uri the URI to open
+     * @return a ReadableByteChannel for the resource
+     * @throws IOException if the resource cannot be opened
      */
-    private java.io.InputStream openStream(String uri) throws IOException {
+    private ReadableByteChannel openChannel(String uri) throws IOException {
         if (uri.startsWith("file:")) {
-            // Handle file: URLs
-            String path = uri.substring(5);
-            // Remove leading slashes for file:// syntax
-            while (path.startsWith("//")) {
-                path = path.substring(1);
+            // Use FileChannel for file: URLs (most efficient)
+            try {
+                Path path = Paths.get(URI.create(uri));
+                return FileChannel.open(path, StandardOpenOption.READ);
+            } catch (Exception e) {
+                // Fall back to URL handling for unusual file: URL formats
             }
-            // Handle Windows paths
-            if (path.length() > 2 && path.charAt(0) == '/' && path.charAt(2) == ':') {
-                path = path.substring(1);
-            }
-            return new java.io.FileInputStream(path);
-        } else {
-            // Try as URL
-            java.net.URL url = new java.net.URL(uri);
-            return url.openStream();
         }
+        // For other protocols, wrap URL stream in a channel
+        URL url = new URL(uri);
+        return Channels.newChannel(url.openStream());
+    }
+
+    /**
+     * Opens an InputStream from a URI string, backed by NIO channels.
+     *
+     * <p>This method provides an InputStream interface while using FileChannel
+     * internally for file: URLs, enabling efficient I/O.
+     *
+     * @param uri the URI to open
+     * @return an InputStream for the resource
+     * @throws IOException if the resource cannot be opened
+     */
+    private InputStream openStream(String uri) throws IOException {
+        return Channels.newInputStream(openChannel(uri));
     }
 
     private XMLReader createXMLReader() throws SAXException {

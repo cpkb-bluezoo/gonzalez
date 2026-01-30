@@ -25,8 +25,15 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import org.xml.sax.EntityResolver;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
@@ -128,6 +135,93 @@ class DefaultEntityResolver implements EntityResolver {
         source.setPublicId(publicId);
 
         return source;
+    }
+
+    /**
+     * Opens a ReadableByteChannel for the specified system ID.
+     *
+     * <p>This is the NIO-native entry point for entity resolution. For file:
+     * URLs, this returns a {@link FileChannel} directly, which is the most
+     * efficient option. For other protocols (http:, https:, etc.), this wraps
+     * the URL's input stream in a channel.
+     *
+     * <p>Resolution process:
+     * <ol>
+     *   <li>If systemId is a file: URL, opens a FileChannel directly</li>
+     *   <li>Otherwise, opens a URL connection and wraps the stream</li>
+     * </ol>
+     *
+     * <p><b>Note:</b> The caller is responsible for closing the returned channel.
+     *
+     * @param systemId the system identifier (URL)
+     * @return a ReadableByteChannel for reading the entity
+     * @throws SAXException if the URL is malformed
+     * @throws IOException if an I/O error occurs opening the channel
+     */
+    public ReadableByteChannel openChannel(String systemId) throws SAXException, IOException {
+        if (systemId == null) {
+            throw new IllegalArgumentException("systemId cannot be null");
+        }
+
+        // Try to parse systemId as URL
+        URL url;
+        try {
+            url = new URL(systemId);
+        } catch (MalformedURLException e) {
+            // systemId is not absolute, resolve against base
+            URL base = getBaseURL();
+            try {
+                url = new URL(base, systemId);
+            } catch (MalformedURLException e2) {
+                throw new SAXException("Invalid system ID: " + systemId, e2);
+            }
+        }
+
+        // For file: URLs, use FileChannel directly (most efficient)
+        if ("file".equals(url.getProtocol())) {
+            try {
+                Path path = Paths.get(url.toURI());
+                return FileChannel.open(path, StandardOpenOption.READ);
+            } catch (Exception e) {
+                // Fall back to URL connection if path conversion fails
+                // (e.g., for unusual file: URL formats)
+            }
+        }
+
+        // For other protocols, wrap the URL stream in a channel
+        URLConnection connection = url.openConnection();
+        InputStream stream = connection.getInputStream();
+        return Channels.newChannel(stream);
+    }
+
+    /**
+     * Resolves the given system ID to an absolute URL string.
+     *
+     * <p>This method resolves relative system IDs against the base URL
+     * and returns the resulting absolute URL as a string.
+     *
+     * @param systemId the system identifier to resolve
+     * @return the resolved absolute URL string
+     * @throws SAXException if the URL is malformed
+     */
+    public String resolveSystemId(String systemId) throws SAXException {
+        if (systemId == null) {
+            return null;
+        }
+
+        try {
+            URL url = new URL(systemId);
+            return url.toString();
+        } catch (MalformedURLException e) {
+            // systemId is not absolute, resolve against base
+            URL base = getBaseURL();
+            try {
+                URL url = new URL(base, systemId);
+                return url.toString();
+            } catch (MalformedURLException e2) {
+                throw new SAXException("Invalid system ID: " + systemId, e2);
+            }
+        }
     }
 
     /**

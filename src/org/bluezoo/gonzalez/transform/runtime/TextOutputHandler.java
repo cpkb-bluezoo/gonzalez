@@ -28,9 +28,12 @@ import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.StandardCharsets;
 
 /**
  * Output handler for XSLT text output method.
@@ -38,6 +41,9 @@ import java.nio.charset.Charset;
  * <p>The text output method outputs only the text content of the result tree,
  * without any markup. All element tags, attributes, comments, and processing
  * instructions are ignored - only character data is written to the output.
+ *
+ * <p>This implementation uses NIO channels for efficient byte-oriented output,
+ * with internal buffering to minimize channel writes.
  *
  * <p>Per XSLT 1.0 specification section 16.3:
  * <ul>
@@ -48,39 +54,101 @@ import java.nio.charset.Charset;
  *
  * <h2>Example</h2>
  * <pre>{@code
+ * // Using with FileChannel (most efficient)
+ * try (FileChannel channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+ *     TextOutputHandler handler = new TextOutputHandler(channel, "UTF-8");
+ *     handler.startDocument();
+ *     handler.characters("Hello, World!");
+ *     handler.endDocument();
+ * }
+ * 
+ * // Using with OutputStream
  * TextOutputHandler handler = new TextOutputHandler(outputStream, "UTF-8");
- * handler.startDocument();
- * handler.startElement("", "root", "root");
- * handler.characters("Hello, World!");
- * handler.endElement("", "root", "root");
- * handler.endDocument();
- * // Output: "Hello, World!"
  * }</pre>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class TextOutputHandler implements OutputHandler, ContentHandler {
 
-    private final Writer writer;
+    private static final int BUFFER_SIZE = 4096;
+
+    private final WritableByteChannel channel;
+    private final Charset charset;
+    private final CharsetEncoder encoder;
+    private ByteBuffer buffer;
+
+    /**
+     * Creates a text output handler writing to a byte channel.
+     *
+     * <p>This is the native NIO constructor. For file: outputs, passing a
+     * {@link java.nio.channels.FileChannel} provides optimal performance.
+     *
+     * @param channel the output channel
+     * @param encoding the character encoding (e.g., "UTF-8"), or null for UTF-8
+     */
+    public TextOutputHandler(WritableByteChannel channel, String encoding) {
+        this.channel = channel;
+        this.charset = encoding != null ? Charset.forName(encoding) : StandardCharsets.UTF_8;
+        this.encoder = charset.newEncoder();
+        this.buffer = ByteBuffer.allocate(BUFFER_SIZE);
+    }
 
     /**
      * Creates a text output handler writing to an output stream.
      *
+     * <p>The output stream is wrapped in a channel internally. For file-based
+     * output, consider using the channel constructor with a FileChannel for
+     * better performance.
+     *
      * @param outputStream the output stream
-     * @param encoding the character encoding (e.g., "UTF-8")
+     * @param encoding the character encoding (e.g., "UTF-8"), or null for UTF-8
      */
     public TextOutputHandler(OutputStream outputStream, String encoding) {
-        Charset charset = Charset.forName(encoding != null ? encoding : "UTF-8");
-        this.writer = new OutputStreamWriter(outputStream, charset);
+        this(Channels.newChannel(outputStream), encoding);
     }
 
     /**
-     * Creates a text output handler writing to a writer.
-     *
-     * @param writer the writer
+     * Writes text to the buffer, flushing to channel if needed.
      */
-    public TextOutputHandler(Writer writer) {
-        this.writer = writer;
+    private void write(String text) throws SAXException {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        
+        try {
+            // Encode text to bytes
+            byte[] bytes = text.getBytes(charset);
+            
+            // Write to buffer, flushing as needed
+            int offset = 0;
+            while (offset < bytes.length) {
+                int remaining = buffer.remaining();
+                int toCopy = Math.min(remaining, bytes.length - offset);
+                
+                buffer.put(bytes, offset, toCopy);
+                offset += toCopy;
+                
+                // Flush buffer if full
+                if (!buffer.hasRemaining()) {
+                    flushBuffer();
+                }
+            }
+        } catch (IOException e) {
+            throw new SAXException("Error writing output", e);
+        }
+    }
+
+    /**
+     * Flushes the internal buffer to the channel.
+     */
+    private void flushBuffer() throws IOException {
+        if (buffer.position() > 0) {
+            buffer.flip();
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
+            buffer.clear();
+        }
     }
 
     @Override
@@ -91,9 +159,9 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
     @Override
     public void endDocument() throws SAXException {
         try {
-            writer.flush();
+            flushBuffer();
         } catch (IOException e) {
-            throw new SAXException(e);
+            throw new SAXException("Error flushing output", e);
         }
     }
 
@@ -121,17 +189,13 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
     @Override
     public void characters(String text) throws SAXException {
         // Text method: output text without escaping
-        try {
-            writer.write(text);
-        } catch (IOException e) {
-            throw new SAXException(e);
-        }
+        write(text);
     }
 
     @Override
     public void charactersRaw(String text) throws SAXException {
         // Same as characters() for text output - no escaping either way
-        characters(text);
+        write(text);
     }
 
     @Override
@@ -147,9 +211,9 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
     @Override
     public void flush() throws SAXException {
         try {
-            writer.flush();
+            flushBuffer();
         } catch (IOException e) {
-            throw new SAXException(e);
+            throw new SAXException("Error flushing output", e);
         }
     }
 
@@ -179,12 +243,12 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
 
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
-        characters(new String(ch, start, length));
+        write(new String(ch, start, length));
     }
 
     @Override
     public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
-        characters(new String(ch, start, length));
+        write(new String(ch, start, length));
     }
 
     @Override

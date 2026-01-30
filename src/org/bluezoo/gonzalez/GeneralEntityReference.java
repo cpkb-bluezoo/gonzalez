@@ -59,8 +59,12 @@ class GeneralEntityReference {
     
     @Override
     public boolean equals(Object obj) {
-        if (this == obj) return true;
-        if (!(obj instanceof GeneralEntityReference)) return false;
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof GeneralEntityReference)) {
+            return false;
+        }
         GeneralEntityReference other = (GeneralEntityReference) obj;
         return name.equals(other.name);
     }

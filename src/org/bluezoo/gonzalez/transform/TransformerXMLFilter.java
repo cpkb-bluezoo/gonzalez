@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform;
 
+import java.io.IOException;
+
 import org.xml.sax.*;
 import org.xml.sax.helpers.XMLFilterImpl;
 
@@ -56,7 +58,7 @@ public class TransformerXMLFilter extends XMLFilterImpl {
     }
 
     @Override
-    public void parse(InputSource input) throws SAXException, java.io.IOException {
+    public void parse(InputSource input) throws SAXException, IOException {
         // Set up the transformation pipeline
         XMLReader parent = getParent();
         if (parent != null) {
@@ -66,7 +68,7 @@ public class TransformerXMLFilter extends XMLFilterImpl {
     }
 
     @Override
-    public void parse(String systemId) throws SAXException, java.io.IOException {
+    public void parse(String systemId) throws SAXException, IOException {
         parse(new InputSource(systemId));
     }
 

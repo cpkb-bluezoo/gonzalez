@@ -28,6 +28,9 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * SAX ContentHandler for streaming transformation.
  *
@@ -125,7 +128,7 @@ public final class StreamingTransformHandler implements ContentHandler {
         }
         
         // Collect namespace bindings from parent
-        java.util.Map<String, String> nsBindings = new java.util.HashMap<>();
+        Map<String, String> nsBindings = new HashMap<String, String>();
         if (currentNode != null) {
             nsBindings.putAll(currentNode.getNamespaceBindings());
         }

@@ -204,7 +204,9 @@ public final class QuantifiedExpr implements Expr {
         StringBuilder sb = new StringBuilder();
         sb.append(quantifier == Quantifier.SOME ? "some " : "every ");
         for (int i = 0; i < bindings.size(); i++) {
-            if (i > 0) sb.append(", ");
+            if (i > 0) {
+                sb.append(", ");
+            }
             sb.append(bindings.get(i));
         }
         sb.append(" satisfies ").append(satisfiesExpr);

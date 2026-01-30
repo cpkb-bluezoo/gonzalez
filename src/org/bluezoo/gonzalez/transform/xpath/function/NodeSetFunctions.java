@@ -26,6 +26,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.*;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -87,11 +88,11 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** id(object) - selects elements by ID */
+    /** id(object, node?) - selects elements by ID (XSLT 2.0+ allows second argument) */
     public static final Function ID = new Function() {
         @Override public String getName() { return "id"; }
         @Override public int getMinArgs() { return 1; }
-        @Override public int getMaxArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
@@ -113,12 +114,33 @@ public final class NodeSetFunctions {
                 return XPathNodeSet.EMPTY;
             }
             
-            // Get document root
-            XPathNode contextNode = context.getContextNode();
-            if (contextNode == null) {
-                return XPathNodeSet.EMPTY;
+            // Get document root - use second argument if provided (XSLT 2.0+)
+            XPathNode root = null;
+            if (args.size() > 1 && args.get(1) != null) {
+                XPathValue docArg = args.get(1);
+                if (docArg instanceof XPathResultTreeFragment) {
+                    // RTF - convert to node set and get root
+                    XPathNodeSet rtfNodes = ((XPathResultTreeFragment) docArg).asNodeSet();
+                    if (rtfNodes != null && !rtfNodes.isEmpty()) {
+                        root = rtfNodes.first().getRoot();
+                    }
+                } else if (docArg.isNodeSet()) {
+                    XPathNodeSet docNodes = (XPathNodeSet) docArg;
+                    if (!docNodes.isEmpty()) {
+                        root = docNodes.first().getRoot();
+                    }
+                }
             }
-            XPathNode root = contextNode.getRoot();
+            
+            if (root == null) {
+                // Default to context document
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode == null) {
+                    return XPathNodeSet.EMPTY;
+                }
+                root = contextNode.getRoot();
+            }
+            
             if (root == null) {
                 return XPathNodeSet.EMPTY;
             }
@@ -177,7 +199,7 @@ public final class NodeSetFunctions {
             }
             
             // Recurse into children
-            java.util.Iterator<XPathNode> children = node.getChildren();
+            Iterator<XPathNode> children = node.getChildren();
             while (children.hasNext()) {
                 collectElementsById(children.next(), idValues, result);
             }
@@ -185,7 +207,7 @@ public final class NodeSetFunctions {
         
         private String getIdAttribute(XPathNode element) {
             // First priority: Check for DTD-declared ID attributes
-            java.util.Iterator<XPathNode> attrs = element.getAttributes();
+            Iterator<XPathNode> attrs = element.getAttributes();
             while (attrs.hasNext()) {
                 XPathNode attr = attrs.next();
                 // Check if this attribute has DTD type ID (StreamingNode specific)

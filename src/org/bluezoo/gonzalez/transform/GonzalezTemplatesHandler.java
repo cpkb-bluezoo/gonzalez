@@ -70,7 +70,11 @@ public class GonzalezTemplatesHandler implements TemplatesHandler {
     @Override
     public Templates getTemplates() {
         if (templates == null) {
-            templates = new GonzalezTemplates(getCompiler().getCompiledStylesheet());
+            try {
+                templates = new GonzalezTemplates(getCompiler().getCompiledStylesheet());
+            } catch (javax.xml.transform.TransformerConfigurationException e) {
+                throw new RuntimeException("Stylesheet validation failed: " + e.getMessage(), e);
+            }
         }
         return templates;
     }

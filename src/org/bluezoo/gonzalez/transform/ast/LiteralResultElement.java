@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.bluezoo.gonzalez.transform.compiler.AttributeSet;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
@@ -31,9 +32,11 @@ import org.xml.sax.SAXException;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * A literal result element in an XSLT stylesheet.
@@ -67,6 +70,10 @@ public final class LiteralResultElement implements XSLTNode {
     private final List<String> useAttributeSets;
     private final SequenceNode content;
     private final StreamingCapability streamingCapability;
+    
+    // Type annotation (from xsl:type attribute)
+    private final String typeNamespaceURI;
+    private final String typeLocalName;
 
     /**
      * Creates a literal result element.
@@ -82,7 +89,8 @@ public final class LiteralResultElement implements XSLTNode {
                                 Map<String, AttributeValueTemplate> attributes,
                                 Map<String, String> namespaceDeclarations,
                                 SequenceNode content) {
-        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations, null, null, content);
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations, 
+             null, null, null, null, content);
     }
 
     /**
@@ -101,7 +109,32 @@ public final class LiteralResultElement implements XSLTNode {
                                 Map<String, String> namespaceDeclarations,
                                 List<String> useAttributeSets,
                                 SequenceNode content) {
-        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations, null, useAttributeSets, content);
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations, 
+             null, useAttributeSets, null, null, content);
+    }
+
+    /**
+     * Creates a literal result element with type annotation.
+     *
+     * @param namespaceURI the namespace URI (may be null)
+     * @param localName the local name
+     * @param prefix the namespace prefix (may be null)
+     * @param attributes map of attribute name to AVT
+     * @param namespaceDeclarations explicit namespace declarations to output
+     * @param useAttributeSets list of attribute set names to apply
+     * @param typeNamespaceURI the type annotation namespace URI (may be null)
+     * @param typeLocalName the type annotation local name (may be null)
+     * @param content the element content
+     */
+    public LiteralResultElement(String namespaceURI, String localName, String prefix,
+                                Map<String, AttributeValueTemplate> attributes,
+                                Map<String, String> namespaceDeclarations,
+                                List<String> useAttributeSets,
+                                String typeNamespaceURI,
+                                String typeLocalName,
+                                SequenceNode content) {
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations, 
+             null, useAttributeSets, typeNamespaceURI, typeLocalName, content);
     }
 
     /**
@@ -122,6 +155,32 @@ public final class LiteralResultElement implements XSLTNode {
                                 Map<String, String> namespaceContext,
                                 List<String> useAttributeSets,
                                 SequenceNode content) {
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations, 
+             namespaceContext, useAttributeSets, null, null, content);
+    }
+
+    /**
+     * Creates a literal result element with all options.
+     *
+     * @param namespaceURI the namespace URI (may be null)
+     * @param localName the local name
+     * @param prefix the namespace prefix (may be null)
+     * @param attributes map of attribute name to AVT
+     * @param namespaceDeclarations explicit namespace declarations to output
+     * @param namespaceContext full namespace bindings for attribute URI lookup
+     * @param useAttributeSets list of attribute set names to apply
+     * @param typeNamespaceURI the type annotation namespace URI (may be null)
+     * @param typeLocalName the type annotation local name (may be null)
+     * @param content the element content
+     */
+    public LiteralResultElement(String namespaceURI, String localName, String prefix,
+                                Map<String, AttributeValueTemplate> attributes,
+                                Map<String, String> namespaceDeclarations,
+                                Map<String, String> namespaceContext,
+                                List<String> useAttributeSets,
+                                String typeNamespaceURI,
+                                String typeLocalName,
+                                SequenceNode content) {
         this.namespaceURI = namespaceURI != null ? namespaceURI : "";
         this.localName = localName;
         this.prefix = prefix;
@@ -138,6 +197,8 @@ public final class LiteralResultElement implements XSLTNode {
         this.useAttributeSets = useAttributeSets != null ?
             Collections.unmodifiableList(new ArrayList<>(useAttributeSets)) :
             Collections.emptyList();
+        this.typeNamespaceURI = typeNamespaceURI;
+        this.typeLocalName = typeLocalName;
         this.content = content != null ? content : SequenceNode.EMPTY;
         this.streamingCapability = computeStreamingCapability();
     }
@@ -168,13 +229,35 @@ public final class LiteralResultElement implements XSLTNode {
         // Start element
         output.startElement(outputUri, localName, qName);
 
+        // Set type annotation if present (from xsl:type)
+        if (typeLocalName != null) {
+            output.setElementType(typeNamespaceURI, typeLocalName);
+        }
+
         // Output namespace declarations (with aliases applied)
         // Track which result namespace URIs we've declared
-        java.util.Set<String> declaredResultUris = new java.util.HashSet<>();
+        Set<String> declaredResultUris = new HashSet<String>();
+        boolean declaredDefaultNs = false;
         
         for (Map.Entry<String, String> ns : namespaceDeclarations.entrySet()) {
             String nsPrefix = ns.getKey();
             String nsUri = ns.getValue();
+            
+            // For namespace undeclarations (xmlns=""), only output if the element 
+            // itself is in no namespace (needs to override parent's default namespace)
+            if (nsUri == null || nsUri.isEmpty()) {
+                // Only output default namespace undeclaration if this element is in no namespace
+                if (nsPrefix.isEmpty() && outputUri.isEmpty()) {
+                    output.namespace("", "");
+                    declaredDefaultNs = true;
+                }
+                continue;
+            }
+            
+            // Track if we're declaring a default namespace
+            if (nsPrefix.isEmpty()) {
+                declaredDefaultNs = true;
+            }
             
             // Check if this namespace should be aliased
             CompiledStylesheet.NamespaceAlias nsAlias = stylesheet.getNamespaceAlias(nsUri);
@@ -189,6 +272,12 @@ public final class LiteralResultElement implements XSLTNode {
                 // No alias - output as-is
                 output.namespace(nsPrefix, nsUri);
             }
+        }
+        
+        // For elements in no namespace, ensure we emit xmlns="" to override any 
+        // inherited default namespace. The output handler will skip redundant declarations.
+        if (outputUri.isEmpty() && !declaredDefaultNs) {
+            output.namespace("", "");
         }
         
         // Ensure the element's result namespace is declared if aliased
@@ -244,7 +333,8 @@ public final class LiteralResultElement implements XSLTNode {
             output.attribute(attrUri, attrLocalName, attrQName, value);
         }
 
-        // Execute content
+        // Execute content (reset atomic separator since we're starting fresh content)
+        StylesheetCompiler.resetAtomicSeparator();
         content.execute(context, output);
 
         // End element
@@ -311,6 +401,33 @@ public final class LiteralResultElement implements XSLTNode {
      */
     public SequenceNode getContent() {
         return content;
+    }
+
+    /**
+     * Returns the type annotation namespace URI.
+     *
+     * @return the type namespace URI, or null if not annotated
+     */
+    public String getTypeNamespaceURI() {
+        return typeNamespaceURI;
+    }
+
+    /**
+     * Returns the type annotation local name.
+     *
+     * @return the type local name, or null if not annotated
+     */
+    public String getTypeLocalName() {
+        return typeLocalName;
+    }
+
+    /**
+     * Returns true if this element has a type annotation.
+     *
+     * @return true if type annotated
+     */
+    public boolean hasTypeAnnotation() {
+        return typeLocalName != null;
     }
 
     @Override

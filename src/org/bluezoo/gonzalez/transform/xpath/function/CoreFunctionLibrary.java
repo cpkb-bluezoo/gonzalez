@@ -68,6 +68,14 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
         for (Function f : NumberFunctions.getAll()) {
             map.put(f.getName(), f);
         }
+        // XPath 2.0/3.0 date/time functions
+        for (Function f : DateTimeFunctions.getAll()) {
+            map.put(f.getName(), f);
+        }
+        // XPath 2.0/3.0 sequence functions
+        for (Function f : SequenceFunctions.getAll()) {
+            map.put(f.getName(), f);
+        }
         
         this.functions = Collections.unmodifiableMap(map);
     }

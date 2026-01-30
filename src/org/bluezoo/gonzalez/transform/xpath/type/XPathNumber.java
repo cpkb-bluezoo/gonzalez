@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import java.math.BigDecimal;
+
 /**
  * XPath number value.
  *
@@ -118,12 +120,20 @@ public final class XPathNumber implements XPathValue {
         // Standard decimal representation
         // XPath spec says to use "canonical lexical representation" which is
         // essentially what Double.toString provides, but without scientific notation
-        // for "reasonable" numbers
+        // Convert scientific notation to plain decimal format per XPath spec
         String str = Double.toString(value);
+
+        // Handle scientific notation (e.g., 4.0E-4 -> 0.0004)
+        if (str.contains("E") || str.contains("e")) {
+            // Use BigDecimal with String constructor to preserve original precision
+            // (valueOf would use Double.toString which already has scientific notation)
+            BigDecimal bd = new BigDecimal(str);
+            str = bd.toPlainString();
+        }
 
         // Remove unnecessary trailing zeros after decimal point
         // but keep at least one digit after the decimal if present
-        if (str.contains(".") && !str.contains("E")) {
+        if (str.contains(".")) {
             while (str.endsWith("0") && !str.endsWith(".0")) {
                 str = str.substring(0, str.length() - 1);
             }

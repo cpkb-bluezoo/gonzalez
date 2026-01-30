@@ -33,7 +33,7 @@ package org.bluezoo.gonzalez;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-final class QName {
+public final class QName {
 
     private String uri;
     private String localName;

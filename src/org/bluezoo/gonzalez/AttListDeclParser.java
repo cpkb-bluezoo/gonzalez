@@ -1006,7 +1006,7 @@ class AttListDeclParser {
         if (s == null) {
             return new String[0];
         }
-        java.util.List<String> result = new java.util.ArrayList<>();
+        List<String> result = new ArrayList<>();
         int len = s.length();
         int start = -1;
         for (int i = 0; i < len; i++) {

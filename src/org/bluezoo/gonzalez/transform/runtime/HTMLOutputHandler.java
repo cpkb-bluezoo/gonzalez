@@ -28,16 +28,21 @@ import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
  * Output handler for XSLT HTML output method.
  *
  * <p>The HTML output method serializes the result tree as HTML, following
- * HTML-specific rules that differ from XML serialization:
+ * HTML-specific rules that differ from XML serialization.
+ *
+ * <p>This implementation uses NIO channels for efficient byte-oriented output,
+ * with internal buffering to minimize channel writes.
  *
  * <h2>HTML-Specific Rules (XSLT 1.0 Section 16.2)</h2>
  * <ul>
@@ -53,28 +58,27 @@ import java.util.*;
  *
  * <h2>Example</h2>
  * <pre>{@code
- * HTMLOutputHandler handler = new HTMLOutputHandler(outputStream, "UTF-8");
- * handler.startDocument();
- * handler.startElement("", "html", "html");
- * handler.startElement("", "body", "body");
- * handler.startElement("", "br", "br");
- * handler.endElement("", "br", "br");  // Outputs: <br>
- * handler.startElement("", "input", "input");
- * handler.attribute("", "type", "type", "checkbox");
- * handler.attribute("", "checked", "checked", "checked");  // Outputs: checked
- * handler.endElement("", "input", "input");  // Outputs: <input type="checkbox" checked>
- * handler.endElement("", "body", "body");
- * handler.endElement("", "html", "html");
- * handler.endDocument();
+ * // Using with FileChannel (most efficient)
+ * try (FileChannel channel = FileChannel.open(path, StandardOpenOption.WRITE)) {
+ *     HTMLOutputHandler handler = new HTMLOutputHandler(channel, "UTF-8", true);
+ *     handler.startDocument();
+ *     handler.startElement("", "html", "html");
+ *     // ... build HTML document ...
+ *     handler.endDocument();
+ * }
  * }</pre>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
 
-    private final Writer writer;
+    private static final int BUFFER_SIZE = 4096;
+
+    private final WritableByteChannel channel;
+    private final Charset charset;
     private final String encoding;
     private final boolean indent;
+    private ByteBuffer buffer;
 
     // Pending element state for deferred attribute output
     private String pendingQName;
@@ -118,37 +122,75 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     ));
 
     /**
-     * Creates an HTML output handler writing to an output stream.
+     * Creates an HTML output handler writing to a byte channel.
      *
-     * @param outputStream the output stream
-     * @param encoding the character encoding (e.g., "UTF-8")
+     * <p>This is the native NIO constructor. For file: outputs, passing a
+     * {@link java.nio.channels.FileChannel} provides optimal performance.
+     *
+     * @param channel the output channel
+     * @param encoding the character encoding (e.g., "UTF-8"), or null for UTF-8
      * @param indent whether to indent output
      */
-    public HTMLOutputHandler(OutputStream outputStream, String encoding, boolean indent) {
+    public HTMLOutputHandler(WritableByteChannel channel, String encoding, boolean indent) {
+        this.channel = channel;
         this.encoding = encoding != null ? encoding : "UTF-8";
-        Charset charset = Charset.forName(this.encoding);
-        this.writer = new OutputStreamWriter(outputStream, charset);
+        this.charset = Charset.forName(this.encoding);
         this.indent = indent;
+        this.buffer = ByteBuffer.allocate(BUFFER_SIZE);
     }
 
     /**
-     * Creates an HTML output handler writing to a writer.
+     * Creates an HTML output handler writing to an output stream.
      *
-     * @param writer the writer
-     * @param encoding the character encoding for meta tag (e.g., "UTF-8")
+     * <p>The output stream is wrapped in a channel internally. For file-based
+     * output, consider using the channel constructor with a FileChannel for
+     * better performance.
+     *
+     * @param outputStream the output stream
+     * @param encoding the character encoding (e.g., "UTF-8"), or null for UTF-8
      * @param indent whether to indent output
      */
-    public HTMLOutputHandler(Writer writer, String encoding, boolean indent) {
-        this.writer = writer;
-        this.encoding = encoding != null ? encoding : "UTF-8";
-        this.indent = indent;
+    public HTMLOutputHandler(OutputStream outputStream, String encoding, boolean indent) {
+        this(Channels.newChannel(outputStream), encoding, indent);
     }
 
-    private void write(String s) throws SAXException {
+    /**
+     * Writes text to the buffer, flushing to channel if needed.
+     */
+    private void write(String text) throws SAXException {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        
         try {
-            writer.write(s);
+            byte[] bytes = text.getBytes(charset);
+            int offset = 0;
+            while (offset < bytes.length) {
+                int remaining = buffer.remaining();
+                int toCopy = Math.min(remaining, bytes.length - offset);
+                
+                buffer.put(bytes, offset, toCopy);
+                offset += toCopy;
+                
+                if (!buffer.hasRemaining()) {
+                    flushBuffer();
+                }
+            }
         } catch (IOException e) {
-            throw new SAXException(e);
+            throw new SAXException("Error writing output", e);
+        }
+    }
+
+    /**
+     * Flushes the internal buffer to the channel.
+     */
+    private void flushBuffer() throws IOException {
+        if (buffer.position() > 0) {
+            buffer.flip();
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
+            buffer.clear();
         }
     }
 
@@ -238,9 +280,9 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     public void endDocument() throws SAXException {
         flushStartTag();
         try {
-            writer.flush();
+            flushBuffer();
         } catch (IOException e) {
-            throw new SAXException(e);
+            throw new SAXException("Error flushing output", e);
         }
     }
 
@@ -321,10 +363,14 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
                 
                 // Output: ><meta charset="..."></head>
                 write(">");
-                if (indent) write("\n  ");
+                if (indent) {
+                    write("\n  ");
+                }
                 write("<meta charset=\"" + encoding + "\">");
                 metaCharsetEmitted = true;
-                if (indent) write("\n");
+                if (indent) {
+                    write("\n");
+                }
                 write("</" + qName + ">");
                 inStartTag = false;
                 if (!elementStack.isEmpty()) {
@@ -447,9 +493,9 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     public void flush() throws SAXException {
         flushStartTag();
         try {
-            writer.flush();
+            flushBuffer();
         } catch (IOException e) {
-            throw new SAXException(e);
+            throw new SAXException("Error flushing output", e);
         }
     }
 

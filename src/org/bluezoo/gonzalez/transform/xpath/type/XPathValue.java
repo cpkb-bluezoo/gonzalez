@@ -21,6 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import java.util.Collections;
+import java.util.Iterator;
+
 /**
  * Base interface for all XPath value types.
  *
@@ -165,8 +168,8 @@ public interface XPathValue {
      *
      * @return an iterator over the items in this value
      */
-    default java.util.Iterator<XPathValue> sequenceIterator() {
-        return java.util.Collections.singletonList(this).iterator();
+    default Iterator<XPathValue> sequenceIterator() {
+        return Collections.singletonList(this).iterator();
     }
 
 }

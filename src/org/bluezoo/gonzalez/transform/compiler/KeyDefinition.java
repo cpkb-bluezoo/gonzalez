@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 
 /**
@@ -33,30 +34,40 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
  */
 public final class KeyDefinition {
 
-    private final String name;
+    private final QName name;
     private final Pattern matchPattern;
     private final XPathExpression useExpr;
 
     /**
      * Creates a key definition.
      *
-     * @param name the key name
+     * @param name the key name (as a QName with resolved namespace)
      * @param matchPattern the match pattern
      * @param useExpr the use expression
      */
-    public KeyDefinition(String name, Pattern matchPattern, XPathExpression useExpr) {
+    public KeyDefinition(QName name, Pattern matchPattern, XPathExpression useExpr) {
         this.name = name;
         this.matchPattern = matchPattern;
         this.useExpr = useExpr;
     }
 
     /**
-     * Returns the key name.
+     * Returns the key name as a QName.
      *
      * @return the name
      */
-    public String getName() {
+    public QName getName() {
         return name;
+    }
+    
+    /**
+     * Returns the expanded key name in Clark notation {uri}local.
+     * This is used for lookup matching since key() calls also expand their names.
+     *
+     * @return the expanded name string
+     */
+    public String getExpandedName() {
+        return name.toString();
     }
 
     /**

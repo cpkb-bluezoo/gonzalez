@@ -556,7 +556,9 @@ class ExternalEntityDecoder {
     private void normalizeLineEndings() {
         // Buffer is in write mode: normalize from 0 to position
         int end = charBuffer.position();
-        if (end == 0) return;
+        if (end == 0) {
+            return;
+        }
         
         int writePos = 0;  // Where to write the next character
         

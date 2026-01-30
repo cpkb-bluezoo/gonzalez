@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.runtime;
 
 import org.xml.sax.*;
+import org.xml.sax.ext.LexicalHandler;
 import org.xml.sax.helpers.AttributesImpl;
 
 import java.util.ArrayList;
@@ -40,13 +41,18 @@ import java.util.List;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class SAXEventBuffer implements ContentHandler {
+public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
 
     /**
      * Base class for stored events.
      */
     private abstract static class Event {
         abstract void replay(ContentHandler handler) throws SAXException;
+        
+        // Optional method for replaying lexical events
+        void replayLexical(LexicalHandler handler) throws SAXException {
+            // Default: do nothing (most events are content events)
+        }
     }
 
     private static class StartDocument extends Event {
@@ -79,14 +85,46 @@ public final class SAXEventBuffer implements ContentHandler {
     private static class StartElement extends Event {
         final String uri, localName, qName;
         final Attributes atts;
+        final String typeNamespaceURI;  // Type annotation namespace for element
+        final String typeLocalName;     // Type annotation local name for element
+        final List<String[]> attributeTypes; // Type annotations for attributes [ns, local]
+        
         StartElement(String uri, String localName, String qName, Attributes atts) {
+            this(uri, localName, qName, atts, null, null, null);
+        }
+        
+        StartElement(String uri, String localName, String qName, Attributes atts,
+                     String typeNamespaceURI, String typeLocalName) {
+            this(uri, localName, qName, atts, typeNamespaceURI, typeLocalName, null);
+        }
+        
+        StartElement(String uri, String localName, String qName, Attributes atts,
+                     String typeNamespaceURI, String typeLocalName, 
+                     List<String[]> attributeTypes) {
             this.uri = uri;
             this.localName = localName;
             this.qName = qName;
             this.atts = new AttributesImpl(atts);
+            this.typeNamespaceURI = typeNamespaceURI;
+            this.typeLocalName = typeLocalName;
+            // Copy attribute types
+            if (attributeTypes != null && !attributeTypes.isEmpty()) {
+                this.attributeTypes = new ArrayList<>(attributeTypes);
+            } else {
+                this.attributeTypes = null;
+            }
         }
+        
         @Override void replay(ContentHandler h) throws SAXException {
             h.startElement(uri, localName, qName, atts);
+        }
+        
+        /** Returns the type annotation for an attribute by index, or null if none. */
+        String[] getAttributeType(int index) {
+            if (attributeTypes != null && index < attributeTypes.size()) {
+                return attributeTypes.get(index);
+            }
+            return null;
         }
     }
 
@@ -146,6 +184,27 @@ public final class SAXEventBuffer implements ContentHandler {
         SkippedEntity(String name) { this.name = name; }
         @Override void replay(ContentHandler h) throws SAXException {
             h.skippedEntity(name);
+        }
+    }
+
+    // Lexical event classes
+    private static class Comment extends Event {
+        final char[] ch;
+        final int start, length;
+        Comment(char[] ch, int start, int length) {
+            this.ch = new char[length];
+            System.arraycopy(ch, start, this.ch, 0, length);
+            this.start = 0;
+            this.length = length;
+        }
+        @Override void replay(ContentHandler h) throws SAXException {
+            // Comments need LexicalHandler
+            if (h instanceof LexicalHandler) {
+                ((LexicalHandler) h).comment(ch, start, length);
+            }
+        }
+        @Override void replayLexical(LexicalHandler h) throws SAXException {
+            h.comment(ch, start, length);
         }
     }
 
@@ -216,6 +275,66 @@ public final class SAXEventBuffer implements ContentHandler {
         }
     }
 
+    /**
+     * Handler interface that supports type annotations during replay.
+     */
+    public interface TypeAwareHandler extends ContentHandler {
+        /**
+         * Called to set type annotation for the current element.
+         *
+         * @param namespaceURI the type namespace URI
+         * @param localName the type local name
+         */
+        void setElementType(String namespaceURI, String localName);
+        
+        /**
+         * Called to set type annotation for an attribute.
+         *
+         * @param attrIndex the attribute index (0-based)
+         * @param namespaceURI the type namespace URI
+         * @param localName the type local name
+         */
+        default void setAttributeType(int attrIndex, String namespaceURI, String localName) {
+            // Default implementation does nothing
+        }
+    }
+
+    /**
+     * Replays events to a type-aware handler, passing type annotations.
+     *
+     * @param handler the target handler (may be TypeAwareHandler)
+     * @throws SAXException if replay fails
+     */
+    public void replayContentWithTypes(ContentHandler handler) throws SAXException {
+        TypeAwareHandler typeHandler = (handler instanceof TypeAwareHandler) 
+            ? (TypeAwareHandler) handler : null;
+        
+        for (Event event : events) {
+            if (event instanceof StartDocument || event instanceof EndDocument) {
+                continue;
+            }
+            event.replay(handler);
+            
+            // If this was a StartElement with type annotation, notify the handler
+            if (typeHandler != null && event instanceof StartElement) {
+                StartElement se = (StartElement) event;
+                // Element type annotation
+                if (se.typeLocalName != null) {
+                    typeHandler.setElementType(se.typeNamespaceURI, se.typeLocalName);
+                }
+                // Attribute type annotations
+                if (se.attributeTypes != null) {
+                    for (int i = 0; i < se.attributeTypes.size(); i++) {
+                        String[] attrType = se.attributeTypes.get(i);
+                        if (attrType != null) {
+                            typeHandler.setAttributeType(i, attrType[0], attrType[1]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ContentHandler implementation
 
     @Override
@@ -225,53 +344,96 @@ public final class SAXEventBuffer implements ContentHandler {
 
     @Override
     public void startDocument() throws SAXException {
-        if (recording) events.add(new StartDocument());
+        if (recording) {
+            events.add(new StartDocument());
+        }
     }
 
     @Override
     public void endDocument() throws SAXException {
-        if (recording) events.add(new EndDocument());
+        if (recording) {
+            events.add(new EndDocument());
+        }
     }
 
     @Override
     public void startPrefixMapping(String prefix, String uri) throws SAXException {
-        if (recording) events.add(new StartPrefixMapping(prefix, uri));
+        if (recording) {
+            events.add(new StartPrefixMapping(prefix, uri));
+        }
     }
 
     @Override
     public void endPrefixMapping(String prefix) throws SAXException {
-        if (recording) events.add(new EndPrefixMapping(prefix));
+        if (recording) {
+            events.add(new EndPrefixMapping(prefix));
+        }
     }
 
     @Override
     public void startElement(String uri, String localName, String qName, Attributes atts) 
             throws SAXException {
-        if (recording) events.add(new StartElement(uri, localName, qName, atts));
+        if (recording) {
+            events.add(new StartElement(uri, localName, qName, atts));
+        }
+    }
+
+    /**
+     * Records a startElement with type annotation.
+     */
+    public void startElementWithType(String uri, String localName, String qName, Attributes atts,
+            String typeNamespaceURI, String typeLocalName) throws SAXException {
+        if (recording) {
+            events.add(new StartElement(uri, localName, qName, atts, 
+                typeNamespaceURI, typeLocalName));
+        }
+    }
+
+    /**
+     * Records a startElement with element and attribute type annotations.
+     */
+    public void startElementWithTypes(String uri, String localName, String qName, Attributes atts,
+            String typeNamespaceURI, String typeLocalName, 
+            List<String[]> attributeTypes) throws SAXException {
+        if (recording) {
+            events.add(new StartElement(uri, localName, qName, atts, 
+                typeNamespaceURI, typeLocalName, attributeTypes));
+        }
     }
 
     @Override
     public void endElement(String uri, String localName, String qName) throws SAXException {
-        if (recording) events.add(new EndElement(uri, localName, qName));
+        if (recording) {
+            events.add(new EndElement(uri, localName, qName));
+        }
     }
 
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
-        if (recording) events.add(new Characters(ch, start, length));
+        if (recording) {
+            events.add(new Characters(ch, start, length));
+        }
     }
 
     @Override
     public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
-        if (recording) events.add(new IgnorableWhitespace(ch, start, length));
+        if (recording) {
+            events.add(new IgnorableWhitespace(ch, start, length));
+        }
     }
 
     @Override
     public void processingInstruction(String target, String data) throws SAXException {
-        if (recording) events.add(new ProcessingInstruction(target, data));
+        if (recording) {
+            events.add(new ProcessingInstruction(target, data));
+        }
     }
 
     @Override
     public void skippedEntity(String name) throws SAXException {
-        if (recording) events.add(new SkippedEntity(name));
+        if (recording) {
+            events.add(new SkippedEntity(name));
+        }
     }
 
     /**
@@ -293,6 +455,45 @@ public final class SAXEventBuffer implements ContentHandler {
     @Override
     public String toString() {
         return getTextContent();
+    }
+
+    // LexicalHandler implementation
+
+    @Override
+    public void comment(char[] ch, int start, int length) throws SAXException {
+        if (recording) {
+            events.add(new Comment(ch, start, length));
+        }
+    }
+
+    @Override
+    public void startDTD(String name, String publicId, String systemId) throws SAXException {
+        // DTD events not captured in RTF buffers
+    }
+
+    @Override
+    public void endDTD() throws SAXException {
+        // DTD events not captured in RTF buffers
+    }
+
+    @Override
+    public void startEntity(String name) throws SAXException {
+        // Entity boundary events not captured in RTF buffers
+    }
+
+    @Override
+    public void endEntity(String name) throws SAXException {
+        // Entity boundary events not captured in RTF buffers
+    }
+
+    @Override
+    public void startCDATA() throws SAXException {
+        // CDATA section markers not captured (content is captured as characters)
+    }
+
+    @Override
+    public void endCDATA() throws SAXException {
+        // CDATA section markers not captured
     }
 
 }

@@ -106,6 +106,26 @@ public final class LocationPath implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
+        // XPath 2.0+: Check for atomic context item with single self-step (".")
+        // When the context is an atomic value, "." should return that value directly
+        if (!absolute && steps.size() == 1) {
+            Step step = steps.get(0);
+            if (step.getAxis() == Step.Axis.SELF && 
+                step.getNodeTestType() == Step.NodeTestType.NODE &&
+                !step.hasPredicates()) {
+                // This is a bare "." - check for atomic context item
+                if (context instanceof org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) {
+                    org.bluezoo.gonzalez.transform.runtime.BasicTransformContext btc = 
+                        (org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) context;
+                    XPathValue contextItem = btc.getContextItem();
+                    if (contextItem != null && !(contextItem instanceof XPathNode)) {
+                        // Context is an atomic value, return it directly
+                        return contextItem;
+                    }
+                }
+            }
+        }
+        
         // Start with the initial node set
         List<XPathNode> currentNodes = new ArrayList<>();
         
@@ -133,25 +153,57 @@ public final class LocationPath implements Expr {
                                           XPathContext context) throws XPathException {
         List<XPathNode> result = new ArrayList<>();
 
+        // XPath 3.0 EXPR step (simple mapping operator)
+        if (step.getNodeTestType() == Step.NodeTestType.EXPR) {
+            Expr stepExpr = step.getStepExpr();
+            for (XPathNode node : inputNodes) {
+                XPathContext nodeContext = context.withContextNode(node);
+                XPathValue value = stepExpr.evaluate(nodeContext);
+                
+                // Collect nodes from the result
+                if (value.isNodeSet()) {
+                    for (XPathNode resultNode : value.asNodeSet()) {
+                        result.add(resultNode);
+                    }
+                }
+                // Note: Non-node results are silently ignored in path expressions
+            }
+            
+            // Apply predicates if any
+            if (!step.getPredicates().isEmpty()) {
+                result = applyPredicates(step.getPredicates(), result, context);
+            }
+            
+            result = removeDuplicates(result);
+            return result;
+        }
+
         for (XPathNode node : inputNodes) {
             // Select nodes along the axis
             Iterator<XPathNode> axisNodes = selectAxis(step.getAxis(), node);
             
-            // Apply node test
+            // Apply node test - collect candidates for THIS input node
+            List<XPathNode> stepResult = new ArrayList<>();
             while (axisNodes.hasNext()) {
                 XPathNode candidate = axisNodes.next();
                 if (matchesNodeTest(step, candidate, context)) {
-                    result.add(candidate);
+                    stepResult.add(candidate);
                 }
             }
+            
+            // Apply predicates to THIS input node's results (position is per-parent)
+            // This is the key XPath semantic: z[2] means "the 2nd z child of each node"
+            // not "the 2nd z among all z children of all nodes"
+            if (!step.getPredicates().isEmpty()) {
+                stepResult = applyPredicates(step.getPredicates(), stepResult, context);
+            }
+            
+            result.addAll(stepResult);
         }
 
-        // Remove duplicates and apply predicates
+        // Remove duplicates from the combined result (nodes can appear multiple times
+        // if the input nodes had overlapping axes)
         result = removeDuplicates(result);
-        
-        if (!step.getPredicates().isEmpty()) {
-            result = applyPredicates(step.getPredicates(), result, context);
-        }
 
         return result;
     }
@@ -241,8 +293,12 @@ public final class LocationPath implements Expr {
                 }
                 String stepNsUri = step.getNamespaceURI();
                 String nodeNsUri2 = node.getNamespaceURI();
-                if (stepNsUri == null) stepNsUri = "";
-                if (nodeNsUri2 == null) nodeNsUri2 = "";
+                if (stepNsUri == null) {
+                    stepNsUri = "";
+                }
+                if (nodeNsUri2 == null) {
+                    nodeNsUri2 = "";
+                }
                 return stepNsUri.equals(nodeNsUri2) && 
                        step.getLocalName().equals(node.getLocalName());
                 
@@ -482,7 +538,25 @@ public final class LocationPath implements Expr {
         FollowingIterator(XPathNode contextNode) {
             // Following axis: all nodes after this node in document order,
             // excluding descendants
-            collectFollowing(contextNode);
+            
+            // Special handling for attribute and namespace nodes:
+            // For these, "following" includes children of the parent element
+            // (they come after the attribute in document order)
+            if (contextNode.isAttribute() || 
+                contextNode.getNodeType() == org.bluezoo.gonzalez.transform.xpath.type.NodeType.NAMESPACE) {
+                XPathNode parent = contextNode.getParent();
+                if (parent != null) {
+                    // First add all children of parent element (they follow attributes)
+                    Iterator<XPathNode> children = parent.getChildren();
+                    while (children.hasNext()) {
+                        collectSubtree(children.next());
+                    }
+                    // Then add following siblings of parent and ancestors
+                    collectFollowing(parent);
+                }
+            } else {
+                collectFollowing(contextNode);
+            }
             index = 0;
         }
 

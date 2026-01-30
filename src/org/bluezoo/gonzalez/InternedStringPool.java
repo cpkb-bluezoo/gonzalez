@@ -255,8 +255,12 @@ class InternedStringPool {
      */
     private int nextPowerOfTwo(int n) {
         // Handle edge cases
-        if (n <= 0) return 1;
-        if ((n & (n - 1)) == 0) return n;  // Already power of 2
+        if (n <= 0) {
+            return 1;
+        }
+        if ((n & (n - 1)) == 0) {
+            return n;  // Already power of 2
+        }
         
         // Round up to next power of 2
         n--;

@@ -21,10 +21,10 @@
 
 package org.bluezoo.gonzalez.transform;
 
+import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
 import org.bluezoo.gonzalez.transform.runtime.HTMLOutputHandler;
-import org.bluezoo.gonzalez.transform.runtime.SAXOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TextOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.xml.sax.*;
@@ -37,6 +37,15 @@ import javax.xml.transform.sax.SAXSource;
 import javax.xml.transform.stream.StreamResult;
 import javax.xml.transform.stream.StreamSource;
 import java.io.*;
+import java.net.URI;
+import java.net.URL;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -61,6 +70,7 @@ public class GonzalezTransformer extends Transformer {
     private Properties outputProperties;
     private URIResolver uriResolver;
     private ErrorListener errorListener;
+    private String initialTemplate;
 
     /**
      * Creates a transformer with a stylesheet (or null for identity transform).
@@ -116,9 +126,19 @@ public class GonzalezTransformer extends Transformer {
         GonzalezTransformHandler transformHandler = 
             new GonzalezTransformHandler(stylesheet, parameters, outputHandler, errorListener);
         
+        // Set initial template if specified (XSLT 2.0+ feature)
+        if (initialTemplate != null) {
+            transformHandler.setInitialTemplate(initialTemplate);
+        }
+        
         // Parse input through the transform
         XMLReader reader = getXMLReader(source);
         reader.setContentHandler(transformHandler);
+        
+        // Set up PSVIProvider for type information (DTD/XSD types)
+        if (reader instanceof PSVIProvider) {
+            transformHandler.setPSVIProvider((PSVIProvider) reader);
+        }
         
         // Set up LexicalHandler to receive comment events
         try {
@@ -202,27 +222,47 @@ public class GonzalezTransformer extends Transformer {
     }
 
     /**
-     * Opens an input stream from a URI string.
+     * Opens a ReadableByteChannel from a URI string.
+     *
+     * <p>For file: URLs, this opens a FileChannel directly for optimal
+     * performance. For other protocols, this wraps the URL's input stream.
+     *
+     * @param uri the URI to open
+     * @return a ReadableByteChannel for the resource
+     * @throws IOException if the resource cannot be opened
+     */
+    private ReadableByteChannel openChannel(String uri) throws IOException {
+        if (uri.startsWith("file:")) {
+            // Use FileChannel for file: URLs (most efficient)
+            try {
+                Path path = Paths.get(URI.create(uri));
+                return FileChannel.open(path, StandardOpenOption.READ);
+            } catch (Exception e) {
+                // Fall back to URL handling for unusual file: URL formats
+            }
+        }
+        // For other protocols, wrap URL stream in a channel
+        URL url = new URL(uri);
+        return Channels.newChannel(url.openStream());
+    }
+
+    /**
+     * Opens an InputStream from a URI string, backed by NIO channels.
+     *
+     * <p>This method provides an InputStream interface while using FileChannel
+     * internally for file: URLs, enabling efficient I/O.
+     *
+     * @param uri the URI to open
+     * @return an InputStream for the resource
+     * @throws IOException if the resource cannot be opened
      */
     private InputStream openStream(String uri) throws IOException {
-        if (uri.startsWith("file:")) {
-            String path = uri.substring(5);
-            while (path.startsWith("//")) {
-                path = path.substring(1);
-            }
-            if (path.length() > 2 && path.charAt(0) == '/' && path.charAt(2) == ':') {
-                path = path.substring(1);
-            }
-            return new FileInputStream(path);
-        } else {
-            java.net.URL url = new java.net.URL(uri);
-            return url.openStream();
-        }
+        return Channels.newInputStream(openChannel(uri));
     }
 
     private ContentHandler getOutputHandler(Result result) throws TransformerException, IOException {
         if (result instanceof SAXResult) {
-            // SAX result: forward events directly to the ContentHandler
+            // SAX result: forward events directly to the ContentHandler (native, most efficient)
             return ((SAXResult) result).getHandler();
         }
         
@@ -232,54 +272,67 @@ public class GonzalezTransformer extends Transformer {
             String encoding = outputProperties.getProperty("encoding", "UTF-8");
             boolean indent = "yes".equals(outputProperties.getProperty("indent"));
             
-            // Get output target
-            OutputStream outputStream = null;
-            Writer writer = null;
-            
+            // Gonzalez only supports byte streams for output (not character streams)
+            // This ensures proper encoding handling and enables NIO optimizations
             if (sr.getWriter() != null) {
-                writer = sr.getWriter();
-            } else if (sr.getOutputStream() != null) {
+                throw new TransformerException(
+                    "StreamResult with Writer not supported - use OutputStream or SystemId");
+            }
+            
+            // Determine output channel/stream
+            // Priority: FileChannel (most efficient) > OutputStream > FileOutputStream from systemId
+            WritableByteChannel channel = null;
+            OutputStream outputStream = null;
+            
+            if (sr.getOutputStream() != null) {
+                // OutputStream provided - wrap in channel
                 outputStream = sr.getOutputStream();
+                channel = Channels.newChannel(outputStream);
             } else if (sr.getSystemId() != null) {
                 String systemId = sr.getSystemId();
-                File file = new File(systemId.startsWith("file:") ? 
-                    systemId.substring(5) : systemId);
-                outputStream = new FileOutputStream(file);
+                
+                // For file: URLs, use FileChannel directly (most efficient)
+                if (systemId.startsWith("file:")) {
+                    try {
+                        Path path = Paths.get(URI.create(systemId));
+                        channel = FileChannel.open(path,
+                            StandardOpenOption.WRITE,
+                            StandardOpenOption.CREATE,
+                            StandardOpenOption.TRUNCATE_EXISTING);
+                    } catch (Exception e) {
+                        // Fall back to FileOutputStream for unusual file: URL formats
+                        File file = new File(systemId.substring(5));
+                        outputStream = new FileOutputStream(file);
+                        channel = Channels.newChannel(outputStream);
+                    }
+                } else {
+                    // Non-file URL - use FileOutputStream
+                    File file = new File(systemId);
+                    outputStream = new FileOutputStream(file);
+                    channel = Channels.newChannel(outputStream);
+                }
             } else {
                 throw new TransformerException("StreamResult has no output target");
             }
             
             // Select handler based on output method
+            // All handlers now use WritableByteChannel for NIO-native output
             switch (method) {
                 case "text":
                     // Text output: only text content, no markup
-                    if (writer != null) {
-                        return new TextOutputHandler(writer);
-                    } else {
-                        return new TextOutputHandler(outputStream, encoding);
-                    }
+                    return new TextOutputHandler(channel, encoding);
                     
                 case "html":
                     // HTML output: HTML-specific serialization rules
-                    if (writer != null) {
-                        return new HTMLOutputHandler(writer, encoding, indent);
-                    } else {
-                        return new HTMLOutputHandler(outputStream, encoding, indent);
-                    }
+                    return new HTMLOutputHandler(channel, encoding, indent);
                     
                 case "xml":
                 case "xhtml":
                 default:
-                    // XML/XHTML output: use XMLWriter for streams, SAXOutputHandler for writers
-                    if (outputStream != null) {
-                        // Use XMLWriter for optimal XML serialization
-                        OutputProperties props = stylesheet != null ? 
-                            stylesheet.getOutputProperties() : new OutputProperties();
-                        return new XMLWriterOutputHandler(outputStream, props);
-                    } else {
-                        // Writer provided - use SAXOutputHandler
-                        return new SAXOutputHandler(writer, outputProperties);
-                    }
+                    // XML/XHTML output: use XMLWriter for optimal serialization
+                    OutputProperties props = stylesheet != null ? 
+                        stylesheet.getOutputProperties() : new OutputProperties();
+                    return new XMLWriterOutputHandler(channel, props);
             }
         }
         
@@ -342,6 +395,26 @@ public class GonzalezTransformer extends Transformer {
     @Override
     public ErrorListener getErrorListener() {
         return errorListener;
+    }
+
+    /**
+     * Sets the initial template name for XSLT 2.0+ initial-template support.
+     * If set, the transformation will start by calling this named template
+     * instead of applying templates to the document root.
+     *
+     * @param name the name of the initial template to call
+     */
+    public void setInitialTemplate(String name) {
+        this.initialTemplate = name;
+    }
+
+    /**
+     * Returns the initial template name.
+     *
+     * @return the initial template name, or null
+     */
+    public String getInitialTemplate() {
+        return initialTemplate;
     }
 
 }

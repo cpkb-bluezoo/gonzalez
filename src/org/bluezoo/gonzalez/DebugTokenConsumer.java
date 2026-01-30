@@ -63,12 +63,19 @@ class DebugTokenConsumer implements TokenConsumer {
             StringBuilder sb = new StringBuilder();
             for (int i = pos; i < lim && i < pos + 50; i++) {
                 char c = data.get(i);
-                if (c == '\n') sb.append("\\n");
-                else if (c == '\r') sb.append("\\r");
-                else if (c == '\t') sb.append("\\t");
-                else sb.append(c);
+                if (c == '\n') {
+                    sb.append("\\n");
+                } else if (c == '\r') {
+                    sb.append("\\r");
+                } else if (c == '\t') {
+                    sb.append("\\t");
+                } else {
+                    sb.append(c);
+                }
             }
-            if (lim - pos > 50) sb.append("...");
+            if (lim - pos > 50) {
+                sb.append("...");
+            }
             
             System.out.println(prefix + " " + token + " [" + sb + "]");
         } else {

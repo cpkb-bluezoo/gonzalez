@@ -21,10 +21,14 @@
 
 package org.bluezoo.gonzalez.transform;
 
+import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.GlobalVariable;
+import org.bluezoo.gonzalez.transform.compiler.TemplateParameter;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
+import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.runtime.*;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
@@ -32,6 +36,8 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.*;
+import org.xml.sax.ext.LexicalHandler;
+import org.xml.sax.helpers.AttributesImpl;
 import org.xml.sax.helpers.DefaultHandler;
 
 import java.util.*;
@@ -55,13 +61,19 @@ import java.util.*;
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public class GonzalezTransformHandler extends DefaultHandler 
-        implements org.xml.sax.ext.LexicalHandler {
+        implements LexicalHandler {
 
     private final CompiledStylesheet stylesheet;
     private final Map<String, Object> parameters;
     private final ContentHandler outputHandler;
     private final TemplateMatcher matcher;
     private final javax.xml.transform.ErrorListener errorListener;
+    
+    // Initial template (XSLT 2.0+ feature)
+    private String initialTemplate;
+    
+    // PSVIProvider for type information (DTD/XSD types)
+    private PSVIProvider psviProvider;
 
     // Document building state
     private StreamingNode root;
@@ -100,6 +112,34 @@ public class GonzalezTransformHandler extends DefaultHandler
         this.outputHandler = outputHandler;
         this.matcher = new TemplateMatcher(stylesheet);
         this.errorListener = errorListener;
+    }
+
+    /**
+     * Sets the initial template name for XSLT 2.0+ initial-template support.
+     * If set, the transformation will start by calling this named template
+     * instead of applying templates to the document root.
+     *
+     * @param name the name of the initial template to call
+     */
+    public void setInitialTemplate(String name) {
+        this.initialTemplate = name;
+    }
+    
+    /**
+     * Sets the PSVIProvider for accessing schema type information.
+     *
+     * <p>When set, the transformer will use the PSVIProvider to retrieve
+     * DTD or XSD type information for elements and attributes during
+     * document building. This enables features like the {@code id()} function
+     * to properly identify ID-typed attributes.
+     *
+     * <p>Typically, this is set to the XMLReader (if it implements PSVIProvider)
+     * before parsing begins.
+     *
+     * @param provider the PSVIProvider, or null to use SAX Attributes directly
+     */
+    public void setPSVIProvider(PSVIProvider provider) {
+        this.psviProvider = provider;
     }
 
     @Override
@@ -155,9 +195,9 @@ public class GonzalezTransformHandler extends DefaultHandler
         nsBindings.putAll(pendingNamespaces);
         pendingNamespaces.clear();
         
-        // Create element node
+        // Create element node - pass PSVIProvider for type information if available
         StreamingNode element = StreamingNode.createElement(
-            uri, localName, prefix, atts, nsBindings, currentNode, documentOrderCounter);
+            uri, localName, prefix, atts, nsBindings, currentNode, documentOrderCounter, psviProvider);
         documentOrderCounter += atts.getLength() + 1;
         
         currentNode = element;
@@ -271,27 +311,32 @@ public class GonzalezTransformHandler extends DefaultHandler
     
     /**
      * Checks if an element matches a strip-space/preserve-space pattern.
-     * Patterns can be: *, {uri}*, {uri}localname, localname
+     * Patterns can be: *, {uri}*, {uri}localname, {*}localname, localname
      * 
      * The patterns use Clark notation {uri}localname for namespace-qualified names.
+     * Special pattern {*}localname matches elements with that local name in any namespace.
      */
     private boolean matchesElementPattern(String pattern, String localName, String namespaceURI) {
         if ("*".equals(pattern)) {
             return true;
         }
         
-        // Check for Clark notation: {uri}localname
+        // Check for Clark notation: {uri}localname or {*}localname
         if (pattern.startsWith("{")) {
             int closeBrace = pattern.indexOf('}');
             if (closeBrace > 1) {
                 String patternUri = pattern.substring(1, closeBrace);
                 String patternLocal = pattern.substring(closeBrace + 1);
                 
-                // Check namespace match
-                if (namespaceURI == null || namespaceURI.isEmpty()) {
-                    return false; // Pattern has namespace, element doesn't
+                // {*}localname - any namespace with specific local name (XSLT 2.0 *:localname)
+                if ("*".equals(patternUri)) {
+                    return patternLocal.equals(localName);
                 }
-                if (!patternUri.equals(namespaceURI)) {
+                
+                // Check namespace match
+                // Empty patternUri means "no namespace" (from Q{}local)
+                String effectiveNodeUri = namespaceURI == null ? "" : namespaceURI;
+                if (!patternUri.equals(effectiveNodeUri)) {
                     return false; // Namespaces don't match
                 }
                 
@@ -353,8 +398,23 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Start output document
         output.startDocument();
         
-        // Apply templates to the root node
-        applyTemplates(root, null, context, output);
+        // Check for initial template (XSLT 2.0+ feature)
+        if (initialTemplate != null) {
+            // Call the named template directly
+            TemplateRule template = stylesheet.getNamedTemplate(initialTemplate);
+            if (template == null) {
+                throw new SAXException("XTDE0040: Initial template '" + initialTemplate + "' not found");
+            }
+            // Execute the named template with document root as context node
+            TransformContext templateContext = context.pushVariableScope();
+            XSLTNode body = template.getBody();
+            if (body != null) {
+                body.execute(templateContext, output);
+            }
+        } else {
+            // Apply templates to the root node (standard behavior)
+            applyTemplates(root, null, context, output);
+        }
         
         // End output document
         output.endDocument();
@@ -372,30 +432,111 @@ public class GonzalezTransformHandler extends DefaultHandler
             context.setVariable(entry.getKey(), value);
         }
         
-        // Evaluate global variables
-        for (GlobalVariable var : stylesheet.getGlobalVariables()) {
-            try {
-                XPathValue value;
-                if (var.getSelectExpr() != null) {
-                    value = var.getSelectExpr().evaluate(context);
-                } else if (var.getContent() != null) {
-                    // Execute content and capture as result tree fragment
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    OutputHandler bufferOutput = wrapOutputHandler(buffer);
-                    var.getContent().execute(context, bufferOutput);
-                    // Store as RTF so xsl:copy-of can access the tree structure
-                    value = new XPathResultTreeFragment(buffer);
-                } else {
-                    value = XPathString.of("");
+        // Evaluate global variables with forward reference support
+        // Use multi-pass: keep evaluating until all done or no progress (circular reference)
+        List<GlobalVariable> allVars = stylesheet.getGlobalVariables();
+        Set<String> evaluated = new HashSet<String>();
+        Set<String> beingEvaluated = new HashSet<String>();
+        
+        // Mark parameters that were already set from external parameters
+        for (GlobalVariable var : allVars) {
+            String key = makeVarKey(var);
+            if (var.isParam() && context.getVariable(var.getNamespaceURI(), var.getLocalName()) != null) {
+                evaluated.add(key);
+            }
+        }
+        
+        // Multi-pass evaluation with circular reference detection
+        boolean progress = true;
+        while (progress) {
+            progress = false;
+            for (GlobalVariable var : allVars) {
+                String key = makeVarKey(var);
+                if (evaluated.contains(key)) {
+                    continue;
                 }
                 
-                // Don't override parameters
-                if (!var.isParam() || context.getVariable(null, var.getName()) == null) {
-                    context.setVariable(var.getName(), value);
+                // Try to evaluate this variable
+                try {
+                    beingEvaluated.add(key);
+                    XPathValue value = evaluateGlobalVariable(var, context, beingEvaluated, evaluated);
+                    beingEvaluated.remove(key);
+                    
+                    if (value != null) {
+                        context.setVariable(var.getNamespaceURI(), var.getLocalName(), value);
+                        evaluated.add(key);
+                        progress = true;
+                    }
+                } catch (CircularReferenceException e) {
+                    throw new SAXException("XTDE0640: Circular reference in variable: " + var.getName());
+                } catch (Exception e) {
+                    // Variable references an unevaluated variable - try again later
+                    beingEvaluated.remove(key);
                 }
-            } catch (Exception e) {
-                throw new SAXException("Error evaluating global variable: " + var.getName(), e);
             }
+        }
+        
+        // Check if any variables remain unevaluated
+        for (GlobalVariable var : allVars) {
+            String key = makeVarKey(var);
+            if (!evaluated.contains(key)) {
+                throw new SAXException("XTDE0640: Circular reference detected involving variable: " + var.getName());
+            }
+        }
+    }
+    
+    private String makeVarKey(GlobalVariable var) {
+        if (var.getNamespaceURI() != null && !var.getNamespaceURI().isEmpty()) {
+            return "{" + var.getNamespaceURI() + "}" + var.getLocalName();
+        }
+        return var.getLocalName();
+    }
+    
+    private XPathValue evaluateGlobalVariable(GlobalVariable var, BasicTransformContext context,
+            Set<String> beingEvaluated, Set<String> evaluated) throws Exception {
+        try {
+            // Check for static variable with pre-computed value (XSLT 3.0)
+            if (var.isStatic()) {
+                return var.getStaticValue();
+            }
+            if (var.getSelectExpr() != null) {
+                return var.getSelectExpr().evaluate(context);
+            } else if (var.getContent() != null) {
+                // Execute content and capture as result tree fragment
+                SAXEventBuffer buffer = new SAXEventBuffer();
+                BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
+                var.getContent().execute(context, bufferOutput);
+                return new XPathResultTreeFragment(buffer);
+            } else {
+                return XPathString.of("");
+            }
+        } catch (XPathVariableException e) {
+            // Variable not yet available - check if it's being evaluated (circular)
+            String refName = e.getVariableName();
+            if (beingEvaluated.contains(refName)) {
+                throw new CircularReferenceException(refName);
+            }
+            throw e;
+        } catch (Exception e) {
+            // Check if the root cause is a variable exception (may be wrapped)
+            Throwable cause = e;
+            while (cause != null) {
+                if (cause instanceof XPathVariableException) {
+                    String refName = ((XPathVariableException) cause).getVariableName();
+                    if (beingEvaluated.contains(refName)) {
+                        throw new CircularReferenceException(refName);
+                    }
+                    throw e;
+                }
+                cause = cause.getCause();
+            }
+            throw e;
+        }
+    }
+    
+    private static class CircularReferenceException extends Exception {
+        CircularReferenceException(String varName) {
+            super("Circular reference: " + varName);
         }
     }
 
@@ -405,7 +546,8 @@ public class GonzalezTransformHandler extends DefaultHandler
     private void applyTemplates(XPathNode node, String mode, 
             BasicTransformContext context, OutputHandler output) throws SAXException {
         
-        TransformContext nodeContext = context.withContextNode(node);
+        // Use withXsltCurrentNode to set both context node and XSLT current() node
+        TransformContext nodeContext = context.withXsltCurrentNode(node);
         if (mode != null) {
             nodeContext = ((BasicTransformContext) nodeContext).withMode(mode);
         }
@@ -429,8 +571,30 @@ public class GonzalezTransformHandler extends DefaultHandler
             return;
         }
         
-        // Push variable scope for template
-        TransformContext templateContext = context.pushVariableScope();
+        // Push variable scope for template and set current template rule (needed for apply-imports)
+        TransformContext templateContext = context.pushVariableScope()
+            .withCurrentTemplateRule(rule);
+        
+        // Bind template parameter defaults
+        for (TemplateParameter templateParam : rule.getParameters()) {
+            XPathValue defaultValue = null;
+            if (templateParam.getSelectExpr() != null) {
+                try {
+                    defaultValue = templateParam.getSelectExpr().evaluate(templateContext);
+                } catch (XPathException e) {
+                    throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
+                }
+            } else if (templateParam.getDefaultContent() != null) {
+                // Execute content to get RTF as default value
+                SAXEventBuffer buffer = new SAXEventBuffer();
+                BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
+                templateParam.getDefaultContent().execute(templateContext, bufferOutput);
+                defaultValue = new XPathResultTreeFragment(buffer);
+            } else {
+                defaultValue = XPathString.of("");
+            }
+            templateContext.getVariableScope().bind(templateParam.getName(), defaultValue);
+        }
         
         // Execute template body
         XSLTNode body = rule.getBody();
@@ -530,8 +694,9 @@ public class GonzalezTransformHandler extends DefaultHandler
         private String pendingUri;
         private String pendingLocalName;
         private String pendingQName;
-        private final org.xml.sax.helpers.AttributesImpl pendingAttrs = 
-            new org.xml.sax.helpers.AttributesImpl();
+        private final AttributesImpl pendingAttrs = new AttributesImpl();
+        // Pending namespace declarations for the current element
+        private final List<String[]> pendingNamespaces = new ArrayList<String[]>();
         
         ContentHandlerOutputAdapter(ContentHandler handler) {
             this.handler = handler;
@@ -557,6 +722,7 @@ public class GonzalezTransformHandler extends DefaultHandler
             pendingLocalName = localName;
             pendingQName = qName != null ? qName : localName;
             pendingAttrs.clear();
+            pendingNamespaces.clear();
         }
         
         @Override
@@ -581,8 +747,16 @@ public class GonzalezTransformHandler extends DefaultHandler
         
         @Override
         public void namespace(String prefix, String uri) throws SAXException {
-            flush();
-            handler.startPrefixMapping(prefix != null ? prefix : "", uri);
+            // If we're inside a deferred start tag, queue the namespace declaration
+            // Otherwise emit it immediately
+            if (inStartTag) {
+                pendingNamespaces.add(new String[] { 
+                    prefix != null ? prefix : "", 
+                    uri != null ? uri : "" 
+                });
+            } else {
+                handler.startPrefixMapping(prefix != null ? prefix : "", uri != null ? uri : "");
+            }
         }
         
         @Override
@@ -602,9 +776,9 @@ public class GonzalezTransformHandler extends DefaultHandler
         public void comment(String text) throws SAXException {
             flush();
             // ContentHandler doesn't have comment() - would need LexicalHandler
-            if (handler instanceof org.xml.sax.ext.LexicalHandler) {
+            if (handler instanceof LexicalHandler) {
                 char[] ch = text.toCharArray();
-                ((org.xml.sax.ext.LexicalHandler) handler).comment(ch, 0, ch.length);
+                ((LexicalHandler) handler).comment(ch, 0, ch.length);
             }
         }
         
@@ -617,9 +791,14 @@ public class GonzalezTransformHandler extends DefaultHandler
         @Override
         public void flush() throws SAXException {
             if (inStartTag) {
+                // Emit namespace declarations first (SAX requires startPrefixMapping before startElement)
+                for (String[] ns : pendingNamespaces) {
+                    handler.startPrefixMapping(ns[0], ns[1]);
+                }
                 handler.startElement(pendingUri, pendingLocalName, pendingQName, pendingAttrs);
                 inStartTag = false;
                 pendingAttrs.clear();
+                pendingNamespaces.clear();
             }
         }
     }

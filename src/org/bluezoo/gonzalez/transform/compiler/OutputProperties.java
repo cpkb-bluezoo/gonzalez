@@ -147,16 +147,28 @@ public final class OutputProperties {
      * @param other the properties to merge
      */
     public void merge(OutputProperties other) {
-        if (other.method != null) this.method = other.method;
-        if (other.version != null) this.version = other.version;
-        if (other.encoding != null) this.encoding = other.encoding;
+        if (other.method != null) {
+            this.method = other.method;
+        }
+        if (other.version != null) {
+            this.version = other.version;
+        }
+        if (other.encoding != null) {
+            this.encoding = other.encoding;
+        }
         this.omitXmlDeclaration = other.omitXmlDeclaration;
         this.standalone = other.standalone;
-        if (other.doctypePublic != null) this.doctypePublic = other.doctypePublic;
-        if (other.doctypeSystem != null) this.doctypeSystem = other.doctypeSystem;
+        if (other.doctypePublic != null) {
+            this.doctypePublic = other.doctypePublic;
+        }
+        if (other.doctypeSystem != null) {
+            this.doctypeSystem = other.doctypeSystem;
+        }
         this.cdataSectionElements.addAll(other.cdataSectionElements);
         this.indent = other.indent;
-        if (other.mediaType != null) this.mediaType = other.mediaType;
+        if (other.mediaType != null) {
+            this.mediaType = other.mediaType;
+        }
     }
 
 }

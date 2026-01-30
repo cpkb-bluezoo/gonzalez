@@ -174,6 +174,12 @@ public final class XPathLexer {
                 currentValue = ",";
                 return currentToken;
 
+            case '?':
+                position++;
+                currentToken = XPathToken.QUESTION;
+                currentValue = "?";
+                return currentToken;
+
             case '@':
                 position++;
                 currentToken = XPathToken.AT;
@@ -383,6 +389,27 @@ public final class XPathLexer {
     }
 
     /**
+     * Expects the current token to be a keyword, accepting either the keyword token
+     * or an NCNAME with the keyword's name (for cases where the keyword follows
+     * a literal and wasn't recognized as a keyword by the lexer).
+     *
+     * @param expected the expected keyword token
+     * @param keywordName the keyword name as a string (e.g., "else", "then")
+     * @throws XPathSyntaxException if the current token doesn't match
+     */
+    public void expectKeyword(XPathToken expected, String keywordName) throws XPathSyntaxException {
+        if (currentToken == expected) {
+            advance();
+        } else if (currentToken == XPathToken.NCNAME && keywordName.equals(currentValue)) {
+            advance();
+        } else {
+            throw new XPathSyntaxException(
+                "Expected " + expected + " but found " + currentToken + 
+                " at position " + tokenStart);
+        }
+    }
+
+    /**
      * Checks if the current token matches and advances if so.
      *
      * @param token the token to match
@@ -544,15 +571,22 @@ public final class XPathLexer {
     /**
      * Determines if the current context expects an expression keyword.
      * Keywords like 'if', 'for', 'let', 'some', 'every' start new expressions.
+     * Keywords like 'then', 'else' follow conditions/expressions.
      */
     private boolean isKeywordContext() {
-        // Keywords are expected where a new expression can begin
+        // Keywords are expected where a new expression can begin,
+        // or after a condition (RPAREN for 'then'/'else' after 'if')
+        // or after type keywords (INSTANCE, CAST, CASTABLE, TREAT for 'of'/'as')
         if (previousToken == null) {
             return true;
         }
         switch (previousToken) {
             case LPAREN:
             case LBRACKET:
+            case RPAREN:    // For 'then' after 'if (condition)'
+            case RBRACKET:  // For 'else' after predicate like 'then foo[1]'
+            case DOT:       // For 'else' after 'then .'
+            case DOUBLE_DOT:// For 'else' after 'then ..'
             case COMMA:
             case PLUS:
             case MINUS:
@@ -577,6 +611,15 @@ public final class XPathLexer {
             case BANG:
             case CONCAT:
             case ARROW:
+            // Type expression keywords - 'of' follows 'instance', 'as' follows 'cast'/'castable'/'treat'
+            case INSTANCE:
+            case CAST:
+            case CASTABLE:
+            case TREAT:
+            case OF:        // For sequence type after 'instance of'
+            case AS:        // For sequence type after 'cast as', etc.
+            case NCNAME:    // For 'in' after variable name in for/some/every $var in ...
+            case DOLLAR:    // For keywords that can appear after $
                 return true;
             default:
                 return false;
@@ -608,6 +651,14 @@ public final class XPathLexer {
             case "text": return XPathToken.NODE_TYPE_TEXT;
             case "processing-instruction": return XPathToken.NODE_TYPE_PI;
             case "node": return XPathToken.NODE_TYPE_NODE;
+            // XPath 2.0/3.0 sequence type keywords (only valid when followed by '(')
+            case "empty-sequence": return XPathToken.EMPTY_SEQUENCE;
+            case "item": return XPathToken.ITEM;
+            case "element": return XPathToken.ELEMENT;
+            case "attribute": return XPathToken.ATTRIBUTE;
+            case "schema-element": return XPathToken.SCHEMA_ELEMENT;
+            case "schema-attribute": return XPathToken.SCHEMA_ATTRIBUTE;
+            case "document-node": return XPathToken.DOCUMENT_NODE;
             default: return null;
         }
     }
@@ -628,8 +679,14 @@ public final class XPathLexer {
             // XPath 2.0 node comparison
             case "is": return XPathToken.IS;
             // XPath 2.0 set operators
+            case "union": return XPathToken.UNION;
             case "intersect": return XPathToken.INTERSECT;
             case "except": return XPathToken.EXCEPT;
+            // XPath 2.0 type expression keywords (appear after expressions)
+            case "instance": return XPathToken.INSTANCE;
+            case "cast": return XPathToken.CAST;
+            case "castable": return XPathToken.CASTABLE;
+            case "treat": return XPathToken.TREAT;
             default: return null;
         }
     }
@@ -637,6 +694,8 @@ public final class XPathLexer {
     /**
      * Returns the keyword token for XPath 2.0/3.0 expression keywords.
      * These are not operators but structural keywords.
+     * Note: Sequence type keywords (item, element, attribute, etc.) are handled
+     * in getNodeTypeToken() since they're only valid when followed by '('.
      */
     private XPathToken getKeywordToken(String name) {
         switch (name) {
@@ -650,6 +709,9 @@ public final class XPathLexer {
             case "some": return XPathToken.SOME;
             case "every": return XPathToken.EVERY;
             case "satisfies": return XPathToken.SATISFIES;
+            // XPath 2.0 type expression keywords
+            case "of": return XPathToken.OF;
+            case "as": return XPathToken.AS;
             default: return null;
         }
     }
@@ -677,6 +739,8 @@ public final class XPathLexer {
             case NODE_TYPE_TEXT:
             case NODE_TYPE_PI:
             case NODE_TYPE_NODE:
+            case DOT:         // '.' represents an expression (context node)
+            case DOUBLE_DOT:  // '..' represents an expression (parent node)
                 return true;
             default:
                 return false;

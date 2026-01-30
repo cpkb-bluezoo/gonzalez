@@ -214,6 +214,56 @@ class SAXAttributes implements Attributes2 {
     }
 
     /**
+     * Resolves namespace prefixes for all attributes that have pending namespace resolution.
+     * This is called after all xmlns declarations on an element have been processed,
+     * to handle cases where xmlns:prefix appears after prefix:attr in the same element.
+     *
+     * @param tracker the namespace scope tracker with current bindings
+     * @throws NamespaceException if an attribute has an unbound prefix
+     */
+    public void resolveAttributeNamespaces(NamespaceScopeTracker tracker) throws NamespaceException {
+        for (int i = 0; i < attributeCount; i++) {
+            Attribute attr = attributes.get(i);
+            QName qname = attr.qname;
+            String qnameStr = qname.getQName();
+            
+            // Check if this attribute has a prefix that needs resolution
+            // Attributes with empty URI and a prefix in the qName need resolution
+            int colonPos = qnameStr.indexOf(':');
+            if (colonPos > 0 && qname.getURI().isEmpty()) {
+                // Skip xmlns: declarations - they're already resolved
+                if (qnameStr.startsWith("xmlns:")) {
+                    continue;
+                }
+                
+                // Resolve the prefix
+                String prefix = qnameStr.substring(0, colonPos);
+                String localName = qnameStr.substring(colonPos + 1);
+                String uri = tracker.getURI(prefix);
+                
+                if (uri == null) {
+                    throw new NamespaceException("Unbound namespace prefix: " + prefix);
+                }
+                
+                // Update the QName with resolved namespace
+                // First remove from qnameMap with old key
+                qnameMap.remove(qname);
+                
+                // Update the QName
+                qname.update(uri, localName, qnameStr);
+                
+                // Re-add to qnameMap with updated key
+                // Check for duplicates by expanded name
+                if (qnameMap.containsKey(qname)) {
+                    throw new NamespaceException("Duplicate attribute by expanded name: {" + 
+                            uri + "}" + localName + " (qName: " + qnameStr + ")");
+                }
+                qnameMap.put(qname, attr);
+            }
+        }
+    }
+
+    /**
      * Sets the context for DTD lookups.
      *
      * @param elementName the element name these attributes belong to

@@ -14,10 +14,12 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 
 /**
@@ -62,9 +64,9 @@ public final class SequenceExpr implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
-        // Empty sequence returns empty node-set
+        // Empty sequence returns empty sequence
         if (items.isEmpty()) {
-            return XPathNodeSet.EMPTY;
+            return XPathSequence.EMPTY;
         }
         
         // Single item - just evaluate it
@@ -72,17 +74,28 @@ public final class SequenceExpr implements Expr {
             return items.get(0).evaluate(context);
         }
         
-        // Multiple items - evaluate each and collect
-        // For XPath 1.0 compatibility, we return the first non-null value
-        // A proper XPath 2.0 implementation would return a sequence type
+        // Multiple items - evaluate each and collect into a sequence
+        List<XPathValue> results = new ArrayList<>();
         for (Expr item : items) {
             XPathValue value = item.evaluate(context);
             if (value != null) {
-                return value;
+                // Flatten nested sequences
+                if (value.isSequence()) {
+                    Iterator<XPathValue> iter = value.sequenceIterator();
+                    while (iter.hasNext()) {
+                        results.add(iter.next());
+                    }
+                } else {
+                    results.add(value);
+                }
             }
         }
         
-        return XPathNodeSet.EMPTY;
+        if (results.isEmpty()) {
+            return XPathSequence.EMPTY;
+        }
+        
+        return XPathSequence.fromList(results);
     }
 
     @Override

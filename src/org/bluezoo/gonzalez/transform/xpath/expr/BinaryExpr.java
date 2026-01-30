@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
@@ -165,6 +166,12 @@ public final class BinaryExpr implements Expr {
             rightVal = XPathString.EMPTY;
         }
 
+        // XPath 2.0: General comparison uses existential semantics
+        // If either operand is a sequence, iterate and check if any pair matches
+        if (leftVal.isSequence() || rightVal.isSequence()) {
+            return evaluateSequenceComparison(leftVal, rightVal);
+        }
+
         // XPath 1.0 Section 3.4: Comparisons involving node-sets
         if (leftVal.isNodeSet() || rightVal.isNodeSet()) {
             return evaluateNodeSetComparison(leftVal, rightVal);
@@ -172,6 +179,72 @@ public final class BinaryExpr implements Expr {
 
         // Both operands are non-node-sets
         return evaluateValueComparison(leftVal, rightVal);
+    }
+
+    /**
+     * Evaluates XPath 2.0 general comparison with sequence semantics.
+     * Returns true if any pair of items (one from each operand) satisfies the comparison.
+     */
+    private XPathValue evaluateSequenceComparison(XPathValue leftVal, XPathValue rightVal) 
+            throws XPathException {
+        // Get iterators for both sides (atomize node-sets)
+        Iterator<XPathValue> leftIter = leftVal.sequenceIterator();
+        
+        while (leftIter.hasNext()) {
+            XPathValue leftItem = leftIter.next();
+            String leftStr = atomize(leftItem);
+            
+            // Need to re-iterate right side for each left item
+            Iterator<XPathValue> rightIter = rightVal.sequenceIterator();
+            while (rightIter.hasNext()) {
+                XPathValue rightItem = rightIter.next();
+                String rightStr = atomize(rightItem);
+                
+                // Try numeric comparison if both are numeric
+                Double leftNum = tryParseNumber(leftStr);
+                Double rightNum = tryParseNumber(rightStr);
+                
+                boolean match;
+                if (leftNum != null && rightNum != null) {
+                    match = compareNumbers(leftNum, rightNum);
+                } else {
+                    match = compareValues(leftStr, rightStr);
+                }
+                
+                if (match) {
+                    return XPathBoolean.TRUE;
+                }
+            }
+        }
+        return XPathBoolean.FALSE;
+    }
+
+    /**
+     * Atomizes a value - extracts string value from nodes.
+     */
+    private String atomize(XPathValue value) {
+        if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            if (ns.size() > 0) {
+                return ns.iterator().next().getStringValue();
+            }
+            return "";
+        }
+        return value.asString();
+    }
+
+    /**
+     * Tries to parse a string as a number, returns null if not a valid number.
+     */
+    private Double tryParseNumber(String s) {
+        if (s == null || s.isEmpty()) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private XPathValue evaluateNodeSetComparison(XPathValue leftVal, XPathValue rightVal) {
@@ -300,9 +373,22 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
         
-        // Handle null values as NaN
-        double leftNum = (leftVal != null) ? leftVal.asNumber() : Double.NaN;
-        double rightNum = (rightVal != null) ? rightVal.asNumber() : Double.NaN;
+        // Handle null values
+        if (leftVal == null) {
+            leftVal = XPathNumber.of(Double.NaN);
+        }
+        if (rightVal == null) {
+            rightVal = XPathNumber.of(Double.NaN);
+        }
+        
+        // Check for date/time arithmetic
+        if (leftVal instanceof XPathDateTime || rightVal instanceof XPathDateTime) {
+            return evaluateDateTimeArithmetic(leftVal, rightVal);
+        }
+        
+        // Standard numeric arithmetic
+        double leftNum = leftVal.asNumber();
+        double rightNum = rightVal.asNumber();
 
         double result;
         switch (operator) {
@@ -326,6 +412,69 @@ public final class BinaryExpr implements Expr {
         }
 
         return XPathNumber.of(result);
+    }
+    
+    private XPathValue evaluateDateTimeArithmetic(XPathValue leftVal, XPathValue rightVal) throws XPathException {
+        XPathDateTime left = null;
+        XPathDateTime right = null;
+        double numVal = Double.NaN;
+        boolean numOnRight = false;
+        
+        // Determine operand types
+        if (leftVal instanceof XPathDateTime) {
+            left = (XPathDateTime) leftVal;
+        } else {
+            numVal = leftVal.asNumber();
+        }
+        
+        if (rightVal instanceof XPathDateTime) {
+            right = (XPathDateTime) rightVal;
+        } else {
+            numVal = rightVal.asNumber();
+            numOnRight = true;
+        }
+        
+        switch (operator) {
+            case PLUS:
+                // date/time + duration or duration + duration
+                if (left != null && right != null) {
+                    return left.add(right);
+                }
+                throw new XPathException("Cannot add number to date/time");
+                
+            case MINUS:
+                // date/time - duration, date/time - date/time, or duration - duration
+                if (left != null && right != null) {
+                    return left.subtract(right);
+                }
+                throw new XPathException("Cannot subtract number from date/time");
+                
+            case MULTIPLY:
+                // duration * number or number * duration
+                if (left != null && !Double.isNaN(numVal) && numOnRight) {
+                    return left.multiply(numVal);
+                } else if (right != null && !Double.isNaN(numVal) && !numOnRight) {
+                    return right.multiply(numVal);
+                }
+                throw new XPathException("Duration multiplication requires a number operand");
+                
+            case DIV:
+                // duration / number or duration / duration
+                if (left != null && right != null) {
+                    // duration / duration = decimal
+                    return XPathNumber.of(left.divideByDuration(right).doubleValue());
+                } else if (left != null && !Double.isNaN(numVal)) {
+                    return left.divide(numVal);
+                }
+                throw new XPathException("Cannot divide " + (left != null ? "date/time" : "number") + 
+                                        " by " + (right != null ? "date/time" : "number"));
+                
+            case MOD:
+                throw new XPathException("Modulo operation not supported for date/time values");
+                
+            default:
+                throw new XPathException("Unsupported arithmetic operator for date/time: " + operator);
+        }
     }
 
     private XPathValue evaluateUnion(XPathContext context) throws XPathException {
@@ -463,7 +612,9 @@ public final class BinaryExpr implements Expr {
      * Extracts a single node from a value, or null if empty/multiple.
      */
     private XPathNode getSingleNode(XPathValue value) {
-        if (value == null) return null;
+        if (value == null) {
+            return null;
+        }
         
         if (value.isNodeSet()) {
             XPathNodeSet ns = value.asNodeSet();
@@ -498,8 +649,12 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
         
-        if (leftVal == null) leftVal = XPathNodeSet.empty();
-        if (rightVal == null) rightVal = XPathNodeSet.empty();
+        if (leftVal == null) {
+            leftVal = XPathNodeSet.empty();
+        }
+        if (rightVal == null) {
+            rightVal = XPathNodeSet.empty();
+        }
         
         if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
             throw new XPathException("intersect operator requires node-set operands");
@@ -533,8 +688,12 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
         
-        if (leftVal == null) leftVal = XPathNodeSet.empty();
-        if (rightVal == null) rightVal = XPathNodeSet.empty();
+        if (leftVal == null) {
+            leftVal = XPathNodeSet.empty();
+        }
+        if (rightVal == null) {
+            rightVal = XPathNodeSet.empty();
+        }
         
         if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
             throw new XPathException("except operator requires node-set operands");

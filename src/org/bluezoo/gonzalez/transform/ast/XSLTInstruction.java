@@ -51,6 +51,9 @@ public abstract class XSLTInstruction implements XSLTNode {
     /** System ID of stylesheet source (for error reporting). */
     protected String systemId;
 
+    /** Static base URI for this instruction (computed from xml:base inheritance). */
+    protected String staticBaseURI;
+
     /**
      * Returns the instruction name (e.g., "value-of", "apply-templates").
      *
@@ -69,6 +72,27 @@ public abstract class XSLTInstruction implements XSLTNode {
         this.systemId = systemId;
         this.lineNumber = lineNumber;
         this.columnNumber = columnNumber;
+    }
+
+    /**
+     * Sets the static base URI for this instruction.
+     *
+     * <p>The static base URI is computed from xml:base attribute inheritance
+     * during stylesheet compilation and is used by the static-base-uri() function.
+     *
+     * @param baseURI the static base URI
+     */
+    public void setStaticBaseURI(String baseURI) {
+        this.staticBaseURI = baseURI;
+    }
+
+    /**
+     * Returns the static base URI for this instruction.
+     *
+     * @return the static base URI, or null if not set
+     */
+    public String getStaticBaseURI() {
+        return staticBaseURI;
     }
 
     /**

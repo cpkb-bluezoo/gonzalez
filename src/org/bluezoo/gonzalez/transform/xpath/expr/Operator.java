@@ -87,14 +87,20 @@ public enum Operator {
     INTERSECT("intersect", 8),
     EXCEPT("except", 8),
     
+    // XPath 2.0 type operators (in order of precedence)
+    INSTANCE_OF("instance of", 9),
+    TREAT_AS("treat as", 10),
+    CASTABLE_AS("castable as", 11),
+    CAST_AS("cast as", 12),
+    
     // XPath 3.0 string concatenation (between additive and comparison)
     STRING_CONCAT("||", 4),
     
     // XPath 3.0 simple map operator (highest precedence)
-    SIMPLE_MAP("!", 9),
+    SIMPLE_MAP("!", 13),
     
     // XPath 3.0 arrow operator (very high precedence, right-associative)
-    ARROW("=>", 10);
+    ARROW("=>", 14);
 
     private final String symbol;
     private final int precedence;
@@ -174,6 +180,7 @@ public enum Operator {
             case DIV: return DIV;
             case MOD: return MOD;
             case PIPE: return UNION;
+            case UNION: return UNION;  // 'union' keyword (synonym for |)
             case TO: return TO;
             case EQ: return VALUE_EQUALS;
             case NE: return VALUE_NOT_EQUALS;

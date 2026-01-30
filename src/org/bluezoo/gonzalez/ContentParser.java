@@ -23,9 +23,13 @@ package org.bluezoo.gonzalez;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -256,11 +260,16 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     private int elementDepth;
     
     /**
+     * Whether the root element has been seen (opened and possibly closed).
+     */
+    private boolean rootElementSeen;
+    
+    /**
      * Stack of element validation contexts.
      * Used for both well-formedness checking (end tag matching) and validation (content model).
      * Each context contains the element name and its validator (if validation is enabled).
      */
-    private java.util.Deque<ElementValidationContext> elementStack;
+    private Deque<ElementValidationContext> elementStack;
     
     /**
      * Pool for reusing ElementValidationContext objects to reduce allocation.
@@ -392,6 +401,21 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      */
     public DTDParser getDTDParser() {
         return dtdParser;
+    }
+    
+    /**
+     * Gets the current attributes being processed.
+     * This is available during {@code startElement} callbacks and returns
+     * the same {@link SAXAttributes} instance passed to the ContentHandler.
+     * 
+     * <p>This method is primarily used by {@link Parser} to implement
+     * {@link org.bluezoo.gonzalez.schema.PSVIProvider} for DTD attribute
+     * type queries.
+     *
+     * @return the current attributes, or null if not in element processing
+     */
+    SAXAttributes getCurrentAttributes() {
+        return attributes;
     }
 
     /**
@@ -544,9 +568,9 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             
             if (baseSystemId != null) {
                 try {
-                    java.net.URL baseURL = new java.net.URL(baseSystemId);
+                    URL baseURL = new URL(baseSystemId);
                     defaultEntityResolver = new DefaultEntityResolver(baseURL);
-                } catch (java.net.MalformedURLException e) {
+                } catch (MalformedURLException e) {
                     // Not a valid URL, use default (current directory)
                     defaultEntityResolver = new DefaultEntityResolver();
                 }
@@ -804,6 +828,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         state = State.INIT;
         documentStarted = false;
         elementDepth = 0;
+        rootElementSeen = false;
         
         // Clear DTD parser (allow GC)
         dtdParser = null;
@@ -865,6 +890,19 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             if (internPool != null) {
                 namespaceTracker.setInternPool(internPool);
             }
+        }
+    }
+    
+    /**
+     * Ensures startDocument has been called.
+     * Per SAX specification, startDocument must be the first event.
+     * This is called before any events that might occur before the root element.
+     */
+    private void ensureDocumentStarted() throws SAXException {
+        if (!documentStarted && contentHandler != null) {
+            contentHandler.setDocumentLocator(locator);
+            contentHandler.startDocument();
+            documentStarted = true;
         }
     }
 
@@ -988,15 +1026,11 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 
             case LT:
                 // Start of root element
-                if (!documentStarted && contentHandler != null) {
-                    contentHandler.setDocumentLocator(locator);
-                    contentHandler.startDocument();
-                    documentStarted = true;
-                }
+                ensureDocumentStarted();
                 
                 // Initialize element stack and pool for well-formedness and validation
                 if (elementStack == null) {
-                    elementStack = new java.util.ArrayDeque<>();
+                    elementStack = new ArrayDeque<>();
                     elementContextPool = new ElementValidationContext.Pool();
                 }
                 
@@ -1018,6 +1052,9 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             // Intern element names if enabled (use zero-alloc pool)
             currentElementName = intern(data);
             elementDepth++;
+            if (elementDepth == 1) {
+                rootElementSeen = true;  // Mark that root element has started
+            }
             
             // Push element onto stack for well-formedness and validation
             // (validator will be null if validation is disabled)
@@ -1064,13 +1101,16 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 if (attributes == null) {
                     attributes = new SAXAttributes();
                     // Set normalizer for lazy attribute value normalization
-                    attributes.setNormalizer((raw, elem, attr) -> {
-                        try {
-                            // Convert StringBuilder to String and normalize
-                            return normalizeAttributeValue(raw.toString(), elem, attr);
-                        } catch (SAXException e) {
-                            // Convert to RuntimeException since normalizer can't throw checked exceptions
-                            throw new RuntimeException("Normalization failed", e);
+                    attributes.setNormalizer(new SAXAttributes.AttributeValueNormalizer() {
+                        @Override
+                        public String normalize(StringBuilder raw, String elem, String attr) {
+                            try {
+                                // Convert StringBuilder to String and normalize
+                                return normalizeAttributeValue(raw.toString(), elem, attr);
+                            } catch (SAXException e) {
+                                // Convert to RuntimeException since normalizer can't throw checked exceptions
+                                throw new RuntimeException("Normalization failed", e);
+                            }
                         }
                     });
                     // Set QName pool for reusing QName objects
@@ -1097,12 +1137,15 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 if (attributes == null) {
                     attributes = new SAXAttributes();
                     attributes.setQNamePool(qnamePool);
-                    attributes.setNormalizer((raw, elem, attr) -> {
-                        try {
-                            // Convert StringBuilder to String and normalize
-                            return normalizeAttributeValue(raw.toString(), elem, attr);
-                        } catch (SAXException e) {
-                            throw new RuntimeException("Normalization failed", e);
+                    attributes.setNormalizer(new SAXAttributes.AttributeValueNormalizer() {
+                        @Override
+                        public String normalize(StringBuilder raw, String elem, String attr) {
+                            try {
+                                // Convert StringBuilder to String and normalize
+                                return normalizeAttributeValue(raw.toString(), elem, attr);
+                            } catch (SAXException e) {
+                                throw new RuntimeException("Normalization failed", e);
+                            }
                         }
                     });
                     // Set StringBuilder recycler to return StringBuilders to pool
@@ -1125,12 +1168,15 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 if (attributes == null) {
                     attributes = new SAXAttributes();
                     attributes.setQNamePool(qnamePool);
-                    attributes.setNormalizer((raw, elem, attr) -> {
-                        try {
-                            // Convert StringBuilder to String and normalize
-                            return normalizeAttributeValue(raw.toString(), elem, attr);
-                        } catch (SAXException e) {
-                            throw new RuntimeException("Normalization failed", e);
+                    attributes.setNormalizer(new SAXAttributes.AttributeValueNormalizer() {
+                        @Override
+                        public String normalize(StringBuilder raw, String elem, String attr) {
+                            try {
+                                // Convert StringBuilder to String and normalize
+                                return normalizeAttributeValue(raw.toString(), elem, attr);
+                            } catch (SAXException e) {
+                                throw new RuntimeException("Normalization failed", e);
+                            }
                         }
                     });
                     // Set StringBuilder recycler to return StringBuilders to pool
@@ -1326,11 +1372,14 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             
             // Add attribute to list (unless it's xmlns and namespace-prefixes is false)
             if (!isNamespaceDecl || namespacePrefixesEnabled) {
-                // Process attribute name for namespace if enabled
+                // For namespace declarations, resolve URI/localName now (already have all xmlns info)
+                // For non-xmlns attributes, defer namespace resolution to fireStartElement
+                // (because xmlns declarations may appear later in the same element)
                 String uri = "";
                 String localName = currentAttributeName;
                 
-                if (namespacesEnabled && namespaceTracker != null) {
+                if (isNamespaceDecl && namespacesEnabled && namespaceTracker != null) {
+                    // Namespace declarations can be resolved immediately
                     try {
                         QName attrQName = namespaceTracker.processName(currentAttributeName, true, qnamePool);
                         uri = attrQName.getURI();
@@ -1339,6 +1388,8 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                         throw fatalError(e.getMessage());
                     }
                 }
+                // Non-xmlns attributes: leave uri="" and localName=qName for now
+                // They will be resolved in fireStartElement after all xmlns are processed
                 
                 try {
                     // For namespace declarations, use normalized String
@@ -1358,9 +1409,12 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                                                   "CDATA", value, true);
                     
                     // Validate xml:space attribute values (must be "default" or "preserve")
+                    // Note: For non-xmlns attrs, localName is still qName at this point
+                    String effectiveLocalName = localName.contains(":") ? 
+                        localName.substring(localName.indexOf(':') + 1) : localName;
                     if ("xml:space".equals(currentAttributeName) || 
-                        (namespacesEnabled && "space".equals(localName) && 
-                         "http://www.w3.org/XML/1998/namespace".equals(uri))) {
+                        (namespacesEnabled && "space".equals(effectiveLocalName) && 
+                         currentAttributeName.startsWith("xml:"))) {
                         // Get the normalized value for validation
                         String spaceValue = isNamespaceDecl ? normalizedValue : 
                             normalizeAttributeValue(currentAttributeValue.toString(), 
@@ -1639,8 +1693,14 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
     private void handlePIContent(Token token, CharBuffer data) throws SAXException {
         switch (token) {
             case S:
+                // Whitespace in PI - only include if we've already started the data
+                // (leading whitespace after target is a separator, not part of data)
+                if (data != null && currentPIData.length() > 0) {
+                    appendBufferToBuilder(currentPIData, data);
+                }
+                break;
             case CDATA:
-                // PI data (including whitespace) - append directly from CharBuffer
+                // PI data - append directly from CharBuffer
                 if (data != null) {
                     appendBufferToBuilder(currentPIData, data);
                 }
@@ -1648,6 +1708,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 
             case END_PI:
                 // End of PI
+                // Ensure startDocument is called before any events (SAX spec requirement)
+                ensureDocumentStarted();
                 if (contentHandler != null) {
                     contentHandler.processingInstruction(currentPITarget, currentPIData.toString());
                 }
@@ -1658,7 +1720,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 // Return to appropriate state
                 if (elementDepth > 0) {
                     state = State.ELEMENT_CONTENT;
-                } else if (documentStarted) {
+                } else if (rootElementSeen) {
+                    // Root element has been seen and closed (elementDepth back to 0)
                     state = State.AFTER_ROOT;
                 } else {
                     state = State.PROLOG;
@@ -1685,6 +1748,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 
             case END_COMMENT:
                 // End of comment
+                // Ensure startDocument is called before any events (SAX spec requirement)
+                ensureDocumentStarted();
                 if (lexicalHandler != null) {
                     String text = currentCommentText.toString();
                     lexicalHandler.comment(text.toCharArray(), 0, text.length());
@@ -1695,7 +1760,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 // Return to appropriate state
                 if (elementDepth > 0) {
                     state = State.ELEMENT_CONTENT;
-                } else if (documentStarted) {
+                } else if (rootElementSeen) {
+                    // Root element has been seen and closed (elementDepth back to 0)
                     state = State.AFTER_ROOT;
                 } else {
                     state = State.PROLOG;
@@ -2152,7 +2218,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             
             // Feed the expanded value through the tokenizer as characters
             // (entity values are already decoded strings, no need for byte encoding)
-            java.nio.CharBuffer buffer = java.nio.CharBuffer.wrap(expandedValue);
+            CharBuffer buffer = CharBuffer.wrap(expandedValue);
             entityTokenizer.receive(buffer);
             
             // Verify buffer was fully consumed - if not, entity value has incomplete token
@@ -2248,6 +2314,14 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 String prefix = entry.getKey();
                 String uri = entry.getValue();
                 contentHandler.startPrefixMapping(prefix, uri);
+            }
+            
+            // Now resolve namespace prefixes for all non-xmlns attributes
+            // This handles cases where xmlns:prefix appears after prefix:attr in the same element
+            try {
+                attributes.resolveAttributeNamespaces(namespaceTracker);
+            } catch (NamespaceException e) {
+                throw fatalError(e.getMessage());
             }
             
             // Process element name
@@ -2388,7 +2462,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
         
         // Get attribute declarations for this element
-        java.util.Map<String, AttributeDeclaration> attrDecls = dtdParser.getAttributeDeclarations(elementName);
+        Map<String, AttributeDeclaration> attrDecls = dtdParser.getAttributeDeclarations(elementName);
         if (attrDecls == null || attrDecls.isEmpty()) {
             return;
         }
@@ -2503,11 +2577,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     "Namespace URI must be a URI (ASCII-only), not an IRI: " + attrValue);
             }
             
-            // Validate URI is not relative (should be absolute or empty)
-            if (!attrValue.isEmpty() && !isAbsoluteURI(attrValue)) {
-                throw fatalError(
-                    "Namespace URI must be absolute (not relative): " + attrValue);
-            }
+            // Note: Relative URIs in namespace declarations are deprecated but not invalid
+            // per Namespaces in XML spec. We allow them for compatibility with real-world documents.
             
             // Check for reserved namespace URIs
             if (NamespaceScopeTracker.XML_NAMESPACE_URI.equals(attrValue)) {
@@ -2539,11 +2610,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     "Namespace URI must be a URI (ASCII-only), not an IRI: " + attrValue);
             }
             
-            // Validate URI is not relative (should be absolute or empty for unbinding in XML 1.1)
-            if (!attrValue.isEmpty() && !isAbsoluteURI(attrValue)) {
-                throw fatalError(
-                    "Namespace URI must be absolute (not relative): " + attrValue);
-            }
+            // Note: Relative URIs in namespace declarations are deprecated but not invalid
+            // per Namespaces in XML spec. We allow them for compatibility with real-world documents.
             
             // Check for XML 1.1-style prefix unbinding in XML 1.0 documents
             if (attrValue.isEmpty() && !this.xml11) {

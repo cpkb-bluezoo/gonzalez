@@ -379,11 +379,11 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     }
 
     @Override
-    public java.util.Iterator<XPathValue> sequenceIterator() {
+    public Iterator<XPathValue> sequenceIterator() {
         ensureSorted();
         // Convert nodes to XPathValue iterator
-        return new java.util.Iterator<XPathValue>() {
-            private final java.util.Iterator<XPathNode> nodeIter = nodes.iterator();
+        return new Iterator<XPathValue>() {
+            private final Iterator<XPathNode> nodeIter = nodes.iterator();
             
             @Override
             public boolean hasNext() {

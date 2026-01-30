@@ -147,6 +147,15 @@ public final class XMLComparator {
                 justAfterTag = false;
                 sb.append(c);
             } else if (c == '>') {
+                // Trim trailing space before > (handles " >" -> ">")
+                if (sb.length() > 0 && sb.charAt(sb.length() - 1) == ' ') {
+                    sb.deleteCharAt(sb.length() - 1);
+                }
+                // Also handle " />" -> "/>" (space before self-closing slash)
+                if (sb.length() >= 2 && sb.charAt(sb.length() - 1) == '/' 
+                        && sb.charAt(sb.length() - 2) == ' ') {
+                    sb.deleteCharAt(sb.length() - 2);
+                }
                 inTag = false;
                 lastWasSpace = false;
                 justAfterTag = true;

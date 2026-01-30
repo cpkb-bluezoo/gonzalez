@@ -21,43 +21,104 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
  * A global variable or parameter (xsl:variable or xsl:param at top level).
+ *
+ * <p>Variable names in XSLT can be QNames with namespace prefixes.
+ * The name is stored as a QName with resolved namespace URI.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class GlobalVariable {
 
-    private final String name;
+    private final QName name;
     private final boolean isParam;
     private final XPathExpression selectExpr;
     private final SequenceNode content;
+    private final XPathValue staticValue;  // Pre-computed value for static variables (XSLT 3.0)
 
     /**
      * Creates a global variable or parameter.
      *
-     * @param name the variable name
+     * @param name the variable name as a QName
      * @param isParam true for parameter, false for variable
      * @param selectExpr the select expression (may be null)
      * @param content the content (may be null)
      */
-    public GlobalVariable(String name, boolean isParam, XPathExpression selectExpr, SequenceNode content) {
+    public GlobalVariable(QName name, boolean isParam, 
+                         XPathExpression selectExpr, SequenceNode content) {
         this.name = name;
         this.isParam = isParam;
         this.selectExpr = selectExpr;
         this.content = content;
+        this.staticValue = null;
     }
 
     /**
-     * Returns the variable name.
+     * Creates a static global variable with a pre-computed value.
      *
-     * @return the name
+     * @param name the variable name as a QName
+     * @param isParam true for parameter, false for variable
+     * @param staticValue the pre-computed value
+     */
+    public GlobalVariable(QName name, boolean isParam, XPathValue staticValue) {
+        this.name = name;
+        this.isParam = isParam;
+        this.selectExpr = null;
+        this.content = null;
+        this.staticValue = staticValue;
+    }
+
+    /**
+     * Returns the variable name as a QName.
+     *
+     * @return the QName
+     */
+    public QName getQName() {
+        return name;
+    }
+
+    /**
+     * Returns the namespace URI.
+     *
+     * @return the namespace URI, or empty string if no namespace
+     */
+    public String getNamespaceURI() {
+        return name.getURI();
+    }
+
+    /**
+     * Returns the local name.
+     *
+     * @return the local name
+     */
+    public String getLocalName() {
+        return name.getLocalName();
+    }
+
+    /**
+     * Returns the expanded name in Clark notation {uri}localName.
+     * Used for variable lookup and matching.
+     *
+     * @return the expanded name
+     */
+    public String getExpandedName() {
+        return name.toString();
+    }
+    
+    /**
+     * Returns the full name (for display/debugging).
+     * Returns the local name, or {uri}localName if namespaced.
+     *
+     * @return the display name
      */
     public String getName() {
-        return name;
+        return name.toString();
     }
 
     /**
@@ -87,9 +148,27 @@ public final class GlobalVariable {
         return content;
     }
 
+    /**
+     * Returns the pre-computed static value (for static variables).
+     *
+     * @return the static value, or null if not a static variable
+     */
+    public XPathValue getStaticValue() {
+        return staticValue;
+    }
+
+    /**
+     * Returns true if this is a static variable.
+     *
+     * @return true if static value is set
+     */
+    public boolean isStatic() {
+        return staticValue != null;
+    }
+
     @Override
     public String toString() {
-        return (isParam ? "param " : "variable ") + name;
+        return (isParam ? "param " : "variable ") + getName();
     }
 
 }

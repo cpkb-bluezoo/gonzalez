@@ -211,7 +211,9 @@ public interface XPathNode {
         while (attrs.hasNext()) {
             XPathNode attr = attrs.next();
             String attrNs = attr.getNamespaceURI();
-            if (attrNs == null) attrNs = "";
+            if (attrNs == null) {
+                attrNs = "";
+            }
             if (attrNs.equals(namespaceURI) && localName.equals(attr.getLocalName())) {
                 return attr;
             }
@@ -253,6 +255,39 @@ public interface XPathNode {
      */
     default boolean isAttribute() {
         return getNodeType() == NodeType.ATTRIBUTE;
+    }
+
+    /**
+     * Returns the type annotation namespace URI for this node.
+     *
+     * <p>For schema-aware processing, elements and attributes may have
+     * type annotations from xsl:type or validation.
+     *
+     * @return the type namespace URI, or null if not annotated
+     */
+    default String getTypeNamespaceURI() {
+        return null;
+    }
+
+    /**
+     * Returns the type annotation local name for this node.
+     *
+     * <p>For schema-aware processing, elements and attributes may have
+     * type annotations from xsl:type or validation.
+     *
+     * @return the type local name, or null if not annotated
+     */
+    default String getTypeLocalName() {
+        return null;
+    }
+
+    /**
+     * Returns true if this node has a type annotation.
+     *
+     * @return true if the node has a type annotation
+     */
+    default boolean hasTypeAnnotation() {
+        return getTypeLocalName() != null;
     }
 
 }

@@ -126,7 +126,9 @@ public final class Step {
         /** The comment() type test. */
         COMMENT,
         /** The processing-instruction() type test. */
-        PROCESSING_INSTRUCTION
+        PROCESSING_INSTRUCTION,
+        /** An XPath 3.0 expression step (simple mapping operator). */
+        EXPR
     }
 
     private final Axis axis;
@@ -134,6 +136,7 @@ public final class Step {
     private final String namespaceURI;
     private final String localName;
     private final String piTarget; // For processing-instruction('target')
+    private final Expr stepExpr;   // For EXPR node test type (XPath 3.0)
     private final List<Expr> predicates;
 
     /**
@@ -143,7 +146,7 @@ public final class Step {
      * @param localName the local name to match
      */
     public Step(Axis axis, String localName) {
-        this(axis, NodeTestType.NAME, null, localName, null, null);
+        this(axis, NodeTestType.NAME, null, localName, null, null, null);
     }
 
     /**
@@ -154,7 +157,7 @@ public final class Step {
      * @param localName the local name
      */
     public Step(Axis axis, String namespaceURI, String localName) {
-        this(axis, NodeTestType.QNAME, namespaceURI, localName, null, null);
+        this(axis, NodeTestType.QNAME, namespaceURI, localName, null, null, null);
     }
 
     /**
@@ -164,7 +167,7 @@ public final class Step {
      * @param nodeTestType the node test type (must be NODE, TEXT, COMMENT, or PROCESSING_INSTRUCTION)
      */
     public Step(Axis axis, NodeTestType nodeTestType) {
-        this(axis, nodeTestType, null, null, null, null);
+        this(axis, nodeTestType, null, null, null, null, null);
     }
 
     /**
@@ -174,7 +177,7 @@ public final class Step {
      * @param piTarget the PI target name
      */
     public static Step processingInstruction(Axis axis, String piTarget) {
-        return new Step(axis, NodeTestType.PROCESSING_INSTRUCTION, null, null, piTarget, null);
+        return new Step(axis, NodeTestType.PROCESSING_INSTRUCTION, null, null, piTarget, null, null);
     }
 
     /**
@@ -183,7 +186,7 @@ public final class Step {
      * @param axis the axis
      */
     public static Step wildcard(Axis axis) {
-        return new Step(axis, NodeTestType.WILDCARD, null, null, null, null);
+        return new Step(axis, NodeTestType.WILDCARD, null, null, null, null, null);
     }
 
     /**
@@ -193,19 +196,30 @@ public final class Step {
      * @param namespaceURI the namespace URI
      */
     public static Step namespaceWildcard(Axis axis, String namespaceURI) {
-        return new Step(axis, NodeTestType.NAMESPACE_WILDCARD, namespaceURI, null, null, null);
+        return new Step(axis, NodeTestType.NAMESPACE_WILDCARD, namespaceURI, null, null, null, null);
+    }
+
+    /**
+     * Creates an expression step (XPath 3.0 simple mapping operator).
+     * This allows parenthesized expressions as path steps, e.g. /(if (...) then . else foo)
+     *
+     * @param expr the expression to evaluate for each context node
+     */
+    public static Step expression(Expr expr) {
+        return new Step(Axis.CHILD, NodeTestType.EXPR, null, null, null, expr, null);
     }
 
     /**
      * Full constructor.
      */
     private Step(Axis axis, NodeTestType nodeTestType, String namespaceURI, 
-                 String localName, String piTarget, List<Expr> predicates) {
+                 String localName, String piTarget, Expr stepExpr, List<Expr> predicates) {
         this.axis = axis != null ? axis : Axis.CHILD;
         this.nodeTestType = nodeTestType;
         this.namespaceURI = namespaceURI;
         this.localName = localName;
         this.piTarget = piTarget;
+        this.stepExpr = stepExpr;
         this.predicates = predicates != null ? 
             Collections.unmodifiableList(new ArrayList<>(predicates)) : 
             Collections.emptyList();
@@ -223,7 +237,7 @@ public final class Step {
         }
         List<Expr> combined = new ArrayList<>(this.predicates);
         combined.addAll(predicates);
-        return new Step(axis, nodeTestType, namespaceURI, localName, piTarget, combined);
+        return new Step(axis, nodeTestType, namespaceURI, localName, piTarget, stepExpr, combined);
     }
 
     /**
@@ -269,6 +283,15 @@ public final class Step {
      */
     public String getPITarget() {
         return piTarget;
+    }
+
+    /**
+     * Returns the expression for EXPR steps (XPath 3.0 simple mapping).
+     *
+     * @return the expression, or null
+     */
+    public Expr getStepExpr() {
+        return stepExpr;
     }
 
     /**
@@ -328,6 +351,10 @@ public final class Step {
                     sb.append('\'').append(piTarget).append('\'');
                 }
                 sb.append(')');
+                break;
+            case EXPR:
+                sb.setLength(0);  // Clear the axis:: prefix
+                sb.append('(').append(stepExpr).append(')');
                 break;
         }
         

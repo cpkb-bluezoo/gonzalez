@@ -65,6 +65,18 @@ public class XPathVariableException extends XPathException {
         return localName;
     }
 
+    /**
+     * Returns the variable name as a key (used for circular reference detection).
+     *
+     * @return the variable name in {uri}localName format, or just localName if no namespace
+     */
+    public String getVariableName() {
+        if (namespaceURI == null || namespaceURI.isEmpty()) {
+            return localName;
+        }
+        return "{" + namespaceURI + "}" + localName;
+    }
+
     private static String formatMessage(String namespaceURI, String localName) {
         if (namespaceURI == null || namespaceURI.isEmpty()) {
             return "Undefined variable: $" + localName;

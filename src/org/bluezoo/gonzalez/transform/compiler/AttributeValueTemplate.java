@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.compiler;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.XPathParser;
 import org.bluezoo.gonzalez.transform.xpath.XPathSyntaxException;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -121,6 +122,19 @@ public final class AttributeValueTemplate {
      * @throws XPathSyntaxException if an embedded expression is invalid
      */
     public static AttributeValueTemplate parse(String value) throws XPathSyntaxException {
+        return parse(value, null);
+    }
+
+    /**
+     * Parses an attribute value template with namespace resolution.
+     *
+     * @param value the attribute value string
+     * @param namespaceResolver resolver for namespace prefixes in embedded expressions
+     * @return the parsed AVT
+     * @throws XPathSyntaxException if an embedded expression is invalid
+     */
+    public static AttributeValueTemplate parse(String value,
+            XPathParser.NamespaceResolver namespaceResolver) throws XPathSyntaxException {
         List<Part> parts = new ArrayList<>();
         StringBuilder literal = new StringBuilder();
         int i = 0;
@@ -169,7 +183,7 @@ public final class AttributeValueTemplate {
                     }
 
                     String exprStr = value.substring(start, i);
-                    XPathExpression expr = XPathExpression.compile(exprStr);
+                    XPathExpression expr = XPathExpression.compile(exprStr, namespaceResolver);
                     parts.add(new ExpressionPart(expr));
                     i++; // Skip closing brace
                 }

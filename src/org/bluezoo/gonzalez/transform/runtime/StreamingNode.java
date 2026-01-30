@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
+import org.bluezoo.gonzalez.schema.PSVIProvider;
+import org.bluezoo.gonzalez.schema.TypedValue;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.xml.sax.Attributes;
@@ -48,6 +50,7 @@ public class StreamingNode implements XPathNode {
     private final Map<String, String> namespaceBindings;
     private final long documentOrder;
     private final String attributeType;  // DTD attribute type (ID, IDREF, CDATA, etc.)
+    private final TypedValue typedValue; // Schema typed value (from XSD validation)
 
     // For element nodes - track children as they're added
     private final List<StreamingNode> children;
@@ -68,14 +71,43 @@ public class StreamingNode implements XPathNode {
     public static StreamingNode createElement(String namespaceURI, String localName, 
             String prefix, Attributes atts, Map<String, String> namespaceBindings,
             StreamingNode parent, long documentOrder) {
+        return createElement(namespaceURI, localName, prefix, atts, namespaceBindings,
+            parent, documentOrder, null);
+    }
+    
+    /**
+     * Creates an element node with PSVI type information.
+     *
+     * @param namespaceURI the element namespace URI
+     * @param localName the element local name
+     * @param prefix the element prefix
+     * @param atts the SAX attributes
+     * @param namespaceBindings namespace bindings in scope
+     * @param parent the parent node
+     * @param documentOrder the document order position
+     * @param psvi the PSVIProvider for type information, or null to use SAX Attributes directly
+     */
+    public static StreamingNode createElement(String namespaceURI, String localName, 
+            String prefix, Attributes atts, Map<String, String> namespaceBindings,
+            StreamingNode parent, long documentOrder, PSVIProvider psvi) {
         
         StreamingNode element = new StreamingNode(NodeType.ELEMENT, namespaceURI, localName,
             prefix, null, parent, namespaceBindings, documentOrder);
         
-        // Create attribute nodes - capture DTD attribute type for ID lookup
+        // Create attribute nodes - capture type information for ID lookup and XPath typing
         if (atts != null) {
             for (int i = 0; i < atts.getLength(); i++) {
-                String attrType = atts.getType(i);  // DTD type: ID, IDREF, CDATA, etc.
+                // Get type info from PSVIProvider if available, otherwise from SAX Attributes
+                String attrType;
+                TypedValue attrTypedValue = null;
+                
+                if (psvi != null) {
+                    attrType = psvi.getDTDAttributeType(i);
+                    attrTypedValue = psvi.getAttributeTypedValue(i);
+                } else {
+                    attrType = atts.getType(i);  // DTD type: ID, IDREF, CDATA, etc.
+                }
+                
                 StreamingNode attr = new StreamingNode(
                     NodeType.ATTRIBUTE,
                     atts.getURI(i),
@@ -85,7 +117,8 @@ public class StreamingNode implements XPathNode {
                     element,
                     Collections.emptyMap(),
                     documentOrder + i + 1,
-                    attrType
+                    attrType,
+                    attrTypedValue
                 );
                 element.attributes.add(attr);
             }
@@ -123,12 +156,20 @@ public class StreamingNode implements XPathNode {
             String prefix, String stringValue, StreamingNode parent,
             Map<String, String> namespaceBindings, long documentOrder) {
         this(nodeType, namespaceURI, localName, prefix, stringValue, parent, 
-             namespaceBindings, documentOrder, null);
+             namespaceBindings, documentOrder, null, null);
     }
     
     private StreamingNode(NodeType nodeType, String namespaceURI, String localName,
             String prefix, String stringValue, StreamingNode parent,
             Map<String, String> namespaceBindings, long documentOrder, String attributeType) {
+        this(nodeType, namespaceURI, localName, prefix, stringValue, parent, 
+             namespaceBindings, documentOrder, attributeType, null);
+    }
+    
+    private StreamingNode(NodeType nodeType, String namespaceURI, String localName,
+            String prefix, String stringValue, StreamingNode parent,
+            Map<String, String> namespaceBindings, long documentOrder, 
+            String attributeType, TypedValue typedValue) {
         this.nodeType = nodeType;
         this.namespaceURI = namespaceURI != null && !namespaceURI.isEmpty() ? namespaceURI : null;
         this.localName = localName;
@@ -138,6 +179,7 @@ public class StreamingNode implements XPathNode {
         this.namespaceBindings = new HashMap<>(namespaceBindings);
         this.documentOrder = documentOrder;
         this.attributeType = attributeType;
+        this.typedValue = typedValue;
         this.attributes = new ArrayList<>();
         this.children = new ArrayList<>();
         
@@ -281,6 +323,18 @@ public class StreamingNode implements XPathNode {
     public boolean isIdAttribute() {
         return "ID".equals(attributeType);
     }
+    
+    /**
+     * Returns the schema typed value for this node.
+     *
+     * <p>This is populated when XSD validation is active and provides
+     * the typed (Java object) representation of the node's value.
+     *
+     * @return the typed value, or null if not available
+     */
+    public TypedValue getTypedValue() {
+        return typedValue;
+    }
 
     /**
      * Returns the namespace bindings in scope for this element.
@@ -293,7 +347,9 @@ public class StreamingNode implements XPathNode {
      * Looks up a namespace URI by prefix.
      */
     public String lookupNamespaceURI(String prefix) {
-        if (prefix == null) prefix = "";
+        if (prefix == null) {
+            prefix = "";
+        }
         String uri = namespaceBindings.get(prefix);
         if (uri != null) {
             return uri;

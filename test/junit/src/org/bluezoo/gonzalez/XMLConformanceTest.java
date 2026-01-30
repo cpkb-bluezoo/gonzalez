@@ -13,11 +13,12 @@
 package org.bluezoo.gonzalez;
 
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -165,7 +166,9 @@ public class XMLConformanceTest {
         
         // Create statistics file placeholder (will be updated in @AfterClass)
         // This ensures the file exists even if no tests run, so build.xml can display it
-        try (PrintWriter statsOut = new PrintWriter(new FileWriter(STATS_FILE))) {
+        try (FileChannel channel = FileChannel.open(STATS_FILE.toPath(),
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+             PrintWriter statsOut = new PrintWriter(Channels.newOutputStream(channel))) {
             statsOut.println("=== XML Conformance Test Statistics ===");
             statsOut.println();
             statsOut.println("Tests are running...");
@@ -213,7 +216,9 @@ public class XMLConformanceTest {
                     return null;
                 }
                 
-                InputSource source = new InputSource(new FileInputStream(entityFile));
+                // Use FileChannel for NIO-native input
+                FileChannel channel = FileChannel.open(entityFile.toPath(), StandardOpenOption.READ);
+                InputSource source = new InputSource(Channels.newInputStream(channel));
                 source.setSystemId(entityFile.toURI().toString());
                 return source;
             }
@@ -316,10 +321,12 @@ public class XMLConformanceTest {
             }
         });
         
-        // Parse the index file using Gonzalez
-        InputSource source = new InputSource(new FileInputStream(indexFile));
+        // Parse the index file using Gonzalez - use FileChannel for NIO-native input
+        FileChannel channel = FileChannel.open(indexFile.toPath(), StandardOpenOption.READ);
+        InputSource source = new InputSource(Channels.newInputStream(channel));
         source.setSystemId(indexFile.toURI().toString());
         parser.parse(source);
+        channel.close();
         
         return tests;
     }
@@ -370,7 +377,7 @@ public class XMLConformanceTest {
             Parser parser = new Parser();
             parser.setContentHandler(new DefaultHandler()); // Simple handler that discards content
             
-            // Entity resolver for test files
+            // Entity resolver for test files - use FileChannel for NIO-native input
             parser.setEntityResolver(new EntityResolver() {
                 @Override
                 public InputSource resolveEntity(String publicId, String systemId) throws SAXException, IOException {
@@ -389,7 +396,8 @@ public class XMLConformanceTest {
                         return null;
                     }
                     
-                    InputSource source = new InputSource(new FileInputStream(entityFile));
+                    FileChannel channel = FileChannel.open(entityFile.toPath(), StandardOpenOption.READ);
+                    InputSource source = new InputSource(Channels.newInputStream(channel));
                     source.setSystemId(entityFile.toURI().toString());
                     return source;
                 }
@@ -431,13 +439,20 @@ public class XMLConformanceTest {
             }
             // Otherwise use parser's default (which is true)
             
+            FileChannel testChannel = null;
             try {
-                InputSource source = new InputSource(new FileInputStream(testCase.file));
+                // Use FileChannel for NIO-native input
+                testChannel = FileChannel.open(testCase.file.toPath(), StandardOpenOption.READ);
+                InputSource source = new InputSource(Channels.newInputStream(testChannel));
                 source.setSystemId(testCase.file.toURI().toString());
                 parser.parse(source);
             } catch (SAXParseException e) {
                 gotFatalError = true;
                 capturedException = e;
+            } finally {
+                if (testChannel != null) {
+                    try { testChannel.close(); } catch (IOException ignored) {}
+                }
             }
             
             // Determine actual result based on test type
@@ -521,7 +536,10 @@ public class XMLConformanceTest {
             resultsBySuite.computeIfAbsent(result.suite, k -> new ArrayList<>()).add(result);
         }
         
-        try (PrintWriter out = new PrintWriter(new FileWriter(REPORT_FILE))) {
+        // Write detailed report - use FileChannel for NIO-native output
+        try (FileChannel reportChannel = FileChannel.open(REPORT_FILE.toPath(),
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+             PrintWriter out = new PrintWriter(Channels.newOutputStream(reportChannel))) {
             out.println("XML Conformance Test Report");
             out.println("============================");
             out.println();
@@ -643,8 +661,11 @@ public class XMLConformanceTest {
         System.out.print(totalLine);
         
         // Write statistics to file (even if empty, so build.xml can display it)
+        // Use FileChannel for NIO-native output
         OUTPUT_DIR.mkdirs(); // Ensure directory exists
-        try (PrintWriter statsOut = new PrintWriter(new FileWriter(STATS_FILE))) {
+        try (FileChannel statsChannel = FileChannel.open(STATS_FILE.toPath(),
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+             PrintWriter statsOut = new PrintWriter(Channels.newOutputStream(statsChannel))) {
             if (statsOutput.length() > 0) {
                 statsOut.print(statsOutput.toString());
             } else {

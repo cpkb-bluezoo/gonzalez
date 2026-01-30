@@ -118,4 +118,39 @@ public interface TransformContext extends XPathContext {
      */
     javax.xml.transform.ErrorListener getErrorListener();
 
+    /**
+     * Returns the currently executing template rule, if any.
+     *
+     * <p>This is used by xsl:next-match to find the next matching template.
+     *
+     * @return the current template rule, or null if not in a template
+     */
+    org.bluezoo.gonzalez.transform.compiler.TemplateRule getCurrentTemplateRule();
+
+    /**
+     * Creates a new context with the specified current template rule.
+     *
+     * @param rule the template rule being executed
+     * @return a new context
+     */
+    TransformContext withCurrentTemplateRule(org.bluezoo.gonzalez.transform.compiler.TemplateRule rule);
+
+    /**
+     * Returns the template matcher for finding template rules.
+     *
+     * @return the template matcher
+     */
+    TemplateMatcher getTemplateMatcher();
+
+    /**
+     * Creates a new context with the specified static base URI.
+     *
+     * <p>This is used when executing instructions that have an xml:base
+     * attribute, so that static-base-uri() returns the correct value.
+     *
+     * @param baseURI the static base URI for the instruction
+     * @return a new context with the base URI
+     */
+    TransformContext withStaticBaseURI(String baseURI);
+
 }

@@ -21,6 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
+import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
+import org.bluezoo.gonzalez.schema.xsd.XSDType;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
 
 import java.util.*;
@@ -60,6 +63,13 @@ public final class CompiledStylesheet {
     private final Map<String, DecimalFormatInfo> decimalFormats;
     private final Map<String, AccumulatorDefinition> accumulators;
     private final Map<String, ModeDeclaration> modeDeclarations;
+    private final Map<String, String> namespaceBindings;  // prefix -> URI from stylesheet
+    private final Set<String> excludedNamespaceURIs;  // namespace URIs to exclude from output
+    private final Map<String, UserFunction> userFunctions;  // keyed by namespace#localName#arity
+    private final Map<String, XSDSchema> importedSchemas;  // namespace URI -> schema
+    private final StylesheetCompiler.ValidationMode defaultValidation;  // from default-validation attr
+    private final String baseURI;  // static base URI of the stylesheet
+    private final double version;  // XSLT version (1.0, 2.0, 3.0)
 
     /**
      * Stores decimal format configuration for format-number().
@@ -139,6 +149,23 @@ public final class CompiledStylesheet {
         private final Map<String, DecimalFormatInfo> decimalFormats = new HashMap<>();
         private final Map<String, AccumulatorDefinition> accumulators = new HashMap<>();
         private final Map<String, ModeDeclaration> modeDeclarations = new HashMap<>();
+        private final Map<String, String> namespaceBindings = new HashMap<>();
+        private final Set<String> excludedNamespaceURIs = new HashSet<>();
+        private final Map<String, UserFunction> userFunctions = new HashMap<>();
+        private final Map<String, XSDSchema> importedSchemas = new HashMap<>();
+        private StylesheetCompiler.ValidationMode defaultValidation = StylesheetCompiler.ValidationMode.STRIP;
+        private String baseURI;
+        private double version = 1.0;
+
+        public Builder setBaseURI(String uri) {
+            this.baseURI = uri;
+            return this;
+        }
+
+        public Builder setVersion(double version) {
+            this.version = version;
+            return this;
+        }
 
         public Builder addTemplateRule(TemplateRule rule) {
             templateRules.add(rule);
@@ -149,6 +176,18 @@ public final class CompiledStylesheet {
         }
 
         public Builder addGlobalVariable(GlobalVariable variable) {
+            // Check for existing variable with same name - newer definition wins
+            // (higher import precedence stylesheets add their variables later)
+            for (int i = 0; i < globalVariables.size(); i++) {
+                GlobalVariable existing = globalVariables.get(i);
+                boolean sameNs = (existing.getNamespaceURI() == null && variable.getNamespaceURI() == null) ||
+                                (existing.getNamespaceURI() != null && existing.getNamespaceURI().equals(variable.getNamespaceURI()));
+                if (sameNs && existing.getLocalName().equals(variable.getLocalName())) {
+                    // Replace existing with new definition (higher precedence)
+                    globalVariables.set(i, variable);
+                    return this;
+                }
+            }
             globalVariables.add(variable);
             return this;
         }
@@ -173,7 +212,8 @@ public final class CompiledStylesheet {
         }
 
         public Builder addKeyDefinition(KeyDefinition key) {
-            keyDefinitions.put(key.getName(), key);
+            // Use expanded name (Clark notation) for lookup
+            keyDefinitions.put(key.getExpandedName(), key);
             return this;
         }
 
@@ -197,6 +237,51 @@ public final class CompiledStylesheet {
 
         public Builder addPreserveSpaceElement(String element) {
             preserveSpaceElements.add(element);
+            return this;
+        }
+
+        /**
+         * Adds a namespace binding from the stylesheet.
+         *
+         * @param prefix the namespace prefix
+         * @param uri the namespace URI
+         * @return this builder
+         */
+        public Builder addNamespaceBinding(String prefix, String uri) {
+            namespaceBindings.put(prefix, uri);
+            return this;
+        }
+        
+        /**
+         * Adds a namespace URI to the exclude-result-prefixes set.
+         *
+         * @param uri the namespace URI to exclude from output
+         * @return this builder
+         */
+        public Builder addExcludedNamespaceURI(String uri) {
+            if (uri != null && !uri.isEmpty()) {
+                excludedNamespaceURIs.add(uri);
+            }
+            return this;
+        }
+        
+        public Builder addUserFunction(UserFunction function) {
+            // Key by namespace + localname + arity for overloading support
+            userFunctions.put(function.getKey(), function);
+            return this;
+        }
+        
+        /**
+         * Adds an imported schema for schema-aware processing.
+         *
+         * @param schema the XSD schema to import
+         * @return this builder
+         */
+        public Builder addImportedSchema(XSDSchema schema) {
+            if (schema != null) {
+                String ns = schema.getTargetNamespace();
+                importedSchemas.put(ns != null ? ns : "", schema);
+            }
             return this;
         }
         
@@ -259,7 +344,10 @@ public final class CompiledStylesheet {
             for (GlobalVariable var : imported.getGlobalVariables()) {
                 boolean exists = false;
                 for (GlobalVariable existing : globalVariables) {
-                    if (existing.getName().equals(var.getName())) {
+                    // Compare by namespace URI and local name
+                    boolean sameNs = (existing.getNamespaceURI() == null && var.getNamespaceURI() == null) ||
+                                    (existing.getNamespaceURI() != null && existing.getNamespaceURI().equals(var.getNamespaceURI()));
+                    if (sameNs && existing.getLocalName().equals(var.getLocalName())) {
                         exists = true;
                         break;
                     }
@@ -340,7 +428,24 @@ public final class CompiledStylesheet {
             return this;
         }
 
-        public CompiledStylesheet build() {
+        public Builder setDefaultValidation(StylesheetCompiler.ValidationMode mode) {
+            this.defaultValidation = mode;
+            return this;
+        }
+
+        public CompiledStylesheet build() throws javax.xml.transform.TransformerConfigurationException {
+            // Validate attribute-set references (XTSE0710)
+            for (AttributeSet attrSet : attributeSets.values()) {
+                if (attrSet.getUseAttributeSets() != null) {
+                    for (String refName : attrSet.getUseAttributeSets()) {
+                        if (!attributeSets.containsKey(refName)) {
+                            throw new javax.xml.transform.TransformerConfigurationException(
+                                "Attribute-set '" + attrSet.getName() + 
+                                "' references undefined attribute-set '" + refName + "'");
+                        }
+                    }
+                }
+            }
             return new CompiledStylesheet(this);
         }
     }
@@ -358,6 +463,13 @@ public final class CompiledStylesheet {
         this.decimalFormats = Collections.unmodifiableMap(new HashMap<>(builder.decimalFormats));
         this.accumulators = Collections.unmodifiableMap(new HashMap<>(builder.accumulators));
         this.modeDeclarations = Collections.unmodifiableMap(new HashMap<>(builder.modeDeclarations));
+        this.namespaceBindings = Collections.unmodifiableMap(new HashMap<>(builder.namespaceBindings));
+        this.excludedNamespaceURIs = Collections.unmodifiableSet(new HashSet<>(builder.excludedNamespaceURIs));
+        this.userFunctions = Collections.unmodifiableMap(new HashMap<>(builder.userFunctions));
+        this.importedSchemas = Collections.unmodifiableMap(new HashMap<>(builder.importedSchemas));
+        this.defaultValidation = builder.defaultValidation;
+        this.baseURI = builder.baseURI;
+        this.version = builder.version;
         this.streamingCapability = computeStreamingCapability();
     }
 
@@ -427,6 +539,27 @@ public final class CompiledStylesheet {
      */
     public KeyDefinition getKeyDefinition(String name) {
         return keyDefinitions.get(name);
+    }
+
+    /**
+     * Returns the base URI of the stylesheet.
+     *
+     * <p>This is typically the URI from which the stylesheet was loaded,
+     * potentially modified by xml:base attributes.
+     *
+     * @return the stylesheet base URI, or null if not set
+     */
+    public String getBaseURI() {
+        return baseURI;
+    }
+
+    /**
+     * Returns the XSLT version of this stylesheet.
+     *
+     * @return the version (1.0, 2.0, or 3.0)
+     */
+    public double getVersion() {
+        return version;
     }
 
     /**
@@ -535,6 +668,142 @@ public final class CompiledStylesheet {
      */
     public Map<String, ModeDeclaration> getModeDeclarations() {
         return modeDeclarations;
+    }
+
+    /**
+     * Returns the namespace bindings from the stylesheet.
+     * These are used to resolve namespace prefixes in variable references.
+     *
+     * @return map of prefix to namespace URI (immutable)
+     */
+    public Map<String, String> getNamespaceBindings() {
+        return namespaceBindings;
+    }
+
+    /**
+     * Resolves a namespace prefix using the stylesheet bindings.
+     *
+     * @param prefix the namespace prefix
+     * @return the namespace URI, or null if not found
+     */
+    public String resolveNamespacePrefix(String prefix) {
+        return namespaceBindings.get(prefix);
+    }
+
+    /**
+     * Returns the set of namespace URIs excluded from result output.
+     * These are URIs from prefixes listed in exclude-result-prefixes.
+     *
+     * @return set of excluded namespace URIs (immutable)
+     */
+    public Set<String> getExcludedNamespaceURIs() {
+        return excludedNamespaceURIs;
+    }
+
+    /**
+     * Checks if a namespace URI should be excluded from result output.
+     *
+     * @param uri the namespace URI to check
+     * @return true if the URI should be excluded
+     */
+    public boolean isExcludedNamespace(String uri) {
+        return uri != null && excludedNamespaceURIs.contains(uri);
+    }
+
+    /**
+     * Returns all user-defined functions.
+     *
+     * @return immutable map of functions keyed by namespace#localName#arity
+     */
+    public Map<String, UserFunction> getUserFunctions() {
+        return userFunctions;
+    }
+
+    /**
+     * Gets a user-defined function by namespace, name, and arity.
+     *
+     * @param namespaceURI the function namespace URI
+     * @param localName the function local name
+     * @param arity the number of arguments
+     * @return the function, or null if not found
+     */
+    public UserFunction getUserFunction(String namespaceURI, String localName, int arity) {
+        String key = namespaceURI + "#" + localName + "#" + arity;
+        return userFunctions.get(key);
+    }
+
+    /**
+     * Tests if a user-defined function exists.
+     *
+     * @param namespaceURI the function namespace URI
+     * @param localName the function local name
+     * @param arity the number of arguments
+     * @return true if the function exists
+     */
+    public boolean hasUserFunction(String namespaceURI, String localName, int arity) {
+        return getUserFunction(namespaceURI, localName, arity) != null;
+    }
+
+    /**
+     * Returns all imported schemas.
+     *
+     * @return immutable map of schemas keyed by namespace URI
+     */
+    public Map<String, XSDSchema> getImportedSchemas() {
+        return importedSchemas;
+    }
+
+    /**
+     * Gets an imported schema by namespace URI.
+     *
+     * @param namespaceURI the schema namespace URI
+     * @return the schema, or null if not found
+     */
+    public XSDSchema getImportedSchema(String namespaceURI) {
+        return importedSchemas.get(namespaceURI != null ? namespaceURI : "");
+    }
+
+    /**
+     * Looks up a type from imported schemas.
+     *
+     * @param namespaceURI the type namespace URI
+     * @param localName the type local name
+     * @return the type definition, or null if not found
+     */
+    public XSDType getImportedType(String namespaceURI, String localName) {
+        XSDSchema schema = getImportedSchema(namespaceURI);
+        if (schema != null) {
+            return schema.getType(localName);
+        }
+        return null;
+    }
+
+    /**
+     * Looks up a simple type from imported schemas.
+     *
+     * @param namespaceURI the type namespace URI
+     * @param localName the type local name
+     * @return the simple type, or null if not found or not a simple type
+     */
+    public XSDSimpleType getImportedSimpleType(String namespaceURI, String localName) {
+        XSDType type = getImportedType(namespaceURI, localName);
+        if (type instanceof XSDSimpleType) {
+            return (XSDSimpleType) type;
+        }
+        return null;
+    }
+
+    /**
+     * Returns the default validation mode for the stylesheet.
+     *
+     * <p>This is set by the default-validation attribute on xsl:stylesheet.
+     * It applies to instructions that construct elements or attributes
+     * when they don't have an explicit validation attribute.
+     *
+     * @return the default validation mode (defaults to STRIP)
+     */
+    public StylesheetCompiler.ValidationMode getDefaultValidation() {
+        return defaultValidation;
     }
 
     /**

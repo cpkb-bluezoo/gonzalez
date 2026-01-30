@@ -64,8 +64,12 @@ class ParameterEntityReference {
     
     @Override
     public boolean equals(Object obj) {
-        if (this == obj) return true;
-        if (!(obj instanceof ParameterEntityReference)) return false;
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof ParameterEntityReference)) {
+            return false;
+        }
         ParameterEntityReference other = (ParameterEntityReference) obj;
         return name.equals(other.name);
     }

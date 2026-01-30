@@ -150,6 +150,40 @@ public enum XPathToken {
     /** The ':=' assignment operator. */
     ASSIGN,
     
+    // XPath 2.0 type expression keywords
+    /** The 'instance' keyword (part of 'instance of'). */
+    INSTANCE,
+    /** The 'of' keyword (part of 'instance of'). */
+    OF,
+    /** The 'cast' keyword (part of 'cast as'). */
+    CAST,
+    /** The 'as' keyword (part of 'cast as', 'treat as', 'castable as'). */
+    AS,
+    /** The 'castable' keyword (part of 'castable as'). */
+    CASTABLE,
+    /** The 'treat' keyword (part of 'treat as'). */
+    TREAT,
+    
+    // XPath 2.0 sequence type keywords
+    /** The 'empty-sequence' keyword. */
+    EMPTY_SEQUENCE,
+    /** The 'item' keyword (for item() type). */
+    ITEM,
+    /** The 'element' keyword (for element() type). */
+    ELEMENT,
+    /** The 'attribute' keyword (for attribute() type). */
+    ATTRIBUTE,
+    /** The 'schema-element' keyword. */
+    SCHEMA_ELEMENT,
+    /** The 'schema-attribute' keyword. */
+    SCHEMA_ATTRIBUTE,
+    /** The 'document-node' keyword. */
+    DOCUMENT_NODE,
+    
+    // XPath 2.0 occurrence indicators
+    /** The '?' occurrence indicator (zero-or-one). */
+    QUESTION,
+    
     // XPath 3.0 operators
     /** The '||' string concatenation operator. */
     CONCAT,
@@ -178,6 +212,9 @@ public enum XPathToken {
     
     /** The '|' union operator. */
     PIPE,
+    
+    /** The 'union' keyword (synonym for |). */
+    UNION,
 
     // Path operators
     /** The '/' path separator. */
@@ -239,6 +276,9 @@ public enum XPathToken {
             case PLUS:
             case MINUS:
             case PIPE:
+            case UNION:
+            case INTERSECT:
+            case EXCEPT:
                 return true;
             default:
                 return false;

@@ -33,8 +33,14 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Output handler adapter that uses {@link XMLWriter} for streaming XML output.
@@ -83,10 +89,10 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     private boolean inPendingElement;
     
     // Buffered attributes for pending element (keyed by {nsUri}localName for duplicate detection)
-    private final java.util.Map<String, PendingAttribute> pendingAttributes = new java.util.LinkedHashMap<>();
+    private final Map<String, PendingAttribute> pendingAttributes = new LinkedHashMap<String, PendingAttribute>();
     
     // Buffered namespaces for pending element
-    private final java.util.List<PendingNamespace> pendingNamespaces = new java.util.ArrayList<>();
+    private final List<PendingNamespace> pendingNamespaces = new ArrayList<PendingNamespace>();
 
     // Buffered namespace prefixes from startPrefixMapping (for ContentHandler mode)
     private final Deque<PrefixMapping> pendingPrefixes = new ArrayDeque<>();
@@ -140,7 +146,11 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             indentConfig = new IndentConfig(' ', 2);
         }
         
-        this.writer = new XMLWriter(channel, 4096, indentConfig);
+        // Use the specified encoding, defaulting to UTF-8
+        String encoding = outputProperties.getEncoding();
+        Charset charset = (encoding != null) ? Charset.forName(encoding) : StandardCharsets.UTF_8;
+        
+        this.writer = new XMLWriter(channel, 4096, indentConfig, charset);
         this.inPendingElement = false;
     }
 
@@ -418,6 +428,7 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
 
     /**
      * Writes the pending start element tag with all buffered attributes and namespaces.
+     * Performs namespace fixup if there are prefix conflicts.
      */
     private void writePendingStartElement() throws SAXException {
         if (!inPendingElement) {
@@ -425,8 +436,37 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         }
         
         try {
-            String prefix = extractPrefix(pendingQName);
-            writer.writeStartElement(prefix, pendingLocalName, pendingUri);
+            String elementPrefix = extractPrefix(pendingQName);
+            String actualElementPrefix = elementPrefix;
+            String actualQName = pendingQName;
+            
+            // Namespace fixup: check for conflicts between element prefix and xsl:namespace declarations
+            // A conflict occurs when a namespace declaration uses the same prefix but different URI
+            PendingNamespace conflictingNs = null;
+            if (elementPrefix != null && !elementPrefix.isEmpty() && !pendingUri.isEmpty()) {
+                for (PendingNamespace ns : pendingNamespaces) {
+                    if (elementPrefix.equals(ns.prefix) && !pendingUri.equals(ns.uri)) {
+                        conflictingNs = ns;
+                        break;
+                    }
+                }
+                
+                if (conflictingNs != null) {
+                    // Conflict! Generate a new prefix for the element
+                    actualElementPrefix = generateUniquePrefix(elementPrefix);
+                    actualQName = actualElementPrefix + ":" + pendingLocalName;
+                    
+                    // Remove any existing declaration for the element's namespace with the old prefix
+                    // (this is the declaration that was output by the literal result element)
+                    pendingNamespaces.removeIf(ns -> 
+                        elementPrefix.equals(ns.prefix) && pendingUri.equals(ns.uri));
+                    
+                    // Add namespace declaration for the element's namespace with new prefix
+                    pendingNamespaces.add(new PendingNamespace(actualElementPrefix, pendingUri));
+                }
+            }
+            
+            writer.writeStartElement(actualElementPrefix, pendingLocalName, pendingUri);
             
             // Write buffered namespace declarations
             for (PendingNamespace ns : pendingNamespaces) {
@@ -438,11 +478,20 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             }
             pendingNamespaces.clear();
             
-            // Write buffered attributes (already deduplicated)
+            // Write buffered attributes (already deduplicated), applying fixup to attribute prefixes too
             for (PendingAttribute attr : pendingAttributes.values()) {
                 String attrPrefix = extractPrefix(attr.qName);
-                if (attrPrefix != null && !attrPrefix.isEmpty()) {
-                    writer.writeAttribute(attrPrefix, attr.namespaceURI, attr.localName, attr.value);
+                String actualAttrPrefix = attrPrefix;
+                String actualAttrQName = attr.qName;
+                
+                // If the attribute used the same prefix as the element and we renamed it, update the attribute
+                if (attrPrefix != null && attrPrefix.equals(elementPrefix) && !actualElementPrefix.equals(elementPrefix)) {
+                    actualAttrPrefix = actualElementPrefix;
+                    actualAttrQName = actualAttrPrefix + ":" + attr.localName;
+                }
+                
+                if (actualAttrPrefix != null && !actualAttrPrefix.isEmpty()) {
+                    writer.writeAttribute(actualAttrPrefix, attr.namespaceURI, attr.localName, attr.value);
                 } else {
                     writer.writeAttribute(attr.localName, attr.value);
                 }
@@ -453,6 +502,17 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         } catch (IOException e) {
             throw new SAXException("Error writing start element", e);
         }
+    }
+    
+    /**
+     * Generates a unique prefix by appending a number suffix.
+     * Uses a simple counter to ensure uniqueness within the current element.
+     */
+    private int prefixCounter = 0;
+    
+    private String generateUniquePrefix(String basePrefix) {
+        // Generate prefix like "p_0", "p_1", etc.
+        return basePrefix + "_" + (prefixCounter++);
     }
 
     /**

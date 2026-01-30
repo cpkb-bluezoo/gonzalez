@@ -79,7 +79,7 @@ public final class PathExpr implements Expr {
         }
         
         XPathNodeSet nodeSet = filterResult.asNodeSet();
-        if (nodeSet.isEmpty()) {
+        if (nodeSet == null || nodeSet.isEmpty()) {
             return XPathNodeSet.EMPTY;
         }
         
