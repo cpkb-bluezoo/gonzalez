@@ -104,9 +104,10 @@ public final class GroundedExecutor {
 
     /**
      * Executes a template in grounded mode with an existing node.
+     * The node should be a BufferedNode for full navigation support.
      *
      * @param template the template to execute
-     * @param contextNode the context node (must be BufferedNode for full navigation)
+     * @param contextNode the context node (should be BufferedNode for full navigation)
      * @throws SAXException if execution fails
      */
     public void executeGrounded(XSLTNode template, XPathNode contextNode) throws SAXException {
@@ -121,8 +122,9 @@ public final class GroundedExecutor {
     /**
      * Starts buffering the current subtree.
      * Called when entering an element that requires grounded execution.
+     * Creates a new buffer if not already buffering, otherwise increments depth.
      *
-     * @return the buffer to use for capturing events
+     * @return the buffer to use for capturing SAX events
      */
     public SAXEventBuffer startBuffering() {
         if (!buffering) {
@@ -136,7 +138,8 @@ public final class GroundedExecutor {
 
     /**
      * Ends buffering for the current element.
-     * Called when exiting an element.
+     * Called when exiting an element. Decrements depth and returns true
+     * when the original buffering element is reached.
      *
      * @return true if buffering is complete (reached the original element)
      */
@@ -170,7 +173,8 @@ public final class GroundedExecutor {
     }
 
     /**
-     * Clears the current buffer.
+     * Clears the current buffer and resets buffering state.
+     * Called when buffering is no longer needed.
      */
     public void clearBuffer() {
         currentBuffer = null;
@@ -179,7 +183,7 @@ public final class GroundedExecutor {
     }
 
     /**
-     * Gets the parent context.
+     * Returns the parent transformation context.
      *
      * @return the parent transformation context
      */
@@ -188,7 +192,7 @@ public final class GroundedExecutor {
     }
 
     /**
-     * Gets the output handler.
+     * Returns the output handler.
      *
      * @return the output handler
      */

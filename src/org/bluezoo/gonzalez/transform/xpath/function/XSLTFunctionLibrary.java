@@ -120,6 +120,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         this.xsltFunctions = Collections.unmodifiableMap(map);
     }
 
+    /**
+     * Checks if a function with the given namespace and local name is available.
+     *
+     * @param namespaceURI the namespace URI, or null/empty for built-in functions
+     * @param localName the local name of the function
+     * @return true if the function is available
+     */
     @Override
     public boolean hasFunction(String namespaceURI, String localName) {
         if (namespaceURI == null || namespaceURI.isEmpty()) {
@@ -137,6 +144,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
 
     private static final String XS_NAMESPACE = "http://www.w3.org/2001/XMLSchema";
     
+    /**
+     * Invokes a function with the given namespace, local name, and arguments.
+     *
+     * @param namespaceURI the namespace URI, or null/empty for built-in functions
+     * @param localName the local name of the function
+     * @param args the evaluated function arguments
+     * @param context the XPath evaluation context
+     * @return the function result
+     * @throws XPathException if the function is unknown or invocation fails
+     */
     @Override
     public XPathValue invokeFunction(String namespaceURI, String localName, 
                                      List<XPathValue> args, XPathContext context) 
@@ -170,7 +187,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     }
     
     /**
-     * Invokes an XML Schema constructor function (xs:date, xs:dateTime, etc.)
+     * Invokes an XML Schema constructor function (xs:date, xs:dateTime, etc.).
+     *
+     * @param localName the local name of the constructor (e.g., "date", "integer")
+     * @param args the constructor arguments
+     * @return the constructed value
+     * @throws XPathException if construction fails
      */
     private XPathValue invokeXsConstructor(String localName, List<XPathValue> args) throws XPathException {
         if (args.isEmpty()) {
@@ -298,6 +320,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     
     /**
      * Invokes a user-defined function.
+     *
+     * @param function the user-defined function to invoke
+     * @param args the function arguments
+     * @param context the transformation context
+     * @return the function result as a Result Tree Fragment
+     * @throws XPathException if function execution fails
      */
     private XPathValue invokeUserFunction(UserFunction function, List<XPathValue> args, 
                                           TransformContext context) throws XPathException {
@@ -342,7 +370,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     }
     
     /**
-     * Builds a cache key for a function call.
+     * Builds a cache key for a function call (for memoized functions).
+     *
+     * @param function the function being called
+     * @param args the function arguments
+     * @return a cache key string
      */
     private String buildCacheKey(UserFunction function, List<XPathValue> args) {
         StringBuilder sb = new StringBuilder();
@@ -356,6 +388,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     
     /**
      * Validates a base64Binary string.
+     *
+     * @param s the string to validate
+     * @return true if valid base64
      */
     private static boolean isValidBase64(String s) {
         if (s.isEmpty()) {
@@ -382,6 +417,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     
     /**
      * Validates a hexBinary string.
+     *
+     * @param s the string to validate
+     * @return true if valid hexadecimal
      */
     private static boolean isValidHexBinary(String s) {
         if (s.isEmpty()) {
@@ -400,6 +438,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         return true;
     }
 
+    /**
+     * Returns the fixed argument count for a function, or -1 if variable.
+     *
+     * @param namespaceURI the namespace URI, or null/empty for built-in functions
+     * @param localName the local name of the function
+     * @return the fixed argument count, or -1 if the function has variable arity
+     */
     @Override
     public int getArgumentCount(String namespaceURI, String localName) {
         if (namespaceURI == null || namespaceURI.isEmpty()) {
@@ -416,7 +461,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     // XSLT Function Implementations
     // ========================================================================
 
-    /** current() - Returns the XSLT current node being processed. */
+    /**
+     * XSLT current() function.
+     * 
+     * <p>Returns the XSLT current node being processed. Unlike the context node,
+     * the current node remains constant during predicate evaluation.
+     * 
+     * <p>Signature: current() → node-set
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-current">XSLT 1.0 current()</a>
+     */
     private static class CurrentFunction implements Function {
         @Override
         public String getName() { return "current"; }
@@ -441,7 +495,17 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** key(name, value) - Returns nodes matching a key definition. */
+    /**
+     * XSLT key() function.
+     * 
+     * <p>Returns nodes matching a key definition. The key name is resolved to a namespace URI
+     * if it contains a prefix. Searches the document tree for nodes matching the key pattern
+     * and use expression.
+     * 
+     * <p>Signature: key(string, object) → node-set
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-key">XSLT 1.0 key()</a>
+     */
     private static class KeyFunction implements Function {
         @Override
         public String getName() { return "key"; }
@@ -580,7 +644,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** document(uri, base?) - Loads an external document (XSLT 1.0). */
+    /**
+     * XSLT document() function.
+     * 
+     * <p>Loads an external XML document from a URI. If the URI is empty, returns the
+     * stylesheet document. Results are cached so the same URI always returns the same document.
+     * 
+     * <p>Signature: document(object, node-set?) → node-set
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-document">XSLT 1.0 document()</a>
+     */
     private static class DocumentFunction implements Function {
         @Override
         public String getName() { return "document"; }
@@ -669,7 +742,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
     
-    /** doc(uri) - Loads an external document (XPath 2.0/3.0). */
+    /**
+     * XPath 2.0 doc() function.
+     * 
+     * <p>Loads an external XML document from a URI. Unlike document(), this function
+     * throws an error if the document cannot be loaded.
+     * 
+     * <p>Signature: doc(string?) → document-node?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-doc">XPath 3.0 doc()</a>
+     */
     private static class DocFunction implements Function {
         @Override
         public String getName() { return "doc"; }
@@ -711,6 +793,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     /**
      * Loads an XML document from a URI and returns its document node.
      * Results are cached so the same URI always returns the same document.
+     *
+     * @param uri the document URI (may be relative)
+     * @param baseUri the base URI for resolving relative URIs
+     * @return the document node, or null if loading fails
      */
     private static XPathNode loadDocument(String uri, String baseUri) {
         try {
@@ -1017,7 +1103,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** format-number(number, format, decimal-format?) - Formats a number. */
+    /**
+     * XSLT format-number() function.
+     * 
+     * <p>Formats a number according to a format pattern string. Supports custom decimal formats
+     * defined via xsl:decimal-format.
+     * 
+     * <p>Signature: format-number(number, string, string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-format-number">XSLT 1.0 format-number()</a>
+     */
     private static class FormatNumberFunction implements Function {
         @Override
         public String getName() { return "format-number"; }
@@ -1184,7 +1279,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** generate-id(node?) - Generates a unique ID for a node. */
+    /**
+     * XSLT generate-id() function.
+     * 
+     * <p>Generates a unique identifier for a node. The ID is based on the node's document order.
+     * 
+     * <p>Signature: generate-id(node-set?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-generate-id">XSLT 1.0 generate-id()</a>
+     */
     private static class GenerateIdFunction implements Function {
         @Override
         public String getName() { return "generate-id"; }
@@ -1219,7 +1322,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** system-property(name) - Returns XSLT processor properties. */
+    /**
+     * XSLT system-property() function.
+     * 
+     * <p>Returns XSLT processor properties such as xsl:version, xsl:vendor, etc.
+     * 
+     * <p>Signature: system-property(string) → object
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-system-property">XSLT 1.0 system-property()</a>
+     */
     private static class SystemPropertyFunction implements Function {
         @Override
         public String getName() { return "system-property"; }
@@ -1250,7 +1361,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** element-available(name) - Tests if an XSLT element is available. */
+    /**
+     * XSLT element-available() function.
+     * 
+     * <p>Tests if an XSLT element is available in the processor.
+     * 
+     * <p>Signature: element-available(string) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-element-available">XSLT 1.0 element-available()</a>
+     */
     private static class ElementAvailableFunction implements Function {
         @Override
         public String getName() { return "element-available"; }
@@ -1313,7 +1432,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** function-available(name) - Tests if a function is available. */
+    /**
+     * XSLT function-available() function.
+     * 
+     * <p>Tests if a function is available in the processor.
+     * 
+     * <p>Signature: function-available(string) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-function-available">XSLT 1.0 function-available()</a>
+     */
     private static class FunctionAvailableFunction implements Function {
         @Override
         public String getName() { return "function-available"; }
@@ -1332,7 +1459,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** type-available(name) - Tests if a schema type is available (XSLT 2.0+). */
+    /**
+     * XSLT 2.0 type-available() function.
+     * 
+     * <p>Tests if a schema type is available (imported via xsl:import-schema).
+     * 
+     * <p>Signature: type-available(string) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt20/#function-type-available">XSLT 2.0 type-available()</a>
+     */
     private static class TypeAvailableFunction implements Function {
         // Built-in XSD types that are always available (even without import-schema)
         private static final Set<String> BUILTIN_TYPES = new HashSet<>(
@@ -1398,7 +1533,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
-    /** unparsed-entity-uri(name) - Returns the URI of an unparsed entity. */
+    /**
+     * XSLT unparsed-entity-uri() function.
+     * 
+     * <p>Returns the URI of an unparsed entity declared in the DTD.
+     * 
+     * <p>Signature: unparsed-entity-uri(string) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xslt/#function-unparsed-entity-uri">XSLT 1.0 unparsed-entity-uri()</a>
+     */
     private static class UnparsedEntityUriFunction implements Function {
         @Override
         public String getName() { return "unparsed-entity-uri"; }

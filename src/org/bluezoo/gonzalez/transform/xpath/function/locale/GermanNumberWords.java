@@ -4,6 +4,8 @@ import java.util.ResourceBundle;
 
 /**
  * German number word formatter.
+ *
+ * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  * 
  * <p>German reverses the order of tens and ones and joins them with "und":
  * <ul>

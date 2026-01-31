@@ -197,6 +197,9 @@ public final class StreamingTransformHandler implements ContentHandler {
 
     /**
      * Creates a transform context for body execution.
+     *
+     * @param node the context node for the body
+     * @return a transform context configured for body execution
      */
     private TransformContext createBodyContext(XPathNode node) {
         TransformContext parent = streamingContext.getParentContext();

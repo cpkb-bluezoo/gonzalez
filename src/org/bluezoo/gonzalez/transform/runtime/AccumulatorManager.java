@@ -92,9 +92,10 @@ public final class AccumulatorManager {
     /**
      * Creates a copy of an existing AccumulatorManager with independent state.
      * Used for xsl:fork to give each branch its own accumulator state.
+     * The accumulator states are deep-copied so modifications don't affect the original.
      *
      * @param other the manager to copy
-     * @param newContext the context for the new manager
+     * @param newContext the transformation context for the new manager
      */
     public AccumulatorManager(AccumulatorManager other, TransformContext newContext) {
         this.stylesheet = other.stylesheet;
@@ -132,6 +133,10 @@ public final class AccumulatorManager {
 
     /**
      * Evaluates the initial value expression for an accumulator.
+     *
+     * @param def the accumulator definition
+     * @return the initial value, or empty string if no initial value expression
+     * @throws SAXException if evaluation fails
      */
     private XPathValue evaluateInitialValue(AccumulatorDefinition def) throws SAXException {
         try {
@@ -205,6 +210,10 @@ public final class AccumulatorManager {
 
     /**
      * Tests if a pattern matches a node.
+     *
+     * @param pattern the pattern to test
+     * @param node the node to match
+     * @return true if the pattern matches the node
      */
     private boolean matchesPattern(Pattern pattern, XPathNode node) {
         if (pattern == null) {
@@ -215,6 +224,12 @@ public final class AccumulatorManager {
 
     /**
      * Evaluates an accumulator rule to compute the new value.
+     *
+     * @param state the accumulator state
+     * @param rule the rule to evaluate
+     * @param node the node triggering the rule
+     * @return the new accumulator value
+     * @throws SAXException if evaluation fails
      */
     private XPathValue evaluateRule(AccumulatorState state, AccumulatorRule rule,
                                      XPathNode node) throws SAXException {

@@ -38,7 +38,15 @@ public final class BooleanFunctions {
 
     private BooleanFunctions() {}
 
-    /** boolean(object) - converts to boolean */
+    /**
+     * XPath 1.0 boolean() function.
+     * 
+     * <p>Converts the argument to a boolean value.
+     * 
+     * <p>Signature: boolean(object) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-boolean">XPath 1.0 boolean()</a>
+     */
     public static final Function BOOLEAN = new Function() {
         @Override public String getName() { return "boolean"; }
         @Override public int getMinArgs() { return 1; }
@@ -50,7 +58,15 @@ public final class BooleanFunctions {
         }
     };
 
-    /** not(boolean) - logical negation */
+    /**
+     * XPath 1.0 not() function.
+     * 
+     * <p>Returns the logical negation of the boolean argument.
+     * 
+     * <p>Signature: not(boolean) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-not">XPath 1.0 not()</a>
+     */
     public static final Function NOT = new Function() {
         @Override public String getName() { return "not"; }
         @Override public int getMinArgs() { return 1; }
@@ -62,7 +78,15 @@ public final class BooleanFunctions {
         }
     };
 
-    /** true() - returns true */
+    /**
+     * XPath 1.0 true() function.
+     * 
+     * <p>Returns the boolean value true.
+     * 
+     * <p>Signature: true() → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-true">XPath 1.0 true()</a>
+     */
     public static final Function TRUE = new Function() {
         @Override public String getName() { return "true"; }
         @Override public int getMinArgs() { return 0; }
@@ -74,7 +98,15 @@ public final class BooleanFunctions {
         }
     };
 
-    /** false() - returns false */
+    /**
+     * XPath 1.0 false() function.
+     * 
+     * <p>Returns the boolean value false.
+     * 
+     * <p>Signature: false() → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-false">XPath 1.0 false()</a>
+     */
     public static final Function FALSE = new Function() {
         @Override public String getName() { return "false"; }
         @Override public int getMinArgs() { return 0; }
@@ -86,7 +118,17 @@ public final class BooleanFunctions {
         }
     };
 
-    /** lang(string) - tests xml:lang */
+    /**
+     * XPath 1.0 lang() function.
+     * 
+     * <p>Returns true if the context node's xml:lang attribute matches the argument,
+     * or if a parent element's xml:lang matches. Language matching is case-insensitive
+     * and supports language subtags (e.g., "en" matches "en-US").
+     * 
+     * <p>Signature: lang(string) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-lang">XPath 1.0 lang()</a>
+     */
     public static final Function LANG = new Function() {
         @Override public String getName() { return "lang"; }
         @Override public int getMinArgs() { return 1; }
@@ -117,7 +159,11 @@ public final class BooleanFunctions {
         }
     };
 
-    /** Returns all boolean functions. */
+    /**
+     * Returns all boolean functions (XPath 1.0).
+     *
+     * @return array of all boolean function implementations
+     */
     public static Function[] getAll() {
         return new Function[] { BOOLEAN, NOT, TRUE, FALSE, LANG };
     }

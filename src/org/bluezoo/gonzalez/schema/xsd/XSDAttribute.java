@@ -38,10 +38,32 @@ public class XSDAttribute {
     
     /**
      * Attribute use mode.
+     *
+     * <p>This enum defines whether an attribute must be present, is optional,
+     * or is prohibited in instance documents.
      */
     public enum Use {
+        /**
+         * Required attribute.
+         *
+         * <p>The attribute must be present in instance documents.
+         */
         REQUIRED,
+        
+        /**
+         * Optional attribute.
+         *
+         * <p>The attribute may be present or absent in instance documents.
+         * If absent and a default value is defined, the default is used.
+         */
         OPTIONAL,
+        
+        /**
+         * Prohibited attribute.
+         *
+         * <p>The attribute must not be present in instance documents.
+         * Used in derived types to prohibit attributes inherited from base types.
+         */
         PROHIBITED
     }
     
@@ -68,72 +90,154 @@ public class XSDAttribute {
         this.namespaceURI = namespaceURI;
     }
     
+    /**
+     * Returns the attribute name.
+     *
+     * @return the local name of this attribute
+     */
     public String getName() {
         return name;
     }
     
+    /**
+     * Returns the namespace URI.
+     *
+     * @return the namespace URI, or null for local attributes
+     */
     public String getNamespaceURI() {
         return namespaceURI;
     }
     
+    /**
+     * Returns the attribute's simple type.
+     *
+     * @return the type, or null if not yet resolved
+     */
     public XSDSimpleType getType() {
         return type;
     }
     
+    /**
+     * Sets the attribute's simple type.
+     *
+     * @param type the type to set
+     */
     public void setType(XSDSimpleType type) {
         this.type = type;
     }
     
+    /**
+     * Returns the type name for forward references.
+     *
+     * @return the type name before resolution, or null
+     */
     public String getTypeName() {
         return typeName;
     }
     
+    /**
+     * Sets the type name for forward references.
+     *
+     * @param typeName the type name to resolve later
+     */
     public void setTypeName(String typeName) {
         this.typeName = typeName;
     }
     
+    /**
+     * Returns the attribute usage constraint.
+     *
+     * @return the use (OPTIONAL, REQUIRED, or PROHIBITED)
+     */
     public Use getUse() {
         return use;
     }
     
+    /**
+     * Sets the attribute usage constraint.
+     *
+     * @param use the use constraint
+     */
     public void setUse(Use use) {
         this.use = use;
     }
     
+    /**
+     * Returns true if this attribute is required.
+     *
+     * @return true if use is REQUIRED
+     */
     public boolean isRequired() {
         return use == Use.REQUIRED;
     }
     
+    /**
+     * Returns true if this attribute is prohibited.
+     *
+     * @return true if use is PROHIBITED
+     */
     public boolean isProhibited() {
         return use == Use.PROHIBITED;
     }
     
+    /**
+     * Returns the default value for this attribute.
+     *
+     * @return the default value, or null if none
+     */
     public String getDefaultValue() {
         return defaultValue;
     }
     
+    /**
+     * Sets the default value for this attribute.
+     *
+     * @param defaultValue the default value to use when attribute is omitted
+     */
     public void setDefaultValue(String defaultValue) {
         this.defaultValue = defaultValue;
     }
     
+    /**
+     * Returns the fixed value for this attribute.
+     *
+     * @return the fixed value, or null if none
+     */
     public String getFixedValue() {
         return fixedValue;
     }
     
+    /**
+     * Sets the fixed value for this attribute.
+     *
+     * @param fixedValue the required value for this attribute
+     */
     public void setFixedValue(String fixedValue) {
         this.fixedValue = fixedValue;
     }
     
+    /**
+     * Returns the form (qualified/unqualified) for this attribute.
+     *
+     * @return "qualified" or "unqualified", or null to use schema default
+     */
     public String getForm() {
         return form;
     }
     
+    /**
+     * Sets the form for this attribute.
+     *
+     * @param form "qualified" or "unqualified"
+     */
     public void setForm(String form) {
         this.form = form;
     }
     
     /**
      * Returns true if this attribute has xs:ID type.
+     *
+     * @return true if the type is derived from xs:ID
      */
     public boolean isIdAttribute() {
         return type != null && type.isDerivedFromId();

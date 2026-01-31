@@ -68,6 +68,13 @@ public class BasicXPathContext implements XPathContext {
 
     /**
      * Full constructor for creating derived contexts.
+     *
+     * @param contextNode the context node
+     * @param position the context position (1-based)
+     * @param size the context size
+     * @param variables the variable bindings map
+     * @param namespaces the namespace prefix bindings map
+     * @param functionLibrary the function library to use
      */
     private BasicXPathContext(XPathNode contextNode, int position, int size,
                               Map<String, XPathValue> variables,
@@ -106,28 +113,43 @@ public class BasicXPathContext implements XPathContext {
         return value;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public String resolveNamespacePrefix(String prefix) {
         return namespaces.get(prefix);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public XPathFunctionLibrary getFunctionLibrary() {
         return functionLibrary;
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public XPathContext withContextNode(XPathNode node) {
         return new BasicXPathContext(node, contextPosition, contextSize,
             variables, namespaces, functionLibrary);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public XPathContext withPositionAndSize(int position, int size) {
         return new BasicXPathContext(contextNode, position, size,
             variables, namespaces, functionLibrary);
     }
 
+    /**
+     * {@inheritDoc}
+     */
     @Override
     public XPathContext withVariable(String namespaceURI, String localName, XPathValue value) {
         Map<String, XPathValue> newVars = new HashMap<>(variables);
@@ -169,6 +191,13 @@ public class BasicXPathContext implements XPathContext {
 
     /**
      * Creates a variable key for the map.
+     * 
+     * <p>The key format is "{namespaceURI}localName" if a namespace is provided,
+     * or just "localName" if no namespace is provided.
+     *
+     * @param namespaceURI the variable namespace URI (may be null)
+     * @param localName the variable local name
+     * @return the variable key string
      */
     private static String makeVariableKey(String namespaceURI, String localName) {
         if (namespaceURI == null || namespaceURI.isEmpty()) {

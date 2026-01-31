@@ -89,14 +89,28 @@ public final class ForkNode implements XSLTNode {
 
     /**
      * Represents a branch within xsl:fork.
+     *
+     * <p>Each branch corresponds to an xsl:sequence child of xsl:fork.
+     * All branches receive the same SAX events but maintain independent
+     * accumulator state.
      */
     public static final class ForkBranch {
         private final XSLTNode content;
 
+        /**
+         * Creates a new fork branch.
+         *
+         * @param content the branch content (xsl:sequence body)
+         */
         public ForkBranch(XSLTNode content) {
             this.content = content;
         }
 
+        /**
+         * Returns the branch content.
+         *
+         * @return the content node, or null if empty
+         */
         public XSLTNode getContent() {
             return content;
         }
@@ -116,7 +130,10 @@ public final class ForkNode implements XSLTNode {
     /**
      * Returns the fork branches.
      *
-     * @return the branches
+     * <p>Each branch corresponds to an xsl:sequence child and will be
+     * executed concurrently with the same input events.
+     *
+     * @return the branches (immutable list)
      */
     public List<ForkBranch> getBranches() {
         return branches;

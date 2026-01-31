@@ -63,16 +63,25 @@ import java.util.*;
 public class GonzalezTransformHandler extends DefaultHandler 
         implements LexicalHandler {
 
+    /** The compiled XSLT stylesheet. */
     private final CompiledStylesheet stylesheet;
+    
+    /** Transformation parameters keyed by name. */
     private final Map<String, Object> parameters;
+    
+    /** The output handler for transformation results. */
     private final ContentHandler outputHandler;
+    
+    /** The template matcher for finding matching templates. */
     private final TemplateMatcher matcher;
+    
+    /** The error listener for reporting transformation errors. */
     private final javax.xml.transform.ErrorListener errorListener;
     
-    // Initial template (XSLT 2.0+ feature)
+    /** Initial template name for XSLT 2.0+ initial-template support. */
     private String initialTemplate;
     
-    // PSVIProvider for type information (DTD/XSD types)
+    /** PSVIProvider for accessing schema type information (DTD/XSD types). */
     private PSVIProvider psviProvider;
 
     // Document building state
@@ -654,6 +663,12 @@ public class GonzalezTransformHandler extends DefaultHandler
 
     /**
      * Applies templates to a node-set (for xsl:apply-templates with select).
+     *
+     * @param nodes the node-set to process
+     * @param mode the template mode, or null for default mode
+     * @param context the transformation context
+     * @param output the output handler
+     * @throws SAXException if a transformation error occurs
      */
     public void applyTemplatesToNodeSet(XPathNodeSet nodes, String mode,
             BasicTransformContext context, OutputHandler output) throws SAXException {

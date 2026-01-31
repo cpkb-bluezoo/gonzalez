@@ -4,6 +4,8 @@ import java.util.ResourceBundle;
 
 /**
  * English number word formatter.
+ *
+ * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  * 
  * <p>Supports both American English (no "and" after hundred) and
  * British English (uses "and" after hundred).

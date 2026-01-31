@@ -51,7 +51,7 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
     /**
      * Creates a new untyped atomic value.
      *
-     * @param lexicalValue the string representation
+     * @param lexicalValue the string representation (null is treated as empty string)
      */
     public XPathAtomicValue(String lexicalValue) {
         this.lexicalValue = lexicalValue != null ? lexicalValue : "";
@@ -106,16 +106,34 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
         return new XPathAtomicValue(value ? "true" : "false");
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#ATOMIC}
+     */
     @Override
     public Type getType() {
         return Type.ATOMIC;
     }
 
+    /**
+     * Returns the lexical (string) value of this atomic value.
+     *
+     * @return the string representation
+     */
     @Override
     public String asString() {
         return lexicalValue;
     }
 
+    /**
+     * Converts this atomic value to a number.
+     *
+     * <p>If the lexical value can be parsed as a number, returns that number.
+     * Otherwise returns NaN. The result is cached for performance.
+     *
+     * @return the numeric value, or NaN if not numeric
+     */
     @Override
     public double asNumber() {
         if (numericValue != null) {
@@ -125,12 +143,24 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
         return numericValue;
     }
 
+    /**
+     * Converts this atomic value to a boolean.
+     *
+     * <p>Non-empty strings are truthy; empty strings are falsy.
+     *
+     * @return true if the lexical value is non-empty, false otherwise
+     */
     @Override
     public boolean asBoolean() {
         // XPath 2.0: Non-empty string is truthy
         return !lexicalValue.isEmpty();
     }
 
+    /**
+     * Atomic values cannot be converted to node-sets.
+     *
+     * @return null (atomic values are not node-sets)
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         // Atomic values are not node-sets
@@ -180,10 +210,11 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
 
     /**
      * Compares this atomic value to another.
-     * Uses numeric comparison if both values are numeric, otherwise string comparison.
      *
-     * @param other the other atomic value
-     * @return comparison result
+     * <p>Uses numeric comparison if both values are numeric, otherwise string comparison.
+     *
+     * @param other the other atomic value (must not be null)
+     * @return negative if this is less than other, zero if equal, positive if greater
      */
     @Override
     public int compareTo(XPathAtomicValue other) {
@@ -195,10 +226,12 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
 
     /**
      * Compares this atomic value to any XPathValue.
-     * Uses appropriate comparison based on types.
      *
-     * @param other the other value
-     * @return comparison result
+     * <p>Uses appropriate comparison based on types. If the other value is numeric
+     * and this value is numeric, uses numeric comparison. Otherwise uses string comparison.
+     *
+     * @param other the other value (must not be null)
+     * @return negative if this is less than other, zero if equal, positive if greater
      */
     public int compareToValue(XPathValue other) {
         if (other instanceof XPathAtomicValue) {
@@ -216,8 +249,10 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
     /**
      * Checks equality with another atomic value using XPath 2.0 semantics.
      *
-     * @param other the other value
-     * @return true if equal
+     * <p>If both values are numeric, compares numerically. Otherwise compares lexically.
+     *
+     * @param other the other value (must not be null)
+     * @return true if the values are equal according to XPath 2.0 rules
      */
     public boolean valueEquals(XPathAtomicValue other) {
         if (this.isNumericValue() && other.isNumericValue()) {
@@ -226,6 +261,14 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
         return this.lexicalValue.equals(other.lexicalValue);
     }
 
+    /**
+     * Compares this atomic value with another object for equality.
+     *
+     * <p>Two atomic values are equal if they have the same lexical value.
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -237,11 +280,21 @@ public final class XPathAtomicValue implements XPathValue, Comparable<XPathAtomi
         return lexicalValue.equals(((XPathAtomicValue) obj).lexicalValue);
     }
 
+    /**
+     * Returns a hash code for this atomic value.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return lexicalValue.hashCode();
     }
 
+    /**
+     * Returns a string representation of this atomic value.
+     *
+     * @return a string in the format "atomic(value)"
+     */
     @Override
     public String toString() {
         return "atomic(" + lexicalValue + ")";

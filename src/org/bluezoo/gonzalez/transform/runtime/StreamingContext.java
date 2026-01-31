@@ -146,6 +146,7 @@ public final class StreamingContext {
 
     /**
      * Increments the element depth (called on startElement).
+     * Used to track nesting level during streaming traversal.
      */
     public void pushDepth() {
         depth++;
@@ -153,6 +154,7 @@ public final class StreamingContext {
 
     /**
      * Decrements the element depth (called on endElement).
+     * Used to track nesting level during streaming traversal.
      */
     public void popDepth() {
         depth--;
@@ -177,9 +179,10 @@ public final class StreamingContext {
     }
 
     /**
-     * Creates an XPath context for expression evaluation.
+     * Creates an XPath context for expression evaluation in streaming mode.
+     * The context provides access to the current streaming node and variable scope.
      *
-     * @return an XPath context
+     * @return an XPath context configured for streaming evaluation
      */
     public XPathContext createXPathContext() {
         return new StreamingXPathContext();

@@ -62,6 +62,11 @@ public class BasicTransformContext implements TransformContext {
 
     /**
      * Creates a new transform context.
+     *
+     * @param stylesheet the compiled stylesheet
+     * @param contextNode the initial context node
+     * @param matcher the template matcher
+     * @param outputHandler the output handler
      */
     public BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
             TemplateMatcher matcher, OutputHandler outputHandler) {
@@ -72,6 +77,12 @@ public class BasicTransformContext implements TransformContext {
 
     /**
      * Creates a new transform context with an error listener.
+     *
+     * @param stylesheet the compiled stylesheet
+     * @param contextNode the initial context node
+     * @param matcher the template matcher
+     * @param outputHandler the output handler
+     * @param errorListener the error listener for transformation errors
      */
     public BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
             TemplateMatcher matcher, OutputHandler outputHandler,
@@ -111,6 +122,12 @@ public class BasicTransformContext implements TransformContext {
         return stylesheet;
     }
 
+    /**
+     * Returns the static base URI for the current instruction.
+     * Uses instruction-level override if set, otherwise uses stylesheet base URI.
+     *
+     * @return the static base URI, or null if not available
+     */
     @Override
     public String getStaticBaseURI() {
         // Use instruction-level override if set, otherwise use stylesheet base URI
@@ -130,6 +147,11 @@ public class BasicTransformContext implements TransformContext {
         return variableScope;
     }
 
+    /**
+     * Creates a new context with a pushed variable scope.
+     *
+     * @return a new context with a fresh variable scope level
+     */
     @Override
     public TransformContext pushVariableScope() {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
@@ -138,6 +160,12 @@ public class BasicTransformContext implements TransformContext {
             runtimeValidator);
     }
 
+    /**
+     * Creates a new context with the specified template mode.
+     *
+     * @param mode the template mode (null for default mode)
+     * @return a new context with the specified mode
+     */
     @Override
     public TransformContext withMode(String mode) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
@@ -146,10 +174,16 @@ public class BasicTransformContext implements TransformContext {
             runtimeValidator);
     }
 
+    /**
+     * Creates a new context with the specified context node.
+     * Note: When changing context node for XPath evaluation (e.g., in predicates),
+     * the XSLT current node stays the same. Use withXsltCurrentNode to update it.
+     *
+     * @param node the new context node
+     * @return a new context with the specified context node
+     */
     @Override
     public TransformContext withContextNode(XPathNode node) {
-        // Note: When changing context node for XPath evaluation (e.g., in predicates),
-        // the XSLT current node stays the same. Use withXsltCurrentNode to update it.
         return new BasicTransformContext(stylesheet, node, xsltCurrentNode, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
@@ -159,6 +193,9 @@ public class BasicTransformContext implements TransformContext {
     /**
      * Creates a new context with a new XSLT current node.
      * This should be used when entering a new template or for-each iteration.
+     *
+     * @param node the new XSLT current node
+     * @return a new context with the specified current node
      */
     public TransformContext withXsltCurrentNode(XPathNode node) {
         return new BasicTransformContext(stylesheet, node, node, null, position, size,
@@ -187,6 +224,9 @@ public class BasicTransformContext implements TransformContext {
     /**
      * Creates a new context with a context item (for atomic values).
      * This is used in for-each loops over atomic sequences.
+     *
+     * @param item the context item (atomic value or node)
+     * @return a new context with the specified context item
      */
     public BasicTransformContext withContextItem(XPathValue item) {
         // If item is a node, also set it as context node
@@ -200,11 +240,20 @@ public class BasicTransformContext implements TransformContext {
     /**
      * Returns the context item (atomic value or node).
      * Returns null if there is no context item (only context node).
+     *
+     * @return the context item, or null if not set
      */
     public XPathValue getContextItem() {
         return contextItem;
     }
 
+    /**
+     * Creates a new context with the specified position and size.
+     *
+     * @param position the context position (1-based)
+     * @param size the context size
+     * @return a new context with the specified position and size
+     */
     @Override
     public TransformContext withPositionAndSize(int position, int size) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
@@ -213,9 +262,16 @@ public class BasicTransformContext implements TransformContext {
             runtimeValidator);
     }
 
+    /**
+     * Creates a new context with a variable binding.
+     *
+     * @param namespaceURI the variable namespace URI (may be null)
+     * @param localName the variable local name
+     * @param value the variable value
+     * @return a new context with the variable bound
+     */
     @Override
     public TransformContext withVariable(String namespaceURI, String localName, XPathValue value) {
-        // Create new variable scope with the binding
         VariableScope newScope = variableScope.push();
         newScope.bind(localName, value);
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
@@ -229,6 +285,12 @@ public class BasicTransformContext implements TransformContext {
         return currentTemplateRule;
     }
 
+    /**
+     * Creates a new context with the specified current template rule.
+     *
+     * @param rule the template rule being executed
+     * @return a new context with the specified template rule
+     */
     @Override
     public TransformContext withCurrentTemplateRule(TemplateRule rule) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
@@ -237,6 +299,12 @@ public class BasicTransformContext implements TransformContext {
             runtimeValidator);
     }
 
+    /**
+     * Creates a new context with the specified static base URI.
+     *
+     * @param baseURI the static base URI for the instruction
+     * @return a new context with the specified base URI
+     */
     @Override
     public TransformContext withStaticBaseURI(String baseURI) {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
@@ -260,6 +328,13 @@ public class BasicTransformContext implements TransformContext {
         return errorListener;
     }
 
+    /**
+     * Evaluates an XPath expression in this context.
+     *
+     * @param expression the compiled XPath expression
+     * @return the evaluation result
+     * @throws XPathException if evaluation fails
+     */
     @Override
     public XPathValue evaluateXPath(XPathExpression expression) throws XPathException {
         return expression.evaluate(this);
@@ -297,10 +372,16 @@ public class BasicTransformContext implements TransformContext {
         return functionLibrary;
     }
 
+    /**
+     * Resolves a namespace prefix to a URI.
+     * First checks the stylesheet's namespace bindings, then falls back
+     * to the source document's namespace bindings.
+     *
+     * @param prefix the namespace prefix (null for default namespace)
+     * @return the namespace URI, or null if not found
+     */
     @Override
     public String resolveNamespacePrefix(String prefix) {
-        // First, check the stylesheet's namespace bindings
-        // This is needed for namespace-prefixed variable names ($ns:var)
         if (stylesheet != null) {
             String uri = stylesheet.resolveNamespacePrefix(prefix);
             if (uri != null) {
@@ -316,6 +397,8 @@ public class BasicTransformContext implements TransformContext {
 
     /**
      * Returns the output handler.
+     *
+     * @return the output handler
      */
     public OutputHandler getOutputHandler() {
         return outputHandler;
@@ -323,6 +406,9 @@ public class BasicTransformContext implements TransformContext {
 
     /**
      * Sets a variable in the current scope.
+     *
+     * @param name the variable name (local name only)
+     * @param value the variable value
      */
     public void setVariable(String name, XPathValue value) {
         variableScope.bind(name, value);
@@ -330,6 +416,10 @@ public class BasicTransformContext implements TransformContext {
 
     /**
      * Sets a variable with namespace in the current scope.
+     *
+     * @param namespaceURI the namespace URI (may be null)
+     * @param localName the local name
+     * @param value the variable value
      */
     public void setVariable(String namespaceURI, String localName, XPathValue value) {
         variableScope.bind(namespaceURI, localName, value);
@@ -337,6 +427,10 @@ public class BasicTransformContext implements TransformContext {
 
     /**
      * Sets a parameter value (checks if already bound).
+     * Parameters take the passed value if provided, otherwise use the default.
+     *
+     * @param name the parameter name
+     * @param value the parameter value
      */
     public void setParameter(String name, XPathValue value) {
         // Parameters take passed value if provided, otherwise default
@@ -363,6 +457,12 @@ public class BasicTransformContext implements TransformContext {
         this.accumulatorManager = accumulatorManager;
     }
 
+    /**
+     * Returns the accumulator-before value for the named accumulator.
+     *
+     * @param name the accumulator name
+     * @return the before value, or null if accumulator not found
+     */
     @Override
     public XPathValue getAccumulatorBefore(String name) {
         if (accumulatorManager != null) {
@@ -371,6 +471,12 @@ public class BasicTransformContext implements TransformContext {
         return null;
     }
 
+    /**
+     * Returns the accumulator-after value for the named accumulator.
+     *
+     * @param name the accumulator name
+     * @return the after value, or null if accumulator not found
+     */
     @Override
     public XPathValue getAccumulatorAfter(String name) {
         if (accumulatorManager != null) {
@@ -379,6 +485,13 @@ public class BasicTransformContext implements TransformContext {
         return null;
     }
 
+    /**
+     * Returns a schema simple type by name.
+     *
+     * @param namespaceURI the type namespace URI
+     * @param localName the type local name
+     * @return the simple type, or null if not found
+     */
     @Override
     public XSDSimpleType getSchemaType(String namespaceURI, String localName) {
         if (stylesheet != null) {
@@ -387,6 +500,11 @@ public class BasicTransformContext implements TransformContext {
         return null;
     }
 
+    /**
+     * Returns the XSLT version of the stylesheet.
+     *
+     * @return the XSLT version (e.g., 1.0, 2.0, 3.0)
+     */
     @Override
     public double getXsltVersion() {
         if (stylesheet != null) {

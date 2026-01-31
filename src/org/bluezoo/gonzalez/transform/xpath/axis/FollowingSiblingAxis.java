@@ -44,41 +44,81 @@ public final class FollowingSiblingAxis implements Axis {
 
     private FollowingSiblingAxis() {}
 
+    /**
+     * Returns the name of this axis.
+     *
+     * @return the axis name "following-sibling"
+     */
     @Override
     public String getName() {
         return "following-sibling";
     }
 
+    /**
+     * Returns false since this is a forward axis.
+     *
+     * @return false
+     */
     @Override
     public boolean isReverse() {
         return false;
     }
 
+    /**
+     * Returns an iterator over the following siblings of the context node.
+     *
+     * <p>Following siblings are all siblings that appear after the context
+     * node in document order. If the context node is an attribute or namespace
+     * node, this axis is empty.
+     *
+     * @param contextNode the context node whose following siblings to iterate
+     * @return iterator over following sibling nodes in document order
+     */
     @Override
     public Iterator<XPathNode> iterate(XPathNode contextNode) {
         return new FollowingSiblingIterator(contextNode);
     }
 
+    /**
+     * Returns the principal node type for this axis.
+     *
+     * @return {@link PrincipalNodeType#ELEMENT}
+     */
     @Override
     public PrincipalNodeType getPrincipalNodeType() {
         return PrincipalNodeType.ELEMENT;
     }
 
     /**
-     * Iterator that traverses following siblings.
+     * Iterator that traverses following siblings in document order.
      */
     private static class FollowingSiblingIterator implements Iterator<XPathNode> {
         private XPathNode current;
 
+        /**
+         * Creates a new following sibling iterator.
+         *
+         * @param node the context node
+         */
         FollowingSiblingIterator(XPathNode node) {
             current = node.getFollowingSibling();
         }
 
+        /**
+         * Returns true if there are more following siblings to iterate.
+         *
+         * @return true if more following siblings exist
+         */
         @Override
         public boolean hasNext() {
             return current != null;
         }
 
+        /**
+         * Returns the next following sibling node and advances to the next sibling.
+         *
+         * @return the next following sibling node
+         */
         @Override
         public XPathNode next() {
             XPathNode result = current;

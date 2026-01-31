@@ -115,6 +115,12 @@ public class SequenceType {
     
     /**
      * Creates a sequence type.
+     *
+     * @param itemKind the kind of item (ITEM, NODE, ELEMENT, ATOMIC, etc.)
+     * @param namespaceURI the namespace URI for atomic types or named element/attribute (may be null)
+     * @param localName the local name for atomic types or named element/attribute (may be null)
+     * @param typeName the type name for element(*, type) or attribute(*, type) (may be null)
+     * @param occurrence the occurrence indicator (ONE, ZERO_OR_ONE, ZERO_OR_MORE, ONE_OR_MORE)
      */
     public SequenceType(ItemKind itemKind, String namespaceURI, String localName, 
                         String typeName, Occurrence occurrence) {
@@ -126,55 +132,103 @@ public class SequenceType {
     }
     
     /**
-     * Creates an atomic type.
+     * Creates an atomic type sequence type.
+     *
+     * @param namespaceURI the namespace URI of the atomic type (e.g., XS_NAMESPACE for xs:string)
+     * @param localName the local name of the atomic type (e.g., "string", "integer")
+     * @param occurrence the occurrence indicator
+     * @return a sequence type for the atomic type
      */
     public static SequenceType atomic(String namespaceURI, String localName, Occurrence occurrence) {
         return new SequenceType(ItemKind.ATOMIC, namespaceURI, localName, null, occurrence);
     }
     
     /**
-     * Creates an element type.
+     * Creates an element type sequence type.
+     *
+     * @param namespaceURI the namespace URI of the element (may be null for any namespace)
+     * @param localName the local name of the element (may be null for any element)
+     * @param occurrence the occurrence indicator
+     * @return a sequence type for the element type
      */
     public static SequenceType element(String namespaceURI, String localName, Occurrence occurrence) {
         return new SequenceType(ItemKind.ELEMENT, namespaceURI, localName, null, occurrence);
     }
     
     /**
-     * Creates an attribute type.
+     * Creates an attribute type sequence type.
+     *
+     * @param namespaceURI the namespace URI of the attribute (may be null for any namespace)
+     * @param localName the local name of the attribute (may be null for any attribute)
+     * @param occurrence the occurrence indicator
+     * @return a sequence type for the attribute type
      */
     public static SequenceType attribute(String namespaceURI, String localName, Occurrence occurrence) {
         return new SequenceType(ItemKind.ATTRIBUTE, namespaceURI, localName, null, occurrence);
     }
     
     /**
-     * Returns a copy with a different occurrence indicator.
+     * Returns a copy of this sequence type with a different occurrence indicator.
+     *
+     * @param occ the new occurrence indicator
+     * @return a new sequence type with the same item kind but different occurrence
      */
     public SequenceType withOccurrence(Occurrence occ) {
         return new SequenceType(itemKind, namespaceURI, localName, typeName, occ);
     }
     
+    /**
+     * Returns the item kind of this sequence type.
+     *
+     * @return the item kind (ITEM, NODE, ELEMENT, ATOMIC, etc.)
+     */
     public ItemKind getItemKind() {
         return itemKind;
     }
     
+    /**
+     * Returns the namespace URI for atomic types or named element/attribute.
+     *
+     * @return the namespace URI, or null if not applicable
+     */
     public String getNamespaceURI() {
         return namespaceURI;
     }
     
+    /**
+     * Returns the local name for atomic types or named element/attribute.
+     *
+     * @return the local name, or null if not applicable
+     */
     public String getLocalName() {
         return localName;
     }
     
+    /**
+     * Returns the type name for element(*, type) or attribute(*, type).
+     *
+     * @return the type name, or null if not applicable
+     */
     public String getTypeName() {
         return typeName;
     }
     
+    /**
+     * Returns the occurrence indicator.
+     *
+     * @return the occurrence (ONE, ZERO_OR_ONE, ZERO_OR_MORE, ONE_OR_MORE)
+     */
     public Occurrence getOccurrence() {
         return occurrence;
     }
     
     /**
      * Returns true if this type allows empty sequences.
+     *
+     * <p>Types with occurrence indicators ? (ZERO_OR_ONE) or * (ZERO_OR_MORE)
+     * allow empty sequences, as does the empty-sequence() type.
+     *
+     * @return true if empty sequences are allowed
      */
     public boolean allowsEmpty() {
         return occurrence == Occurrence.ZERO_OR_ONE || 
@@ -184,6 +238,11 @@ public class SequenceType {
     
     /**
      * Returns true if this type allows multiple items.
+     *
+     * <p>Types with occurrence indicators * (ZERO_OR_MORE) or + (ONE_OR_MORE)
+     * allow multiple items.
+     *
+     * @return true if multiple items are allowed
      */
     public boolean allowsMany() {
         return occurrence == Occurrence.ZERO_OR_MORE || 
@@ -193,8 +252,16 @@ public class SequenceType {
     /**
      * Checks if a value matches this sequence type.
      *
-     * @param value the value to check
-     * @return true if the value matches this type
+     * <p>This performs type checking according to XPath 2.0/3.1 rules:
+     * <ul>
+     *   <li>Checks the number of items matches the occurrence indicator</li>
+     *   <li>Checks each item matches the item type</li>
+     *   <li>For atomic types, checks the value is of the correct type</li>
+     *   <li>For element/attribute types, checks name and optionally type annotation</li>
+     * </ul>
+     *
+     * @param value the value to check (may be null, treated as empty sequence)
+     * @return true if the value matches this sequence type
      */
     public boolean matches(XPathValue value) {
         if (value == null) {
@@ -639,6 +706,14 @@ public class SequenceType {
         }
     }
     
+    /**
+     * Returns a string representation of this sequence type.
+     *
+     * <p>The format matches XPath 2.0/3.1 syntax, e.g., "xs:string", "element()*",
+     * "node()?", "empty-sequence()".
+     *
+     * @return a string representation of the sequence type
+     */
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();

@@ -11,6 +11,8 @@ import java.util.Map;
 
 /**
  * Facade for locale-specific date/time formatting.
+ *
+ * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  * 
  * <p>This class provides access to localized strings for:
  * <ul>

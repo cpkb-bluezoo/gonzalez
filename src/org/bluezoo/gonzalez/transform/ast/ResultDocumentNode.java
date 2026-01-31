@@ -217,7 +217,12 @@ public final class ResultDocumentNode implements XSLTNode {
     }
 
     /**
-     * Returns the href AVT.
+     * Returns the href attribute value template.
+     *
+     * <p>The href AVT specifies the URI of the output document. If null,
+     * the content is written to the principal output.
+     *
+     * @return the href AVT, or null if writing to principal output
      */
     public AttributeValueTemplate getHrefAvt() {
         return hrefAvt;
@@ -225,13 +230,20 @@ public final class ResultDocumentNode implements XSLTNode {
 
     /**
      * Returns the format name.
+     *
+     * <p>The format name references a named output format defined via
+     * xsl:output with a name attribute.
+     *
+     * @return the format name, or null if not specified
      */
     public String getFormat() {
         return format;
     }
 
     /**
-     * Returns the content.
+     * Returns the content to be written to the result document.
+     *
+     * @return the content node, or null if empty
      */
     public XSLTNode getContent() {
         return content;

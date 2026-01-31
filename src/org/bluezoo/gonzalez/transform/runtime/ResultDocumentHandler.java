@@ -340,7 +340,9 @@ public final class ResultDocumentHandler implements OutputHandler {
     }
 
     /**
-     * Returns the output properties.
+     * Returns the output properties for this result document.
+     *
+     * @return the output properties
      */
     public OutputProperties getOutputProperties() {
         return outputProperties;

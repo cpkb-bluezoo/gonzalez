@@ -42,7 +42,7 @@ public final class XPathAnyURI implements XPathValue, Comparable<XPathAnyURI> {
     /**
      * Creates a new xs:anyURI value.
      *
-     * @param uri the URI string
+     * @param uri the URI string (null is treated as empty string)
      */
     public XPathAnyURI(String uri) {
         this.uri = uri != null ? uri : "";
@@ -70,6 +70,11 @@ public final class XPathAnyURI implements XPathValue, Comparable<XPathAnyURI> {
         return uri;
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#ATOMIC}
+     */
     @Override
     public Type getType() {
         return Type.ATOMIC;
@@ -84,33 +89,72 @@ public final class XPathAnyURI implements XPathValue, Comparable<XPathAnyURI> {
         return "anyURI";
     }
 
+    /**
+     * Returns the URI string value.
+     *
+     * @return the URI string
+     */
     @Override
     public String asString() {
         return uri;
     }
 
+    /**
+     * URIs cannot be converted to numbers.
+     *
+     * @return NaN (URIs are not numeric)
+     */
     @Override
     public double asNumber() {
         // URIs are not numeric
         return Double.NaN;
     }
 
+    /**
+     * Converts this URI to a boolean.
+     *
+     * <p>Non-empty URIs are truthy; empty URIs are falsy.
+     *
+     * @return true if the URI is non-empty, false otherwise
+     */
     @Override
     public boolean asBoolean() {
         // Non-empty URI is truthy
         return !uri.isEmpty();
     }
 
+    /**
+     * URIs cannot be converted to node-sets.
+     *
+     * @return null (URIs are not node-sets)
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         return null;
     }
 
+    /**
+     * Compares this URI with another.
+     *
+     * <p>Comparison is done lexicographically on the URI strings.
+     *
+     * @param other the other URI (must not be null)
+     * @return negative if this is less than other, zero if equal, positive if greater
+     */
     @Override
     public int compareTo(XPathAnyURI other) {
         return this.uri.compareTo(other.uri);
     }
 
+    /**
+     * Compares this URI with another object for equality.
+     *
+     * <p>URIs are equal if they have the same string value. Also compares equal
+     * to XPathString values with the same string content.
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -125,11 +169,21 @@ public final class XPathAnyURI implements XPathValue, Comparable<XPathAnyURI> {
         return false;
     }
 
+    /**
+     * Returns a hash code for this URI.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return uri.hashCode();
     }
 
+    /**
+     * Returns a string representation of this URI.
+     *
+     * @return a string in the format "xs:anyURI(uri)"
+     */
     @Override
     public String toString() {
         return "xs:anyURI(" + uri + ")";

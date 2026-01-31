@@ -41,6 +41,8 @@ public final class XPathBoolean implements XPathValue {
 
     /**
      * Private constructor - use {@link #of(boolean)} or the singletons.
+     *
+     * @param value the boolean value
      */
     private XPathBoolean(boolean value) {
         this.value = value;
@@ -67,11 +69,24 @@ public final class XPathBoolean implements XPathValue {
         return of(value.asBoolean());
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#BOOLEAN}
+     */
     @Override
     public Type getType() {
         return Type.BOOLEAN;
     }
 
+    /**
+     * Converts this boolean to a string according to XPath 1.0 Section 4.2.
+     *
+     * <p>The boolean false value is converted to the string "false".
+     * The boolean true value is converted to the string "true".
+     *
+     * @return "true" or "false"
+     */
     @Override
     public String asString() {
         // XPath 1.0 Section 4.2: "The boolean false value is converted to
@@ -79,6 +94,13 @@ public final class XPathBoolean implements XPathValue {
         return value ? "true" : "false";
     }
 
+    /**
+     * Converts this boolean to a number according to XPath 1.0 Section 4.4.
+     *
+     * <p>Boolean true is converted to 1.0; boolean false is converted to 0.0.
+     *
+     * @return 1.0 if true, 0.0 if false
+     */
     @Override
     public double asNumber() {
         // XPath 1.0 Section 4.4: "boolean true is converted to 1;
@@ -86,11 +108,21 @@ public final class XPathBoolean implements XPathValue {
         return value ? 1.0 : 0.0;
     }
 
+    /**
+     * Returns this boolean value unchanged.
+     *
+     * @return the boolean value
+     */
     @Override
     public boolean asBoolean() {
         return value;
     }
 
+    /**
+     * Booleans cannot be converted to node-sets.
+     *
+     * @return null (booleans are not node-sets)
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         return null;
@@ -134,6 +166,12 @@ public final class XPathBoolean implements XPathValue {
         return of(this.value || other.value);
     }
 
+    /**
+     * Compares this boolean with another object for equality.
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -145,11 +183,21 @@ public final class XPathBoolean implements XPathValue {
         return value == ((XPathBoolean) obj).value;
     }
 
+    /**
+     * Returns a hash code for this boolean.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return Boolean.hashCode(value);
     }
 
+    /**
+     * Returns a string representation of this XPath boolean.
+     *
+     * @return a string in the format "XPathBoolean[true]" or "XPathBoolean[false]"
+     */
     @Override
     public String toString() {
         return "XPathBoolean[" + value + "]";

@@ -34,16 +34,21 @@ import org.bluezoo.gonzalez.schema.ValidationSource;
  */
 public class XSDTypedValue implements TypedValue {
 
+    /** The XSD datatype local name (e.g., "integer", "date"). */
     private final String datatypeLocalName;
+    
+    /** The converted Java value (may be null if conversion failed). */
     private final Object typedValue;
+    
+    /** The original lexical representation (normalized). */
     private final String lexicalValue;
 
     /**
      * Creates an XSD typed value.
      *
-     * @param datatypeLocalName the XSD datatype local name (e.g., "integer")
-     * @param typedValue the converted Java value
-     * @param lexicalValue the original lexical representation
+     * @param datatypeLocalName the XSD datatype local name (e.g., "integer", "date", "string")
+     * @param typedValue the converted Java value (may be null if conversion failed)
+     * @param lexicalValue the original lexical representation, never null
      */
     public XSDTypedValue(String datatypeLocalName, Object typedValue, String lexicalValue) {
         this.datatypeLocalName = datatypeLocalName;
@@ -51,26 +56,64 @@ public class XSDTypedValue implements TypedValue {
         this.lexicalValue = lexicalValue;
     }
 
+    /**
+     * Returns the datatype namespace URI.
+     *
+     * <p>For XSD types, this is always the XML Schema namespace URI.
+     *
+     * @return {@link TypedValue#XSD_NAMESPACE}
+     */
     @Override
     public String getDatatypeURI() {
         return XSD_NAMESPACE;
     }
 
+    /**
+     * Returns the datatype local name.
+     *
+     * <p>This is the XSD Part 2 datatype name, such as "integer", "date",
+     * "string", "boolean", etc.
+     *
+     * @return the datatype local name, never null
+     */
     @Override
     public String getDatatypeLocalName() {
         return datatypeLocalName;
     }
 
+    /**
+     * Returns the typed Java value.
+     *
+     * <p>The Java type depends on the XSD datatype. See
+     * {@link TypedValue#getTypedValue()} for the mapping.
+     *
+     * @return the converted Java value, or null if conversion failed
+     */
     @Override
     public Object getTypedValue() {
         return typedValue;
     }
 
+    /**
+     * Returns the original lexical representation.
+     *
+     * <p>This is the normalized string value as it appeared in the document,
+     * after whitespace normalization according to the datatype's whitespace facet.
+     *
+     * @return the lexical value, never null
+     */
     @Override
     public String getLexicalValue() {
         return lexicalValue;
     }
 
+    /**
+     * Returns the validation source.
+     *
+     * <p>For XSDTypedValue, this is always XSD.
+     *
+     * @return {@link ValidationSource#XSD}
+     */
     @Override
     public ValidationSource getValidationSource() {
         return ValidationSource.XSD;

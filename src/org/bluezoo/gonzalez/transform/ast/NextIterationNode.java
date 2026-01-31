@@ -52,22 +52,48 @@ public final class NextIterationNode implements XSLTNode {
 
     /**
      * Represents a parameter value for next-iteration.
+     *
+     * <p>Encapsulates a parameter value specified via xsl:with-param within
+     * xsl:next-iteration. The value can be provided either via the select
+     * attribute or as element content.
      */
     public static final class ParamValue {
         private final String name;
         private final XPathExpression select;
         private final XSLTNode content;
 
+        /**
+         * Creates a new parameter value.
+         *
+         * @param name the parameter name
+         * @param select the select expression (may be null if using content)
+         * @param content the content node (may be null if using select)
+         */
         public ParamValue(String name, XPathExpression select, XSLTNode content) {
             this.name = name;
             this.select = select;
             this.content = content;
         }
 
+        /**
+         * Returns the parameter name.
+         *
+         * @return the parameter name
+         */
         public String getName() {
             return name;
         }
 
+        /**
+         * Evaluates the parameter value.
+         *
+         * <p>If a select expression is provided, it is evaluated. Otherwise,
+         * the content is evaluated as a result tree fragment.
+         *
+         * @param context the transformation context
+         * @return the evaluated parameter value
+         * @throws SAXException if an error occurs during evaluation
+         */
         public XPathValue evaluate(TransformContext context) throws SAXException {
             try {
                 if (select != null) {
@@ -125,15 +151,29 @@ public final class NextIterationNode implements XSLTNode {
 
     /**
      * Signal exception used to communicate next-iteration to the iterate loop.
+     *
+     * <p>This exception is thrown by xsl:next-iteration to signal to the
+     * enclosing xsl:iterate that iteration should continue with updated
+     * parameter values. The exception is caught by the iterate loop handler.
      */
     public static class NextIterationSignal extends SAXException {
         private final Map<String, XPathValue> params;
 
+        /**
+         * Creates a new next-iteration signal.
+         *
+         * @param params the parameter values for the next iteration
+         */
         public NextIterationSignal(Map<String, XPathValue> params) {
             super("next-iteration");
             this.params = params;
         }
 
+        /**
+         * Returns the parameter values for the next iteration.
+         *
+         * @return map of parameter names to values
+         */
         public Map<String, XPathValue> getParams() {
             return params;
         }

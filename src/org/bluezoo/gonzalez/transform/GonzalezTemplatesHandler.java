@@ -41,9 +41,16 @@ import org.bluezoo.gonzalez.transform.compiler.StylesheetResolver;
  */
 public class GonzalezTemplatesHandler implements TemplatesHandler {
 
+    /** The parent transformer factory. */
     private final GonzalezTransformerFactory factory;
+    
+    /** The stylesheet compiler, created lazily when systemId is known. */
     private StylesheetCompiler compiler;
+    
+    /** The system identifier for the stylesheet being compiled. */
     private String systemId;
+    
+    /** The compiled templates, created when getTemplates() is called. */
     private GonzalezTemplates templates;
 
     /**
@@ -67,6 +74,16 @@ public class GonzalezTemplatesHandler implements TemplatesHandler {
         return compiler;
     }
 
+    /**
+     * Gets the compiled Templates object.
+     *
+     * <p>This method compiles the stylesheet from the SAX events that have
+     * been received. It should be called after all SAX events have been
+     * processed (after endDocument()).
+     *
+     * @return the compiled Templates object
+     * @throws RuntimeException if stylesheet compilation fails
+     */
     @Override
     public Templates getTemplates() {
         if (templates == null) {
@@ -79,6 +96,14 @@ public class GonzalezTemplatesHandler implements TemplatesHandler {
         return templates;
     }
 
+    /**
+     * Sets the system identifier for the stylesheet being compiled.
+     *
+     * <p>This is used as the base URI for resolving relative references
+     * in the stylesheet (imports, includes, etc.).
+     *
+     * @param systemID the system identifier (URI)
+     */
     @Override
     public void setSystemId(String systemID) {
         this.systemId = systemID;
@@ -86,6 +111,11 @@ public class GonzalezTemplatesHandler implements TemplatesHandler {
         this.compiler = null;
     }
 
+    /**
+     * Gets the system identifier for the stylesheet being compiled.
+     *
+     * @return the system identifier, or null if not set
+     */
     @Override
     public String getSystemId() {
         return systemId;
@@ -93,58 +123,132 @@ public class GonzalezTemplatesHandler implements TemplatesHandler {
 
     // Delegate all ContentHandler methods to compiler
 
+    /**
+     * Sets the document locator for error reporting.
+     *
+     * @param locator the document locator
+     */
     @Override
     public void setDocumentLocator(Locator locator) {
         getCompiler().setDocumentLocator(locator);
     }
 
+    /**
+     * Receives notification of the beginning of a document.
+     *
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void startDocument() throws SAXException {
         templates = null; // Reset
         getCompiler().startDocument();
     }
 
+    /**
+     * Receives notification of the end of a document.
+     *
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void endDocument() throws SAXException {
         getCompiler().endDocument();
     }
 
+    /**
+     * Receives notification of the start of a namespace prefix mapping.
+     *
+     * @param prefix the namespace prefix, or empty string for default namespace
+     * @param uri the namespace URI
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void startPrefixMapping(String prefix, String uri) throws SAXException {
         getCompiler().startPrefixMapping(prefix, uri);
     }
 
+    /**
+     * Receives notification of the end of a namespace prefix mapping.
+     *
+     * @param prefix the namespace prefix, or empty string for default namespace
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void endPrefixMapping(String prefix) throws SAXException {
         getCompiler().endPrefixMapping(prefix);
     }
 
+    /**
+     * Receives notification of the start of an element.
+     *
+     * @param uri the element namespace URI, or empty string if none
+     * @param localName the element local name
+     * @param qName the element qualified name (prefix:local)
+     * @param atts the element attributes
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void startElement(String uri, String localName, String qName, Attributes atts) 
             throws SAXException {
         getCompiler().startElement(uri, localName, qName, atts);
     }
 
+    /**
+     * Receives notification of the end of an element.
+     *
+     * @param uri the element namespace URI, or empty string if none
+     * @param localName the element local name
+     * @param qName the element qualified name (prefix:local)
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void endElement(String uri, String localName, String qName) throws SAXException {
         getCompiler().endElement(uri, localName, qName);
     }
 
+    /**
+     * Receives notification of character data.
+     *
+     * @param ch the characters
+     * @param start the start position in the array
+     * @param length the number of characters to use
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
         getCompiler().characters(ch, start, length);
     }
 
+    /**
+     * Receives notification of ignorable whitespace in element content.
+     *
+     * @param ch the whitespace characters
+     * @param start the start position in the array
+     * @param length the number of characters to use
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
         getCompiler().ignorableWhitespace(ch, start, length);
     }
 
+    /**
+     * Receives notification of a processing instruction.
+     *
+     * @param target the processing instruction target
+     * @param data the processing instruction data
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void processingInstruction(String target, String data) throws SAXException {
         getCompiler().processingInstruction(target, data);
     }
 
+    /**
+     * Receives notification of a skipped entity.
+     *
+     * @param name the entity name
+     * @throws SAXException if a SAX error occurs
+     */
     @Override
     public void skippedEntity(String name) throws SAXException {
         getCompiler().skippedEntity(name);

@@ -59,6 +59,8 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Creates a root node.
+     *
+     * @return a new root node
      */
     public static StreamingNode createRoot() {
         return new StreamingNode(NodeType.ROOT, null, null, null, null, null, 
@@ -67,6 +69,15 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Creates an element node.
+     *
+     * @param namespaceURI the element namespace URI
+     * @param localName the element local name
+     * @param prefix the element prefix
+     * @param atts the SAX attributes
+     * @param namespaceBindings namespace bindings in scope
+     * @param parent the parent node
+     * @param documentOrder the document order position
+     * @return a new element node
      */
     public static StreamingNode createElement(String namespaceURI, String localName, 
             String prefix, Attributes atts, Map<String, String> namespaceBindings,
@@ -129,6 +140,11 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Creates a text node.
+     *
+     * @param text the text content
+     * @param parent the parent node
+     * @param documentOrder the document order position
+     * @return a new text node
      */
     public static StreamingNode createText(String text, StreamingNode parent, long documentOrder) {
         return new StreamingNode(NodeType.TEXT, null, null, null, text, parent,
@@ -137,6 +153,11 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Creates a comment node.
+     *
+     * @param text the comment text
+     * @param parent the parent node
+     * @param documentOrder the document order position
+     * @return a new comment node
      */
     public static StreamingNode createComment(String text, StreamingNode parent, long documentOrder) {
         return new StreamingNode(NodeType.COMMENT, null, null, null, text, parent,
@@ -145,6 +166,12 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Creates a processing instruction node.
+     *
+     * @param target the PI target
+     * @param data the PI data
+     * @param parent the parent node
+     * @param documentOrder the document order position
+     * @return a new processing instruction node
      */
     public static StreamingNode createPI(String target, String data, StreamingNode parent, 
             long documentOrder) {
@@ -338,6 +365,8 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Returns the namespace bindings in scope for this element.
+     *
+     * @return an unmodifiable map of prefix to namespace URI
      */
     public Map<String, String> getNamespaceBindings() {
         return Collections.unmodifiableMap(namespaceBindings);
@@ -345,6 +374,10 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Looks up a namespace URI by prefix.
+     * Searches from this element up to the root.
+     *
+     * @param prefix the namespace prefix (null for default namespace)
+     * @return the namespace URI, or null if not found
      */
     public String lookupNamespaceURI(String prefix) {
         if (prefix == null) {
@@ -376,7 +409,7 @@ public class StreamingNode implements XPathNode {
     /**
      * Returns the parent as a StreamingNode.
      *
-     * @return the parent node
+     * @return the parent node, or null if this is the root
      */
     public StreamingNode getParentNode() {
         return parent;
@@ -384,8 +417,9 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Adds a child node to this element.
+     * Updates sibling links automatically.
      *
-     * @param child the child to add
+     * @param child the child node to add
      */
     public void addChild(StreamingNode child) {
         if (!children.isEmpty()) {
@@ -399,7 +433,7 @@ public class StreamingNode implements XPathNode {
     /**
      * Adds a namespace mapping to this element.
      *
-     * @param prefix the namespace prefix
+     * @param prefix the namespace prefix (null or empty for default namespace)
      * @param uri the namespace URI
      */
     public void addNamespaceMapping(String prefix, String uri) {
@@ -408,9 +442,10 @@ public class StreamingNode implements XPathNode {
 
     /**
      * Appends text to this element's text content.
-     * Creates or updates a text child node.
+     * Creates or updates a text child node. If the last child is already
+     * a text node, the text is appended to it.
      *
-     * @param text the text to append
+     * @param text the text to append (ignored if null or empty)
      */
     public void appendText(String text) {
         if (text == null || text.isEmpty()) {

@@ -53,39 +53,52 @@ public interface ExtensionFunction {
     /**
      * Returns the namespace URI for this function.
      *
-     * @return the namespace URI
+     * @return the namespace URI, may be null or empty for functions in the
+     *         default namespace
      */
     String getNamespaceURI();
 
     /**
      * Returns the local name of this function.
      *
-     * @return the function name
+     * @return the function name, must not be null or empty
      */
     String getLocalName();
 
     /**
-     * Returns the minimum number of arguments.
+     * Returns the minimum number of arguments required by this function.
      *
-     * @return minimum argument count
+     * @return minimum argument count, must be non-negative
      */
     int getMinArgs();
 
     /**
-     * Returns the maximum number of arguments.
-     * Return Integer.MAX_VALUE for unlimited.
+     * Returns the maximum number of arguments accepted by this function.
      *
-     * @return maximum argument count
+     * <p>Return {@link Integer#MAX_VALUE} to indicate that the function
+     * accepts an unlimited number of arguments.
+     *
+     * @return maximum argument count, must be greater than or equal to
+     *         {@link #getMinArgs()}
      */
     int getMaxArgs();
 
     /**
      * Invokes the function with the given arguments.
      *
-     * @param args the evaluated arguments
-     * @param context the transformation context
-     * @return the function result
-     * @throws XPathException if evaluation fails
+     * <p>The arguments have already been evaluated and are provided as
+     * XPath values. The function should validate that the number of
+     * arguments is within the range specified by {@link #getMinArgs()}
+     * and {@link #getMaxArgs()}.
+     *
+     * @param args the evaluated function arguments, must not be null
+     * @param context the transformation context providing access to the
+     *                current node, variables, and other context information,
+     *                must not be null
+     * @return the function result as an XPath value, must not be null
+     * @throws XPathException if the function evaluation fails, including
+     *                       cases where the argument count is invalid or
+     *                       the arguments have incorrect types
      */
     XPathValue invoke(List<XPathValue> args, TransformContext context) throws XPathException;
 

@@ -48,7 +48,15 @@ public final class NodeSetFunctions {
 
     private NodeSetFunctions() {}
 
-    /** last() - returns context size */
+    /**
+     * XPath 1.0 last() function.
+     * 
+     * <p>Returns the context size (number of nodes in the current node-set).
+     * 
+     * <p>Signature: last() → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-last">XPath 1.0 last()</a>
+     */
     public static final Function LAST = new Function() {
         @Override public String getName() { return "last"; }
         @Override public int getMinArgs() { return 0; }
@@ -60,7 +68,15 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** position() - returns context position */
+    /**
+     * XPath 1.0 position() function.
+     * 
+     * <p>Returns the context position (1-based index of the current node in the node-set).
+     * 
+     * <p>Signature: position() → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-position">XPath 1.0 position()</a>
+     */
     public static final Function POSITION = new Function() {
         @Override public String getName() { return "position"; }
         @Override public int getMinArgs() { return 0; }
@@ -72,7 +88,15 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** count(node-set) - returns number of nodes */
+    /**
+     * XPath 1.0 count() function.
+     * 
+     * <p>Returns the number of nodes in the node-set.
+     * 
+     * <p>Signature: count(node-set) → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-count">XPath 1.0 count()</a>
+     */
     public static final Function COUNT = new Function() {
         @Override public String getName() { return "count"; }
         @Override public int getMinArgs() { return 1; }
@@ -88,7 +112,18 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** id(object, node?) - selects elements by ID (XSLT 2.0+ allows second argument) */
+    /**
+     * XPath 1.0 id() function (XSLT 2.0+ allows second argument).
+     * 
+     * <p>Returns a node-set containing elements with IDs matching the string values
+     * in the first argument. IDs are found via DTD-declared ID attributes, xml:id,
+     * or plain "id" attributes. The second argument (XSLT 2.0+) specifies the document
+     * to search; if omitted, uses the context document.
+     * 
+     * <p>Signature: id(object, node?) → node-set
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-id">XPath 1.0 id()</a>
+     */
     public static final Function ID = new Function() {
         @Override public String getName() { return "id"; }
         @Override public int getMinArgs() { return 1; }
@@ -248,7 +283,16 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** local-name(node-set?) - returns local name of first node */
+    /**
+     * XPath 1.0 local-name() function.
+     * 
+     * <p>Returns the local name (without namespace prefix) of the first node in the
+     * node-set, or the context node if no argument is provided.
+     * 
+     * <p>Signature: local-name(node-set?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-local-name">XPath 1.0 local-name()</a>
+     */
     public static final Function LOCAL_NAME = new Function() {
         @Override public String getName() { return "local-name"; }
         @Override public int getMinArgs() { return 0; }
@@ -276,7 +320,16 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** namespace-uri(node-set?) - returns namespace URI of first node */
+    /**
+     * XPath 1.0 namespace-uri() function.
+     * 
+     * <p>Returns the namespace URI of the first node in the node-set, or the context
+     * node if no argument is provided. Returns empty string if the node has no namespace.
+     * 
+     * <p>Signature: namespace-uri(node-set?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-namespace-uri">XPath 1.0 namespace-uri()</a>
+     */
     public static final Function NAMESPACE_URI = new Function() {
         @Override public String getName() { return "namespace-uri"; }
         @Override public int getMinArgs() { return 0; }
@@ -304,7 +357,16 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** name(node-set?) - returns qualified name of first node */
+    /**
+     * XPath 1.0 name() function.
+     * 
+     * <p>Returns the qualified name (prefix:localName) of the first node in the
+     * node-set, or the context node if no argument is provided.
+     * 
+     * <p>Signature: name(node-set?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-name">XPath 1.0 name()</a>
+     */
     public static final Function NAME = new Function() {
         @Override public String getName() { return "name"; }
         @Override public int getMinArgs() { return 0; }
@@ -342,7 +404,11 @@ public final class NodeSetFunctions {
         }
     };
 
-    /** Returns all node-set functions. */
+    /**
+     * Returns all node-set functions (XPath 1.0).
+     *
+     * @return array of all node-set function implementations
+     */
     public static Function[] getAll() {
         return new Function[] { LAST, POSITION, COUNT, ID, LOCAL_NAME, NAMESPACE_URI, NAME };
     }

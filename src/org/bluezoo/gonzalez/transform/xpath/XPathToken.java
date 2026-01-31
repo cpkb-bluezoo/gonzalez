@@ -115,9 +115,9 @@ public enum XPathToken {
     // XPath 2.0 node comparison operators
     /** The 'is' node identity operator. */
     IS,
-    /** The '<<' node precedes operator. */
+    /** The '&lt;&lt;' node precedes operator. */
     PRECEDES,
-    /** The '>>' node follows operator. */
+    /** The '&gt;&gt;' node follows operator. */
     FOLLOWS,
     
     // XPath 2.0 set operators
@@ -196,13 +196,13 @@ public enum XPathToken {
     EQUALS,
     /** The '!=' operator. */
     NOT_EQUALS,
-    /** The '<' operator. */
+    /** The '&lt;' operator. */
     LESS_THAN,
-    /** The '<=' operator. */
+    /** The '&lt;=' operator. */
     LESS_THAN_OR_EQUAL,
-    /** The '>' operator. */
+    /** The '&gt;' operator. */
     GREATER_THAN,
-    /** The '>=' operator. */
+    /** The '&gt;=' operator. */
     GREATER_THAN_OR_EQUAL,
     
     /** The '+' operator. */

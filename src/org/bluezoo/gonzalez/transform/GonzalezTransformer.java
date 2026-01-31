@@ -65,11 +65,22 @@ import java.util.Properties;
  */
 public class GonzalezTransformer extends Transformer {
 
+    /** The compiled XSLT stylesheet, or null for identity transform. */
     private final CompiledStylesheet stylesheet;
+    
+    /** Transformation parameters keyed by name. */
     private final Map<String, Object> parameters = new HashMap<>();
+    
+    /** Output properties for the transformation. */
     private Properties outputProperties;
+    
+    /** URI resolver for resolving external resources. */
     private URIResolver uriResolver;
+    
+    /** Error listener for reporting transformation errors. */
     private ErrorListener errorListener;
+    
+    /** Initial template name for XSLT 2.0+ initial-template support. */
     private String initialTemplate;
 
     /**
@@ -90,6 +101,14 @@ public class GonzalezTransformer extends Transformer {
         }
     }
 
+    /**
+     * Transforms the source XML document to the result target using the
+     * configured stylesheet (or performs an identity transform if no stylesheet).
+     *
+     * @param xmlSource the source XML document to transform
+     * @param outputTarget the target for the transformation output
+     * @throws TransformerException if an error occurs during transformation
+     */
     @Override
     public void transform(Source xmlSource, Result outputTarget) throws TransformerException {
         try {
@@ -339,31 +358,62 @@ public class GonzalezTransformer extends Transformer {
         throw new TransformerException("Unsupported result: " + result.getClass());
     }
 
+    /**
+     * Sets a transformation parameter.
+     *
+     * @param name the parameter name
+     * @param value the parameter value
+     */
     @Override
     public void setParameter(String name, Object value) {
         parameters.put(name, value);
     }
 
+    /**
+     * Gets a transformation parameter value.
+     *
+     * @param name the parameter name
+     * @return the parameter value, or null if not set
+     */
     @Override
     public Object getParameter(String name) {
         return parameters.get(name);
     }
 
+    /**
+     * Clears all transformation parameters.
+     */
     @Override
     public void clearParameters() {
         parameters.clear();
     }
 
+    /**
+     * Sets the URI resolver for resolving external resources during transformation.
+     *
+     * @param resolver the URI resolver, or null to use the default resolver
+     */
     @Override
     public void setURIResolver(URIResolver resolver) {
         this.uriResolver = resolver;
     }
 
+    /**
+     * Gets the URI resolver.
+     *
+     * @return the URI resolver, or null if not set
+     */
     @Override
     public URIResolver getURIResolver() {
         return uriResolver;
     }
 
+    /**
+     * Sets the output properties for the transformation.
+     *
+     * @param oformat the output properties, or null to clear all properties
+     * @throws IllegalArgumentException if any property value is invalid
+     */
     @Override
     public void setOutputProperties(Properties oformat) throws IllegalArgumentException {
         this.outputProperties = new Properties();
@@ -372,26 +422,56 @@ public class GonzalezTransformer extends Transformer {
         }
     }
 
+    /**
+     * Gets a copy of the output properties.
+     *
+     * @return a copy of the output properties
+     */
     @Override
     public Properties getOutputProperties() {
         return new Properties(outputProperties);
     }
 
+    /**
+     * Sets a single output property.
+     *
+     * @param name the property name (e.g., "method", "encoding", "indent")
+     * @param value the property value
+     * @throws IllegalArgumentException if the property name or value is invalid
+     */
     @Override
     public void setOutputProperty(String name, String value) throws IllegalArgumentException {
         outputProperties.setProperty(name, value);
     }
 
+    /**
+     * Gets an output property value.
+     *
+     * @param name the property name
+     * @return the property value, or null if not set
+     * @throws IllegalArgumentException if the property name is invalid
+     */
     @Override
     public String getOutputProperty(String name) throws IllegalArgumentException {
         return outputProperties.getProperty(name);
     }
 
+    /**
+     * Sets the error listener for reporting transformation errors and warnings.
+     *
+     * @param listener the error listener, or null to use the default listener
+     * @throws IllegalArgumentException if the listener is invalid
+     */
     @Override
     public void setErrorListener(ErrorListener listener) throws IllegalArgumentException {
         this.errorListener = listener;
     }
 
+    /**
+     * Gets the error listener.
+     *
+     * @return the error listener, or null if not set
+     */
     @Override
     public ErrorListener getErrorListener() {
         return errorListener;

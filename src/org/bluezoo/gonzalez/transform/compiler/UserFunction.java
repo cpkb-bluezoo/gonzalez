@@ -204,20 +204,41 @@ public final class UserFunction {
 
     /**
      * Represents a function parameter.
+     *
+     * <p>Function parameters define the signature of a user-defined function.
+     * Each parameter has a name and an optional type declaration.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public static final class FunctionParameter {
         private final String name;
         private final String asType;
 
+        /**
+         * Creates a function parameter.
+         *
+         * @param name the parameter name
+         * @param asType the optional type declaration (as attribute)
+         */
         public FunctionParameter(String name, String asType) {
             this.name = name;
             this.asType = asType;
         }
 
+        /**
+         * Returns the parameter name.
+         *
+         * @return the name
+         */
         public String getName() {
             return name;
         }
 
+        /**
+         * Returns the type declaration.
+         *
+         * @return the type string, or null if not declared
+         */
         public String getAsType() {
             return asType;
         }

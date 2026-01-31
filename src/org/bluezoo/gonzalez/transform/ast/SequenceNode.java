@@ -39,7 +39,12 @@ import java.util.List;
  */
 public final class SequenceNode implements XSLTNode {
 
-    /** Empty sequence singleton. */
+    /**
+     * Empty sequence singleton.
+     *
+     * <p>This is a shared instance representing an empty sequence with no children.
+     * It can be used to avoid creating multiple empty sequence instances.
+     */
     public static final SequenceNode EMPTY = new SequenceNode(Collections.emptyList());
 
     private final List<XSLTNode> children;

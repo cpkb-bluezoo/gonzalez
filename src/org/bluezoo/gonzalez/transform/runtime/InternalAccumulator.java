@@ -115,7 +115,9 @@ public class InternalAccumulator {
     }
 
     /**
-     * Returns the synthetic ID.
+     * Returns the synthetic ID for this accumulator.
+     *
+     * @return the unique synthetic identifier
      */
     public String getSyntheticId() {
         return syntheticId;
@@ -123,13 +125,17 @@ public class InternalAccumulator {
 
     /**
      * Returns the accumulator type.
+     *
+     * @return the type (COUNTER, SUM, LAST, or CUSTOM)
      */
     public Type getType() {
         return type;
     }
 
     /**
-     * Returns the match pattern.
+     * Returns the match pattern for this accumulator.
+     *
+     * @return the pattern that determines when to update the accumulator
      */
     public Pattern getMatchPattern() {
         return matchPattern;
@@ -137,6 +143,8 @@ public class InternalAccumulator {
 
     /**
      * Returns the original XSLT 1.0 expression this accumulator replaces.
+     *
+     * @return the original expression, or null if not applicable
      */
     public XPathExpression getOriginalExpression() {
         return originalExpression;
@@ -144,13 +152,16 @@ public class InternalAccumulator {
 
     /**
      * Returns the current accumulator value.
+     *
+     * @return the current value
      */
     public XPathValue getCurrentValue() {
         return currentValue;
     }
 
     /**
-     * Initializes/resets the accumulator.
+     * Initializes or resets the accumulator to its initial state.
+     * Clears the value stack and sets current value to zero.
      */
     public void initialize() {
         valueStack.clear();
@@ -159,7 +170,11 @@ public class InternalAccumulator {
 
     /**
      * Called when entering a node (startElement).
-     * Pushes current value and potentially updates based on match.
+     * Pushes current value onto the stack and potentially updates based on match.
+     *
+     * @param node the node being entered
+     * @param context the transformation context
+     * @throws SAXException if update fails
      */
     public void notifyStartElement(XPathNode node, TransformContext context) throws SAXException {
         valueStack.push(currentValue);
@@ -171,7 +186,10 @@ public class InternalAccumulator {
 
     /**
      * Called when exiting a node (endElement).
-     * Pops the value stack.
+     * Pops the value stack to restore the previous accumulator value.
+     *
+     * @param node the node being exited
+     * @param context the transformation context
      */
     public void notifyEndElement(XPathNode node, TransformContext context) {
         if (!valueStack.isEmpty()) {

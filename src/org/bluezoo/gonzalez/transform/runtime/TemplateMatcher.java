@@ -237,10 +237,11 @@ public final class TemplateMatcher {
     }
 
     /**
-     * Returns true if the given rule is a built-in rule.
+     * Returns true if the given rule is a built-in template rule.
+     * Built-in rules are used when no explicit template matches.
      *
      * @param rule the rule to check
-     * @return true if built-in
+     * @return true if the rule is a built-in rule
      */
     public static boolean isBuiltIn(TemplateRule rule) {
         return rule.getName() != null && rule.getName().startsWith("__builtin__");
@@ -248,9 +249,11 @@ public final class TemplateMatcher {
 
     /**
      * Returns the type of built-in rule.
+     * Types include: "element-or-root", "text-or-attribute", "empty",
+     * "shallow-copy", "deep-copy", "shallow-skip", "fail".
      *
      * @param rule the built-in rule
-     * @return the type, or null if not built-in
+     * @return the type string, or null if not a built-in rule
      */
     public static String getBuiltInType(TemplateRule rule) {
         if (!isBuiltIn(rule)) return null;

@@ -65,15 +65,31 @@ public final class ForExpr implements Expr {
          * @param varName the variable name (without $)
          * @param sequence the sequence expression
          */
+        /**
+         * Creates a new binding.
+         *
+         * @param varName the variable name (without $)
+         * @param sequence the sequence expression
+         */
         public Binding(String varName, Expr sequence) {
             this.varName = varName;
             this.sequence = sequence;
         }
 
+        /**
+         * Returns the variable name.
+         *
+         * @return the variable name (without $)
+         */
         public String getVarName() {
             return varName;
         }
 
+        /**
+         * Returns the sequence expression.
+         *
+         * @return the sequence expression
+         */
         public Expr getSequence() {
             return sequence;
         }

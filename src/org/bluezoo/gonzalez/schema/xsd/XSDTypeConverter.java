@@ -66,9 +66,31 @@ public final class XSDTypeConverter {
     /**
      * Converts a lexical value to a Java object based on the XSD datatype.
      *
-     * @param datatypeLocalName the XSD datatype local name
-     * @param lexicalValue the lexical representation
-     * @return the converted Java value, or the lexical value if conversion fails
+     * <p>This method performs lexical-to-value mapping according to XSD Part 2
+     * specifications. It handles whitespace normalization based on the datatype's
+     * whitespace facet, then converts the normalized string to the appropriate
+     * Java type.
+     *
+     * <p>Supported conversions include:
+     * <ul>
+     *   <li>String types → {@link String}</li>
+     *   <li>Numeric types → {@link java.math.BigDecimal}, {@link java.math.BigInteger},
+     *       {@link Integer}, {@link Long}, etc.</li>
+     *   <li>Boolean → {@link Boolean}</li>
+     *   <li>Date/time types → {@link java.time.LocalDate}, {@link java.time.LocalDateTime},
+     *       {@link java.time.OffsetDateTime}, etc.</li>
+     *   <li>Binary types → {@code byte[]}</li>
+     *   <li>URI types → {@link java.net.URI}</li>
+     *   <li>QName types → {@link javax.xml.namespace.QName}</li>
+     * </ul>
+     *
+     * <p>If conversion fails (e.g., invalid format), the original lexical value
+     * is returned as a fallback. This allows the caller to handle conversion
+     * errors gracefully.
+     *
+     * @param datatypeLocalName the XSD datatype local name (e.g., "integer", "date", "string")
+     * @param lexicalValue the lexical representation of the value
+     * @return the converted Java value, or the original lexical value if conversion fails
      */
     public static Object convert(String datatypeLocalName, String lexicalValue) {
         if (lexicalValue == null) {

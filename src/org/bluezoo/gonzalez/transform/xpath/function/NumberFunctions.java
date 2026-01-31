@@ -45,7 +45,15 @@ public final class NumberFunctions {
 
     private NumberFunctions() {}
 
-    /** number(object?) - converts to number */
+    /**
+     * XPath 1.0 number() function.
+     * 
+     * <p>Converts the argument (or context node if no argument) to a number.
+     * 
+     * <p>Signature: number(object?) → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-number">XPath 1.0 number()</a>
+     */
     public static final Function NUMBER = new Function() {
         @Override public String getName() { return "number"; }
         @Override public int getMinArgs() { return 0; }
@@ -66,7 +74,15 @@ public final class NumberFunctions {
         }
     };
 
-    /** sum(node-set) - sum of node string-values as numbers */
+    /**
+     * XPath 1.0 sum() function.
+     * 
+     * <p>Returns the sum of the numeric values of all nodes in the node-set.
+     * 
+     * <p>Signature: sum(node-set) → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-sum">XPath 1.0 sum()</a>
+     */
     public static final Function SUM = new Function() {
         @Override public String getName() { return "sum"; }
         @Override public int getMinArgs() { return 1; }
@@ -95,7 +111,15 @@ public final class NumberFunctions {
         }
     };
 
-    /** floor(number) - largest integer not greater than argument */
+    /**
+     * XPath 1.0 floor() function.
+     * 
+     * <p>Returns the largest integer not greater than the argument.
+     * 
+     * <p>Signature: floor(number) → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-floor">XPath 1.0 floor()</a>
+     */
     public static final Function FLOOR = new Function() {
         @Override public String getName() { return "floor"; }
         @Override public int getMinArgs() { return 1; }
@@ -109,7 +133,15 @@ public final class NumberFunctions {
         }
     };
 
-    /** ceiling(number) - smallest integer not less than argument */
+    /**
+     * XPath 1.0 ceiling() function.
+     * 
+     * <p>Returns the smallest integer not less than the argument.
+     * 
+     * <p>Signature: ceiling(number) → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-ceiling">XPath 1.0 ceiling()</a>
+     */
     public static final Function CEILING = new Function() {
         @Override public String getName() { return "ceiling"; }
         @Override public int getMinArgs() { return 1; }
@@ -123,7 +155,16 @@ public final class NumberFunctions {
         }
     };
 
-    /** round(number) - round to nearest integer */
+    /**
+     * XPath 1.0 round() function.
+     * 
+     * <p>Rounds the argument to the nearest integer. Uses round-half-to-positive-infinity
+     * semantics (e.g., -0.5 rounds to -0.0, not -1).
+     * 
+     * <p>Signature: round(number) → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-round">XPath 1.0 round()</a>
+     */
     public static final Function ROUND = new Function() {
         @Override public String getName() { return "round"; }
         @Override public int getMinArgs() { return 1; }
@@ -152,7 +193,15 @@ public final class NumberFunctions {
 
     // ========== XPath 2.0/3.0 Number Functions ==========
     
-    /** abs(number) - absolute value (XPath 2.0) */
+    /**
+     * XPath 2.0 abs() function.
+     * 
+     * <p>Returns the absolute value of a number.
+     * 
+     * <p>Signature: abs(numeric?) → numeric?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-abs">XPath 2.0 abs()</a>
+     */
     public static final Function ABS = new Function() {
         @Override public String getName() { return "abs"; }
         @Override public int getMinArgs() { return 1; }
@@ -170,7 +219,16 @@ public final class NumberFunctions {
         }
     };
     
-    /** round-half-to-even(number, precision?) - banker's rounding (XPath 2.0) */
+    /**
+     * XPath 2.0 round-half-to-even() function.
+     * 
+     * <p>Rounds a number to the nearest value with the specified precision, using
+     * round-half-to-even (banker's rounding) semantics.
+     * 
+     * <p>Signature: round-half-to-even(numeric?, integer?) → numeric?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-round-half-to-even">XPath 2.0 round-half-to-even()</a>
+     */
     public static final Function ROUND_HALF_TO_EVEN = new Function() {
         @Override public String getName() { return "round-half-to-even"; }
         @Override public int getMinArgs() { return 1; }
@@ -200,7 +258,15 @@ public final class NumberFunctions {
         }
     };
     
-    /** min(sequence) - minimum value (XPath 2.0) */
+    /**
+     * XPath 2.0 min() function.
+     * 
+     * <p>Returns the minimum value from a sequence of comparable items.
+     * 
+     * <p>Signature: min(item()*, collation?) → atomic?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-min">XPath 2.0 min()</a>
+     */
     public static final Function MIN = new Function() {
         @Override public String getName() { return "min"; }
         @Override public int getMinArgs() { return 1; }
@@ -226,7 +292,15 @@ public final class NumberFunctions {
         }
     };
     
-    /** max(sequence) - maximum value (XPath 2.0) */
+    /**
+     * XPath 2.0 max() function.
+     * 
+     * <p>Returns the maximum value from a sequence of comparable items.
+     * 
+     * <p>Signature: max(item()*, collation?) → atomic?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-max">XPath 2.0 max()</a>
+     */
     public static final Function MAX = new Function() {
         @Override public String getName() { return "max"; }
         @Override public int getMinArgs() { return 1; }
@@ -252,7 +326,15 @@ public final class NumberFunctions {
         }
     };
     
-    /** avg(sequence) - average value (XPath 2.0) */
+    /**
+     * XPath 2.0 avg() function.
+     * 
+     * <p>Returns the average (arithmetic mean) of a sequence of numeric values.
+     * 
+     * <p>Signature: avg(numeric*) → numeric?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-avg">XPath 2.0 avg()</a>
+     */
     public static final Function AVG = new Function() {
         @Override public String getName() { return "avg"; }
         @Override public int getMinArgs() { return 1; }
@@ -276,7 +358,16 @@ public final class NumberFunctions {
         }
     };
     
-    /** format-integer(value, picture, language?) - format an integer (XPath 2.0) */
+    /**
+     * XPath 2.0 format-integer() function.
+     * 
+     * <p>Formats an integer according to a picture string. Supports decimal, alphabetic,
+     * Roman numeral, and word formats.
+     * 
+     * <p>Signature: format-integer(integer?, string, string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-format-integer">XPath 3.0 format-integer()</a>
+     */
     public static final Function FORMAT_INTEGER = new Function() {
         @Override public String getName() { return "format-integer"; }
         @Override public int getMinArgs() { return 2; }
@@ -442,6 +533,9 @@ public final class NumberFunctions {
 
     /**
      * Helper to extract numeric values from a sequence or node-set.
+     *
+     * @param value the XPath value to extract numbers from
+     * @return list of numeric values
      */
     private static List<Double> getNumericValues(XPathValue value) {
         List<Double> result = new ArrayList<>();
@@ -472,7 +566,11 @@ public final class NumberFunctions {
         return result;
     }
 
-    /** Returns all number functions. */
+    /**
+     * Returns all number functions (XPath 1.0 and 2.0/3.0).
+     *
+     * @return array of all number function implementations
+     */
     public static Function[] getAll() {
         return new Function[] { NUMBER, SUM, FLOOR, CEILING, ROUND, ABS, ROUND_HALF_TO_EVEN, MIN, MAX, AVG, FORMAT_INTEGER };
     }

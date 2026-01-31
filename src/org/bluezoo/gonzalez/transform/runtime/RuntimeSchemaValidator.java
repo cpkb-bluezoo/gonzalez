@@ -77,38 +77,87 @@ public class RuntimeSchemaValidator {
             this.errorMessage = errorMessage;
         }
         
+        /**
+         * Creates a valid result with type annotation.
+         *
+         * @param typeNs the type namespace URI
+         * @param typeLocal the type local name
+         * @return a valid validation result
+         */
         public static ValidationResult valid(String typeNs, String typeLocal) {
             return new ValidationResult(true, typeNs, typeLocal, null, null);
         }
         
+        /**
+         * Creates a valid result without type annotation.
+         *
+         * @return a valid validation result with no type
+         */
         public static ValidationResult validUntyped() {
             return new ValidationResult(true, null, null, null, null);
         }
         
+        /**
+         * Creates an error result.
+         *
+         * @param errorCode the XSLT error code (e.g., "XTTE0505")
+         * @param message the error message
+         * @return an error validation result
+         */
         public static ValidationResult error(String errorCode, String message) {
             return new ValidationResult(false, null, null, errorCode, message);
         }
         
+        /**
+         * Returns true if validation succeeded.
+         *
+         * @return true if valid
+         */
         public boolean isValid() {
             return valid;
         }
         
+        /**
+         * Returns the type annotation namespace URI.
+         *
+         * @return the namespace URI, or null if no type annotation
+         */
         public String getTypeNamespaceURI() {
             return typeNamespaceURI;
         }
         
+        /**
+         * Returns the type annotation local name.
+         *
+         * @return the local name, or null if no type annotation
+         */
         public String getTypeLocalName() {
             return typeLocalName;
         }
         
+        /**
+         * Returns true if this result includes a type annotation.
+         *
+         * @return true if a type annotation is present
+         */
         public boolean hasTypeAnnotation() {
             return typeLocalName != null;
         }
         
+        /**
+         * Returns the error code if validation failed.
+         *
+         * @return the XSLT error code, or null if validation succeeded
+         */
         public String getErrorCode() {
             return errorCode;
         }
         
+        /**
+         * Returns the error message if validation failed.
+         *
+         * @return the error message, or null if validation succeeded
+         */
         public String getErrorMessage() {
             return errorMessage;
         }
@@ -510,6 +559,9 @@ public class RuntimeSchemaValidator {
     
     /**
      * Gets a schema for the given namespace, using cache.
+     *
+     * @param namespaceURI the namespace URI (null for no namespace)
+     * @return the schema, or null if not found
      */
     private XSDSchema getSchema(String namespaceURI) {
         String key = namespaceURI != null ? namespaceURI : "";

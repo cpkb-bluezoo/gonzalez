@@ -50,7 +50,9 @@ public final class DateTimeFunctions {
     private DateTimeFunctions() {}
 
     /**
-     * Returns all date/time functions.
+     * Returns all date/time functions (XPath 2.0/3.0).
+     *
+     * @return list of all date/time function implementations
      */
     public static List<Function> getAll() {
         List<Function> functions = new ArrayList<>();
@@ -110,6 +112,15 @@ public final class DateTimeFunctions {
 
     // ========== Current date/time functions ==========
     
+    /**
+     * XPath 2.0 current-dateTime() function.
+     * 
+     * <p>Returns the current date and time as an xs:dateTime value.
+     * 
+     * <p>Signature: current-dateTime() → dateTime
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-current-dateTime">XPath 3.0 current-dateTime()</a>
+     */
     public static final Function CURRENT_DATE_TIME = new Function() {
         @Override public String getName() { return "current-dateTime"; }
         @Override public int getMinArgs() { return 0; }
@@ -121,6 +132,15 @@ public final class DateTimeFunctions {
         }
     };
     
+    /**
+     * XPath 2.0 current-date() function.
+     * 
+     * <p>Returns the current date as an xs:date value.
+     * 
+     * <p>Signature: current-date() → date
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-current-date">XPath 3.0 current-date()</a>
+     */
     public static final Function CURRENT_DATE = new Function() {
         @Override public String getName() { return "current-date"; }
         @Override public int getMinArgs() { return 0; }
@@ -132,6 +152,15 @@ public final class DateTimeFunctions {
         }
     };
     
+    /**
+     * XPath 2.0 current-time() function.
+     * 
+     * <p>Returns the current time as an xs:time value.
+     * 
+     * <p>Signature: current-time() → time
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-current-time">XPath 3.0 current-time()</a>
+     */
     public static final Function CURRENT_TIME = new Function() {
         @Override public String getName() { return "current-time"; }
         @Override public int getMinArgs() { return 0; }
@@ -145,6 +174,15 @@ public final class DateTimeFunctions {
     
     // ========== DateTime constructor ==========
     
+    /**
+     * XPath 2.0 dateTime() constructor function.
+     * 
+     * <p>Constructs an xs:dateTime from an xs:date and xs:time.
+     * 
+     * <p>Signature: dateTime(date, time) → dateTime?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-dateTime">XPath 3.0 dateTime()</a>
+     */
     public static final Function DATE_TIME = new Function() {
         @Override public String getName() { return "dateTime"; }
         @Override public int getMinArgs() { return 2; }
@@ -167,6 +205,15 @@ public final class DateTimeFunctions {
     
     // ========== Year extraction ==========
     
+    /**
+     * XPath 2.0 year-from-dateTime() function.
+     * 
+     * <p>Extracts the year component from an xs:dateTime value.
+     * 
+     * <p>Signature: year-from-dateTime(dateTime?) → integer?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-year-from-dateTime">XPath 3.0 year-from-dateTime()</a>
+     */
     public static final Function YEAR_FROM_DATE_TIME = new Function() {
         @Override public String getName() { return "year-from-dateTime"; }
         @Override public int getMinArgs() { return 1; }
@@ -510,6 +557,15 @@ public final class DateTimeFunctions {
     
     // ========== Formatting functions ==========
     
+    /**
+     * XPath 3.0 format-dateTime() function.
+     * 
+     * <p>Formats a dateTime value according to a picture string and locale.
+     * 
+     * <p>Signature: format-dateTime(dateTime?, string, string?, string?, string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-format-dateTime">XPath 3.0 format-dateTime()</a>
+     */
     public static final Function FORMAT_DATE_TIME = new Function() {
         @Override public String getName() { return "format-dateTime"; }
         @Override public int getMinArgs() { return 2; }
@@ -529,6 +585,15 @@ public final class DateTimeFunctions {
         }
     };
     
+    /**
+     * XPath 3.0 format-date() function.
+     * 
+     * <p>Formats a date value according to a picture string and locale.
+     * 
+     * <p>Signature: format-date(date?, string, string?, string?, string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-format-date">XPath 3.0 format-date()</a>
+     */
     public static final Function FORMAT_DATE = new Function() {
         @Override public String getName() { return "format-date"; }
         @Override public int getMinArgs() { return 2; }
@@ -548,6 +613,15 @@ public final class DateTimeFunctions {
         }
     };
     
+    /**
+     * XPath 3.0 format-time() function.
+     * 
+     * <p>Formats a time value according to a picture string and locale.
+     * 
+     * <p>Signature: format-time(time?, string, string?, string?, string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-format-time">XPath 3.0 format-time()</a>
+     */
     public static final Function FORMAT_TIME = new Function() {
         @Override public String getName() { return "format-time"; }
         @Override public int getMinArgs() { return 2; }
@@ -569,6 +643,10 @@ public final class DateTimeFunctions {
     
     /**
      * Parses language and place into a Java Locale.
+     *
+     * @param language the language code (e.g., "en", "en-GB")
+     * @param place the country/region code (optional)
+     * @return the parsed Locale
      */
     private static Locale parseLocale(String language, String place) {
         if (language == null || language.isEmpty()) {
@@ -588,6 +666,14 @@ public final class DateTimeFunctions {
     /**
      * Formats a date/time according to a picture string.
      * Supports basic XSLT 2.0/3.0 picture formatting.
+     *
+     * @param dt the dateTime value to format
+     * @param picture the format picture string
+     * @param hasDate true if date components should be included
+     * @param hasTime true if time components should be included
+     * @param locale the locale for localization
+     * @return the formatted string
+     * @throws XPathException if the picture string is invalid
      */
     private static String formatDateTime(XPathDateTime dt, String picture, 
                                          boolean hasDate, boolean hasTime, Locale locale) throws XPathException {
@@ -630,14 +716,24 @@ public final class DateTimeFunctions {
     /**
      * Formats a single component like Y, M, D, H, m, s, etc.
      * 
-     * Picture string format examples:
-     * - [Y] = year in decimal
-     * - [Y0001] = year padded to 4 digits
-     * - [M01] = month padded to 2 digits
-     * - [MNn] = month name, initial capital
-     * - [MI] = month in Roman numerals
-     * - [D] = day without padding
-     * - [D01] = day padded to 2 digits
+     * <p>Picture string format examples:
+     * <ul>
+     *   <li>[Y] = year in decimal</li>
+     *   <li>[Y0001] = year padded to 4 digits</li>
+     *   <li>[M01] = month padded to 2 digits</li>
+     *   <li>[MNn] = month name, initial capital</li>
+     *   <li>[MI] = month in Roman numerals</li>
+     *   <li>[D] = day without padding</li>
+     *   <li>[D01] = day padded to 2 digits</li>
+     * </ul>
+     *
+     * @param dt the dateTime value
+     * @param component the component specification (e.g., "Y", "M01", "MNn")
+     * @param hasDate true if date components are available
+     * @param hasTime true if time components are available
+     * @param dtLocale the locale for localization
+     * @return the formatted component string
+     * @throws XPathException if the component specification is invalid
      */
     private static String formatComponent(XPathDateTime dt, String component,
                                           boolean hasDate, boolean hasTime,
@@ -892,6 +988,11 @@ public final class DateTimeFunctions {
      * Apply width constraints to a string value.
      * If the string is longer than maxWidth, truncate it.
      * If the string is shorter than minWidth, pad with spaces.
+     *
+     * @param value the string to constrain
+     * @param minWidth minimum width (pad if shorter)
+     * @param maxWidth maximum width (truncate if longer)
+     * @return the constrained string
      */
     private static String applyWidth(String value, int minWidth, int maxWidth) {
         if (value == null) {
@@ -911,6 +1012,17 @@ public final class DateTimeFunctions {
         return value;
     }
     
+    /**
+     * Formats a number according to presentation and width constraints.
+     *
+     * @param value the number to format
+     * @param minWidth minimum width constraint
+     * @param maxWidth maximum width constraint
+     * @param presentation presentation format ("1"=decimal, "I"=Roman, "W"=words, etc.)
+     * @param ordinal true to add ordinal suffix
+     * @param dtLocale the locale for localization
+     * @return the formatted number string
+     */
     private static String formatNumber(int value, int minWidth, int maxWidth, String presentation, 
                                        boolean ordinal, DateTimeLocale dtLocale) {
         // Handle Roman numerals
@@ -1067,10 +1179,23 @@ public final class DateTimeFunctions {
     
     // ========== Helper methods ==========
     
+    /**
+     * Checks if a value is empty (null or empty sequence).
+     *
+     * @param value the value to check
+     * @return true if empty
+     */
     private static boolean isEmpty(XPathValue value) {
         return value == null || (value instanceof XPathSequence && ((XPathSequence)value).isEmpty());
     }
     
+    /**
+     * Converts an XPath value to an xs:dateTime.
+     *
+     * @param value the value to convert
+     * @return the dateTime value
+     * @throws XPathException if conversion fails
+     */
     private static XPathDateTime toDateTime(XPathValue value) throws XPathException {
         if (value instanceof XPathDateTime) {
             XPathDateTime dt = (XPathDateTime) value;
@@ -1082,6 +1207,13 @@ public final class DateTimeFunctions {
         return XPathDateTime.parseDateTime(value.asString());
     }
     
+    /**
+     * Converts an XPath value to an xs:date.
+     *
+     * @param value the value to convert
+     * @return the date value
+     * @throws XPathException if conversion fails
+     */
     private static XPathDateTime toDate(XPathValue value) throws XPathException {
         if (value instanceof XPathDateTime) {
             XPathDateTime dt = (XPathDateTime) value;
@@ -1093,6 +1225,13 @@ public final class DateTimeFunctions {
         return XPathDateTime.parseDate(value.asString());
     }
     
+    /**
+     * Converts an XPath value to an xs:time.
+     *
+     * @param value the value to convert
+     * @return the time value
+     * @throws XPathException if conversion fails
+     */
     private static XPathDateTime toTime(XPathValue value) throws XPathException {
         if (value instanceof XPathDateTime) {
             XPathDateTime dt = (XPathDateTime) value;
@@ -1104,6 +1243,13 @@ public final class DateTimeFunctions {
         return XPathDateTime.parseTime(value.asString());
     }
     
+    /**
+     * Converts an XPath value to an xs:duration.
+     *
+     * @param value the value to convert
+     * @return the duration value
+     * @throws XPathException if conversion fails
+     */
     private static XPathDateTime toDuration(XPathValue value) throws XPathException {
         if (value instanceof XPathDateTime) {
             XPathDateTime dt = (XPathDateTime) value;

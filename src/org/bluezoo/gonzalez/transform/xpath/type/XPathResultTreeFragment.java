@@ -53,7 +53,7 @@ public final class XPathResultTreeFragment implements XPathValue {
     /**
      * Creates a result tree fragment from a SAX event buffer.
      *
-     * @param buffer the buffered SAX events
+     * @param buffer the buffered SAX events (must not be null)
      */
     public XPathResultTreeFragment(SAXEventBuffer buffer) {
         this(buffer, null);
@@ -62,8 +62,8 @@ public final class XPathResultTreeFragment implements XPathValue {
     /**
      * Creates a result tree fragment from a SAX event buffer with a base URI.
      *
-     * @param buffer the buffered SAX events
-     * @param baseUri the base URI for the RTF (from xml:base on the variable)
+     * @param buffer the buffered SAX events (must not be null)
+     * @param baseUri the base URI for the RTF (from xml:base on the variable, may be null)
      */
     public XPathResultTreeFragment(SAXEventBuffer buffer, String baseUri) {
         this.buffer = buffer;
@@ -255,17 +255,39 @@ public final class XPathResultTreeFragment implements XPathValue {
         }
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * <p>RTF is not a standard XPath 1.0 type; it is treated as a node-set
+     * for compatibility with XPath operations.
+     *
+     * @return {@link Type#NODESET}
+     */
     @Override
     public Type getType() {
         // RTF is not a standard XPath 1.0 type; treat as nodeset for compatibility
         return Type.NODESET;
     }
 
+    /**
+     * Converts this RTF to a string.
+     *
+     * <p>Returns the text content of the RTF (concatenation of all text nodes).
+     *
+     * @return the text content as a string
+     */
     @Override
     public String asString() {
         return buffer.getTextContent();
     }
 
+    /**
+     * Converts this RTF to a number.
+     *
+     * <p>The text content is parsed as a number. If parsing fails, returns NaN.
+     *
+     * @return the numeric value, or NaN if the text content is not a valid number
+     */
     @Override
     public double asNumber() {
         try {
@@ -275,12 +297,31 @@ public final class XPathResultTreeFragment implements XPathValue {
         }
     }
 
+    /**
+     * Converts this RTF to a boolean.
+     *
+     * <p>RTFs are converted to string for boolean evaluation. Non-empty strings
+     * are truthy; empty strings are falsy.
+     *
+     * @return true if the text content is non-empty, false otherwise
+     */
     @Override
     public boolean asBoolean() {
         // RTFs are converted to string for boolean - non-empty is true
         return !asString().isEmpty();
     }
 
+    /**
+     * Converts this RTF to a node-set.
+     *
+     * <p>For XSLT 2.0+, RTFs can be converted to node-sets. This builds a
+     * temporary navigable tree from the buffered SAX events and returns it
+     * as a node-set containing the root node.
+     *
+     * <p>The tree is built lazily and cached for subsequent calls.
+     *
+     * @return a node-set containing the root node of the RTF tree, or empty if build fails
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         // For XSLT 2.0+, RTFs can be converted to node-sets
@@ -532,6 +573,11 @@ public final class XPathResultTreeFragment implements XPathValue {
         }
     }
 
+    /**
+     * Returns a string representation of this RTF.
+     *
+     * @return a string in the format "RTF[textContent]"
+     */
     @Override
     public String toString() {
         return "RTF[" + asString() + "]";

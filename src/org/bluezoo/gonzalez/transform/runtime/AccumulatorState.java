@@ -132,10 +132,12 @@ public final class AccumulatorState {
     }
 
     /**
-     * Pops a value from the stack and restores it.
+     * Pops a value from the stack.
      * Called at endElement after processing children.
+     * Note: The current value is not restored from the stack because
+     * post-descent rules may have updated it.
      *
-     * @return the popped value (which is now the current value)
+     * @return the popped value (the value before processing children)
      */
     public XPathValue pop() {
         if (!valueStack.isEmpty()) {

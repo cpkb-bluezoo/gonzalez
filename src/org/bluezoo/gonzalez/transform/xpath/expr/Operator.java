@@ -131,7 +131,7 @@ public enum Operator {
     /**
      * Returns true if this is a comparison operator.
      *
-     * @return true for =, !=, <, <=, >, >=
+     * @return true for =, !=, &lt;, &lt;=, &gt;, &gt;=
      */
     public boolean isComparison() {
         return this == EQUALS || this == NOT_EQUALS ||
@@ -206,7 +206,7 @@ public enum Operator {
     /**
      * Returns true if this is an XPath 2.0 node comparison operator.
      *
-     * @return true for is, <<, >>
+     * @return true for is, &lt;&lt;, &gt;&gt;
      */
     public boolean isNodeComparison() {
         return this == NODE_IS || this == NODE_PRECEDES || this == NODE_FOLLOWS;

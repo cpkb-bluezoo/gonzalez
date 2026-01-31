@@ -39,7 +39,14 @@ package org.bluezoo.gonzalez.transform.ast;
  */
 public abstract class XSLTInstruction implements XSLTNode {
 
-    /** XSLT namespace URI. */
+    /**
+     * XSLT namespace URI.
+     *
+     * <p>This is the standard namespace URI for XSLT stylesheets as defined
+     * by the W3C XSLT specification.
+     *
+     * @see <a href="https://www.w3.org/TR/xslt-30/#xslt-namespace">XSLT Namespace</a>
+     */
     public static final String XSLT_NAMESPACE = "http://www.w3.org/1999/XSL/Transform";
 
     /** Line number in stylesheet source (for error reporting). */

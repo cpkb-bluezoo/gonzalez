@@ -43,21 +43,46 @@ public final class ChildAxis implements Axis {
 
     private ChildAxis() {}
 
+    /**
+     * Returns the name of this axis.
+     *
+     * @return the axis name "child"
+     */
     @Override
     public String getName() {
         return "child";
     }
 
+    /**
+     * Returns false since this is a forward axis.
+     *
+     * @return false
+     */
     @Override
     public boolean isReverse() {
         return false;
     }
 
+    /**
+     * Returns an iterator over the children of the context node.
+     *
+     * <p>Children include element nodes, text nodes, comment nodes, and
+     * processing instruction nodes that are directly contained within
+     * the context node.
+     *
+     * @param contextNode the context node whose children to iterate
+     * @return iterator over child nodes in document order
+     */
     @Override
     public Iterator<XPathNode> iterate(XPathNode contextNode) {
         return contextNode.getChildren();
     }
 
+    /**
+     * Returns the principal node type for this axis.
+     *
+     * @return {@link PrincipalNodeType#ELEMENT}
+     */
     @Override
     public PrincipalNodeType getPrincipalNodeType() {
         return PrincipalNodeType.ELEMENT;

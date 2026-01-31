@@ -73,20 +73,39 @@ public final class IterateNode implements XSLTNode {
 
     /**
      * Parameter declaration for xsl:iterate.
+     *
+     * <p>Represents an iteration parameter that can be initialized with a default
+     * value and updated via xsl:next-iteration for subsequent iterations.
      */
     public static final class IterateParam {
         private final String name;
         private final XPathExpression defaultValue;
 
+        /**
+         * Creates a new iteration parameter.
+         *
+         * @param name the parameter name
+         * @param defaultValue the default value expression (may be null)
+         */
         public IterateParam(String name, XPathExpression defaultValue) {
             this.name = name;
             this.defaultValue = defaultValue;
         }
 
+        /**
+         * Returns the parameter name.
+         *
+         * @return the parameter name
+         */
         public String getName() {
             return name;
         }
 
+        /**
+         * Returns the default value expression.
+         *
+         * @return the default value expression, or null if not specified
+         */
         public XPathExpression getDefaultValue() {
             return defaultValue;
         }
@@ -94,28 +113,58 @@ public final class IterateNode implements XSLTNode {
 
     /**
      * Result of iteration body execution.
+     *
+     * <p>Encapsulates the result of executing the body of an xsl:iterate iteration,
+     * including whether to break the loop and parameter values for the next iteration.
      */
     public static final class IterationResult {
         private final boolean shouldBreak;
         private final Map<String, XPathValue> nextParams;
 
+        /**
+         * Creates a new iteration result.
+         *
+         * @param shouldBreak true if iteration should terminate
+         * @param nextParams parameter values for the next iteration
+         */
         private IterationResult(boolean shouldBreak, Map<String, XPathValue> nextParams) {
             this.shouldBreak = shouldBreak;
             this.nextParams = nextParams;
         }
 
+        /**
+         * Creates a result indicating iteration should continue with updated parameters.
+         *
+         * @param nextParams parameter values for the next iteration
+         * @return a continue result with the specified parameters
+         */
         public static IterationResult continueWith(Map<String, XPathValue> nextParams) {
             return new IterationResult(false, nextParams);
         }
 
+        /**
+         * Creates a result indicating iteration should break.
+         *
+         * @return a break result
+         */
         public static IterationResult breakIteration() {
             return new IterationResult(true, new HashMap<>());
         }
 
+        /**
+         * Returns true if iteration should break.
+         *
+         * @return true if breaking, false if continuing
+         */
         public boolean isBreak() {
             return shouldBreak;
         }
 
+        /**
+         * Returns parameter values for the next iteration.
+         *
+         * @return map of parameter names to values (may be empty)
+         */
         public Map<String, XPathValue> getNextParams() {
             return nextParams;
         }

@@ -251,8 +251,9 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
 
     /**
      * Replays all stored events to a content handler.
+     * Includes startDocument and endDocument events.
      *
-     * @param handler the target handler
+     * @param handler the target content handler
      * @throws SAXException if replay fails
      */
     public void replay(ContentHandler handler) throws SAXException {
@@ -263,8 +264,9 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
 
     /**
      * Replays events without startDocument/endDocument.
+     * Useful for replaying a fragment into an existing document.
      *
-     * @param handler the target handler
+     * @param handler the target content handler
      * @throws SAXException if replay fails
      */
     public void replayContent(ContentHandler handler) throws SAXException {
@@ -301,8 +303,10 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
 
     /**
      * Replays events to a type-aware handler, passing type annotations.
+     * If the handler implements TypeAwareHandler, type annotations for
+     * elements and attributes are passed through.
      *
-     * @param handler the target handler (may be TypeAwareHandler)
+     * @param handler the target handler (may implement TypeAwareHandler)
      * @throws SAXException if replay fails
      */
     public void replayContentWithTypes(ContentHandler handler) throws SAXException {
@@ -379,7 +383,15 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
     }
 
     /**
-     * Records a startElement with type annotation.
+     * Records a startElement with element type annotation.
+     *
+     * @param uri the element namespace URI
+     * @param localName the element local name
+     * @param qName the element qualified name
+     * @param atts the element attributes
+     * @param typeNamespaceURI the type annotation namespace URI
+     * @param typeLocalName the type annotation local name
+     * @throws SAXException if recording fails
      */
     public void startElementWithType(String uri, String localName, String qName, Attributes atts,
             String typeNamespaceURI, String typeLocalName) throws SAXException {
@@ -391,6 +403,15 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
 
     /**
      * Records a startElement with element and attribute type annotations.
+     *
+     * @param uri the element namespace URI
+     * @param localName the element local name
+     * @param qName the element qualified name
+     * @param atts the element attributes
+     * @param typeNamespaceURI the element type annotation namespace URI
+     * @param typeLocalName the element type annotation local name
+     * @param attributeTypes list of attribute type annotations [namespaceURI, localName] by index
+     * @throws SAXException if recording fails
      */
     public void startElementWithTypes(String uri, String localName, String qName, Attributes atts,
             String typeNamespaceURI, String typeLocalName, 
@@ -438,8 +459,9 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
 
     /**
      * Returns the text content of all character events concatenated.
+     * This extracts only text nodes, ignoring element structure.
      *
-     * @return the text content
+     * @return the concatenated text content
      */
     public String getTextContent() {
         StringBuilder sb = new StringBuilder();

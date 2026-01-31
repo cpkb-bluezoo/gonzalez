@@ -62,12 +62,13 @@ public class XSDSchemaParser extends DefaultHandler {
     /**
      * Parses an XSD schema from a URI.
      *
-     * <p>Static convenience method for one-off parsing.
+     * <p>Static convenience method for one-off parsing. This method handles
+     * file: URIs, http: URIs, and local file paths.
      *
-     * @param uri the URI of the XSD document
-     * @return the parsed schema
-     * @throws SAXException if parsing fails
-     * @throws IOException if an I/O error occurs
+     * @param uri the URI of the XSD document (file path, file: URI, or http: URI)
+     * @return the parsed schema, never null
+     * @throws SAXException if parsing fails due to XML errors
+     * @throws IOException if an I/O error occurs reading the schema
      */
     public static XSDSchema parse(String uri) throws SAXException, IOException {
         XSDSchemaParser parser = new XSDSchemaParser();

@@ -40,7 +40,7 @@ public final class XPathNumber implements XPathValue {
     /** One singleton. */
     public static final XPathNumber ONE = new XPathNumber(1.0);
 
-    /** NaN singleton. */
+    /** NaN (not-a-number) singleton. */
     public static final XPathNumber NaN = new XPathNumber(Double.NaN);
 
     /** Positive infinity singleton. */
@@ -54,7 +54,7 @@ public final class XPathNumber implements XPathValue {
     /**
      * Creates a new XPath number value.
      *
-     * @param value the numeric value
+     * @param value the numeric value (may be NaN or infinite)
      */
     public XPathNumber(double value) {
         this.value = value;
@@ -86,6 +86,11 @@ public final class XPathNumber implements XPathValue {
         return new XPathNumber(value);
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#NUMBER}
+     */
     @Override
     public Type getType() {
         return Type.NUMBER;
@@ -142,11 +147,23 @@ public final class XPathNumber implements XPathValue {
         return str;
     }
 
+    /**
+     * Returns this number value unchanged.
+     *
+     * @return the numeric value
+     */
     @Override
     public double asNumber() {
         return value;
     }
 
+    /**
+     * Converts this number to a boolean according to XPath 1.0 Section 4.3.
+     *
+     * <p>A number is true if and only if it is neither positive or negative zero nor NaN.
+     *
+     * @return true if the number is non-zero and not NaN, false otherwise
+     */
     @Override
     public boolean asBoolean() {
         // XPath 1.0 Section 4.3: "a number is true if and only if it is
@@ -154,6 +171,11 @@ public final class XPathNumber implements XPathValue {
         return value != 0.0 && !Double.isNaN(value);
     }
 
+    /**
+     * Numbers cannot be converted to node-sets.
+     *
+     * @return null (numbers are not node-sets)
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         return null;
@@ -195,6 +217,15 @@ public final class XPathNumber implements XPathValue {
         return value == Math.floor(value) && !Double.isInfinite(value) && !Double.isNaN(value);
     }
 
+    /**
+     * Compares this number with another object for equality.
+     *
+     * <p>Two numbers are equal if they have the same value. NaN values are
+     * considered equal to each other (unlike IEEE 754 where NaN != NaN).
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -211,11 +242,21 @@ public final class XPathNumber implements XPathValue {
         return Double.compare(value, other) == 0;
     }
 
+    /**
+     * Returns a hash code for this number.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return Double.hashCode(value);
     }
 
+    /**
+     * Returns a string representation of this XPath number.
+     *
+     * @return a string in the format "XPathNumber[value]"
+     */
     @Override
     public String toString() {
         return "XPathNumber[" + asString() + "]";

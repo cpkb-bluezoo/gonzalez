@@ -38,6 +38,10 @@ public final class ExtensionRegistry {
 
     /**
      * Creates a new empty registry.
+     *
+     * <p>The registry initially contains no registered extension functions
+     * or elements. Use {@link #registerFunction(ExtensionFunction)} and
+     * {@link #registerElement(ExtensionElement)} to add extensions.
      */
     public ExtensionRegistry() {
     }
@@ -45,7 +49,10 @@ public final class ExtensionRegistry {
     /**
      * Registers an extension function.
      *
-     * @param function the function to register
+     * <p>If a function with the same namespace URI and local name is already
+     * registered, it will be replaced with the new function.
+     *
+     * @param function the function to register, must not be null
      */
     public void registerFunction(ExtensionFunction function) {
         String key = makeKey(function.getNamespaceURI(), function.getLocalName());
@@ -55,8 +62,11 @@ public final class ExtensionRegistry {
     /**
      * Unregisters an extension function.
      *
-     * @param namespaceURI the function namespace
-     * @param localName the function name
+     * <p>If no function with the given namespace URI and local name is
+     * registered, this method has no effect.
+     *
+     * @param namespaceURI the function namespace URI, may be null or empty
+     * @param localName the function name, must not be null
      */
     public void unregisterFunction(String namespaceURI, String localName) {
         functions.remove(makeKey(namespaceURI, localName));
@@ -65,8 +75,8 @@ public final class ExtensionRegistry {
     /**
      * Returns an extension function.
      *
-     * @param namespaceURI the function namespace
-     * @param localName the function name
+     * @param namespaceURI the function namespace URI, may be null or empty
+     * @param localName the function name, must not be null
      * @return the function, or null if not registered
      */
     public ExtensionFunction getFunction(String namespaceURI, String localName) {
@@ -76,9 +86,10 @@ public final class ExtensionRegistry {
     /**
      * Returns true if a function is registered.
      *
-     * @param namespaceURI the function namespace
-     * @param localName the function name
-     * @return true if registered
+     * @param namespaceURI the function namespace URI, may be null or empty
+     * @param localName the function name, must not be null
+     * @return true if a function with the given namespace URI and local name
+     *         is registered, false otherwise
      */
     public boolean hasFunction(String namespaceURI, String localName) {
         return functions.containsKey(makeKey(namespaceURI, localName));
@@ -87,7 +98,10 @@ public final class ExtensionRegistry {
     /**
      * Registers an extension element.
      *
-     * @param element the element to register
+     * <p>If an element with the same namespace URI and local name is already
+     * registered, it will be replaced with the new element.
+     *
+     * @param element the element to register, must not be null
      */
     public void registerElement(ExtensionElement element) {
         String key = makeKey(element.getNamespaceURI(), element.getLocalName());
@@ -97,8 +111,11 @@ public final class ExtensionRegistry {
     /**
      * Unregisters an extension element.
      *
-     * @param namespaceURI the element namespace
-     * @param localName the element name
+     * <p>If no element with the given namespace URI and local name is
+     * registered, this method has no effect.
+     *
+     * @param namespaceURI the element namespace URI, may be null or empty
+     * @param localName the element name, must not be null
      */
     public void unregisterElement(String namespaceURI, String localName) {
         elements.remove(makeKey(namespaceURI, localName));
@@ -107,8 +124,8 @@ public final class ExtensionRegistry {
     /**
      * Returns an extension element.
      *
-     * @param namespaceURI the element namespace
-     * @param localName the element name
+     * @param namespaceURI the element namespace URI, may be null or empty
+     * @param localName the element name, must not be null
      * @return the element, or null if not registered
      */
     public ExtensionElement getElement(String namespaceURI, String localName) {
@@ -118,9 +135,10 @@ public final class ExtensionRegistry {
     /**
      * Returns true if an element is registered.
      *
-     * @param namespaceURI the element namespace
-     * @param localName the element name
-     * @return true if registered
+     * @param namespaceURI the element namespace URI, may be null or empty
+     * @param localName the element name, must not be null
+     * @return true if an element with the given namespace URI and local name
+     *         is registered, false otherwise
      */
     public boolean hasElement(String namespaceURI, String localName) {
         return elements.containsKey(makeKey(namespaceURI, localName));
@@ -129,8 +147,12 @@ public final class ExtensionRegistry {
     /**
      * Returns true if the given namespace has any registered extensions.
      *
-     * @param namespaceURI the namespace
-     * @return true if any extensions are registered
+     * <p>This checks both extension functions and extension elements for
+     * the specified namespace URI.
+     *
+     * @param namespaceURI the namespace URI to check, must not be null
+     * @return true if any extensions (functions or elements) are registered
+     *         for the given namespace, false otherwise
      */
     public boolean isExtensionNamespace(String namespaceURI) {
         String prefix = "{" + namespaceURI + "}";
@@ -146,7 +168,12 @@ public final class ExtensionRegistry {
     /**
      * Returns all registered function names.
      *
-     * @return set of "{namespace}localName" keys
+     * <p>The returned set is unmodifiable and contains keys in the format
+     * "{namespaceURI}localName". Functions in the default namespace (null or
+     * empty namespace URI) are represented as just the local name without
+     * the curly braces.
+     *
+     * @return an unmodifiable set of function name keys, never null
      */
     public Set<String> getFunctionNames() {
         return Collections.unmodifiableSet(functions.keySet());
@@ -155,7 +182,12 @@ public final class ExtensionRegistry {
     /**
      * Returns all registered element names.
      *
-     * @return set of "{namespace}localName" keys
+     * <p>The returned set is unmodifiable and contains keys in the format
+     * "{namespaceURI}localName". Elements in the default namespace (null or
+     * empty namespace URI) are represented as just the local name without
+     * the curly braces.
+     *
+     * @return an unmodifiable set of element name keys, never null
      */
     public Set<String> getElementNames() {
         return Collections.unmodifiableSet(elements.keySet());

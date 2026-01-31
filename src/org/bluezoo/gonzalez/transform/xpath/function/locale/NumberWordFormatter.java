@@ -5,6 +5,8 @@ import java.util.ResourceBundle;
 
 /**
  * Interface for formatting integers as words in a locale-specific manner.
+ *
+ * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  * 
  * <p>Different languages have fundamentally different number word systems:
  * <ul>
@@ -22,7 +24,7 @@ public interface NumberWordFormatter {
     
     /**
      * Formats an integer as words.
-     * 
+     *
      * @param value the integer to format
      * @return the number as words (e.g., 21 → "twenty one")
      */
@@ -30,7 +32,7 @@ public interface NumberWordFormatter {
     
     /**
      * Formats an integer as ordinal words.
-     * 
+     *
      * @param value the integer to format
      * @return the number as ordinal words (e.g., 21 → "twenty first")
      */
@@ -38,7 +40,7 @@ public interface NumberWordFormatter {
     
     /**
      * Creates a NumberWordFormatter for the given locale.
-     * 
+     *
      * @param locale the locale to use
      * @param bundle the ResourceBundle containing localized words
      * @return an appropriate NumberWordFormatter implementation

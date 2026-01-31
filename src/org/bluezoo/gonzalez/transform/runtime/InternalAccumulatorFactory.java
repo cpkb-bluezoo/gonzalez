@@ -163,10 +163,10 @@ public final class InternalAccumulatorFactory {
     }
 
     /**
-     * Creates internal accumulators for position tracking within a select.
+     * Creates an internal accumulator for position tracking within a select expression.
      *
-     * @param selectExpr the select expression
-     * @return a position accumulator if applicable
+     * @param selectExpr the select expression being iterated
+     * @return a position counter accumulator
      */
     public InternalAccumulator createPositionAccumulator(XPathExpression selectExpr) {
         return InternalAccumulator.createCounter(

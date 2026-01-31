@@ -56,14 +56,14 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
      * Creates a new sequence containing the given items.
      * The list is not copied - caller must not modify it after construction.
      *
-     * @param items the list of items
+     * @param items the list of items (must not be null)
      */
     public XPathSequence(List<XPathValue> items) {
         this.items = items;
     }
 
     /**
-     * Returns the empty sequence.
+     * Returns the empty sequence singleton.
      *
      * @return the empty sequence
      */
@@ -74,8 +74,10 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
     /**
      * Creates a sequence containing a single item.
      *
-     * @param item the item
-     * @return a sequence containing just that item
+     * <p>If the item is already a sequence, it is returned unchanged (no nesting).
+     *
+     * @param item the item (may be null, in which case returns empty sequence)
+     * @return a sequence containing just that item, or empty if item is null
      */
     public static XPathSequence of(XPathValue item) {
         if (item == null) {
@@ -92,10 +94,12 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
 
     /**
      * Creates a sequence from multiple items.
-     * Sequences are automatically flattened.
      *
-     * @param items the items
-     * @return the sequence
+     * <p>Sequences are automatically flattened (nested sequences are unwrapped).
+     * Null items are ignored.
+     *
+     * @param items the items (may be null or empty, in which case returns empty sequence)
+     * @return the sequence containing the flattened items
      */
     public static XPathSequence of(XPathValue... items) {
         if (items == null || items.length == 0) {
@@ -118,10 +122,12 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
 
     /**
      * Creates a sequence from a list of items.
-     * Sequences are automatically flattened.
      *
-     * @param items the items
-     * @return the sequence
+     * <p>Sequences are automatically flattened (nested sequences are unwrapped).
+     * Null items are ignored.
+     *
+     * @param items the items (may be null or empty, in which case returns empty sequence)
+     * @return the sequence containing the flattened items
      */
     public static XPathSequence fromList(List<XPathValue> items) {
         if (items == null || items.isEmpty()) {
@@ -144,10 +150,12 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
 
     /**
      * Creates a sequence from a node-set.
-     * Nodes are converted to sequence items in document order.
      *
-     * @param nodeSet the node-set
-     * @return a sequence containing the nodes
+     * <p>Nodes are converted to sequence items in document order. Each node
+     * is wrapped in a singleton node-set for the sequence.
+     *
+     * @param nodeSet the node-set (may be null or empty, in which case returns empty sequence)
+     * @return a sequence containing the nodes as items
      */
     public static XPathSequence fromNodeSet(XPathNodeSet nodeSet) {
         if (nodeSet == null || nodeSet.isEmpty()) {
@@ -160,11 +168,24 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
         return new XPathSequence(list);
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#SEQUENCE}
+     */
     @Override
     public Type getType() {
         return Type.SEQUENCE;
     }
 
+    /**
+     * Converts this sequence to a string according to XPath 2.0 rules.
+     *
+     * <p>The string value is the space-separated concatenation of the atomized
+     * values of each item. Empty sequences return empty string.
+     *
+     * @return the space-separated string representation of all items
+     */
     @Override
     public String asString() {
         // XPath 2.0: String value is space-separated atomized values
@@ -184,6 +205,13 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
         return sb.toString();
     }
 
+    /**
+     * Converts this sequence to a number according to XPath 2.0 rules.
+     *
+     * <p>The first item is converted to a number. Empty sequences return NaN.
+     *
+     * @return the numeric representation of the first item, or NaN if empty
+     */
     @Override
     public double asNumber() {
         // XPath 2.0: Convert first item to number
@@ -193,6 +221,13 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
         return items.get(0).asNumber();
     }
 
+    /**
+     * Converts this sequence to a boolean according to XPath 2.0 rules.
+     *
+     * <p>Non-empty sequences are truthy. Empty sequences are falsy.
+     *
+     * @return true if the sequence is non-empty, false otherwise
+     */
     @Override
     public boolean asBoolean() {
         // XPath 2.0: Non-empty sequence is truthy
@@ -200,6 +235,14 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
         return !items.isEmpty();
     }
 
+    /**
+     * Converts this sequence to a node-set.
+     *
+     * <p>All items that are node-sets are combined into a single node-set.
+     * Non-node items are ignored.
+     *
+     * @return a node-set containing all nodes from node-set items, or empty if none
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         // Convert sequence of nodes to node-set
@@ -218,11 +261,21 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
         return new XPathNodeSet(nodes);
     }
 
+    /**
+     * Returns the number of items in this sequence.
+     *
+     * @return the size of the sequence
+     */
     @Override
     public int sequenceSize() {
         return items.size();
     }
 
+    /**
+     * Returns an iterator over the items in this sequence.
+     *
+     * @return an iterator over XPathValue items
+     */
     @Override
     public Iterator<XPathValue> sequenceIterator() {
         return Collections.unmodifiableList(items).iterator();
@@ -290,8 +343,8 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
     /**
      * Returns a subsequence from startIndex (0-based) to the end.
      *
-     * @param startIndex the start index (0-based)
-     * @return the subsequence
+     * @param startIndex the start index (0-based, inclusive)
+     * @return the subsequence from startIndex to the end, or empty if startIndex is out of range
      */
     public XPathSequence subsequence(int startIndex) {
         if (startIndex >= items.size()) {
@@ -306,9 +359,9 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
     /**
      * Returns a subsequence from startIndex to endIndex (0-based, exclusive).
      *
-     * @param startIndex the start index (0-based)
+     * @param startIndex the start index (0-based, inclusive)
      * @param endIndex the end index (0-based, exclusive)
-     * @return the subsequence
+     * @return the subsequence from startIndex to endIndex, or empty if indices are invalid
      */
     public XPathSequence subsequence(int startIndex, int endIndex) {
         if (startIndex >= items.size() || endIndex <= startIndex) {
@@ -322,8 +375,11 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
     /**
      * Concatenates this sequence with another.
      *
-     * @param other the other sequence
-     * @return the concatenated sequence
+     * <p>The result contains all items from this sequence followed by all items
+     * from the other sequence.
+     *
+     * @param other the other sequence (must not be null)
+     * @return a new sequence containing the concatenation
      */
     public XPathSequence concat(XPathSequence other) {
         if (this.isEmpty()) {
@@ -351,12 +407,23 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
     /**
      * Atomizes this sequence, converting all items to atomic values.
      *
+     * <p>This is equivalent to converting the sequence to a string, which
+     * automatically atomizes each item.
+     *
      * @return a string representing the atomized sequence
      */
     public String atomize() {
         return asString();
     }
 
+    /**
+     * Compares this sequence with another object for equality.
+     *
+     * <p>Two sequences are equal if they contain the same items in the same order.
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -369,11 +436,23 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
         return this.items.equals(other.items);
     }
 
+    /**
+     * Returns a hash code for this sequence.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return items.hashCode();
     }
 
+    /**
+     * Returns a string representation of this sequence.
+     *
+     * <p>The format is "(item1, item2, ...)" or "()" for empty sequences.
+     *
+     * @return a string representation
+     */
     @Override
     public String toString() {
         if (items.isEmpty()) {

@@ -43,7 +43,8 @@ public interface XPathNodeWithBaseURI extends XPathNode {
      * Returns the document URI of this node.
      *
      * <p>Only document (root) nodes have a document URI. For other node types,
-     * this should return null.
+     * this should return null. The document URI is the URI from which the document
+     * was loaded (e.g., via doc() or document() functions).
      *
      * @return the document URI, or null if not a document node or no URI is set
      */

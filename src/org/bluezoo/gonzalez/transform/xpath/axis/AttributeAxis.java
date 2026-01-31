@@ -45,21 +45,48 @@ public final class AttributeAxis implements Axis {
 
     private AttributeAxis() {}
 
+    /**
+     * Returns the name of this axis.
+     *
+     * @return the axis name "attribute"
+     */
     @Override
     public String getName() {
         return "attribute";
     }
 
+    /**
+     * Returns false since this is a forward axis.
+     *
+     * @return false
+     */
     @Override
     public boolean isReverse() {
         return false;
     }
 
+    /**
+     * Returns an iterator over the attributes of the context node.
+     *
+     * <p>Only element nodes have attributes. For other node types,
+     * this method returns an empty iterator.
+     *
+     * @param contextNode the context node whose attributes to iterate
+     * @return iterator over attribute nodes
+     */
     @Override
     public Iterator<XPathNode> iterate(XPathNode contextNode) {
         return contextNode.getAttributes();
     }
 
+    /**
+     * Returns the principal node type for this axis.
+     *
+     * <p>The attribute axis has attributes as its principal node type,
+     * meaning name tests match attribute names rather than element names.
+     *
+     * @return {@link PrincipalNodeType#ATTRIBUTE}
+     */
     @Override
     public PrincipalNodeType getPrincipalNodeType() {
         return PrincipalNodeType.ATTRIBUTE;

@@ -24,38 +24,80 @@ package org.bluezoo.gonzalez.schema;
 /**
  * The schema language used for validation.
  *
+ * <p>This enum identifies which schema language was used to validate
+ * an XML item. The validation source is provided through the
+ * {@link PSVIProvider#getValidationSource()} method during SAX parsing.
+ *
+ * <p>Different schema languages provide different levels of type
+ * information:
+ * <ul>
+ *   <li>DTD provides basic attribute types</li>
+ *   <li>XSD provides full type system with simple and complex types</li>
+ *   <li>Relax NG provides types when using XSD datatype library</li>
+ *   <li>Schematron provides validation rules but no type information</li>
+ * </ul>
+ *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
+ * @see PSVIProvider#getValidationSource()
  */
 public enum ValidationSource {
 
     /**
      * No schema validation was performed.
+     *
+     * <p>This indicates that the item was not validated against any schema.
+     * Type information is not available.
      */
     NONE,
 
     /**
      * Validation was performed using a DTD (Document Type Definition).
-     * Provides attribute types: ID, IDREF, IDREFS, NMTOKEN, NMTOKENS,
-     * ENTITY, ENTITIES, NOTATION, and enumerated types.
+     *
+     * <p>DTD validation provides basic attribute type information:
+     * <ul>
+     *   <li>ID, IDREF, IDREFS - for identity constraints</li>
+     *   <li>NMTOKEN, NMTOKENS - for name tokens</li>
+     *   <li>ENTITY, ENTITIES - for entity references</li>
+     *   <li>NOTATION - for notation references</li>
+     *   <li>Enumerated types - for attribute value lists</li>
+     * </ul>
+     *
+     * <p>DTD does not provide typed values or complex type information.
      */
     DTD,
 
     /**
      * Validation was performed using XML Schema (XSD).
-     * Provides full type information including simple types, complex types,
-     * and derived types.
+     *
+     * <p>XSD validation provides comprehensive type information:
+     * <ul>
+     *   <li>Simple types with facets (length, pattern, enumeration, etc.)</li>
+     *   <li>Complex types with content models (sequence, choice, all)</li>
+     *   <li>Type derivation (restriction, extension)</li>
+     *   <li>Typed values converted to Java objects</li>
+     *   <li>Full PSVI (Post-Schema-Validation Infoset) information</li>
+     * </ul>
      */
     XSD,
 
     /**
      * Validation was performed using Relax NG.
-     * Provides simple type information when XSD Part 2 datatypes are used.
+     *
+     * <p>Relax NG validation provides type information when the schema
+     * uses the XSD Part 2 datatype library. This allows typed values
+     * to be available similar to XSD validation.
+     *
+     * <p>Relax NG does not provide complex type information or content
+     * model validation in the same way as XSD.
      */
     RELAX_NG,
 
     /**
      * Validation was performed using Schematron.
-     * Provides validity status only (no type annotations).
+     *
+     * <p>Schematron validation provides validity status based on
+     * assertion rules, but does not provide type annotations or
+     * typed values. Only validity status (VALID/INVALID) is available.
      */
     SCHEMATRON
 }

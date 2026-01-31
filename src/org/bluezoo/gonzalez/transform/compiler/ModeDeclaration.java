@@ -93,6 +93,12 @@ public final class ModeDeclaration {
         /** Mode can be used but not overridden. */
         FINAL;
 
+        /**
+         * Parses a visibility attribute value.
+         *
+         * @param value the attribute value
+         * @return the enum value, or null if invalid
+         */
         public static Visibility parse(String value) {
             if (value == null) {
                 return null;
@@ -219,6 +225,10 @@ public final class ModeDeclaration {
 
     /**
      * Builder for constructing ModeDeclaration instances.
+     *
+     * <p>Provides a fluent API for creating mode declarations.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public static class Builder {
         private String name;
@@ -229,51 +239,110 @@ public final class ModeDeclaration {
         private boolean typed = false;
         private boolean warning = false;
 
+        /**
+         * Sets the mode name.
+         *
+         * @param name the name, or null for default mode
+         * @return this builder
+         */
         public Builder name(String name) {
             this.name = name;
             return this;
         }
 
+        /**
+         * Sets whether the mode is streamable.
+         *
+         * @param streamable true if streamable
+         * @return this builder
+         */
         public Builder streamable(boolean streamable) {
             this.streamable = streamable;
             return this;
         }
 
+        /**
+         * Sets the on-no-match behavior.
+         *
+         * @param onNoMatch the behavior enum
+         * @return this builder
+         */
         public Builder onNoMatch(OnNoMatch onNoMatch) {
             this.onNoMatch = onNoMatch;
             return this;
         }
 
+        /**
+         * Sets the on-no-match behavior from a string value.
+         *
+         * @param value the attribute value
+         * @return this builder
+         */
         public Builder onNoMatch(String value) {
             this.onNoMatch = OnNoMatch.parse(value);
             return this;
         }
 
+        /**
+         * Sets the mode visibility.
+         *
+         * @param visibility the visibility enum
+         * @return this builder
+         */
         public Builder visibility(Visibility visibility) {
             this.visibility = visibility;
             return this;
         }
 
+        /**
+         * Sets the mode visibility from a string value.
+         *
+         * @param value the attribute value
+         * @return this builder
+         */
         public Builder visibility(String value) {
             this.visibility = Visibility.parse(value);
             return this;
         }
 
+        /**
+         * Sets the accumulator names available in this mode.
+         *
+         * @param accumulators whitespace-separated accumulator names
+         * @return this builder
+         */
         public Builder useAccumulators(String accumulators) {
             this.useAccumulators = accumulators;
             return this;
         }
 
+        /**
+         * Sets whether typed validation is enabled.
+         *
+         * @param typed true if typed
+         * @return this builder
+         */
         public Builder typed(boolean typed) {
             this.typed = typed;
             return this;
         }
 
+        /**
+         * Sets whether warnings should be issued for no-match.
+         *
+         * @param warning true if warnings enabled
+         * @return this builder
+         */
         public Builder warning(boolean warning) {
             this.warning = warning;
             return this;
         }
 
+        /**
+         * Builds the ModeDeclaration.
+         *
+         * @return the mode declaration
+         */
         public ModeDeclaration build() {
             return new ModeDeclaration(name, streamable, onNoMatch, visibility,
                                         useAccumulators, typed, warning);

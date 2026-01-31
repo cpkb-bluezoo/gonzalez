@@ -65,7 +65,7 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
      * Creates a new node-set containing the given nodes.
      * The list is not copied - caller must not modify it after construction.
      *
-     * @param nodes the list of nodes
+     * @param nodes the list of nodes (must not be null)
      */
     public XPathNodeSet(List<XPathNode> nodes) {
         this.nodes = nodes;
@@ -75,7 +75,7 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Creates an empty node-set.
      *
-     * @return the empty node-set
+     * @return the empty node-set singleton
      */
     public static XPathNodeSet empty() {
         return EMPTY;
@@ -84,8 +84,8 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Creates a node-set containing a single node.
      *
-     * @param node the node
-     * @return a node-set containing just that node
+     * @param node the node (may be null, in which case returns empty node-set)
+     * @return a node-set containing just that node, or empty if node is null
      */
     public static XPathNodeSet of(XPathNode node) {
         if (node == null) {
@@ -101,8 +101,8 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Creates a node-set from multiple nodes.
      *
-     * @param nodes the nodes
-     * @return the node-set
+     * @param nodes the nodes (may be null or empty, in which case returns empty node-set)
+     * @return the node-set containing the given nodes
      */
     public static XPathNodeSet of(XPathNode... nodes) {
         if (nodes == null || nodes.length == 0) {
@@ -113,11 +113,25 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         return new XPathNodeSet(list);
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#NODESET}
+     */
     @Override
     public Type getType() {
         return Type.NODESET;
     }
 
+    /**
+     * Converts this node-set to a string according to XPath 1.0 Section 4.2.
+     *
+     * <p>A node-set is converted to a string by returning the string-value of
+     * the node in the node-set that is first in document order. If the node-set
+     * is empty, an empty string is returned.
+     *
+     * @return the string-value of the first node in document order, or empty string if empty
+     */
     @Override
     public String asString() {
         // XPath 1.0 Section 4.2: "A node-set is converted to a string by
@@ -131,6 +145,14 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         return nodes.get(0).getStringValue();
     }
 
+    /**
+     * Converts this node-set to a number according to XPath 1.0 Section 4.4.
+     *
+     * <p>A node-set is first converted to a string as if by a call to the string
+     * function and then converted in the same way as a string argument.
+     *
+     * @return the numeric representation, or NaN if the string-value is not a valid number
+     */
     @Override
     public double asNumber() {
         // XPath 1.0 Section 4.4: "a node-set is first converted to a string
@@ -147,12 +169,24 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         }
     }
 
+    /**
+     * Converts this node-set to a boolean according to XPath 1.0 Section 4.3.
+     *
+     * <p>A node-set is true if and only if it is non-empty.
+     *
+     * @return true if the node-set is non-empty, false otherwise
+     */
     @Override
     public boolean asBoolean() {
         // XPath 1.0 Section 4.3: "a node-set is true if and only if it is non-empty"
         return !nodes.isEmpty();
     }
 
+    /**
+     * Returns this node-set unchanged.
+     *
+     * @return this node-set
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         return this;
@@ -245,8 +279,11 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Returns the union of this node-set and another.
      *
-     * @param other the other node-set
-     * @return the union
+     * <p>The union contains all nodes from both node-sets, with duplicates removed
+     * (based on node identity, not value equality).
+     *
+     * @param other the other node-set (must not be null)
+     * @return a new node-set containing the union
      */
     public XPathNodeSet union(XPathNodeSet other) {
         if (this.isEmpty()) {
@@ -272,8 +309,11 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Returns the intersection of this node-set and another.
      *
-     * @param other the other node-set
-     * @return the intersection
+     * <p>The intersection contains only nodes that are present in both node-sets
+     * (based on node identity).
+     *
+     * @param other the other node-set (must not be null)
+     * @return a new node-set containing the intersection
      */
     public XPathNodeSet intersect(XPathNodeSet other) {
         if (this.isEmpty() || other.isEmpty()) {
@@ -296,8 +336,11 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Returns the difference of this node-set and another (nodes in this but not in other).
      *
-     * @param other the other node-set
-     * @return the difference
+     * <p>The difference contains nodes that are in this node-set but not in the other,
+     * based on node identity.
+     *
+     * @param other the other node-set (must not be null)
+     * @return a new node-set containing the difference
      */
     public XPathNodeSet except(XPathNodeSet other) {
         if (this.isEmpty()) {
@@ -341,6 +384,14 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         return nodes;
     }
 
+    /**
+     * Compares this node-set with another object for equality.
+     *
+     * <p>Two node-sets are equal if they contain the same nodes (by node identity).
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -362,22 +413,47 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         return true;
     }
 
+    /**
+     * Returns a hash code for this node-set.
+     *
+     * <p>Note: This implementation uses only the size for hashing, as computing
+     * a full hash would require iterating all nodes.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         // Simple hash based on size - full hash would require iterating all nodes
         return nodes.size();
     }
 
+    /**
+     * Returns a string representation of this node-set.
+     *
+     * @return a string in the format "XPathNodeSet[size=N]"
+     */
     @Override
     public String toString() {
         return "XPathNodeSet[size=" + nodes.size() + "]";
     }
 
+    /**
+     * Returns the number of nodes in this node-set.
+     *
+     * @return the size of the node-set
+     */
     @Override
     public int sequenceSize() {
         return nodes.size();
     }
 
+    /**
+     * Returns an iterator over the nodes in this node-set as XPathValue items.
+     *
+     * <p>Each node is wrapped in a singleton node-set for the iterator.
+     *
+     * @return an iterator over XPathValue items
+     */
     @Override
     public Iterator<XPathValue> sequenceIterator() {
         ensureSorted();

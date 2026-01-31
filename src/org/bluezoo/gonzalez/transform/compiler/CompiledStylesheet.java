@@ -122,6 +122,12 @@ public final class CompiledStylesheet {
         /** The suggested prefix to use in output (may be empty for default namespace). */
         public final String resultPrefix;
         
+        /**
+         * Creates a namespace alias.
+         *
+         * @param resultUri the result namespace URI (replacement)
+         * @param resultPrefix the prefix to use in output
+         */
         public NamespaceAlias(String resultUri, String resultPrefix) {
             this.resultUri = resultUri != null ? resultUri : "";
             this.resultPrefix = resultPrefix != null ? resultPrefix : "";
@@ -135,6 +141,12 @@ public final class CompiledStylesheet {
 
     /**
      * Builder for creating compiled stylesheets.
+     *
+     * <p>The builder pattern is used to construct CompiledStylesheet instances
+     * incrementally during stylesheet compilation. Methods return the builder
+     * instance for method chaining.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public static class Builder {
         private final List<TemplateRule> templateRules = new ArrayList<>();
@@ -157,16 +169,34 @@ public final class CompiledStylesheet {
         private String baseURI;
         private double version = 1.0;
 
+        /**
+         * Sets the base URI of the stylesheet.
+         *
+         * @param uri the base URI
+         * @return this builder
+         */
         public Builder setBaseURI(String uri) {
             this.baseURI = uri;
             return this;
         }
 
+        /**
+         * Sets the XSLT version.
+         *
+         * @param version the version (1.0, 2.0, or 3.0)
+         * @return this builder
+         */
         public Builder setVersion(double version) {
             this.version = version;
             return this;
         }
 
+        /**
+         * Adds a template rule to the stylesheet.
+         *
+         * @param rule the template rule
+         * @return this builder
+         */
         public Builder addTemplateRule(TemplateRule rule) {
             templateRules.add(rule);
             if (rule.getName() != null) {
@@ -175,6 +205,14 @@ public final class CompiledStylesheet {
             return this;
         }
 
+        /**
+         * Adds a global variable or parameter.
+         * If a variable with the same name already exists, it is replaced
+         * (higher import precedence stylesheets add their variables later).
+         *
+         * @param variable the global variable
+         * @return this builder
+         */
         public Builder addGlobalVariable(GlobalVariable variable) {
             // Check for existing variable with same name - newer definition wins
             // (higher import precedence stylesheets add their variables later)
@@ -192,6 +230,14 @@ public final class CompiledStylesheet {
             return this;
         }
 
+        /**
+         * Adds an attribute set to the stylesheet.
+         * Per XSLT 1.0: Multiple attribute sets with the same name are merged.
+         * Later definitions take precedence for conflicting attribute names.
+         *
+         * @param attributeSet the attribute set
+         * @return this builder
+         */
         public Builder addAttributeSet(AttributeSet attributeSet) {
             // Per XSLT 1.0: Multiple attribute sets with the same name are MERGED.
             // Later definitions take precedence for conflicting attribute names.
@@ -206,11 +252,23 @@ public final class CompiledStylesheet {
             return this;
         }
 
+        /**
+         * Sets the output properties for the stylesheet.
+         *
+         * @param props the output properties
+         * @return this builder
+         */
         public Builder setOutputProperties(OutputProperties props) {
             this.outputProperties = props;
             return this;
         }
 
+        /**
+         * Adds a key definition to the stylesheet.
+         *
+         * @param key the key definition
+         * @return this builder
+         */
         public Builder addKeyDefinition(KeyDefinition key) {
             // Use expanded name (Clark notation) for lookup
             keyDefinitions.put(key.getExpandedName(), key);
@@ -265,6 +323,12 @@ public final class CompiledStylesheet {
             return this;
         }
         
+        /**
+         * Adds a user-defined function to the stylesheet.
+         *
+         * @param function the user-defined function
+         * @return this builder
+         */
         public Builder addUserFunction(UserFunction function) {
             // Key by namespace + localname + arity for overloading support
             userFunctions.put(function.getKey(), function);
@@ -285,6 +349,22 @@ public final class CompiledStylesheet {
             return this;
         }
         
+        /**
+         * Adds a decimal format definition.
+         *
+         * @param name the format name, or null for default
+         * @param decimalSeparator the decimal separator string
+         * @param groupingSeparator the grouping separator string
+         * @param infinity the infinity string
+         * @param minusSign the minus sign string
+         * @param nan the NaN string
+         * @param percent the percent string
+         * @param perMille the per-mille string
+         * @param zeroDigit the zero digit string
+         * @param digit the digit placeholder string
+         * @param patternSeparator the pattern separator string
+         * @return this builder
+         */
         public Builder addDecimalFormat(String name, String decimalSeparator, String groupingSeparator,
                 String infinity, String minusSign, String nan, String percent,
                 String perMille, String zeroDigit, String digit, String patternSeparator) {
@@ -428,11 +508,24 @@ public final class CompiledStylesheet {
             return this;
         }
 
+        /**
+         * Sets the default validation mode for the stylesheet.
+         *
+         * @param mode the validation mode
+         * @return this builder
+         */
         public Builder setDefaultValidation(StylesheetCompiler.ValidationMode mode) {
             this.defaultValidation = mode;
             return this;
         }
 
+        /**
+         * Builds the compiled stylesheet.
+         * Validates attribute-set references and other constraints.
+         *
+         * @return the compiled stylesheet
+         * @throws javax.xml.transform.TransformerConfigurationException if validation fails
+         */
         public CompiledStylesheet build() throws javax.xml.transform.TransformerConfigurationException {
             // Validate attribute-set references (XTSE0710)
             for (AttributeSet attrSet : attributeSets.values()) {

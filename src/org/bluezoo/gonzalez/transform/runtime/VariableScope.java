@@ -71,8 +71,9 @@ public final class VariableScope {
 
     /**
      * Pushes a new scope level.
+     * Creates a new VariableScope that is a child of this one.
      *
-     * @return a new VariableScope with the pushed scope
+     * @return a new VariableScope with a pushed scope level
      */
     public VariableScope push() {
         return new VariableScope(currentScope);
@@ -80,8 +81,9 @@ public final class VariableScope {
 
     /**
      * Binds a variable in the current scope.
+     * Variables are immutable once bound - rebinding overwrites the value.
      *
-     * @param name the variable name (local name only)
+     * @param name the variable name (local name only, no namespace)
      * @param value the variable value
      */
     public void bind(String name, XPathValue value) {
@@ -90,8 +92,9 @@ public final class VariableScope {
 
     /**
      * Binds a variable with namespace in the current scope.
+     * Variables are immutable once bound - rebinding overwrites the value.
      *
-     * @param namespaceURI the namespace URI (may be null)
+     * @param namespaceURI the namespace URI (may be null for no namespace)
      * @param localName the local name
      * @param value the variable value
      */
@@ -102,9 +105,10 @@ public final class VariableScope {
 
     /**
      * Looks up a variable value.
+     * Searches from the current scope up to the root scope.
      *
-     * @param name the variable name
-     * @return the value, or null if not bound
+     * @param name the variable name (local name only)
+     * @return the variable value, or null if not bound
      */
     public XPathValue lookup(String name) {
         return lookup(null, name);
@@ -112,10 +116,11 @@ public final class VariableScope {
 
     /**
      * Looks up a variable value with namespace.
+     * Searches from the current scope up to the root scope.
      *
-     * @param namespaceURI the namespace URI (may be null)
+     * @param namespaceURI the namespace URI (may be null for no namespace)
      * @param localName the local name
-     * @return the value, or null if not bound
+     * @return the variable value, or null if not bound
      */
     public XPathValue lookup(String namespaceURI, String localName) {
         String key = makeKey(namespaceURI, localName);
@@ -134,21 +139,21 @@ public final class VariableScope {
     }
 
     /**
-     * Returns true if a variable is bound.
+     * Returns true if a variable is bound in any scope.
      *
-     * @param name the variable name
-     * @return true if bound
+     * @param name the variable name (local name only)
+     * @return true if the variable is bound
      */
     public boolean isBound(String name) {
         return lookup(name) != null;
     }
 
     /**
-     * Returns true if a variable with namespace is bound.
+     * Returns true if a variable with namespace is bound in any scope.
      *
-     * @param namespaceURI the namespace URI
+     * @param namespaceURI the namespace URI (may be null for no namespace)
      * @param localName the local name
-     * @return true if bound
+     * @return true if the variable is bound
      */
     public boolean isBound(String namespaceURI, String localName) {
         return lookup(namespaceURI, localName) != null;

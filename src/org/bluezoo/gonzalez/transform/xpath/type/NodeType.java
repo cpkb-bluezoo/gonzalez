@@ -103,7 +103,9 @@ public enum NodeType {
     /**
      * Returns the XPath node test syntax for this node type.
      *
-     * @return the node test string
+     * <p>For example, ELEMENT returns "element()", TEXT returns "text()".
+     *
+     * @return the node test string (e.g., "element()", "text()")
      */
     public String getNodeTest() {
         return nodeTest;
@@ -111,6 +113,9 @@ public enum NodeType {
 
     /**
      * Returns true if this node type can have children.
+     *
+     * <p>Only root and element nodes can have children. Attribute and namespace
+     * nodes are not considered children.
      *
      * @return true for ROOT and ELEMENT, false otherwise
      */
@@ -121,6 +126,10 @@ public enum NodeType {
     /**
      * Returns true if this node type has an expanded-name.
      *
+     * <p>An expanded-name consists of a namespace URI and a local name.
+     * Elements, attributes, namespace nodes, and processing instructions have
+     * expanded-names.
+     *
      * @return true for ELEMENT, ATTRIBUTE, NAMESPACE, and PROCESSING_INSTRUCTION
      */
     public boolean hasExpandedName() {
@@ -130,8 +139,10 @@ public enum NodeType {
 
     /**
      * Returns true if this is a principal node type for an axis.
-     * Elements are principal for most axes, attributes for the attribute axis,
-     * and namespaces for the namespace axis.
+     *
+     * <p>Elements are principal for most axes (child, descendant, etc.),
+     * attributes for the attribute axis, and namespaces for the namespace axis.
+     * Principal node types determine which nodes are selected by an axis.
      *
      * @return true for ELEMENT, ATTRIBUTE, and NAMESPACE
      */

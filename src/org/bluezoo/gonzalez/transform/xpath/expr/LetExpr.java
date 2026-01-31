@@ -68,10 +68,20 @@ public final class LetExpr implements Expr {
             this.value = value;
         }
 
+        /**
+         * Returns the variable name.
+         *
+         * @return the variable name (without $)
+         */
         public String getVarName() {
             return varName;
         }
 
+        /**
+         * Returns the value expression.
+         *
+         * @return the value expression
+         */
         public Expr getValue() {
             return value;
         }

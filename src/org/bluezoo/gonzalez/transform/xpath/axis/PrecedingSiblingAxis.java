@@ -44,26 +44,58 @@ public final class PrecedingSiblingAxis implements Axis {
 
     private PrecedingSiblingAxis() {}
 
+    /**
+     * Returns the name of this axis.
+     *
+     * @return the axis name "preceding-sibling"
+     */
     @Override
     public String getName() {
         return "preceding-sibling";
     }
 
+    /**
+     * Returns true since this is a reverse axis.
+     *
+     * @return true
+     */
     @Override
     public boolean isReverse() {
         return true;
     }
 
+    /**
+     * Returns false since this axis requires buffering for streaming,
+     * as preceding siblings have already been processed.
+     *
+     * @return false
+     */
     @Override
     public boolean supportsStreaming() {
         return false; // Requires buffering
     }
 
+    /**
+     * Returns an iterator over the preceding siblings of the context node.
+     *
+     * <p>Preceding siblings are all siblings that appear before the context
+     * node in document order. They are returned in reverse document order,
+     * meaning the sibling closest to the context node is returned first.
+     * If the context node is an attribute or namespace node, this axis is empty.
+     *
+     * @param contextNode the context node whose preceding siblings to iterate
+     * @return iterator over preceding sibling nodes in reverse document order
+     */
     @Override
     public Iterator<XPathNode> iterate(XPathNode contextNode) {
         return new PrecedingSiblingIterator(contextNode);
     }
 
+    /**
+     * Returns the principal node type for this axis.
+     *
+     * @return {@link PrincipalNodeType#ELEMENT}
+     */
     @Override
     public PrincipalNodeType getPrincipalNodeType() {
         return PrincipalNodeType.ELEMENT;
@@ -71,19 +103,37 @@ public final class PrecedingSiblingAxis implements Axis {
 
     /**
      * Iterator that traverses preceding siblings in reverse document order.
+     *
+     * <p>Starts from the immediate preceding sibling and proceeds backward
+     * through the sibling chain.
      */
     private static class PrecedingSiblingIterator implements Iterator<XPathNode> {
         private XPathNode current;
 
+        /**
+         * Creates a new preceding sibling iterator.
+         *
+         * @param node the context node
+         */
         PrecedingSiblingIterator(XPathNode node) {
             current = node.getPrecedingSibling();
         }
 
+        /**
+         * Returns true if there are more preceding siblings to iterate.
+         *
+         * @return true if more preceding siblings exist
+         */
         @Override
         public boolean hasNext() {
             return current != null;
         }
 
+        /**
+         * Returns the next preceding sibling node and advances to the previous sibling.
+         *
+         * @return the next preceding sibling node
+         */
         @Override
         public XPathNode next() {
             XPathNode result = current;

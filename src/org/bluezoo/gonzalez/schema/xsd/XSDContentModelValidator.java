@@ -52,6 +52,11 @@ public class XSDContentModelValidator {
     
     /**
      * Result of a validation operation.
+     *
+     * <p>This class encapsulates the result of validating an element against
+     * a content model. It indicates whether the element is valid, provides
+     * error information if invalid, and optionally includes the matched
+     * element declaration.
      */
     public static class ValidationResult {
         private final boolean valid;
@@ -59,6 +64,14 @@ public class XSDContentModelValidator {
         private final String errorMessage;
         private final XSDElement matchedElement;
         
+        /**
+         * Creates a validation result.
+         *
+         * @param valid true if validation succeeded
+         * @param errorCode the error code if invalid (may be null)
+         * @param errorMessage the error message if invalid (may be null)
+         * @param matchedElement the matched element declaration (may be null)
+         */
         private ValidationResult(boolean valid, String errorCode, String errorMessage,
                                  XSDElement matchedElement) {
             this.valid = valid;
@@ -67,30 +80,75 @@ public class XSDContentModelValidator {
             this.matchedElement = matchedElement;
         }
         
+        /**
+         * Creates a valid result with a matched element.
+         *
+         * @param element the element declaration that matched
+         * @return a valid validation result
+         */
         public static ValidationResult valid(XSDElement element) {
             return new ValidationResult(true, null, null, element);
         }
         
+        /**
+         * Creates a valid result without a matched element.
+         *
+         * <p>Used when validation succeeds but no specific element
+         * declaration is matched (e.g., for wildcards or empty content).
+         *
+         * @return a valid validation result
+         */
         public static ValidationResult validNoElement() {
             return new ValidationResult(true, null, null, null);
         }
         
+        /**
+         * Creates an invalid result with error information.
+         *
+         * @param errorCode the error code (typically an XSLT/XPath error code)
+         * @param message a descriptive error message
+         * @return an invalid validation result
+         */
         public static ValidationResult error(String errorCode, String message) {
             return new ValidationResult(false, errorCode, message, null);
         }
         
+        /**
+         * Returns whether the validation succeeded.
+         *
+         * @return true if valid, false if invalid
+         */
         public boolean isValid() {
             return valid;
         }
         
+        /**
+         * Returns the error code if validation failed.
+         *
+         * @return the error code, or null if valid
+         */
         public String getErrorCode() {
             return errorCode;
         }
         
+        /**
+         * Returns the error message if validation failed.
+         *
+         * @return the error message, or null if valid
+         */
         public String getErrorMessage() {
             return errorMessage;
         }
         
+        /**
+         * Returns the matched element declaration.
+         *
+         * <p>When an element successfully matches the content model,
+         * this returns the element declaration that matched. This is
+         * null for wildcards or when no specific element matched.
+         *
+         * @return the matched element declaration, or null
+         */
         public XSDElement getMatchedElement() {
             return matchedElement;
         }
@@ -130,6 +188,9 @@ public class XSDContentModelValidator {
     
     /**
      * Creates a new content model validator.
+     *
+     * <p>The validator can be reused for multiple validation sessions
+     * by calling {@link #startValidation(XSDComplexType)} multiple times.
      */
     public XSDContentModelValidator() {
         this.stateStack = new ArrayDeque<>();
@@ -137,6 +198,11 @@ public class XSDContentModelValidator {
     
     /**
      * Starts validation for a complex type's content model.
+     *
+     * <p>This method initializes the validator for a new validation session.
+     * It should be called before validating any child elements. After calling
+     * this method, call {@link #validateElement(String, String)} for each
+     * child element, then {@link #endValidation()} when done.
      *
      * @param type the complex type to validate against
      */
@@ -151,6 +217,14 @@ public class XSDContentModelValidator {
     
     /**
      * Validates that an element is allowed at the current position in the content model.
+     *
+     * <p>This method checks if the specified element matches the content model
+     * at the current position. It updates internal state to track progress
+     * through sequences, choices, and other model groups.
+     *
+     * <p>Call this method for each child element in document order. After
+     * all elements have been validated, call {@link #endValidation()} to
+     * check that all required elements were present.
      *
      * @param namespaceURI the element namespace URI (may be null)
      * @param localName the element local name
@@ -454,7 +528,15 @@ public class XSDContentModelValidator {
     /**
      * Completes validation, checking that all required elements are present.
      *
-     * @return validation result
+     * <p>This method should be called after all child elements have been
+     * validated. It checks that all particles with minOccurs > 0 have
+     * been satisfied, and that sequences and choices are complete.
+     *
+     * <p>After calling this method, call {@link #startValidation(XSDComplexType)}
+     * again to validate another element's content, or call {@link #reset()}
+     * to clear the validator state.
+     *
+     * @return validation result indicating whether all required content was present
      */
     public ValidationResult endValidation() {
         if (currentType == null) {
@@ -669,6 +751,10 @@ public class XSDContentModelValidator {
     
     /**
      * Resets the validator for reuse.
+     *
+     * <p>Clears all validation state, allowing the validator to be reused
+     * for a new validation session. This is equivalent to creating a new
+     * validator instance.
      */
     public void reset() {
         this.currentType = null;

@@ -58,6 +58,12 @@ public final class StreamabilityAnalyzer {
 
     /**
      * Streamability category for an expression.
+     *
+     * <p>Categories are ordered from most streamable (MOTIONLESS) to least
+     * streamable (FREE_RANGING). Higher ordinal values indicate more restrictive
+     * buffering requirements.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public enum ExpressionStreamability {
         /** Expression is independent of streaming context (constants, variables). */
@@ -71,13 +77,25 @@ public final class StreamabilityAnalyzer {
     }
 
     /**
-     * Analysis result for a template.
+     * Analysis result for a template's streamability.
+     *
+     * <p>Contains the streamability category and reasons why buffering
+     * might be required.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public static final class TemplateStreamability {
         private final TemplateRule template;
         private final ExpressionStreamability streamability;
         private final List<String> bufferingReasons;
 
+        /**
+         * Creates a template streamability analysis result.
+         *
+         * @param template the analyzed template
+         * @param streamability the streamability category
+         * @param bufferingReasons list of reasons why buffering is needed
+         */
         public TemplateStreamability(TemplateRule template, ExpressionStreamability streamability,
                                      List<String> bufferingReasons) {
             this.template = template;
@@ -85,40 +103,81 @@ public final class StreamabilityAnalyzer {
             this.bufferingReasons = bufferingReasons;
         }
 
+        /**
+         * Returns the analyzed template.
+         *
+         * @return the template rule
+         */
         public TemplateRule getTemplate() {
             return template;
         }
 
+        /**
+         * Returns the streamability category.
+         *
+         * @return the streamability category
+         */
         public ExpressionStreamability getStreamability() {
             return streamability;
         }
 
+        /**
+         * Returns the list of reasons why buffering is required.
+         *
+         * @return list of buffering reasons
+         */
         public List<String> getBufferingReasons() {
             return bufferingReasons;
         }
 
+        /**
+         * Returns true if the template is fully streamable.
+         *
+         * @return true if MOTIONLESS or CONSUMING
+         */
         public boolean isFullyStreamable() {
             return streamability == ExpressionStreamability.MOTIONLESS ||
                    streamability == ExpressionStreamability.CONSUMING;
         }
 
+        /**
+         * Returns true if the template requires subtree buffering (grounding).
+         *
+         * @return true if GROUNDED
+         */
         public boolean requiresGrounding() {
             return streamability == ExpressionStreamability.GROUNDED;
         }
 
+        /**
+         * Returns true if the template requires full document buffering.
+         *
+         * @return true if FREE_RANGING
+         */
         public boolean requiresDocumentBuffering() {
             return streamability == ExpressionStreamability.FREE_RANGING;
         }
     }
 
     /**
-     * Analysis result for a stylesheet.
+     * Analysis result for an entire stylesheet's streamability.
+     *
+     * <p>Contains the overall buffering strategy and per-template analysis.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public static final class StylesheetStreamability {
         private final BufferingStrategy overallStrategy;
         private final Map<TemplateRule, TemplateStreamability> templateAnalysis;
         private final List<String> bufferingReasons;
 
+        /**
+         * Creates a stylesheet streamability analysis result.
+         *
+         * @param overallStrategy the overall buffering strategy required
+         * @param templateAnalysis map of template to its streamability analysis
+         * @param bufferingReasons list of reasons why buffering is needed
+         */
         public StylesheetStreamability(BufferingStrategy overallStrategy,
                                         Map<TemplateRule, TemplateStreamability> templateAnalysis,
                                         List<String> bufferingReasons) {
@@ -127,22 +186,47 @@ public final class StreamabilityAnalyzer {
             this.bufferingReasons = bufferingReasons;
         }
 
+        /**
+         * Returns the overall buffering strategy required.
+         *
+         * @return the buffering strategy
+         */
         public BufferingStrategy getOverallStrategy() {
             return overallStrategy;
         }
 
+        /**
+         * Returns the per-template streamability analysis.
+         *
+         * @return map of template to its analysis
+         */
         public Map<TemplateRule, TemplateStreamability> getTemplateAnalysis() {
             return templateAnalysis;
         }
 
+        /**
+         * Returns the list of reasons why buffering is required.
+         *
+         * @return list of buffering reasons
+         */
         public List<String> getBufferingReasons() {
             return bufferingReasons;
         }
 
+        /**
+         * Returns true if the stylesheet is fully streamable.
+         *
+         * @return true if no buffering is required
+         */
         public boolean isFullyStreamable() {
             return overallStrategy == BufferingStrategy.NONE;
         }
 
+        /**
+         * Returns true if the stylesheet is mostly streamable (only subtree buffering).
+         *
+         * @return true if only GROUNDED buffering is required
+         */
         public boolean isMostlyStreamable() {
             return overallStrategy == BufferingStrategy.GROUNDED;
         }

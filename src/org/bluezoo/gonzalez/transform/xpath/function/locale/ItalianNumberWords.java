@@ -4,6 +4,8 @@ import java.util.ResourceBundle;
 
 /**
  * Italian number word formatter.
+ *
+ * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  * 
  * <p>Italian has elision rules:
  * <ul>

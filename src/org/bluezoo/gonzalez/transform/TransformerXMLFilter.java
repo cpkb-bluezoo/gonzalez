@@ -39,6 +39,7 @@ import javax.xml.transform.sax.TransformerHandler;
  */
 public class TransformerXMLFilter extends XMLFilterImpl {
 
+    /** The transformer handler that performs the transformation. */
     private final TransformerHandler handler;
 
     /**
@@ -50,6 +51,14 @@ public class TransformerXMLFilter extends XMLFilterImpl {
         this.handler = handler;
     }
 
+    /**
+     * Sets the content handler that receives the transformation output.
+     *
+     * <p>This also configures the transformer handler to output to the
+     * specified content handler.
+     *
+     * @param handler the content handler to receive transformation output
+     */
     @Override
     public void setContentHandler(ContentHandler handler) {
         super.setContentHandler(handler);
@@ -57,6 +66,13 @@ public class TransformerXMLFilter extends XMLFilterImpl {
         this.handler.setResult(new SAXResult(handler));
     }
 
+    /**
+     * Parses an input source through the transformation pipeline.
+     *
+     * @param input the input source to parse
+     * @throws SAXException if a SAX parsing or transformation error occurs
+     * @throws IOException if an I/O error occurs
+     */
     @Override
     public void parse(InputSource input) throws SAXException, IOException {
         // Set up the transformation pipeline
@@ -67,6 +83,13 @@ public class TransformerXMLFilter extends XMLFilterImpl {
         }
     }
 
+    /**
+     * Parses an input source identified by system ID through the transformation pipeline.
+     *
+     * @param systemId the system identifier (URI) of the input source
+     * @throws SAXException if a SAX parsing or transformation error occurs
+     * @throws IOException if an I/O error occurs
+     */
     @Override
     public void parse(String systemId) throws SAXException, IOException {
         parse(new InputSource(systemId));

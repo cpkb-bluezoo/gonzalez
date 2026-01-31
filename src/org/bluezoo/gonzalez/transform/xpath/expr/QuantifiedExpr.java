@@ -78,10 +78,20 @@ public final class QuantifiedExpr implements Expr {
             this.sequence = sequence;
         }
 
+        /**
+         * Returns the variable name.
+         *
+         * @return the variable name (without $)
+         */
         public String getVarName() {
             return varName;
         }
 
+        /**
+         * Returns the sequence expression.
+         *
+         * @return the sequence expression
+         */
         public Expr getSequence() {
             return sequence;
         }

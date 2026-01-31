@@ -88,8 +88,16 @@ public final class BreakNode implements XSLTNode {
 
     /**
      * Signal exception used to communicate break to the iterate loop.
+     *
+     * <p>This exception is thrown by xsl:break to signal to the enclosing
+     * xsl:iterate that iteration should terminate early. The exception is
+     * caught by the iterate loop handler, which then executes xsl:on-completion
+     * if present.
      */
     public static class BreakSignal extends SAXException {
+        /**
+         * Creates a new break signal.
+         */
         public BreakSignal() {
             super("break");
         }

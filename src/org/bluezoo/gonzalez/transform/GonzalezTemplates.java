@@ -39,6 +39,7 @@ import java.util.Properties;
  */
 public class GonzalezTemplates implements Templates {
 
+    /** The compiled XSLT stylesheet. */
     private final CompiledStylesheet stylesheet;
 
     /**
@@ -50,11 +51,28 @@ public class GonzalezTemplates implements Templates {
         this.stylesheet = stylesheet;
     }
 
+    /**
+     * Creates a new Transformer instance from these templates.
+     *
+     * <p>Each Transformer instance is thread-safe and can be used
+     * concurrently with other instances created from the same Templates.
+     *
+     * @return a new Transformer instance
+     * @throws TransformerConfigurationException if the transformer cannot be created
+     */
     @Override
     public Transformer newTransformer() throws TransformerConfigurationException {
         return new GonzalezTransformer(stylesheet);
     }
 
+    /**
+     * Gets the output properties from the compiled stylesheet.
+     *
+     * <p>These properties reflect the xsl:output settings in the stylesheet,
+     * such as method, encoding, indent, etc.
+     *
+     * @return a Properties object containing the output properties
+     */
     @Override
     public Properties getOutputProperties() {
         Properties props = new Properties();

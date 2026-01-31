@@ -4,6 +4,8 @@ import java.util.ResourceBundle;
 
 /**
  * French number word formatter.
+ *
+ * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  * 
  * <p>French uses a mixed base-20 (vigesimal) system for 70-99:
  * <ul>

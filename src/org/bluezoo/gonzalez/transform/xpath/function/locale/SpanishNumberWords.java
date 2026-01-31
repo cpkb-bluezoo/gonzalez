@@ -4,6 +4,8 @@ import java.util.ResourceBundle;
 
 /**
  * Spanish number word formatter.
+ *
+ * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  * 
  * <p>Spanish has several special rules:
  * <ul>

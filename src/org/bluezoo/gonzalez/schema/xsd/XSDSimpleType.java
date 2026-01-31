@@ -101,16 +101,48 @@ public class XSDSimpleType extends XSDType {
     private WhitespaceHandling whitespace = WhitespaceHandling.PRESERVE;
     
     /**
-     * Whitespace handling modes.
+     * Whitespace handling modes for simple types.
+     *
+     * <p>This enum defines how whitespace characters are normalized during
+     * validation and value conversion, as specified by the whitespace facet.
      */
     public enum WhitespaceHandling {
+        /**
+         * Preserve whitespace.
+         *
+         * <p>No whitespace normalization is performed. All whitespace
+         * characters (space, tab, newline, carriage return) are preserved
+         * as-is.
+         */
         PRESERVE,
+        
+        /**
+         * Replace whitespace.
+         *
+         * <p>All whitespace characters (tab, newline, carriage return) are
+         * replaced with spaces, but multiple spaces are not collapsed.
+         */
         REPLACE,
+        
+        /**
+         * Collapse whitespace.
+         *
+         * <p>All whitespace characters are replaced with spaces, multiple
+         * spaces are collapsed to single spaces, and leading/trailing
+         * whitespace is trimmed.
+         */
         COLLAPSE
     }
     
     /**
      * Creates an atomic simple type.
+     *
+     * <p>Atomic types represent single values, optionally derived from
+     * a base type with facets (restrictions).
+     *
+     * @param name the type name (local part), or null for anonymous types
+     * @param namespaceURI the type namespace URI
+     * @param baseType the base type from which this type is derived, or null for built-in types
      */
     public XSDSimpleType(String name, String namespaceURI, XSDSimpleType baseType) {
         super(name, namespaceURI);
@@ -122,6 +154,14 @@ public class XSDSimpleType extends XSDType {
     
     /**
      * Creates a list simple type.
+     *
+     * <p>List types represent sequences of atomic values separated by whitespace.
+     * The itemType specifies the type of each item in the list.
+     *
+     * @param name the type name (local part)
+     * @param namespaceURI the type namespace URI
+     * @param itemType the type of each item in the list
+     * @return a new list simple type
      */
     public static XSDSimpleType createList(String name, String namespaceURI, XSDSimpleType itemType) {
         return new XSDSimpleType(name, namespaceURI, Variety.LIST, null, itemType, null);
@@ -129,6 +169,14 @@ public class XSDSimpleType extends XSDType {
     
     /**
      * Creates a union simple type.
+     *
+     * <p>Union types represent values that can be one of several member types.
+     * The value is validated against each member type in order until one matches.
+     *
+     * @param name the type name (local part)
+     * @param namespaceURI the type namespace URI
+     * @param memberTypes the list of member types (must not be null or empty)
+     * @return a new union simple type
      */
     public static XSDSimpleType createUnion(String name, String namespaceURI, List<XSDSimpleType> memberTypes) {
         return new XSDSimpleType(name, namespaceURI, Variety.UNION, null, null, memberTypes);
@@ -144,21 +192,34 @@ public class XSDSimpleType extends XSDType {
     }
     
     /**
-     * Gets a built-in type by name.
+     * Gets a built-in XSD type by name.
+     *
+     * <p>Built-in types are defined in XSD Part 2 and include primitive types
+     * (string, boolean, decimal, etc.) and derived types (integer, token, etc.).
+     *
+     * @param name the built-in type name (e.g., "string", "integer", "date")
+     * @return the built-in type, or null if not a built-in type name
      */
     public static XSDSimpleType getBuiltInType(String name) {
         return BUILT_IN_TYPE_MAP.get(name);
     }
     
     /**
-     * Returns true if this is a built-in ID type.
+     * Returns true if this is the built-in xs:ID type.
+     *
+     * @return true if this is xs:ID, false otherwise
      */
     public boolean isIdType() {
         return "ID".equals(getName()) && XSDSchema.XSD_NAMESPACE.equals(getNamespaceURI());
     }
     
     /**
-     * Returns true if this is derived from xs:ID.
+     * Returns true if this type is derived from xs:ID.
+     *
+     * <p>This includes xs:ID itself and any types derived from it by restriction.
+     * This is used to identify ID attributes for uniqueness validation.
+     *
+     * @return true if derived from xs:ID, false otherwise
      */
     public boolean isDerivedFromId() {
         if (isIdType()) return true;
@@ -168,50 +229,151 @@ public class XSDSimpleType extends XSDType {
         return false;
     }
     
+    /**
+     * Returns true, indicating this is a simple type.
+     *
+     * @return true
+     */
     @Override
     public boolean isSimpleType() {
         return true;
     }
     
+    /**
+     * Returns the variety of this simple type.
+     *
+     * @return the variety (ATOMIC, LIST, or UNION)
+     */
     public Variety getVariety() {
         return variety;
     }
     
+    /**
+     * Returns the base type from which this type is derived.
+     *
+     * <p>For atomic types, this is the type being restricted. For list and
+     * union types, this is typically null.
+     *
+     * @return the base type, or null if not derived
+     */
     public XSDSimpleType getBaseType() {
         return baseType;
     }
     
     /**
      * Sets the base type. Used during schema parsing for late binding.
+     *
+     * <p>This method is used when parsing schemas where type references
+     * may appear before the type definition. The base type is resolved
+     * after all types have been parsed.
+     *
+     * @param baseType the base type from which this type is derived
      */
     public void setBaseType(XSDSimpleType baseType) {
         this.baseType = baseType;
     }
     
+    /**
+     * Returns the item type for list types.
+     *
+     * <p>For list varieties, this returns the type of each item in the list.
+     * For other varieties, returns null.
+     *
+     * @return the item type, or null if not a list type
+     */
     public XSDSimpleType getItemType() {
         return itemType;
     }
     
+    /**
+     * Returns the member types for union types.
+     *
+     * <p>For union varieties, this returns the list of member types. For
+     * other varieties, returns null.
+     *
+     * @return the member types, or null if not a union type
+     */
     public List<XSDSimpleType> getMemberTypes() {
         return memberTypes;
     }
     
     // Facet getters and setters
     
+    /**
+     * Returns the minLength facet value.
+     *
+     * @return the minimum length, or null if not set
+     */
     public Integer getMinLength() { return minLength; }
+    
+    /**
+     * Sets the minLength facet value.
+     *
+     * @param value the minimum length constraint
+     */
     public void setMinLength(Integer value) { this.minLength = value; }
     
+    /**
+     * Returns the maxLength facet value.
+     *
+     * @return the maximum length, or null if not set
+     */
     public Integer getMaxLength() { return maxLength; }
+    
+    /**
+     * Sets the maxLength facet value.
+     *
+     * @param value the maximum length constraint
+     */
     public void setMaxLength(Integer value) { this.maxLength = value; }
     
+    /**
+     * Returns the length facet value.
+     *
+     * @return the exact length, or null if not set
+     */
     public Integer getLength() { return length; }
+    
+    /**
+     * Sets the length facet value.
+     *
+     * @param value the exact length constraint
+     */
     public void setLength(Integer value) { this.length = value; }
     
+    /**
+     * Returns the pattern facet value (regular expression).
+     *
+     * @return the pattern, or null if not set
+     */
     public String getPattern() { return pattern; }
+    
+    /**
+     * Sets the pattern facet value.
+     *
+     * @param value the regular expression pattern
+     */
     public void setPattern(String value) { this.pattern = value; }
     
+    /**
+     * Returns the enumeration facet values.
+     *
+     * @return the set of allowed values, or null if not set
+     */
     public Set<String> getEnumeration() { return enumeration; }
+    
+    /**
+     * Sets the enumeration facet values.
+     *
+     * @param value the set of allowed values
+     */
     public void setEnumeration(Set<String> value) { this.enumeration = value; }
+    
+    /**
+     * Adds a value to the enumeration facet.
+     *
+     * @param value the enumeration value to add
+     */
     public void addEnumeration(String value) {
         if (enumeration == null) {
             enumeration = new HashSet<>();
@@ -219,32 +381,123 @@ public class XSDSimpleType extends XSDType {
         enumeration.add(value);
     }
     
+    /**
+     * Returns the minInclusive facet value.
+     *
+     * @return the minimum inclusive value (as string), or null if not set
+     */
     public String getMinInclusive() { return minInclusive; }
+    
+    /**
+     * Sets the minInclusive facet value.
+     *
+     * @param value the minimum inclusive value (as string)
+     */
     public void setMinInclusive(String value) { this.minInclusive = value; }
     
+    /**
+     * Returns the maxInclusive facet value.
+     *
+     * @return the maximum inclusive value (as string), or null if not set
+     */
     public String getMaxInclusive() { return maxInclusive; }
+    
+    /**
+     * Sets the maxInclusive facet value.
+     *
+     * @param value the maximum inclusive value (as string)
+     */
     public void setMaxInclusive(String value) { this.maxInclusive = value; }
     
+    /**
+     * Returns the minExclusive facet value.
+     *
+     * @return the minimum exclusive value (as string), or null if not set
+     */
     public String getMinExclusive() { return minExclusive; }
+    
+    /**
+     * Sets the minExclusive facet value.
+     *
+     * @param value the minimum exclusive value (as string)
+     */
     public void setMinExclusive(String value) { this.minExclusive = value; }
     
+    /**
+     * Returns the maxExclusive facet value.
+     *
+     * @return the maximum exclusive value (as string), or null if not set
+     */
     public String getMaxExclusive() { return maxExclusive; }
+    
+    /**
+     * Sets the maxExclusive facet value.
+     *
+     * @param value the maximum exclusive value (as string)
+     */
     public void setMaxExclusive(String value) { this.maxExclusive = value; }
     
+    /**
+     * Returns the totalDigits facet value.
+     *
+     * @return the total number of digits, or null if not set
+     */
     public Integer getTotalDigits() { return totalDigits; }
+    
+    /**
+     * Sets the totalDigits facet value.
+     *
+     * @param value the total number of digits constraint
+     */
     public void setTotalDigits(Integer value) { this.totalDigits = value; }
     
+    /**
+     * Returns the fractionDigits facet value.
+     *
+     * @return the number of fraction digits, or null if not set
+     */
     public Integer getFractionDigits() { return fractionDigits; }
+    
+    /**
+     * Sets the fractionDigits facet value.
+     *
+     * @param value the number of fraction digits constraint
+     */
     public void setFractionDigits(Integer value) { this.fractionDigits = value; }
     
+    /**
+     * Returns the whitespace facet value.
+     *
+     * @return the whitespace handling mode, never null (defaults to PRESERVE)
+     */
     public WhitespaceHandling getWhitespace() { return whitespace; }
+    
+    /**
+     * Sets the whitespace facet value.
+     *
+     * @param value the whitespace handling mode
+     */
     public void setWhitespace(WhitespaceHandling value) { this.whitespace = value; }
     
     /**
      * Validates a lexical value against this type.
      *
+     * <p>This method checks the value against all applicable facets:
+     * <ul>
+     *   <li>Whitespace normalization (preserve, replace, collapse)</li>
+     *   <li>Length constraints (length, minLength, maxLength)</li>
+     *   <li>Pattern matching</li>
+     *   <li>Enumeration membership</li>
+     *   <li>Numeric range constraints (min/max inclusive/exclusive)</li>
+     *   <li>Digit constraints (totalDigits, fractionDigits)</li>
+     *   <li>Base type validation</li>
+     * </ul>
+     *
+     * <p>For derived types, validation is performed against the base type
+     * first, then against the facets of this type.
+     *
      * @param value the lexical value to validate
-     * @return null if valid, error message if invalid
+     * @return null if valid, a descriptive error message if invalid
      */
     public String validate(String value) {
         if (value == null) {

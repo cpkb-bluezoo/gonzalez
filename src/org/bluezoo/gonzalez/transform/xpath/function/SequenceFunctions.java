@@ -57,7 +57,9 @@ public final class SequenceFunctions {
     private SequenceFunctions() {}
 
     /**
-     * Returns all sequence functions.
+     * Returns all sequence functions (XPath 2.0/3.0).
+     *
+     * @return list of all sequence function implementations
      */
     public static List<Function> getAll() {
         List<Function> functions = new ArrayList<>();
@@ -93,7 +95,15 @@ public final class SequenceFunctions {
         return functions;
     }
 
-    /** empty(sequence) - returns true if sequence is empty */
+    /**
+     * XPath 2.0 empty() function.
+     * 
+     * <p>Returns true if the sequence is empty.
+     * 
+     * <p>Signature: empty(item()*) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-empty">XPath 2.0 empty()</a>
+     */
     public static final Function EMPTY = new Function() {
         @Override public String getName() { return "empty"; }
         @Override public int getMinArgs() { return 1; }
@@ -106,7 +116,15 @@ public final class SequenceFunctions {
         }
     };
 
-    /** exists(sequence) - returns true if sequence is not empty */
+    /**
+     * XPath 2.0 exists() function.
+     * 
+     * <p>Returns true if the sequence contains at least one item.
+     * 
+     * <p>Signature: exists(item()*) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-exists">XPath 2.0 exists()</a>
+     */
     public static final Function EXISTS = new Function() {
         @Override public String getName() { return "exists"; }
         @Override public int getMinArgs() { return 1; }

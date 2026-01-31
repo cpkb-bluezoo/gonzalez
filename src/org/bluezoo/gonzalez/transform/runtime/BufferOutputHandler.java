@@ -72,9 +72,9 @@ public class BufferOutputHandler implements OutputHandler {
     }
     
     /**
-     * Returns the underlying buffer.
+     * Returns the underlying SAX event buffer.
      *
-     * @return the SAX event buffer
+     * @return the SAX event buffer containing captured events
      */
     public SAXEventBuffer getBuffer() {
         return buffer;

@@ -135,6 +135,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     
     /**
      * Validation modes for schema-aware processing.
+     *
+     * <p>Controls how elements and attributes are validated against imported schemas
+     * when constructing result trees.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public enum ValidationMode {
         /** Validate strictly against schema - error if no declaration */
@@ -248,11 +253,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         return builder.build();
     }
 
+    /**
+     * Sets the document locator for error reporting.
+     *
+     * @param locator the SAX locator
+     */
     @Override
     public void setDocumentLocator(Locator locator) {
         this.locator = locator;
     }
 
+    /**
+     * Called when document parsing starts.
+     * Initializes compilation state and sets the base URI.
+     *
+     * @throws SAXException if initialization fails
+     */
     @Override
     public void startDocument() throws SAXException {
         elementStack.clear();
@@ -264,6 +280,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
     }
 
+    /**
+     * Called when document parsing ends.
+     * Handles simplified stylesheets and finalizes compilation.
+     *
+     * @throws SAXException if compilation fails
+     */
     @Override
     public void endDocument() throws SAXException {
         // Handle simplified stylesheets (XSLT 1.0 Section 2.3)
@@ -333,6 +355,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Adding here would incorrectly modify parent element's bindings when child declares xmlns.
     }
 
+    /**
+     * Called when a namespace prefix mapping ends.
+     * Restores the previous namespace binding for the prefix.
+     *
+     * @param prefix the namespace prefix
+     * @throws SAXException if processing fails
+     */
     @Override
     public void endPrefixMapping(String prefix) throws SAXException {
         // Restore the previous value for this prefix (from before the current element)
@@ -359,6 +388,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     // Temporary storage for previous namespace values before startElement is called
     private Map<String, String> pendingPreviousNamespaces;
 
+    /**
+     * Called when an element starts.
+     * Processes XSLT elements and literal result elements, building the AST.
+     *
+     * @param uri the element namespace URI
+     * @param localName the element local name
+     * @param qName the element qualified name
+     * @param atts the element attributes
+     * @throws SAXException if compilation fails
+     */
     @Override
     public void startElement(String uri, String localName, String qName, Attributes atts) 
             throws SAXException {
@@ -610,6 +649,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         elementStack.push(ctx);
     }
 
+    /**
+     * Called when an element ends.
+     * Finalizes element processing and pops the element context.
+     *
+     * @param uri the element namespace URI
+     * @param localName the element local name
+     * @param qName the element qualified name
+     * @throws SAXException if compilation fails
+     */
     @Override
     public void endElement(String uri, String localName, String qName) throws SAXException {
         flushCharacters();
@@ -651,6 +699,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
     }
 
+    /**
+     * Called for character data.
+     * Buffers characters for later processing (whitespace handling, text nodes).
+     *
+     * @param ch the character array
+     * @param start the start position
+     * @param length the number of characters
+     * @throws SAXException if processing fails
+     */
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
         characterBuffer.append(ch, start, length);
@@ -3329,6 +3386,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
     }
 
+    /**
+     * Resolves a namespace prefix to its URI.
+     * Implements XPathParser.NamespaceResolver for XPath expression compilation.
+     *
+     * @param prefix the namespace prefix
+     * @return the namespace URI, or null if prefix not found
+     */
     @Override
     public String resolve(String prefix) {
         return namespaces.get(prefix);

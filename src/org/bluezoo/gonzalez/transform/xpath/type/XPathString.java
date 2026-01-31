@@ -40,6 +40,7 @@ public final class XPathString implements XPathValue {
      * Creates a new XPath string value.
      *
      * @param value the string value (must not be null)
+     * @throws NullPointerException if value is null
      */
     public XPathString(String value) {
         if (value == null) {
@@ -62,6 +63,11 @@ public final class XPathString implements XPathValue {
         return new XPathString(value);
     }
 
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#STRING}
+     */
     @Override
     public Type getType() {
         return Type.STRING;
@@ -89,12 +95,24 @@ public final class XPathString implements XPathValue {
         }
     }
 
+    /**
+     * Converts this string to a boolean according to XPath 1.0 Section 4.3.
+     *
+     * <p>A string is true if and only if its length is non-zero.
+     *
+     * @return true if the string is non-empty, false otherwise
+     */
     @Override
     public boolean asBoolean() {
         // XPath 1.0 Section 4.3: "a string is true if and only if its length is non-zero"
         return !value.isEmpty();
     }
 
+    /**
+     * Strings cannot be converted to node-sets.
+     *
+     * @return null (strings are not node-sets)
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         return null;
@@ -109,6 +127,12 @@ public final class XPathString implements XPathValue {
         return value;
     }
 
+    /**
+     * Compares this string with another object for equality.
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -120,11 +144,21 @@ public final class XPathString implements XPathValue {
         return value.equals(((XPathString) obj).value);
     }
 
+    /**
+     * Returns a hash code for this string.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return value.hashCode();
     }
 
+    /**
+     * Returns a string representation of this XPath string.
+     *
+     * @return a string in the format "XPathString[\"value\"]"
+     */
     @Override
     public String toString() {
         return "XPathString[\"" + value + "\"]";

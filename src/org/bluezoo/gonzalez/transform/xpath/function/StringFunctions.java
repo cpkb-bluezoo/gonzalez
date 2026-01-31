@@ -48,7 +48,15 @@ public final class StringFunctions {
 
     private StringFunctions() {}
 
-    /** string(object?) - converts to string */
+    /**
+     * XPath 1.0 string() function.
+     * 
+     * <p>Converts the argument (or context node if no argument) to a string.
+     * 
+     * <p>Signature: string(object?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-string">XPath 1.0 string()</a>
+     */
     public static final Function STRING = new Function() {
         @Override public String getName() { return "string"; }
         @Override public int getMinArgs() { return 0; }
@@ -64,7 +72,15 @@ public final class StringFunctions {
         }
     };
 
-    /** concat(string, string, string*) - concatenates strings */
+    /**
+     * XPath 1.0 concat() function.
+     * 
+     * <p>Concatenates two or more strings together.
+     * 
+     * <p>Signature: concat(string, string, string*) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-concat">XPath 1.0 concat()</a>
+     */
     public static final Function CONCAT = new Function() {
         @Override public String getName() { return "concat"; }
         @Override public int getMinArgs() { return 2; }
@@ -80,7 +96,15 @@ public final class StringFunctions {
         }
     };
 
-    /** starts-with(string, string) - tests prefix */
+    /**
+     * XPath 1.0 starts-with() function.
+     * 
+     * <p>Returns true if the first string starts with the second string.
+     * 
+     * <p>Signature: starts-with(string, string) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-starts-with">XPath 1.0 starts-with()</a>
+     */
     public static final Function STARTS_WITH = new Function() {
         @Override public String getName() { return "starts-with"; }
         @Override public int getMinArgs() { return 2; }
@@ -94,7 +118,15 @@ public final class StringFunctions {
         }
     };
 
-    /** contains(string, string) - tests substring */
+    /**
+     * XPath 1.0 contains() function.
+     * 
+     * <p>Returns true if the first string contains the second string as a substring.
+     * 
+     * <p>Signature: contains(string, string) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-contains">XPath 1.0 contains()</a>
+     */
     public static final Function CONTAINS = new Function() {
         @Override public String getName() { return "contains"; }
         @Override public int getMinArgs() { return 2; }
@@ -108,7 +140,16 @@ public final class StringFunctions {
         }
     };
 
-    /** substring-before(string, string) - substring before match */
+    /**
+     * XPath 1.0 substring-before() function.
+     * 
+     * <p>Returns the substring of the first argument that precedes the first occurrence
+     * of the second argument, or empty string if not found.
+     * 
+     * <p>Signature: substring-before(string, string) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-substring-before">XPath 1.0 substring-before()</a>
+     */
     public static final Function SUBSTRING_BEFORE = new Function() {
         @Override public String getName() { return "substring-before"; }
         @Override public int getMinArgs() { return 2; }
@@ -126,7 +167,16 @@ public final class StringFunctions {
         }
     };
 
-    /** substring-after(string, string) - substring after match */
+    /**
+     * XPath 1.0 substring-after() function.
+     * 
+     * <p>Returns the substring of the first argument that follows the first occurrence
+     * of the second argument, or empty string if not found.
+     * 
+     * <p>Signature: substring-after(string, string) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-substring-after">XPath 1.0 substring-after()</a>
+     */
     public static final Function SUBSTRING_AFTER = new Function() {
         @Override public String getName() { return "substring-after"; }
         @Override public int getMinArgs() { return 2; }
@@ -144,7 +194,17 @@ public final class StringFunctions {
         }
     };
 
-    /** substring(string, number, number?) - substring by position */
+    /**
+     * XPath 1.0 substring() function.
+     * 
+     * <p>Returns the substring of the first argument starting at the position specified
+     * by the second argument, with optional length specified by the third argument.
+     * Positions are 1-based. If length is omitted, returns to end of string.
+     * 
+     * <p>Signature: substring(string, number, number?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-substring">XPath 1.0 substring()</a>
+     */
     public static final Function SUBSTRING = new Function() {
         @Override public String getName() { return "substring"; }
         @Override public int getMinArgs() { return 2; }
@@ -211,7 +271,15 @@ public final class StringFunctions {
         }
     };
 
-    /** string-length(string?) - length in characters */
+    /**
+     * XPath 1.0 string-length() function.
+     * 
+     * <p>Returns the number of characters in the string (or context node if no argument).
+     * 
+     * <p>Signature: string-length(string?) → number
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-string-length">XPath 1.0 string-length()</a>
+     */
     public static final Function STRING_LENGTH = new Function() {
         @Override public String getName() { return "string-length"; }
         @Override public int getMinArgs() { return 0; }
@@ -229,7 +297,16 @@ public final class StringFunctions {
         }
     };
 
-    /** normalize-space(string?) - whitespace normalization */
+    /**
+     * XPath 1.0 normalize-space() function.
+     * 
+     * <p>Strips leading and trailing whitespace, and collapses sequences of whitespace
+     * characters to single spaces.
+     * 
+     * <p>Signature: normalize-space(string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-normalize-space">XPath 1.0 normalize-space()</a>
+     */
     public static final Function NORMALIZE_SPACE = new Function() {
         @Override public String getName() { return "normalize-space"; }
         @Override public int getMinArgs() { return 0; }
@@ -264,7 +341,18 @@ public final class StringFunctions {
         }
     };
 
-    /** translate(string, string, string) - character replacement */
+    /**
+     * XPath 1.0 translate() function.
+     * 
+     * <p>Replaces characters in the first string: each character found in the second string
+     * is replaced by the corresponding character in the third string. Characters in the first
+     * string that appear in the second but have no corresponding character in the third
+     * (because the third string is shorter) are removed.
+     * 
+     * <p>Signature: translate(string, string, string) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath/#function-translate">XPath 1.0 translate()</a>
+     */
     public static final Function TRANSLATE = new Function() {
         @Override public String getName() { return "translate"; }
         @Override public int getMinArgs() { return 3; }
@@ -294,7 +382,16 @@ public final class StringFunctions {
         }
     };
 
-    /** data(arg?) - atomizes the argument (returns typed values of nodes) */
+    /**
+     * XPath 2.0 data() function.
+     * 
+     * <p>Atomizes the argument, returning the typed value of nodes. For sequences,
+     * returns a sequence of atomized values.
+     * 
+     * <p>Signature: data(item()*) → atomic*
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-data">XPath 2.0 data()</a>
+     */
     public static final Function DATA = new Function() {
         @Override public String getName() { return "data"; }
         @Override public int getMinArgs() { return 0; }
@@ -357,7 +454,15 @@ public final class StringFunctions {
 
     // ========== XPath 2.0/3.0 String Functions ==========
 
-    /** string-join(sequence, separator) - join strings with separator (XPath 2.0) */
+    /**
+     * XPath 2.0 string-join() function.
+     * 
+     * <p>Concatenates the string values of items in a sequence, separated by a separator string.
+     * 
+     * <p>Signature: string-join(item()*, string) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-string-join">XPath 2.0 string-join()</a>
+     */
     public static final Function STRING_JOIN = new Function() {
         @Override public String getName() { return "string-join"; }
         @Override public int getMinArgs() { return 1; }
@@ -373,7 +478,15 @@ public final class StringFunctions {
         }
     };
 
-    /** upper-case(string) - convert to upper case (XPath 2.0) */
+    /**
+     * XPath 2.0 upper-case() function.
+     * 
+     * <p>Converts a string to upper case.
+     * 
+     * <p>Signature: upper-case(string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-upper-case">XPath 2.0 upper-case()</a>
+     */
     public static final Function UPPER_CASE = new Function() {
         @Override public String getName() { return "upper-case"; }
         @Override public int getMinArgs() { return 1; }
@@ -386,7 +499,15 @@ public final class StringFunctions {
         }
     };
 
-    /** lower-case(string) - convert to lower case (XPath 2.0) */
+    /**
+     * XPath 2.0 lower-case() function.
+     * 
+     * <p>Converts a string to lower case.
+     * 
+     * <p>Signature: lower-case(string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-lower-case">XPath 2.0 lower-case()</a>
+     */
     public static final Function LOWER_CASE = new Function() {
         @Override public String getName() { return "lower-case"; }
         @Override public int getMinArgs() { return 1; }
@@ -399,7 +520,15 @@ public final class StringFunctions {
         }
     };
 
-    /** ends-with(string, suffix, collation?) - test if string ends with suffix (XPath 2.0) */
+    /**
+     * XPath 2.0 ends-with() function.
+     * 
+     * <p>Returns true if the first string ends with the second string.
+     * 
+     * <p>Signature: ends-with(string?, string?, string?) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-ends-with">XPath 2.0 ends-with()</a>
+     */
     public static final Function ENDS_WITH = new Function() {
         @Override public String getName() { return "ends-with"; }
         @Override public int getMinArgs() { return 2; }
@@ -413,7 +542,16 @@ public final class StringFunctions {
         }
     };
 
-    /** matches(input, pattern, flags?) - test if string matches regex (XPath 2.0) */
+    /**
+     * XPath 2.0 matches() function.
+     * 
+     * <p>Returns true if the input string matches the regular expression pattern.
+     * Optional flags control matching behavior (i=case-insensitive, m=multiline, s=dotall, x=comments).
+     * 
+     * <p>Signature: matches(string?, string, string?) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-matches">XPath 2.0 matches()</a>
+     */
     public static final Function MATCHES = new Function() {
         @Override public String getName() { return "matches"; }
         @Override public int getMinArgs() { return 2; }
@@ -435,7 +573,16 @@ public final class StringFunctions {
         }
     };
 
-    /** replace(input, pattern, replacement, flags?) - replace matches (XPath 2.0) */
+    /**
+     * XPath 2.0 replace() function.
+     * 
+     * <p>Replaces substrings that match a regular expression pattern with a replacement string.
+     * The replacement string can contain $1, $2, etc. to refer to captured groups.
+     * 
+     * <p>Signature: replace(string?, string, string, string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-replace">XPath 2.0 replace()</a>
+     */
     public static final Function REPLACE = new Function() {
         @Override public String getName() { return "replace"; }
         @Override public int getMinArgs() { return 3; }
@@ -459,7 +606,16 @@ public final class StringFunctions {
         }
     };
 
-    /** tokenize(input, pattern, flags?) - split string by regex (XPath 2.0) */
+    /**
+     * XPath 2.0 tokenize() function.
+     * 
+     * <p>Splits a string into a sequence of tokens by matching against a regular expression pattern.
+     * If no pattern is provided, splits on whitespace.
+     * 
+     * <p>Signature: tokenize(string?, string?, string?) → string*
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-tokenize">XPath 2.0 tokenize()</a>
+     */
     public static final Function TOKENIZE = new Function() {
         @Override public String getName() { return "tokenize"; }
         @Override public int getMinArgs() { return 1; }
@@ -500,7 +656,16 @@ public final class StringFunctions {
         }
     };
 
-    /** compare(string1, string2, collation?) - compare strings (XPath 2.0) */
+    /**
+     * XPath 2.0 compare() function.
+     * 
+     * <p>Compares two strings and returns -1, 0, or 1 if the first is less than, equal to,
+     * or greater than the second. Returns empty sequence if either argument is empty.
+     * 
+     * <p>Signature: compare(string?, string?, string?) → integer?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-compare">XPath 2.0 compare()</a>
+     */
     public static final Function COMPARE = new Function() {
         @Override public String getName() { return "compare"; }
         @Override public int getMinArgs() { return 2; }
@@ -530,7 +695,15 @@ public final class StringFunctions {
         }
     };
 
-    /** codepoints-to-string(codepoints) - convert codepoints to string (XPath 2.0) */
+    /**
+     * XPath 2.0 codepoints-to-string() function.
+     * 
+     * <p>Converts a sequence of Unicode codepoints to a string.
+     * 
+     * <p>Signature: codepoints-to-string(integer*) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-codepoints-to-string">XPath 2.0 codepoints-to-string()</a>
+     */
     public static final Function CODEPOINTS_TO_STRING = new Function() {
         @Override public String getName() { return "codepoints-to-string"; }
         @Override public int getMinArgs() { return 1; }
@@ -547,7 +720,15 @@ public final class StringFunctions {
         }
     };
 
-    /** string-to-codepoints(string) - convert string to codepoints (XPath 2.0) */
+    /**
+     * XPath 2.0 string-to-codepoints() function.
+     * 
+     * <p>Converts a string to a sequence of Unicode codepoints.
+     * 
+     * <p>Signature: string-to-codepoints(string?) → integer*
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-string-to-codepoints">XPath 2.0 string-to-codepoints()</a>
+     */
     public static final Function STRING_TO_CODEPOINTS = new Function() {
         @Override public String getName() { return "string-to-codepoints"; }
         @Override public int getMinArgs() { return 1; }
@@ -570,7 +751,15 @@ public final class StringFunctions {
         }
     };
 
-    /** encode-for-uri(string) - URI encode a string (XPath 2.0) */
+    /**
+     * XPath 2.0 encode-for-uri() function.
+     * 
+     * <p>Percent-encodes a string for use as a URI component.
+     * 
+     * <p>Signature: encode-for-uri(string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-encode-for-uri">XPath 2.0 encode-for-uri()</a>
+     */
     public static final Function ENCODE_FOR_URI = new Function() {
         @Override public String getName() { return "encode-for-uri"; }
         @Override public int getMinArgs() { return 1; }
@@ -588,7 +777,16 @@ public final class StringFunctions {
         }
     };
 
-    /** iri-to-uri(string) - convert IRI to URI (XPath 2.0) */
+    /**
+     * XPath 2.0 iri-to-uri() function.
+     * 
+     * <p>Converts an IRI (Internationalized Resource Identifier) to a URI by percent-encoding
+     * non-ASCII characters.
+     * 
+     * <p>Signature: iri-to-uri(string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-iri-to-uri">XPath 2.0 iri-to-uri()</a>
+     */
     public static final Function IRI_TO_URI = new Function() {
         @Override public String getName() { return "iri-to-uri"; }
         @Override public int getMinArgs() { return 1; }
@@ -601,7 +799,15 @@ public final class StringFunctions {
         }
     };
 
-    /** escape-html-uri(string) - escape for HTML href (XPath 2.0) */
+    /**
+     * XPath 2.0 escape-html-uri() function.
+     * 
+     * <p>Escapes non-ASCII characters in a string for use in HTML href attributes.
+     * 
+     * <p>Signature: escape-html-uri(string?) → string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath20/#function-escape-html-uri">XPath 2.0 escape-html-uri()</a>
+     */
     public static final Function ESCAPE_HTML_URI = new Function() {
         @Override public String getName() { return "escape-html-uri"; }
         @Override public int getMinArgs() { return 1; }
@@ -696,7 +902,11 @@ public final class StringFunctions {
         return result;
     }
 
-    /** Returns all string functions. */
+    /**
+     * Returns all string functions (XPath 1.0 and 2.0/3.0).
+     *
+     * @return array of all string function implementations
+     */
     public static Function[] getAll() {
         return new Function[] {
             STRING, CONCAT, STARTS_WITH, CONTAINS, SUBSTRING_BEFORE,

@@ -50,21 +50,49 @@ public final class NamespaceAxis implements Axis {
 
     private NamespaceAxis() {}
 
+    /**
+     * Returns the name of this axis.
+     *
+     * @return the axis name "namespace"
+     */
     @Override
     public String getName() {
         return "namespace";
     }
 
+    /**
+     * Returns false since this is a forward axis.
+     *
+     * @return false
+     */
     @Override
     public boolean isReverse() {
         return false;
     }
 
+    /**
+     * Returns an iterator over the namespace nodes of the context node.
+     *
+     * <p>Only element nodes have namespace nodes. Each in-scope namespace
+     * binding is represented as a namespace node. For other node types,
+     * this method returns an empty iterator.
+     *
+     * @param contextNode the context node whose namespace nodes to iterate
+     * @return iterator over namespace nodes
+     */
     @Override
     public Iterator<XPathNode> iterate(XPathNode contextNode) {
         return contextNode.getNamespaces();
     }
 
+    /**
+     * Returns the principal node type for this axis.
+     *
+     * <p>The namespace axis has namespace nodes as its principal node type,
+     * meaning name tests match namespace prefix names.
+     *
+     * @return {@link PrincipalNodeType#NAMESPACE}
+     */
     @Override
     public PrincipalNodeType getPrincipalNodeType() {
         return PrincipalNodeType.NAMESPACE;

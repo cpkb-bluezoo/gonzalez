@@ -100,6 +100,9 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     /**
      * Creates a validator for the given schema.
      *
+     * <p>The validator must be configured with a parent XMLReader using
+     * {@link #setParent(XMLReader)} before parsing.
+     *
      * @param schema the XSD schema to validate against
      */
     public XSDValidator(XSDSchema schema) {
@@ -109,8 +112,11 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     /**
      * Creates a validator with a parent XMLReader.
      *
-     * @param parent the parent reader
-     * @param schema the XSD schema
+     * <p>This constructor sets up the validator with both a parent reader
+     * and schema, ready for immediate use.
+     *
+     * @param parent the parent XMLReader that will parse the document
+     * @param schema the XSD schema to validate against
      */
     public XSDValidator(XMLReader parent, XSDSchema schema) {
         super(parent);
@@ -119,6 +125,8 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     
     /**
      * Returns the schema being used for validation.
+     *
+     * @return the XSD schema, never null
      */
     public XSDSchema getSchema() {
         return schema;
@@ -469,7 +477,13 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     }
     
     /**
-     * Returns the list of validation errors encountered.
+     * Returns the list of validation errors encountered during parsing.
+     *
+     * <p>The list contains all validation errors that occurred, in the order
+     * they were encountered. Errors are also reported through the SAX
+     * {@link ErrorHandler} if one is set.
+     *
+     * @return an unmodifiable list of error messages
      */
     public List<String> getValidationErrors() {
         return Collections.unmodifiableList(validationErrors);
@@ -477,6 +491,12 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     
     /**
      * Returns true if the document validated successfully.
+     *
+     * <p>This method returns true only if no validation errors were encountered.
+     * It should be checked after parsing completes (after {@code endDocument}
+     * callback).
+     *
+     * @return true if validation succeeded, false if any errors occurred
      */
     public boolean isValid() {
         return currentValidity == Validity.VALID;

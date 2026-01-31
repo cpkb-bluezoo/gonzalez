@@ -44,21 +44,46 @@ public final class DescendantOrSelfAxis implements Axis {
 
     private DescendantOrSelfAxis() {}
 
+    /**
+     * Returns the name of this axis.
+     *
+     * @return the axis name "descendant-or-self"
+     */
     @Override
     public String getName() {
         return "descendant-or-self";
     }
 
+    /**
+     * Returns false since this is a forward axis.
+     *
+     * @return false
+     */
     @Override
     public boolean isReverse() {
         return false;
     }
 
+    /**
+     * Returns an iterator over the context node and its descendants.
+     *
+     * <p>This is equivalent to the union of the self and descendant axes.
+     * The context node is returned first, followed by all descendants in
+     * document order.
+     *
+     * @param contextNode the context node (included in the result)
+     * @return iterator over the context node and its descendants in document order
+     */
     @Override
     public Iterator<XPathNode> iterate(XPathNode contextNode) {
         return new DescendantAxis.DescendantIterator(contextNode, true);
     }
 
+    /**
+     * Returns the principal node type for this axis.
+     *
+     * @return {@link PrincipalNodeType#ELEMENT}
+     */
     @Override
     public PrincipalNodeType getPrincipalNodeType() {
         return PrincipalNodeType.ELEMENT;

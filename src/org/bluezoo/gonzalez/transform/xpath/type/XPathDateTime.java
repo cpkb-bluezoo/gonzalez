@@ -565,68 +565,148 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     
     // ========== Accessor methods ==========
     
+    /**
+     * Returns the date/time type of this value.
+     *
+     * @return the DateTimeType (DATE_TIME, DATE, TIME, DURATION, etc.)
+     */
     public DateTimeType getDateTimeType() {
         return type;
     }
     
+    /**
+     * Returns the year component (for DATE, DATE_TIME, gYear, gYearMonth).
+     *
+     * @return the year, or null if not applicable for this type
+     */
     public Integer getYear() {
         return year;
     }
     
+    /**
+     * Returns the month component (for DATE, DATE_TIME, gYearMonth, gMonth, gMonthDay).
+     *
+     * @return the month (1-12), or null if not applicable for this type
+     */
     public Integer getMonth() {
         return month;
     }
     
+    /**
+     * Returns the day component (for DATE, DATE_TIME, gMonthDay, gDay).
+     *
+     * @return the day (1-31), or null if not applicable for this type
+     */
     public Integer getDay() {
         return day;
     }
     
+    /**
+     * Returns the hour component (for TIME, DATE_TIME).
+     *
+     * @return the hour (0-24), or null if not applicable for this type
+     */
     public Integer getHour() {
         return hour;
     }
     
+    /**
+     * Returns the minute component (for TIME, DATE_TIME).
+     *
+     * @return the minute (0-59), or null if not applicable for this type
+     */
     public Integer getMinute() {
         return minute;
     }
     
+    /**
+     * Returns the second component (for TIME, DATE_TIME).
+     *
+     * @return the second (0-60, may include fractional part), or null if not applicable
+     */
     public BigDecimal getSecond() {
         return second;
     }
     
+    /**
+     * Returns the timezone offset (for DATE, TIME, DATE_TIME, and g* types).
+     *
+     * @return the ZoneOffset, or null if no timezone is specified
+     */
     public ZoneOffset getTimezone() {
         return timezone;
     }
     
+    /**
+     * Returns true if this duration is negative.
+     *
+     * @return true for negative durations, false otherwise
+     */
     public boolean isNegative() {
         return negative;
     }
     
+    /**
+     * Returns the years component of a duration.
+     *
+     * @return the years, or null if not applicable or zero
+     */
     public Integer getDurationYears() {
         return durationYears;
     }
     
+    /**
+     * Returns the months component of a duration.
+     *
+     * @return the months, or null if not applicable or zero
+     */
     public Integer getDurationMonths() {
         return durationMonths;
     }
     
+    /**
+     * Returns the days component of a duration.
+     *
+     * @return the days, or null if not applicable or zero
+     */
     public Integer getDurationDays() {
         return durationDays;
     }
     
+    /**
+     * Returns the hours component of a duration.
+     *
+     * @return the hours, or null if not applicable or zero
+     */
     public Integer getDurationHours() {
         return durationHours;
     }
     
+    /**
+     * Returns the minutes component of a duration.
+     *
+     * @return the minutes, or null if not applicable or zero
+     */
     public Integer getDurationMinutes() {
         return durationMinutes;
     }
     
+    /**
+     * Returns the seconds component of a duration.
+     *
+     * @return the seconds (may include fractional part), or null if not applicable or zero
+     */
     public BigDecimal getDurationSeconds() {
         return durationSeconds;
     }
     
     /**
-     * Returns the timezone as a dayTimeDuration, or null if no timezone.
+     * Returns the timezone as a dayTimeDuration.
+     *
+     * <p>Converts the timezone offset to a duration representation.
+     * For example, "+05:00" becomes "PT5H".
+     *
+     * @return the timezone as a dayTimeDuration, or null if no timezone is set
      */
     public XPathDateTime getTimezoneAsDuration() {
         if (timezone == null) {
@@ -649,28 +729,55 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     
     // ========== XPathValue implementation ==========
     
+    /**
+     * Returns the XPath type of this value.
+     *
+     * @return {@link Type#ATOMIC}
+     */
     @Override
     public Type getType() {
         return Type.ATOMIC;
     }
     
+    /**
+     * Returns the lexical representation of this date/time value.
+     *
+     * @return the original string representation used to create this value
+     */
     @Override
     public String asString() {
         return lexicalValue;
     }
     
+    /**
+     * Date/time values cannot be converted to numbers.
+     *
+     * @return NaN (date/time values are not numeric)
+     */
     @Override
     public double asNumber() {
         // Date/time values cannot be converted to numbers
         return Double.NaN;
     }
     
+    /**
+     * Converts this date/time value to a boolean.
+     *
+     * <p>Non-empty date/time values are always truthy.
+     *
+     * @return true (date/time values are always truthy)
+     */
     @Override
     public boolean asBoolean() {
         // Non-empty date/time is truthy
         return true;
     }
     
+    /**
+     * Date/time values cannot be converted to node-sets.
+     *
+     * @return null (date/time values are not node-sets)
+     */
     @Override
     public XPathNodeSet asNodeSet() {
         return null;
@@ -678,6 +785,16 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     
     // ========== Comparison ==========
     
+    /**
+     * Compares this date/time value with another.
+     *
+     * <p>Both values must be of the same type. Comparison is done component-wise
+     * (year, month, day, hour, minute, second for date/time values).
+     *
+     * @param other the other date/time value (must not be null)
+     * @return negative if this is less than other, zero if equal, positive if greater
+     * @throws IllegalArgumentException if the types are different
+     */
     @Override
     public int compareTo(XPathDateTime other) {
         if (this.type != other.type) {
@@ -1392,6 +1509,15 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         return sb.toString();
     }
     
+    /**
+     * Compares this date/time value with another object for equality.
+     *
+     * <p>Two date/time values are equal if they have the same type and the same
+     * lexical representation.
+     *
+     * @param obj the object to compare
+     * @return true if the objects are equal
+     */
     @Override
     public boolean equals(Object obj) {
         if (this == obj) {
@@ -1404,11 +1530,21 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         return type == other.type && lexicalValue.equals(other.lexicalValue);
     }
     
+    /**
+     * Returns a hash code for this date/time value.
+     *
+     * @return the hash code
+     */
     @Override
     public int hashCode() {
         return lexicalValue.hashCode();
     }
     
+    /**
+     * Returns a string representation of this date/time value.
+     *
+     * @return a string in the format "type(lexicalValue)"
+     */
     @Override
     public String toString() {
         return type.name().toLowerCase() + "(" + lexicalValue + ")";

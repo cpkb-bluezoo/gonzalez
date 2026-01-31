@@ -81,6 +81,13 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
         this.functions = Collections.unmodifiableMap(map);
     }
 
+    /**
+     * Checks if a function with the given namespace and local name is available.
+     *
+     * @param namespaceURI the namespace URI, or null/empty for core functions
+     * @param localName the local name of the function
+     * @return true if the function is available
+     */
     @Override
     public boolean hasFunction(String namespaceURI, String localName) {
         // Core functions have no namespace
@@ -90,6 +97,17 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
         return functions.containsKey(localName);
     }
 
+    /**
+     * Invokes a function with the given namespace, local name, and arguments.
+     *
+     * @param namespaceURI the namespace URI, or null/empty for core functions
+     * @param localName the local name of the function
+     * @param args the evaluated function arguments
+     * @param context the XPath evaluation context
+     * @return the function result
+     * @throws XPathException if the function is unknown, argument count is invalid,
+     *         or argument types are incompatible
+     */
     @Override
     public XPathValue invokeFunction(String namespaceURI, String localName,
                                      List<XPathValue> args, XPathContext context) throws XPathException {
@@ -123,6 +141,10 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
     
     /**
      * Validates argument types for XPath 2.0+ strict type checking.
+     *
+     * @param function the function being invoked
+     * @param args the function arguments to validate
+     * @throws XPathException if any argument type is incompatible
      */
     private void validateArgumentTypes(Function function, List<XPathValue> args) throws XPathException {
         Function.ArgType[] expectedTypes = function.getArgumentTypes();
@@ -179,6 +201,13 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
         }
     }
 
+    /**
+     * Returns the fixed argument count for a function, or -1 if variable.
+     *
+     * @param namespaceURI the namespace URI, or null/empty for core functions
+     * @param localName the local name of the function
+     * @return the fixed argument count, or -1 if the function has variable arity
+     */
     @Override
     public int getArgumentCount(String namespaceURI, String localName) {
         if (namespaceURI != null && !namespaceURI.isEmpty()) {

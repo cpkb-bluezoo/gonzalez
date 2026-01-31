@@ -72,12 +72,19 @@ import java.util.Map;
 public final class ForEachGroupNode implements XSLTNode {
 
     /**
-     * Grouping method.
+     * Grouping method for xsl:for-each-group.
      */
     public enum GroupingMethod {
+        /** Groups items by a computed key value. */
         GROUP_BY,
+        
+        /** Groups adjacent items that have the same key value. */
         GROUP_ADJACENT,
+        
+        /** Groups items starting with each item that matches a pattern. */
         GROUP_STARTING_WITH,
+        
+        /** Groups items ending with each item that matches a pattern. */
         GROUP_ENDING_WITH
     }
 
@@ -91,6 +98,14 @@ public final class ForEachGroupNode implements XSLTNode {
 
     /**
      * Creates a group-by grouping node.
+     *
+     * <p>Groups items by evaluating the group-by expression for each item
+     * and collecting items with the same key value.
+     *
+     * @param select the expression selecting items to group
+     * @param groupByExpr the expression computing the grouping key
+     * @param body the body to execute for each group
+     * @return a new ForEachGroupNode configured for group-by grouping
      */
     public static ForEachGroupNode groupBy(XPathExpression select, XPathExpression groupByExpr,
                                             XSLTNode body) {
@@ -100,6 +115,15 @@ public final class ForEachGroupNode implements XSLTNode {
 
     /**
      * Creates a group-adjacent grouping node.
+     *
+     * <p>Groups consecutive items that have the same key value. Unlike
+     * group-by, this preserves the order of items and only groups adjacent
+     * items with matching keys.
+     *
+     * @param select the expression selecting items to group
+     * @param groupAdjacentExpr the expression computing the grouping key
+     * @param body the body to execute for each group
+     * @return a new ForEachGroupNode configured for group-adjacent grouping
      */
     public static ForEachGroupNode groupAdjacent(XPathExpression select, 
                                                   XPathExpression groupAdjacentExpr,
@@ -110,6 +134,15 @@ public final class ForEachGroupNode implements XSLTNode {
 
     /**
      * Creates a group-starting-with grouping node.
+     *
+     * <p>Groups items starting with each item that matches the pattern.
+     * Each group begins at a matching item and continues until the next match
+     * (or end of sequence).
+     *
+     * @param select the expression selecting items to group
+     * @param pattern the pattern that identifies group start items
+     * @param body the body to execute for each group
+     * @return a new ForEachGroupNode configured for group-starting-with grouping
      */
     public static ForEachGroupNode groupStartingWith(XPathExpression select, 
                                                       Pattern pattern,
@@ -120,6 +153,15 @@ public final class ForEachGroupNode implements XSLTNode {
 
     /**
      * Creates a group-ending-with grouping node.
+     *
+     * <p>Groups items ending with each item that matches the pattern.
+     * Each group ends at a matching item and begins after the previous match
+     * (or start of sequence).
+     *
+     * @param select the expression selecting items to group
+     * @param pattern the pattern that identifies group end items
+     * @param body the body to execute for each group
+     * @return a new ForEachGroupNode configured for group-ending-with grouping
      */
     public static ForEachGroupNode groupEndingWith(XPathExpression select, 
                                                     Pattern pattern,

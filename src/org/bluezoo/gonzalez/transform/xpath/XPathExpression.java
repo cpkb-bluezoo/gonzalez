@@ -171,6 +171,11 @@ public final class XPathExpression {
         return compiledExpr;
     }
 
+    /**
+     * Returns a string representation of this expression.
+     *
+     * @return a string in the format "XPathExpression[expression]"
+     */
     @Override
     public String toString() {
         return "XPathExpression[" + expressionString + "]";

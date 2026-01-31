@@ -47,21 +47,47 @@ public final class FollowingAxis implements Axis {
 
     private FollowingAxis() {}
 
+    /**
+     * Returns the name of this axis.
+     *
+     * @return the axis name "following"
+     */
     @Override
     public String getName() {
         return "following";
     }
 
+    /**
+     * Returns false since this is a forward axis.
+     *
+     * @return false
+     */
     @Override
     public boolean isReverse() {
         return false;
     }
 
+    /**
+     * Returns an iterator over all nodes that follow the context node
+     * in document order, excluding descendants.
+     *
+     * <p>For attribute and namespace nodes, the following axis includes
+     * the children of the parent element and all nodes that follow the
+     * parent element.
+     *
+     * @param contextNode the context node
+     * @return iterator over following nodes in document order
+     */
     @Override
     public Iterator<XPathNode> iterate(XPathNode contextNode) {
         return new FollowingIterator(contextNode);
     }
 
+    /**
+     * Returns the principal node type for this axis.
+     *
+     * @return {@link PrincipalNodeType#ELEMENT}
+     */
     @Override
     public PrincipalNodeType getPrincipalNodeType() {
         return PrincipalNodeType.ELEMENT;
@@ -69,11 +95,19 @@ public final class FollowingAxis implements Axis {
 
     /**
      * Iterator that traverses following nodes in document order.
+     *
+     * <p>Uses a breadth-first traversal strategy, collecting nodes that
+     * follow the context node while excluding descendants.
      */
     private static class FollowingIterator implements Iterator<XPathNode> {
         private final List<XPathNode> pending = new ArrayList<>();
         private XPathNode next;
 
+        /**
+         * Creates a new following iterator.
+         *
+         * @param node the context node
+         */
         FollowingIterator(XPathNode node) {
             // Special handling for attribute and namespace nodes:
             // For these, "following" includes the children of the parent element
@@ -114,6 +148,10 @@ public final class FollowingAxis implements Axis {
             advance();
         }
 
+        /**
+         * Advances to the next following node by processing the pending queue
+         * and adding children and following siblings as appropriate.
+         */
         private void advance() {
             if (pending.isEmpty()) {
                 next = null;
@@ -138,11 +176,21 @@ public final class FollowingAxis implements Axis {
             }
         }
 
+        /**
+         * Returns true if there are more following nodes to iterate.
+         *
+         * @return true if more following nodes exist
+         */
         @Override
         public boolean hasNext() {
             return next != null;
         }
 
+        /**
+         * Returns the next following node and advances the iterator.
+         *
+         * @return the next following node
+         */
         @Override
         public XPathNode next() {
             XPathNode result = next;

@@ -78,8 +78,13 @@ import org.bluezoo.gonzalez.transform.compiler.StylesheetResolver;
  */
 public class GonzalezTransformerFactory extends SAXTransformerFactory {
 
+    /** Factory attributes for configuration. */
     private final Map<String, Object> attributes = new HashMap<>();
+    
+    /** URI resolver for resolving external resources. */
     private URIResolver uriResolver;
+    
+    /** Error listener for reporting compilation and transformation errors. */
     private ErrorListener errorListener;
 
     /**
@@ -88,6 +93,13 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     public GonzalezTransformerFactory() {
     }
 
+    /**
+     * Creates a new Transformer from a stylesheet source.
+     *
+     * @param source the stylesheet source, or null for identity transform
+     * @return a new Transformer instance
+     * @throws TransformerConfigurationException if the stylesheet cannot be compiled
+     */
     @Override
     public Transformer newTransformer(Source source) throws TransformerConfigurationException {
         if (source == null) {
@@ -99,12 +111,28 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         return templates.newTransformer();
     }
 
+    /**
+     * Creates a new Transformer for identity transformation.
+     *
+     * @return a new Transformer instance that performs identity transform
+     * @throws TransformerConfigurationException if the transformer cannot be created
+     */
     @Override
     public Transformer newTransformer() throws TransformerConfigurationException {
         // Identity transform
         return new GonzalezTransformer(null);
     }
 
+    /**
+     * Compiles a stylesheet source into a Templates object.
+     *
+     * <p>The Templates object can be used to create multiple Transformer
+     * instances efficiently, as the stylesheet is compiled once.
+     *
+     * @param source the stylesheet source
+     * @return a compiled Templates object
+     * @throws TransformerConfigurationException if the stylesheet cannot be compiled
+     */
     @Override
     public Templates newTemplates(Source source) throws TransformerConfigurationException {
         try {
@@ -235,6 +263,17 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         return reader;
     }
 
+    /**
+     * Gets the associated stylesheet from an XML document's xml-stylesheet
+     * processing instruction.
+     *
+     * @param source the XML document source
+     * @param media the media type to match
+     * @param title the title to match
+     * @param charset the character encoding
+     * @return the associated stylesheet source, or null if not found
+     * @throws TransformerConfigurationException if an error occurs
+     */
     @Override
     public Source getAssociatedStylesheet(Source source, String media, String title, String charset) 
             throws TransformerConfigurationException {
@@ -242,21 +281,45 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         return null;
     }
 
+    /**
+     * Sets the URI resolver for resolving external resources during
+     * stylesheet compilation and transformation.
+     *
+     * @param resolver the URI resolver, or null to use the default resolver
+     */
     @Override
     public void setURIResolver(URIResolver resolver) {
         this.uriResolver = resolver;
     }
 
+    /**
+     * Gets the URI resolver.
+     *
+     * @return the URI resolver, or null if not set
+     */
     @Override
     public URIResolver getURIResolver() {
         return uriResolver;
     }
 
+    /**
+     * Sets a feature flag for the factory.
+     *
+     * @param name the feature name
+     * @param value the feature value
+     * @throws TransformerConfigurationException if the feature is not supported
+     */
     @Override
     public void setFeature(String name, boolean value) throws TransformerConfigurationException {
         attributes.put(name, value);
     }
 
+    /**
+     * Gets a feature flag value.
+     *
+     * @param name the feature name
+     * @return true if the feature is enabled, false otherwise
+     */
     @Override
     public boolean getFeature(String name) {
         Object value = attributes.get(name);
@@ -275,21 +338,46 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         return false;
     }
 
+    /**
+     * Sets an attribute value for the factory.
+     *
+     * @param name the attribute name
+     * @param value the attribute value
+     * @throws IllegalArgumentException if the attribute name or value is invalid
+     */
     @Override
     public void setAttribute(String name, Object value) throws IllegalArgumentException {
         attributes.put(name, value);
     }
 
+    /**
+     * Gets an attribute value.
+     *
+     * @param name the attribute name
+     * @return the attribute value, or null if not set
+     * @throws IllegalArgumentException if the attribute name is invalid
+     */
     @Override
     public Object getAttribute(String name) throws IllegalArgumentException {
         return attributes.get(name);
     }
 
+    /**
+     * Sets the error listener for reporting compilation and transformation errors.
+     *
+     * @param listener the error listener, or null to use the default listener
+     * @throws IllegalArgumentException if the listener is invalid
+     */
     @Override
     public void setErrorListener(ErrorListener listener) throws IllegalArgumentException {
         this.errorListener = listener;
     }
 
+    /**
+     * Gets the error listener.
+     *
+     * @return the error listener, or null if not set
+     */
     @Override
     public ErrorListener getErrorListener() {
         return errorListener;
@@ -297,12 +385,26 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
 
     // SAXTransformerFactory methods
 
+    /**
+     * Creates a TransformerHandler from a stylesheet source.
+     *
+     * @param src the stylesheet source
+     * @return a new TransformerHandler instance
+     * @throws TransformerConfigurationException if the stylesheet cannot be compiled
+     */
     @Override
     public TransformerHandler newTransformerHandler(Source src) throws TransformerConfigurationException {
         Templates templates = newTemplates(src);
         return newTransformerHandler(templates);
     }
 
+    /**
+     * Creates a TransformerHandler from a Templates object.
+     *
+     * @param templates the compiled templates
+     * @return a new TransformerHandler instance
+     * @throws TransformerConfigurationException if the templates are not from this factory
+     */
     @Override
     public TransformerHandler newTransformerHandler(Templates templates) throws TransformerConfigurationException {
         if (!(templates instanceof GonzalezTemplates)) {
@@ -311,22 +413,48 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         return new GonzalezTransformerHandler((GonzalezTemplates) templates);
     }
 
+    /**
+     * Creates a TransformerHandler for identity transformation.
+     *
+     * @return a new TransformerHandler instance that performs identity transform
+     * @throws TransformerConfigurationException if the handler cannot be created
+     */
     @Override
     public TransformerHandler newTransformerHandler() throws TransformerConfigurationException {
         return new GonzalezTransformerHandler(null);
     }
 
+    /**
+     * Creates a TemplatesHandler for building Templates from SAX events.
+     *
+     * @return a new TemplatesHandler instance
+     * @throws TransformerConfigurationException if the handler cannot be created
+     */
     @Override
     public TemplatesHandler newTemplatesHandler() throws TransformerConfigurationException {
         return new GonzalezTemplatesHandler(this);
     }
 
+    /**
+     * Creates an XMLFilter from a stylesheet source.
+     *
+     * @param src the stylesheet source
+     * @return a new XMLFilter instance
+     * @throws TransformerConfigurationException if the stylesheet cannot be compiled
+     */
     @Override
     public org.xml.sax.XMLFilter newXMLFilter(Source src) throws TransformerConfigurationException {
         Templates templates = newTemplates(src);
         return newXMLFilter(templates);
     }
 
+    /**
+     * Creates an XMLFilter from a Templates object.
+     *
+     * @param templates the compiled templates
+     * @return a new XMLFilter instance
+     * @throws TransformerConfigurationException if the templates are not from this factory
+     */
     @Override
     public org.xml.sax.XMLFilter newXMLFilter(Templates templates) throws TransformerConfigurationException {
         TransformerHandler handler = newTransformerHandler(templates);

@@ -57,7 +57,7 @@ public final class XPathQName implements XPathValue, Comparable<XPathQName> {
      *
      * @param namespaceURI the namespace URI (may be null or empty for no namespace)
      * @param prefix the prefix (may be null or empty)
-     * @param localName the local name (required)
+     * @param localName the local name (required, null is treated as empty)
      */
     public XPathQName(String namespaceURI, String prefix, String localName) {
         this.namespaceURI = namespaceURI != null ? namespaceURI : "";

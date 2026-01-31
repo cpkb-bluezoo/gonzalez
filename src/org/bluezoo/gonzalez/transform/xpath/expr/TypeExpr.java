@@ -70,14 +70,29 @@ public class TypeExpr implements Expr {
         this.targetType = targetType;
     }
     
+    /**
+     * Returns the type operation kind.
+     *
+     * @return INSTANCE_OF, CAST_AS, CASTABLE_AS, or TREAT_AS
+     */
     public Kind getKind() {
         return kind;
     }
     
+    /**
+     * Returns the operand expression.
+     *
+     * @return the expression to test or cast
+     */
     public Expr getOperand() {
         return operand;
     }
     
+    /**
+     * Returns the target sequence type.
+     *
+     * @return the target type for the operation
+     */
     public SequenceType getTargetType() {
         return targetType;
     }

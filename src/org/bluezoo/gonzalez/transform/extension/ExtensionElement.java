@@ -58,26 +58,36 @@ public interface ExtensionElement {
     /**
      * Returns the namespace URI for this element.
      *
-     * @return the namespace URI
+     * @return the namespace URI, may be null or empty for elements in the
+     *         default namespace
      */
     String getNamespaceURI();
 
     /**
      * Returns the local name of this element.
      *
-     * @return the element name
+     * @return the element name, must not be null or empty
      */
     String getLocalName();
 
     /**
-     * Compiles the extension element.
+     * Compiles the extension element into an executable XSLT node.
      *
-     * <p>This is called at stylesheet compile time to create an executable
-     * node from the extension element and its attributes/content.
+     * <p>This method is called at stylesheet compile time to transform the
+     * extension element and its content into an executable node that can be
+     * evaluated during transformation. The attributes map contains all
+     * attribute values as strings (attribute value templates are not yet
+     * evaluated), and the content node contains the compiled child nodes
+     * of the extension element.
      *
-     * @param attributes the element's attributes
-     * @param content the compiled content (child nodes)
-     * @return an executable XSLT node
+     * @param attributes the element's attributes as a map from attribute
+     *                   name to attribute value, must not be null (may be
+     *                   empty if the element has no attributes)
+     * @param content the compiled content sequence containing child nodes
+     *                of the extension element, must not be null (may be
+     *                empty if the element has no content)
+     * @return an executable XSLT node that will be evaluated during
+     *         transformation, must not be null
      */
     XSLTNode compile(Map<String, String> attributes, SequenceNode content);
 

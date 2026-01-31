@@ -230,6 +230,10 @@ public final class AccumulatorDefinition {
 
     /**
      * Builder for constructing AccumulatorDefinition instances.
+     *
+     * <p>Provides a fluent API for creating accumulator definitions.
+     *
+     * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
      */
     public static class Builder {
         private String name;
@@ -238,36 +242,80 @@ public final class AccumulatorDefinition {
         private boolean streamable = true;  // Default is streamable
         private String asType;
 
+        /**
+         * Sets the accumulator name.
+         *
+         * @param name the name
+         * @return this builder
+         */
         public Builder name(String name) {
             this.name = name;
             return this;
         }
 
+        /**
+         * Sets the initial value expression.
+         *
+         * @param initialValue the initial value expression
+         * @return this builder
+         */
         public Builder initialValue(XPathExpression initialValue) {
             this.initialValue = initialValue;
             return this;
         }
 
+        /**
+         * Adds an accumulator rule.
+         *
+         * @param rule the rule
+         * @return this builder
+         */
         public Builder addRule(AccumulatorRule rule) {
             this.rules.add(rule);
             return this;
         }
 
+        /**
+         * Adds an accumulator rule with the given parameters.
+         *
+         * @param match the match pattern
+         * @param phase the phase when the rule fires
+         * @param newValue the expression computing the new value
+         * @return this builder
+         */
         public Builder addRule(Pattern match, Phase phase, XPathExpression newValue) {
             this.rules.add(new AccumulatorRule(match, phase, newValue));
             return this;
         }
 
+        /**
+         * Sets whether the accumulator is streamable.
+         *
+         * @param streamable true if streamable
+         * @return this builder
+         */
         public Builder streamable(boolean streamable) {
             this.streamable = streamable;
             return this;
         }
 
+        /**
+         * Sets the type declaration.
+         *
+         * @param asType the type string
+         * @return this builder
+         */
         public Builder asType(String asType) {
             this.asType = asType;
             return this;
         }
 
+        /**
+         * Builds the AccumulatorDefinition.
+         *
+         * @return the accumulator definition
+         * @throws IllegalStateException if name or initialValue is missing
+         */
         public AccumulatorDefinition build() {
             if (name == null || name.isEmpty()) {
                 throw new IllegalStateException("Accumulator name is required");
