@@ -301,6 +301,24 @@ public final class LocationPath implements Expr {
                 }
                 return stepNsUri.equals(nodeNsUri2) && 
                        step.getLocalName().equals(node.getLocalName());
+            
+            // XPath 2.0 kind tests
+            case ELEMENT:
+                if (!node.isElement()) {
+                    return false;
+                }
+                // Check optional name parameter: element(name) or element(name, type)
+                return matchesKindTestName(step, node);
+                
+            case ATTRIBUTE:
+                if (!node.isAttribute()) {
+                    return false;
+                }
+                // Check optional name parameter: attribute(name) or attribute(name, type)
+                return matchesKindTestName(step, node);
+                
+            case DOCUMENT_NODE:
+                return node.getNodeType() == NodeType.ROOT;
                 
             default:
                 return false;
@@ -316,6 +334,27 @@ public final class LocationPath implements Expr {
             default:
                 return node.isElement();
         }
+    }
+    
+    /**
+     * Checks if a node matches the optional name in a kind test.
+     * For element(name) or attribute(name), checks if node name matches.
+     * For element(*) or attribute(*) or element() (no args), matches any node.
+     */
+    private boolean matchesKindTestName(Step step, XPathNode node) {
+        String elementName = step.getLocalName();
+        if (elementName == null || "*".equals(elementName)) {
+            return true; // element() or element(*) - matches any
+        }
+        // Check name match (localName contains the name to match)
+        // Note: namespace checking via step.getNamespaceURI() (which holds the type name)
+        // is not fully implemented here - we just match local names
+        String localPart = elementName;
+        int colonIdx = elementName.indexOf(':');
+        if (colonIdx > 0) {
+            localPart = elementName.substring(colonIdx + 1);
+        }
+        return localPart.equals(node.getLocalName());
     }
 
     private List<XPathNode> removeDuplicates(List<XPathNode> nodes) {

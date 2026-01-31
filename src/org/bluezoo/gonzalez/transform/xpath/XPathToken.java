@@ -344,6 +344,10 @@ public enum XPathToken {
             case NODE_TYPE_TEXT:
             case NODE_TYPE_PI:
             case NODE_TYPE_NODE:
+            // XPath 2.0 kind tests
+            case ELEMENT:
+            case ATTRIBUTE:
+            case DOCUMENT_NODE:
                 return true;
             default:
                 return isAxis();

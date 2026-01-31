@@ -800,9 +800,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // XTSE0090: Check if attribute is allowed (using schema)
             validator.validateAttribute(ctx.localName, attrName);
             
-            // XTSE0020: Validate QName attributes
+            // XTSE0020: Validate QName attributes (but skip if it's an AVT with expressions)
             if (isQNameAttribute(attrName) && attrValue != null && !attrValue.isEmpty()) {
-                XSLTSchemaValidator.validateQName(attrName, attrValue);
+                // If the value contains {}, it's an AVT and we can't validate statically
+                if (!attrValue.contains("{") || attrValue.startsWith("Q{")) {
+                    XSLTSchemaValidator.validateQName(attrName, attrValue);
+                }
             }
         }
     }

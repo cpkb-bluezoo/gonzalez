@@ -1037,6 +1037,15 @@ public final class XPathParser {
         if (token.isNodeType()) {
             return true;
         }
+        
+        // XPath 2.0 kind tests: element(), attribute(), document-node()
+        if (token == XPathToken.ELEMENT || token == XPathToken.ATTRIBUTE ||
+            token == XPathToken.DOCUMENT_NODE) {
+            // These are kind tests when followed by (
+            if (lexer.peek() == XPathToken.LPAREN) {
+                return true;
+            }
+        }
 
         // Wildcard
         if (token == XPathToken.STAR) {
@@ -1209,6 +1218,15 @@ public final class XPathParser {
             Step step = Step.expression(funcExpr);
             return parseStepPredicates(step);
         }
+        
+        // Check for XPath 2.0 kind tests as steps: element(), attribute(), document-node()
+        // When these appear without an explicit axis, they use the default child axis
+        if ((lexer.current() == XPathToken.ELEMENT || lexer.current() == XPathToken.ATTRIBUTE ||
+             lexer.current() == XPathToken.DOCUMENT_NODE) && lexer.peek() == XPathToken.LPAREN) {
+            // Parse as kind test with implicit child axis
+            Step step = parseNodeTest(Step.Axis.CHILD);
+            return parseStepPredicates(step);
+        }
 
         // Determine axis
         Step.Axis axis = Step.Axis.CHILD;
@@ -1337,7 +1355,7 @@ public final class XPathParser {
             return Step.wildcard(axis);
         }
 
-        // Node type test
+        // Node type test (XPath 1.0)
         if (token.isNodeType()) {
             Step.NodeTestType nodeTestType;
             switch (token) {
@@ -1373,6 +1391,75 @@ public final class XPathParser {
 
             if (piTarget != null) {
                 return Step.processingInstruction(axis, piTarget);
+            }
+            return new Step(axis, nodeTestType);
+        }
+        
+        // XPath 2.0 kind tests: element(), attribute(), document-node()
+        if (token == XPathToken.ELEMENT || token == XPathToken.ATTRIBUTE || 
+            token == XPathToken.DOCUMENT_NODE) {
+            Step.NodeTestType nodeTestType;
+            switch (token) {
+                case ELEMENT:
+                    nodeTestType = Step.NodeTestType.ELEMENT;
+                    break;
+                case ATTRIBUTE:
+                    nodeTestType = Step.NodeTestType.ATTRIBUTE;
+                    break;
+                case DOCUMENT_NODE:
+                    nodeTestType = Step.NodeTestType.DOCUMENT_NODE;
+                    break;
+                default:
+                    throw new XPathSyntaxException("Unexpected kind test: " + token,
+                        lexer.getExpression(), lexer.tokenStart());
+            }
+            
+            lexer.advance();
+            lexer.expect(XPathToken.LPAREN);
+            
+            // Check for optional name argument: element(name) or element(name, type)
+            String elemName = null;
+            String typeName = null;
+            if (lexer.current() == XPathToken.NCNAME || lexer.current() == XPathToken.STAR) {
+                if (lexer.current() == XPathToken.STAR) {
+                    elemName = "*";
+                } else {
+                    elemName = lexer.value();
+                }
+                lexer.advance();
+                
+                // Check for prefix
+                if (lexer.current() == XPathToken.COLON) {
+                    lexer.advance();
+                    if (lexer.current() == XPathToken.NCNAME) {
+                        elemName = elemName + ":" + lexer.value();
+                        lexer.advance();
+                    }
+                }
+                
+                // Check for type argument
+                if (lexer.current() == XPathToken.COMMA) {
+                    lexer.advance();
+                    if (lexer.current() == XPathToken.NCNAME) {
+                        typeName = lexer.value();
+                        lexer.advance();
+                        // Check for prefix
+                        if (lexer.current() == XPathToken.COLON) {
+                            lexer.advance();
+                            if (lexer.current() == XPathToken.NCNAME) {
+                                typeName = typeName + ":" + lexer.value();
+                                lexer.advance();
+                            }
+                        }
+                    }
+                }
+            }
+            
+            lexer.expect(XPathToken.RPAREN);
+            
+            // Return appropriate step
+            if (elemName != null) {
+                return new Step(axis, nodeTestType, elemName, typeName);
             }
             return new Step(axis, nodeTestType);
         }

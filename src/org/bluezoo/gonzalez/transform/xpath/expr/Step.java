@@ -127,6 +127,12 @@ public final class Step {
         COMMENT,
         /** The processing-instruction() type test. */
         PROCESSING_INSTRUCTION,
+        /** The element() kind test (XPath 2.0). */
+        ELEMENT,
+        /** The attribute() kind test (XPath 2.0). */
+        ATTRIBUTE,
+        /** The document-node() kind test (XPath 2.0). */
+        DOCUMENT_NODE,
         /** An XPath 3.0 expression step (simple mapping operator). */
         EXPR
     }
@@ -168,6 +174,19 @@ public final class Step {
      */
     public Step(Axis axis, NodeTestType nodeTestType) {
         this(axis, nodeTestType, null, null, null, null, null);
+    }
+    
+    /**
+     * Creates a step with a kind test that optionally specifies a name and/or type.
+     * Used for element(name), element(name, type), attribute(name), etc.
+     *
+     * @param axis the axis
+     * @param nodeTestType the node test type (ELEMENT, ATTRIBUTE, or DOCUMENT_NODE)
+     * @param elementName the element/attribute name to match (may be null or "*" for any)
+     * @param typeName the type name to match (may be null for any type)
+     */
+    public Step(Axis axis, NodeTestType nodeTestType, String elementName, String typeName) {
+        this(axis, nodeTestType, typeName, elementName, null, null, null);
     }
 
     /**
@@ -351,6 +370,29 @@ public final class Step {
                     sb.append('\'').append(piTarget).append('\'');
                 }
                 sb.append(')');
+                break;
+            case ELEMENT:
+                sb.append("element(");
+                if (localName != null && !"*".equals(localName)) {
+                    sb.append(localName);
+                    if (namespaceURI != null) {  // type name stored in namespace field
+                        sb.append(", ").append(namespaceURI);
+                    }
+                }
+                sb.append(')');
+                break;
+            case ATTRIBUTE:
+                sb.append("attribute(");
+                if (localName != null && !"*".equals(localName)) {
+                    sb.append(localName);
+                    if (namespaceURI != null) {
+                        sb.append(", ").append(namespaceURI);
+                    }
+                }
+                sb.append(')');
+                break;
+            case DOCUMENT_NODE:
+                sb.append("document-node()");
                 break;
             case EXPR:
                 sb.setLength(0);  // Clear the axis:: prefix
