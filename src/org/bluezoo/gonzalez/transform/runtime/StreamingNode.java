@@ -25,6 +25,7 @@ import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.schema.TypedValue;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeWithBaseURI;
 import org.xml.sax.Attributes;
 
 import java.util.*;
@@ -38,7 +39,7 @@ import java.util.*;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class StreamingNode implements XPathNode {
+public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
 
     private final NodeType nodeType;
     private final String namespaceURI;
@@ -51,6 +52,7 @@ public class StreamingNode implements XPathNode {
     private final long documentOrder;
     private final String attributeType;  // DTD attribute type (ID, IDREF, CDATA, etc.)
     private final TypedValue typedValue; // Schema typed value (from XSD validation)
+    private final String documentBaseURI; // Base URI for the document (on root nodes only)
 
     // For element nodes - track children as they're added
     private final List<StreamingNode> children;
@@ -63,8 +65,18 @@ public class StreamingNode implements XPathNode {
      * @return a new root node
      */
     public static StreamingNode createRoot() {
+        return createRoot(null);
+    }
+    
+    /**
+     * Creates a root node with a base URI.
+     *
+     * @param baseURI the base URI of the document (typically from the source's system ID)
+     * @return a new root node
+     */
+    public static StreamingNode createRoot(String baseURI) {
         return new StreamingNode(NodeType.ROOT, null, null, null, null, null, 
-            Collections.emptyMap(), 0);
+            Collections.emptyMap(), 0, null, null, baseURI);
     }
 
     /**
@@ -183,20 +195,28 @@ public class StreamingNode implements XPathNode {
             String prefix, String stringValue, StreamingNode parent,
             Map<String, String> namespaceBindings, long documentOrder) {
         this(nodeType, namespaceURI, localName, prefix, stringValue, parent, 
-             namespaceBindings, documentOrder, null, null);
+             namespaceBindings, documentOrder, null, null, null);
     }
     
     private StreamingNode(NodeType nodeType, String namespaceURI, String localName,
             String prefix, String stringValue, StreamingNode parent,
             Map<String, String> namespaceBindings, long documentOrder, String attributeType) {
         this(nodeType, namespaceURI, localName, prefix, stringValue, parent, 
-             namespaceBindings, documentOrder, attributeType, null);
+             namespaceBindings, documentOrder, attributeType, null, null);
     }
     
     private StreamingNode(NodeType nodeType, String namespaceURI, String localName,
             String prefix, String stringValue, StreamingNode parent,
             Map<String, String> namespaceBindings, long documentOrder, 
             String attributeType, TypedValue typedValue) {
+        this(nodeType, namespaceURI, localName, prefix, stringValue, parent, 
+             namespaceBindings, documentOrder, attributeType, typedValue, null);
+    }
+    
+    private StreamingNode(NodeType nodeType, String namespaceURI, String localName,
+            String prefix, String stringValue, StreamingNode parent,
+            Map<String, String> namespaceBindings, long documentOrder, 
+            String attributeType, TypedValue typedValue, String documentBaseURI) {
         this.nodeType = nodeType;
         this.namespaceURI = namespaceURI != null && !namespaceURI.isEmpty() ? namespaceURI : null;
         this.localName = localName;
@@ -207,6 +227,7 @@ public class StreamingNode implements XPathNode {
         this.documentOrder = documentOrder;
         this.attributeType = attributeType;
         this.typedValue = typedValue;
+        this.documentBaseURI = documentBaseURI;
         this.attributes = new ArrayList<>();
         this.children = new ArrayList<>();
         
@@ -244,6 +265,48 @@ public class StreamingNode implements XPathNode {
     @Override
     public String getPrefix() {
         return prefix;
+    }
+    
+    /**
+     * Returns the base URI of this node.
+     *
+     * <p>For nodes in a document loaded from a URI, the base URI is the
+     * document's URI (or as modified by xml:base attributes). This is used
+     * by functions like document() that need to resolve relative URIs.
+     *
+     * @return the base URI, or null if not set
+     */
+    @Override
+    public String getBaseURI() {
+        // For root nodes, return the document base URI directly
+        if (nodeType == NodeType.ROOT) {
+            return documentBaseURI;
+        }
+        // For other nodes, inherit from the root
+        // (In a full implementation, we'd also check for xml:base attributes)
+        StreamingNode current = parent;
+        while (current != null) {
+            if (current.nodeType == NodeType.ROOT) {
+                return current.documentBaseURI;
+            }
+            current = current.parent;
+        }
+        return null;
+    }
+    
+    /**
+     * Returns the document URI of this node.
+     *
+     * <p>Only root nodes have a document URI. For other node types, returns null.
+     *
+     * @return the document URI, or null
+     */
+    @Override
+    public String getDocumentURI() {
+        if (nodeType == NodeType.ROOT) {
+            return documentBaseURI;
+        }
+        return null;
     }
 
     @Override
@@ -290,6 +353,10 @@ public class StreamingNode implements XPathNode {
         List<XPathNode> nsNodes = new ArrayList<>();
         for (Map.Entry<String, String> entry : namespaceBindings.entrySet()) {
             nsNodes.add(new NamespaceNode(entry.getKey(), entry.getValue(), this));
+        }
+        // Always include the implicit xml namespace (per XPath data model)
+        if (!namespaceBindings.containsKey("xml")) {
+            nsNodes.add(new NamespaceNode("xml", "http://www.w3.org/XML/1998/namespace", this));
         }
         return nsNodes.iterator();
     }

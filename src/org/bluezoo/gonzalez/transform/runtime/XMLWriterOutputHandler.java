@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -150,7 +151,10 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         String encoding = outputProperties.getEncoding();
         Charset charset = (encoding != null) ? Charset.forName(encoding) : StandardCharsets.UTF_8;
         
-        this.writer = new XMLWriter(channel, 4096, indentConfig, charset);
+        // Check for XML 1.1 output mode (for proper control character escaping)
+        boolean xml11 = "1.1".equals(outputProperties.getVersion());
+        
+        this.writer = new XMLWriter(channel, 4096, indentConfig, charset, xml11);
         this.inPendingElement = false;
     }
 
@@ -468,17 +472,21 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             
             writer.writeStartElement(actualElementPrefix, pendingLocalName, pendingUri);
             
-            // Write buffered namespace declarations
+            // Track prefix-to-namespace mappings (built BEFORE clearing pendingNamespaces)
+            Map<String, String> prefixToNamespace = new HashMap<>();
+            
+            // Write buffered namespace declarations and track them
             for (PendingNamespace ns : pendingNamespaces) {
                 if (ns.prefix == null || ns.prefix.isEmpty()) {
                     writer.writeDefaultNamespace(ns.uri);
                 } else {
                     writer.writeNamespace(ns.prefix, ns.uri);
+                    prefixToNamespace.put(ns.prefix, ns.uri);
                 }
             }
             pendingNamespaces.clear();
             
-            // Write buffered attributes (already deduplicated), applying fixup to attribute prefixes too
+            // Write buffered attributes (already deduplicated), applying fixup to attribute prefixes
             for (PendingAttribute attr : pendingAttributes.values()) {
                 String attrPrefix = extractPrefix(attr.qName);
                 String actualAttrPrefix = attrPrefix;
@@ -488,6 +496,24 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
                 if (attrPrefix != null && attrPrefix.equals(elementPrefix) && !actualElementPrefix.equals(elementPrefix)) {
                     actualAttrPrefix = actualElementPrefix;
                     actualAttrQName = actualAttrPrefix + ":" + attr.localName;
+                }
+                
+                // Handle namespaced attributes
+                if (actualAttrPrefix != null && !actualAttrPrefix.isEmpty() && 
+                    attr.namespaceURI != null && !attr.namespaceURI.isEmpty()) {
+                    String existingUri = prefixToNamespace.get(actualAttrPrefix);
+                    if (existingUri == null) {
+                        // Prefix not declared - add namespace declaration
+                        writer.writeNamespace(actualAttrPrefix, attr.namespaceURI);
+                        prefixToNamespace.put(actualAttrPrefix, attr.namespaceURI);
+                    } else if (!existingUri.equals(attr.namespaceURI)) {
+                        // Prefix conflict! Generate a new unique prefix
+                        actualAttrPrefix = generateUniquePrefix(actualAttrPrefix);
+                        actualAttrQName = actualAttrPrefix + ":" + attr.localName;
+                        // Add namespace declaration for the new prefix
+                        writer.writeNamespace(actualAttrPrefix, attr.namespaceURI);
+                        prefixToNamespace.put(actualAttrPrefix, attr.namespaceURI);
+                    }
                 }
                 
                 if (actualAttrPrefix != null && !actualAttrPrefix.isEmpty()) {

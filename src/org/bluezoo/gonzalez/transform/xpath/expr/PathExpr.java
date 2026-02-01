@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.ArrayList;
@@ -84,7 +85,10 @@ public final class PathExpr implements Expr {
         }
         
         // Evaluate the path for each node in the filter result
-        List<XPathNode> result = new ArrayList<>();
+        // In XPath 2.0+, path steps can return atomic values (e.g., local-name())
+        List<XPathNode> nodeResults = new ArrayList<>();
+        List<XPathValue> atomicResults = new ArrayList<>();
+        boolean hasAtomicResults = false;
         
         for (XPathNode node : nodeSet) {
             XPathContext nodeContext = context.withContextNode(node);
@@ -94,23 +98,45 @@ public final class PathExpr implements Expr {
                 for (XPathNode resultNode : pathResult.asNodeSet()) {
                     // Add if not already present (union semantics)
                     boolean found = false;
-                    for (XPathNode existing : result) {
+                    for (XPathNode existing : nodeResults) {
                         if (existing.isSameNode(resultNode)) {
                             found = true;
                             break;
                         }
                     }
                     if (!found) {
-                        result.add(resultNode);
+                        nodeResults.add(resultNode);
                     }
                 }
+            } else if (pathResult.isSequence()) {
+                // Handle sequences from path steps
+                for (XPathValue item : (XPathSequence) pathResult) {
+                    if (item instanceof XPathNode) {
+                        nodeResults.add((XPathNode) item);
+                    } else {
+                        atomicResults.add(item);
+                        hasAtomicResults = true;
+                    }
+                }
+            } else {
+                // Atomic value (string, number, etc.) from function call step
+                atomicResults.add(pathResult);
+                hasAtomicResults = true;
             }
         }
         
-        if (result.isEmpty()) {
+        // Return atomic values if present (XPath 2.0+ simple map semantics)
+        if (hasAtomicResults) {
+            if (atomicResults.size() == 1) {
+                return atomicResults.get(0);
+            }
+            return new XPathSequence(atomicResults);
+        }
+        
+        if (nodeResults.isEmpty()) {
             return XPathNodeSet.EMPTY;
         }
-        return new XPathNodeSet(result);
+        return new XPathNodeSet(nodeResults);
     }
 
     /**

@@ -21,7 +21,13 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
+import java.util.Map;
+import java.util.regex.Matcher;
+
+import javax.xml.transform.ErrorListener;
+
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
@@ -73,6 +79,14 @@ public interface TransformContext extends XPathContext {
     TransformContext pushVariableScope();
 
     /**
+     * Creates a new context with only global (top-level) variables visible.
+     * Used for attribute sets which should only see top-level variables and params.
+     *
+     * @return a new context with global-only variable scope
+     */
+    TransformContext withGlobalVariablesOnly();
+
+    /**
      * Creates a new context with the specified mode.
      *
      * @param mode the template mode
@@ -116,7 +130,7 @@ public interface TransformContext extends XPathContext {
      *
      * @return the error listener, or null if none is set
      */
-    javax.xml.transform.ErrorListener getErrorListener();
+    ErrorListener getErrorListener();
 
     /**
      * Returns the currently executing template rule, if any.
@@ -125,7 +139,7 @@ public interface TransformContext extends XPathContext {
      *
      * @return the current template rule, or null if not in a template
      */
-    org.bluezoo.gonzalez.transform.compiler.TemplateRule getCurrentTemplateRule();
+    TemplateRule getCurrentTemplateRule();
 
     /**
      * Creates a new context with the specified current template rule.
@@ -133,7 +147,7 @@ public interface TransformContext extends XPathContext {
      * @param rule the template rule being executed
      * @return a new context
      */
-    TransformContext withCurrentTemplateRule(org.bluezoo.gonzalez.transform.compiler.TemplateRule rule);
+    TransformContext withCurrentTemplateRule(TemplateRule rule);
 
     /**
      * Returns the template matcher for finding template rules.
@@ -162,5 +176,56 @@ public interface TransformContext extends XPathContext {
      * @return a new context with the base URI
      */
     TransformContext withStaticBaseURI(String baseURI);
+
+    /**
+     * Creates a new context with the specified regex matcher for xsl:analyze-string.
+     *
+     * <p>The matcher is used by the regex-group() function to access captured groups.
+     *
+     * @param matcher the regex matcher from the current match
+     * @return a new context with the matcher
+     */
+    TransformContext withRegexMatcher(Matcher matcher);
+
+    /**
+     * Returns the current regex matcher from xsl:analyze-string.
+     *
+     * <p>This is used by the regex-group() function to access captured groups.
+     *
+     * @return the current matcher, or null if not in a matching-substring
+     */
+    Matcher getRegexMatcher();
+
+    /**
+     * Returns the current tunnel parameters (XSLT 2.0).
+     *
+     * <p>Tunnel parameters are passed automatically through intermediate templates
+     * without being explicitly declared. They are only received by templates
+     * that declare a matching parameter with tunnel="yes".
+     *
+     * @return a map of parameter names (expanded names) to values, never null
+     */
+    Map<String, XPathValue> getTunnelParameters();
+
+    /**
+     * Creates a new context with additional tunnel parameters (XSLT 2.0).
+     *
+     * <p>The new tunnel parameters are merged with any existing ones.
+     * If a parameter already exists, it is overwritten.
+     *
+     * @param params the tunnel parameters to add
+     * @return a new context with the tunnel parameters
+     */
+    TransformContext withTunnelParameters(Map<String, XPathValue> params);
+
+    /**
+     * Creates a new context with no tunnel parameters (XSLT 2.0).
+     *
+     * <p>This is used when entering a user-defined function, which per XSLT spec
+     * should not have access to the caller's tunnel parameters.
+     *
+     * @return a new context with empty tunnel parameters
+     */
+    TransformContext withNoTunnelParameters();
 
 }

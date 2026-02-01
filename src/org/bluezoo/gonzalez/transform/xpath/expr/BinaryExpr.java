@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -176,8 +177,14 @@ public final class BinaryExpr implements Expr {
             return evaluateSequenceComparison(leftVal, rightVal);
         }
 
-        // XPath 1.0 Section 3.4: Comparisons involving node-sets
+        // For XPath 2.0+, node-sets (including typed nodes) should use sequence comparison
+        // to properly handle list type atomization (e.g., xs:NMTOKENS → sequence of NMTOKEN)
         if (leftVal.isNodeSet() || rightVal.isNodeSet()) {
+            // Check if either value might have a list type annotation
+            if (hasListTypeAnnotation(leftVal) || hasListTypeAnnotation(rightVal)) {
+                return evaluateSequenceComparison(leftVal, rightVal);
+            }
+            // Standard XPath 1.0 node-set comparison for untyped nodes
             return evaluateNodeSetComparison(leftVal, rightVal);
         }
 
@@ -188,22 +195,17 @@ public final class BinaryExpr implements Expr {
     /**
      * Evaluates XPath 2.0 general comparison with sequence semantics.
      * Returns true if any pair of items (one from each operand) satisfies the comparison.
+     * For list types (xs:NMTOKENS, xs:IDREFS), nodes are atomized to sequences.
      */
     private XPathValue evaluateSequenceComparison(XPathValue leftVal, XPathValue rightVal) 
             throws XPathException {
-        // Get iterators for both sides (atomize node-sets)
-        Iterator<XPathValue> leftIter = leftVal.sequenceIterator();
+        // Atomize both operands to get sequences of atomic values
+        List<String> leftAtoms = atomizeToList(leftVal);
+        List<String> rightAtoms = atomizeToList(rightVal);
         
-        while (leftIter.hasNext()) {
-            XPathValue leftItem = leftIter.next();
-            String leftStr = atomize(leftItem);
-            
-            // Need to re-iterate right side for each left item
-            Iterator<XPathValue> rightIter = rightVal.sequenceIterator();
-            while (rightIter.hasNext()) {
-                XPathValue rightItem = rightIter.next();
-                String rightStr = atomize(rightItem);
-                
+        // Compare all pairs
+        for (String leftStr : leftAtoms) {
+            for (String rightStr : rightAtoms) {
                 // Try numeric comparison if both are numeric
                 Double leftNum = tryParseNumber(leftStr);
                 Double rightNum = tryParseNumber(rightStr);
@@ -224,7 +226,122 @@ public final class BinaryExpr implements Expr {
     }
 
     /**
+     * Atomizes a value to a list of strings.
+     * For list types (xs:NMTOKENS, xs:IDREFS), returns multiple values.
+     */
+    private List<String> atomizeToList(XPathValue value) {
+        List<String> result = new java.util.ArrayList<>();
+        
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                atomizeItem(item, result);
+            }
+        } else {
+            atomizeItem(value, result);
+        }
+        
+        return result.isEmpty() ? java.util.Collections.singletonList("") : result;
+    }
+    
+    /**
+     * Atomizes a single item, adding its string value(s) to the result list.
+     * For nodes with list type annotations, adds multiple values.
+     */
+    private void atomizeItem(XPathValue value, List<String> result) {
+        if (value instanceof XPathNode) {
+            XPathNode node = (XPathNode) value;
+            String typeLocal = node.getTypeLocalName();
+            String typeNs = node.getTypeNamespaceURI();
+            
+            // For list types, split on whitespace
+            if (typeLocal != null && "http://www.w3.org/2001/XMLSchema".equals(typeNs)) {
+                if ("NMTOKENS".equals(typeLocal) || "IDREFS".equals(typeLocal) || 
+                    "ENTITIES".equals(typeLocal)) {
+                    String stringValue = node.getStringValue();
+                    if (stringValue != null && !stringValue.trim().isEmpty()) {
+                        for (String token : stringValue.trim().split("\\s+")) {
+                            result.add(token);
+                        }
+                        return;
+                    }
+                }
+            }
+            result.add(node.getStringValue());
+        } else if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            for (XPathNode node : ns) {
+                atomizeItem(new NodeValueWrapper(node), result);
+            }
+        } else {
+            result.add(value.asString());
+        }
+    }
+    
+    /** Simple wrapper to treat XPathNode as XPathValue for atomization */
+    private static class NodeValueWrapper implements XPathValue, XPathNode {
+        private final XPathNode node;
+        NodeValueWrapper(XPathNode node) { this.node = node; }
+        @Override public Type getType() { return Type.NODESET; }
+        @Override public String asString() { return node.getStringValue(); }
+        @Override public double asNumber() { 
+            try { return Double.parseDouble(node.getStringValue()); } 
+            catch (Exception e) { return Double.NaN; } 
+        }
+        @Override public boolean asBoolean() { return !node.getStringValue().isEmpty(); }
+        @Override public XPathNodeSet asNodeSet() { return new XPathNodeSet(java.util.Collections.singletonList(node)); }
+        @Override public NodeType getNodeType() { return node.getNodeType(); }
+        @Override public String getNamespaceURI() { return node.getNamespaceURI(); }
+        @Override public String getLocalName() { return node.getLocalName(); }
+        @Override public String getPrefix() { return node.getPrefix(); }
+        @Override public String getStringValue() { return node.getStringValue(); }
+        @Override public XPathNode getParent() { return node.getParent(); }
+        @Override public Iterator<XPathNode> getChildren() { return node.getChildren(); }
+        @Override public Iterator<XPathNode> getAttributes() { return node.getAttributes(); }
+        @Override public Iterator<XPathNode> getNamespaces() { return node.getNamespaces(); }
+        @Override public XPathNode getFollowingSibling() { return node.getFollowingSibling(); }
+        @Override public XPathNode getPrecedingSibling() { return node.getPrecedingSibling(); }
+        @Override public long getDocumentOrder() { return node.getDocumentOrder(); }
+        @Override public boolean isSameNode(XPathNode other) { return node.isSameNode(other); }
+        @Override public XPathNode getRoot() { return node.getRoot(); }
+        @Override public boolean isFullyNavigable() { return node.isFullyNavigable(); }
+        @Override public String getTypeNamespaceURI() { return node.getTypeNamespaceURI(); }
+        @Override public String getTypeLocalName() { return node.getTypeLocalName(); }
+    }
+
+    /**
+     * Checks if a value might have a list type annotation (xs:NMTOKENS, xs:IDREFS, xs:ENTITIES).
+     * These types require special atomization that produces sequences.
+     */
+    private boolean hasListTypeAnnotation(XPathValue value) {
+        if (value instanceof XPathNode) {
+            XPathNode node = (XPathNode) value;
+            String typeLocal = node.getTypeLocalName();
+            String typeNs = node.getTypeNamespaceURI();
+            if (typeLocal != null && "http://www.w3.org/2001/XMLSchema".equals(typeNs)) {
+                return "NMTOKENS".equals(typeLocal) || "IDREFS".equals(typeLocal) || 
+                       "ENTITIES".equals(typeLocal);
+            }
+        }
+        if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            for (XPathNode node : ns) {
+                String typeLocal = node.getTypeLocalName();
+                String typeNs = node.getTypeNamespaceURI();
+                if (typeLocal != null && "http://www.w3.org/2001/XMLSchema".equals(typeNs)) {
+                    if ("NMTOKENS".equals(typeLocal) || "IDREFS".equals(typeLocal) || 
+                        "ENTITIES".equals(typeLocal)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Atomizes a value - extracts string value from nodes.
+     * @deprecated Use atomizeToList for proper list type handling
      */
     private String atomize(XPathValue value) {
         if (value.isNodeSet()) {
@@ -508,7 +625,10 @@ public final class BinaryExpr implements Expr {
 
     /**
      * Evaluates an XPath 2.0 value comparison (eq, ne, lt, le, gt, ge).
-     * For XPath 1.0 compatibility, this behaves like general comparison for atomic values.
+     * Unlike general comparison, value comparison is type-aware:
+     * - Two strings are compared lexicographically
+     * - Two numbers are compared numerically
+     * - Mixed types: strings stay strings, numbers stay numbers
      */
     private XPathValue evaluateValueComparison(XPathContext context) throws XPathException {
         XPathValue leftVal = left.evaluate(context);
@@ -523,19 +643,32 @@ public final class BinaryExpr implements Expr {
             return XPathBoolean.FALSE;
         }
         
-        // Try numeric comparison first
+        // XPath 2.0 value comparison is type-aware
+        // Check the actual types of the operands
+        XPathValue.Type leftType = leftVal.getType();
+        XPathValue.Type rightType = rightVal.getType();
+        
+        // If both operands are numbers, use numeric comparison
+        if (leftType == XPathValue.Type.NUMBER && rightType == XPathValue.Type.NUMBER) {
+            return XPathBoolean.of(compareValuesNumeric(leftVal.asNumber(), rightVal.asNumber()));
+        }
+        
+        // If both operands are strings, use string comparison
+        if (leftType == XPathValue.Type.STRING && rightType == XPathValue.Type.STRING) {
+            return XPathBoolean.of(compareValuesString(leftVal.asString(), rightVal.asString()));
+        }
+        
+        // Mixed types or other types: try numeric first, fall back to string
+        // This provides XPath 1.0-like behavior for compatibility
         double leftNum = leftVal.asNumber();
         double rightNum = rightVal.asNumber();
         
-        // If both are valid numbers (not NaN), use numeric comparison
         if (!Double.isNaN(leftNum) && !Double.isNaN(rightNum)) {
             return XPathBoolean.of(compareValuesNumeric(leftNum, rightNum));
         }
         
-        // String comparison
-        String leftStr = leftVal.asString();
-        String rightStr = rightVal.asString();
-        return XPathBoolean.of(compareValuesString(leftStr, rightStr));
+        // String comparison as fallback
+        return XPathBoolean.of(compareValuesString(leftVal.asString(), rightVal.asString()));
     }
     
     private boolean compareValuesNumeric(double a, double b) {

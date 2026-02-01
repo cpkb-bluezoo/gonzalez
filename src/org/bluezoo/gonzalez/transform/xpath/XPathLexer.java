@@ -322,14 +322,12 @@ public final class XPathLexer {
             case '*':
                 // '*' is either multiplication or a wildcard name test
                 // It's multiplication if preceded by certain tokens
-                if (isMultiplicationContext()) {
-                    position++;
-                    currentToken = XPathToken.STAR;
-                    currentValue = "*";
-                    return currentToken;
-                }
                 position++;
-                currentToken = XPathToken.STAR;
+                if (isMultiplicationContext()) {
+                    currentToken = XPathToken.STAR_MULTIPLY;
+                } else {
+                    currentToken = XPathToken.STAR;
+                }
                 currentValue = "*";
                 return currentToken;
         }
@@ -718,14 +716,10 @@ public final class XPathLexer {
 
     /**
      * Determines if the current context expects an operator.
-     * Used to disambiguate 'and', 'or', 'div', 'mod' from names.
+     * Used to disambiguate 'and', 'or', 'div', 'mod', 'intersect', 'except' from names.
      */
     private boolean isOperatorContext() {
         // An operator is expected after these tokens (complete expressions)
-        // Note: STAR is NOT included because when * is used as multiplication,
-        // the next token should be an operand, not an operator.
-        // When * is used as wildcard (name test), it's ambiguous, but treating
-        // the next token as a name (not operator) is safer.
         if (previousToken == null) {
             return false;
         }
@@ -741,7 +735,9 @@ public final class XPathLexer {
             case NODE_TYPE_NODE:
             case DOT:         // '.' represents an expression (context node)
             case DOUBLE_DOT:  // '..' represents an expression (parent node)
+            case STAR:        // '*' as name test (wildcard) - operators can follow
                 return true;
+            // Note: STAR_MULTIPLY is NOT included - after multiplication, operands follow, not operators
             default:
                 return false;
         }

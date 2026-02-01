@@ -90,6 +90,7 @@ public class GonzalezTransformHandler extends DefaultHandler
     private long documentOrderCounter = 0;
     private Map<String, String> pendingNamespaces = new HashMap<>();
     private StringBuilder textBuffer = new StringBuilder();
+    private Locator documentLocator;
 
     /**
      * Creates a transform handler.
@@ -152,9 +153,15 @@ public class GonzalezTransformHandler extends DefaultHandler
     }
 
     @Override
+    public void setDocumentLocator(Locator locator) {
+        this.documentLocator = locator;
+    }
+    
+    @Override
     public void startDocument() throws SAXException {
-        // Initialize the document root
-        root = StreamingNode.createRoot();
+        // Initialize the document root with the base URI from the locator
+        String baseURI = documentLocator != null ? documentLocator.getSystemId() : null;
+        root = StreamingNode.createRoot(baseURI);
         currentNode = root;
         documentOrderCounter = 1;
         pendingNamespaces.clear();
@@ -301,21 +308,8 @@ public class GonzalezTransformHandler extends DefaultHandler
         String localName = currentNode.getLocalName();
         String namespaceURI = currentNode.getNamespaceURI();
         
-        // Check preserve-space first (it takes precedence)
-        for (String pattern : stylesheet.getPreserveSpaceElements()) {
-            if (matchesElementPattern(pattern, localName, namespaceURI)) {
-                return false;
-            }
-        }
-        
-        // Check strip-space
-        for (String pattern : stylesheet.getStripSpaceElements()) {
-            if (matchesElementPattern(pattern, localName, namespaceURI)) {
-                return true;
-            }
-        }
-        
-        return false;
+        // Use CompiledStylesheet's method which handles import precedence correctly
+        return stylesheet.shouldStripWhitespace(namespaceURI, localName);
     }
     
     /**
@@ -421,8 +415,25 @@ public class GonzalezTransformHandler extends DefaultHandler
                 body.execute(templateContext, output);
             }
         } else {
-            // Apply templates to the root node (standard behavior)
-            applyTemplates(root, null, context, output);
+            // Check for xsl:initial-template (XSLT 3.0 feature)
+            // The template name "xsl:initial-template" in the XSLT namespace is special
+            // Try both the prefixed form and the expanded Clark notation form
+            TemplateRule xslInitialTemplate = stylesheet.getNamedTemplate("xsl:initial-template");
+            if (xslInitialTemplate == null) {
+                xslInitialTemplate = stylesheet.getNamedTemplate("{http://www.w3.org/1999/XSL/Transform}initial-template");
+            }
+            
+            if (xslInitialTemplate != null) {
+                // xsl:initial-template exists - invoke it with document root as context
+                TransformContext templateContext = context.pushVariableScope();
+                XSLTNode body = xslInitialTemplate.getBody();
+                if (body != null) {
+                    body.execute(templateContext, output);
+                }
+            } else {
+                // Apply templates to the root node (standard behavior)
+                applyTemplates(root, null, context, output);
+            }
         }
         
         // End output document

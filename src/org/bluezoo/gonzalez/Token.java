@@ -51,7 +51,7 @@ enum Token {
     START_COMMENT(false), // "<!--"
     END_COMMENT(false), // "-->"
     START_CDATA(false), // "<[CDATA["
-    END_CDATA(false), // "]]>" - ends both CDATA sections and conditional sections
+    END_CDATA(true), // "]]>" - ends CDATA sections; data contains any extra ']' characters that are content
     START_PI(false), // "<?"
     END_PI(false), // "?>"
     START_DOCTYPE(false), // "<!DOCTYPE"

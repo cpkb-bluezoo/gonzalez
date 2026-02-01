@@ -94,7 +94,8 @@ public class XPathSyntaxException extends Exception {
         
         StringBuilder sb = new StringBuilder();
         sb.append(message);
-        sb.append("\n  Expression: ").append(expression);
+        sb.append("\n  Expression: ");
+        sb.append(expression);
         sb.append("\n  Position:   ");
         for (int i = 0; i < position; i++) {
             sb.append(' ');

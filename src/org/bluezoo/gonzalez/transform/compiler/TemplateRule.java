@@ -202,16 +202,19 @@ public final class TemplateRule {
     public String toString() {
         StringBuilder sb = new StringBuilder("TemplateRule[");
         if (name != null) {
-            sb.append("name=").append(name);
+            sb.append("name=");
+            sb.append(name);
         }
         if (matchPattern != null) {
             if (name != null) {
                 sb.append(", ");
             }
-            sb.append("match=").append(matchPattern);
+            sb.append("match=");
+            sb.append(matchPattern);
         }
         if (mode != null) {
-            sb.append(", mode=").append(mode);
+            sb.append(", mode=");
+            sb.append(mode);
         }
         sb.append("]");
         return sb.toString();

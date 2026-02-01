@@ -119,6 +119,8 @@ public final class Step {
         WILDCARD,
         /** A namespace wildcard like 'prefix:*'. */
         NAMESPACE_WILDCARD,
+        /** An any-namespace wildcard like '*:localname' (XPath 2.0). */
+        ANY_NAMESPACE,
         /** The node() type test. */
         NODE,
         /** The text() type test. */
@@ -133,6 +135,10 @@ public final class Step {
         ATTRIBUTE,
         /** The document-node() kind test (XPath 2.0). */
         DOCUMENT_NODE,
+        /** The schema-element() kind test (XPath 2.0 schema-aware). */
+        SCHEMA_ELEMENT,
+        /** The schema-attribute() kind test (XPath 2.0 schema-aware). */
+        SCHEMA_ATTRIBUTE,
         /** An XPath 3.0 expression step (simple mapping operator). */
         EXPR
     }
@@ -216,6 +222,17 @@ public final class Step {
      */
     public static Step namespaceWildcard(Axis axis, String namespaceURI) {
         return new Step(axis, NodeTestType.NAMESPACE_WILDCARD, namespaceURI, null, null, null, null);
+    }
+
+    /**
+     * Creates an any-namespace wildcard step (*:localname).
+     * Matches any node with the given local name regardless of namespace.
+     *
+     * @param axis the axis
+     * @param localName the local name to match
+     */
+    public static Step anyNamespace(Axis axis, String localName) {
+        return new Step(axis, NodeTestType.ANY_NAMESPACE, null, localName, null, null, null);
     }
 
     /**
@@ -354,6 +371,9 @@ public final class Step {
                 break;
             case NAMESPACE_WILDCARD:
                 sb.append('{').append(namespaceURI).append("}:*");
+                break;
+            case ANY_NAMESPACE:
+                sb.append("*:").append(localName);
                 break;
             case NODE:
                 sb.append("node()");

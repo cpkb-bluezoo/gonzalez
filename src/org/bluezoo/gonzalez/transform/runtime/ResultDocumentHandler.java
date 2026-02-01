@@ -157,7 +157,9 @@ public final class ResultDocumentHandler implements OutputHandler {
         }
         
         String attrName = qName != null && !qName.isEmpty() ? qName : localName;
-        pendingAttributes.append(' ').append(attrName).append("=\"");
+        pendingAttributes.append(' ');
+        pendingAttributes.append(attrName);
+        pendingAttributes.append("=\"");
         appendEscaped(pendingAttributes, value, true);
         pendingAttributes.append('"');
     }
@@ -169,9 +171,15 @@ public final class ResultDocumentHandler implements OutputHandler {
         }
         
         if (prefix == null || prefix.isEmpty()) {
-            pendingAttributes.append(" xmlns=\"").append(uri).append('"');
+            pendingAttributes.append(" xmlns=\"");
+            pendingAttributes.append(uri);
+            pendingAttributes.append('"');
         } else {
-            pendingAttributes.append(" xmlns:").append(prefix).append("=\"").append(uri).append('"');
+            pendingAttributes.append(" xmlns:");
+            pendingAttributes.append(prefix);
+            pendingAttributes.append("=\"");
+            pendingAttributes.append(uri);
+            pendingAttributes.append('"');
         }
     }
 

@@ -140,7 +140,16 @@ public class XSLTSchemaValidator {
             return; // No schema available, skip validation
         }
         
-        XSDElement element = schema.getElement(elementName);
+        // Standard XML namespace attributes (xml:space, xml:lang, xml:base, xml:id) 
+        // are allowed on any element per XML spec
+        if (attributeName.startsWith("xml:")) {
+            return;
+        }
+        
+        // xsl:transform is a synonym for xsl:stylesheet
+        String normalizedName = "transform".equals(elementName) ? "stylesheet" : elementName;
+        
+        XSDElement element = schema.getElement(normalizedName);
         if (element == null) {
             return; // Unknown element - handled elsewhere
         }
@@ -174,7 +183,10 @@ public class XSLTSchemaValidator {
             return;
         }
         
-        XSDElement element = schema.getElement(elementName);
+        // xsl:transform is a synonym for xsl:stylesheet
+        String normalizedName = "transform".equals(elementName) ? "stylesheet" : elementName;
+        
+        XSDElement element = schema.getElement(normalizedName);
         if (element == null) {
             return;
         }
@@ -210,6 +222,32 @@ public class XSLTSchemaValidator {
             return;
         }
         
+        // For mode attribute, allow special values like #all, #default, #current, #unnamed
+        // These can also be in a space-separated list
+        if ("mode".equals(attributeName)) {
+            for (String part : value.trim().split("\\s+")) {
+                if (part.startsWith("#")) {
+                    // Special mode values
+                    if ("#all".equals(part) || "#default".equals(part) || 
+                        "#current".equals(part) || "#unnamed".equals(part)) {
+                        continue;
+                    }
+                    throw new SAXException("XTSE0020: Invalid mode value '" + part + 
+                        "' for attribute '" + attributeName + "'");
+                }
+                // Regular QName
+                validateSingleQName(attributeName, part);
+            }
+            return;
+        }
+        
+        validateSingleQName(attributeName, value);
+    }
+    
+    /**
+     * Validates a single QName value.
+     */
+    private static void validateSingleQName(String attributeName, String value) throws SAXException {
         // Handle EQName syntax: Q{uri}localname (XSLT 3.0)
         if (value.startsWith("Q{")) {
             int endBrace = value.indexOf('}');

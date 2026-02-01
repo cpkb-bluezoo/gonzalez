@@ -32,11 +32,13 @@ import java.util.regex.PatternSyntaxException;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathTypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -386,7 +388,8 @@ public final class StringFunctions {
      * XPath 2.0 data() function.
      * 
      * <p>Atomizes the argument, returning the typed value of nodes. For sequences,
-     * returns a sequence of atomized values.
+     * returns a sequence of atomized values. If a node has a type annotation,
+     * the result is a typed atomic value that can be checked with {@code instance of}.
      * 
      * <p>Signature: data(item()*) → atomic*
      * 
@@ -401,9 +404,10 @@ public final class StringFunctions {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
             if (args.isEmpty()) {
                 // Atomize context node
-                return XPathString.of(context.getContextNode().getStringValue());
+                XPathNode node = context.getContextNode();
+                return atomizeNode(node);
             }
-            // Atomize the argument - returns string value for untyped nodes
+            // Atomize the argument - returns typed value for typed nodes
             // For sequences, return sequence of atomized values
             XPathValue arg = args.get(0);
             
@@ -436,19 +440,41 @@ public final class StringFunctions {
                 if (nodeSet.isEmpty()) {
                     return XPathString.of("");
                 }
-                // Return first node's string value for single node
+                // Return first node's typed value for single node
                 if (nodeSet.size() == 1) {
-                    return XPathString.of(nodeSet.iterator().next().getStringValue());
+                    return atomizeNode(nodeSet.iterator().next());
                 }
-                // For multiple nodes, return sequence of string values
-                List<XPathValue> strings = new ArrayList<>(nodeSet.size());
+                // For multiple nodes, return sequence of typed values
+                List<XPathValue> values = new ArrayList<>(nodeSet.size());
                 for (XPathNode node : nodeSet) {
-                    strings.add(XPathString.of(node.getStringValue()));
+                    values.add(atomizeNode(node));
                 }
-                return new XPathSequence(strings);
+                return new XPathSequence(values);
             }
-            // Atomic value - return its string representation
+            // Already an atomic value - return as-is
+            if (value instanceof XPathTypedAtomic || value instanceof XPathNumber ||
+                value instanceof XPathBoolean || value instanceof XPathDateTime) {
+                return value;
+            }
+            // String/atomic value - return as string
             return XPathString.of(value.asString());
+        }
+        
+        /**
+         * Atomizes a single node, returning a typed value if the node has a type annotation.
+         */
+        private XPathValue atomizeNode(XPathNode node) {
+            String stringValue = node.getStringValue();
+            String typeNs = node.getTypeNamespaceURI();
+            String typeLocal = node.getTypeLocalName();
+            
+            // If node has a type annotation, return a typed atomic value
+            if (typeLocal != null) {
+                return XPathTypedAtomic.fromNode(stringValue, typeNs, typeLocal);
+            }
+            
+            // No type annotation - return untyped string
+            return XPathString.of(stringValue);
         }
     };
 
@@ -864,17 +890,47 @@ public final class StringFunctions {
         if (value instanceof XPathSequence) {
             XPathSequence seq = (XPathSequence) value;
             for (XPathValue item : seq) {
-                result.add(item.asString());
+                addStringValues(item, result);
             }
         } else if (value instanceof XPathNodeSet) {
             XPathNodeSet nodeSet = (XPathNodeSet) value;
             for (XPathNode node : nodeSet) {
-                result.add(node.getStringValue());
+                // Atomize node - for list types, this produces multiple values
+                XPathValue atomized = atomizeNodeForStringList(node);
+                addStringValues(atomized, result);
+            }
+        } else if (value instanceof XPathNode) {
+            // Direct node (e.g., SequenceAttributeItem)
+            XPathNode node = (XPathNode) value;
+            XPathValue atomized = atomizeNodeForStringList(node);
+            addStringValues(atomized, result);
+        } else {
+            addStringValues(value, result);
+        }
+        return result;
+    }
+    
+    private static void addStringValues(XPathValue value, List<String> result) {
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                result.add(item.asString());
             }
         } else {
             result.add(value.asString());
         }
-        return result;
+    }
+    
+    private static XPathValue atomizeNodeForStringList(XPathNode node) {
+        String typeNs = node.getTypeNamespaceURI();
+        String typeLocal = node.getTypeLocalName();
+        String stringValue = node.getStringValue();
+        
+        // For list types, atomize to sequence
+        if (typeLocal != null) {
+            return XPathTypedAtomic.fromNode(stringValue, typeNs, typeLocal);
+        }
+        return XPathString.of(stringValue);
     }
 
     private static List<Integer> toIntList(XPathValue value) {

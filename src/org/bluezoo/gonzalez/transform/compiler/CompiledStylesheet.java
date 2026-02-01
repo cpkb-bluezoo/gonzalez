@@ -57,8 +57,39 @@ public final class CompiledStylesheet {
     private final OutputProperties outputProperties;
     private final Map<String, KeyDefinition> keyDefinitions;
     private final Map<String, NamespaceAlias> namespaceAliases;  // keyed by stylesheet URI
+    private final List<SpaceDeclaration> stripSpaceDeclarations;
+    private final List<SpaceDeclaration> preserveSpaceDeclarations;
+    // Legacy lists for backward compatibility
     private final List<String> stripSpaceElements;
     private final List<String> preserveSpaceElements;
+    
+    /**
+     * Represents a strip-space or preserve-space declaration with import precedence.
+     */
+    public static class SpaceDeclaration {
+        public final String pattern;
+        public final int importPrecedence;
+        
+        public SpaceDeclaration(String pattern, int importPrecedence) {
+            this.pattern = pattern;
+            this.importPrecedence = importPrecedence;
+        }
+        
+        /**
+         * Returns the priority/specificity of this pattern.
+         * Specific patterns (e.g., "foo" or "{uri}foo") have priority 0.
+         * Wildcard patterns (e.g., "*" or "{uri}*") have priority -0.5.
+         */
+        public double getPriority() {
+            if ("*".equals(pattern)) {
+                return -0.5;
+            }
+            if (pattern.endsWith("}*")) {
+                return -0.5;
+            }
+            return 0.0;
+        }
+    }
     private final StreamingCapability streamingCapability;
     private final Map<String, DecimalFormatInfo> decimalFormats;
     private final Map<String, AccumulatorDefinition> accumulators;
@@ -156,8 +187,9 @@ public final class CompiledStylesheet {
         private OutputProperties outputProperties = new OutputProperties();
         private final Map<String, KeyDefinition> keyDefinitions = new HashMap<>();
         private final Map<String, NamespaceAlias> namespaceAliases = new HashMap<>();  // keyed by stylesheet URI
-        private final List<String> stripSpaceElements = new ArrayList<>();
-        private final List<String> preserveSpaceElements = new ArrayList<>();
+        private final List<SpaceDeclaration> stripSpaceDeclarations = new ArrayList<>();
+        private final List<SpaceDeclaration> preserveSpaceDeclarations = new ArrayList<>();
+        private int currentImportPrecedence = 0;  // Tracks current import precedence level
         private final Map<String, DecimalFormatInfo> decimalFormats = new HashMap<>();
         private final Map<String, AccumulatorDefinition> accumulators = new HashMap<>();
         private final Map<String, ModeDeclaration> modeDeclarations = new HashMap<>();
@@ -165,6 +197,8 @@ public final class CompiledStylesheet {
         private final Set<String> excludedNamespaceURIs = new HashSet<>();
         private final Map<String, UserFunction> userFunctions = new HashMap<>();
         private final Map<String, XSDSchema> importedSchemas = new HashMap<>();
+        // Tracks precedences from included stylesheets that need to be updated to final precedence
+        private final Set<Integer> pendingIncludePrecedences = new HashSet<>();
         private StylesheetCompiler.ValidationMode defaultValidation = StylesheetCompiler.ValidationMode.STRIP;
         private String baseURI;
         private double version = 1.0;
@@ -289,13 +323,29 @@ public final class CompiledStylesheet {
         }
 
         public Builder addStripSpaceElement(String element) {
-            stripSpaceElements.add(element);
+            stripSpaceDeclarations.add(new SpaceDeclaration(element, currentImportPrecedence));
             return this;
         }
 
         public Builder addPreserveSpaceElement(String element) {
-            preserveSpaceElements.add(element);
+            preserveSpaceDeclarations.add(new SpaceDeclaration(element, currentImportPrecedence));
             return this;
+        }
+        
+        /**
+         * Sets the current import precedence level for subsequent declarations.
+         * Higher values indicate higher precedence (main stylesheet over imported).
+         */
+        public Builder setImportPrecedence(int precedence) {
+            this.currentImportPrecedence = precedence;
+            return this;
+        }
+        
+        /**
+         * Gets the current import precedence level.
+         */
+        public int getImportPrecedence() {
+            return currentImportPrecedence;
         }
 
         /**
@@ -409,17 +459,144 @@ public final class CompiledStylesheet {
          */
         public Builder merge(CompiledStylesheet imported, boolean isImport) {
             // Add template rules - for imports these have lower precedence
-            // For includes they have the same precedence as the including stylesheet
             for (TemplateRule rule : imported.getTemplateRules()) {
                 templateRules.add(rule);
                 if (rule.getName() != null) {
-                    // For named templates, first definition wins (higher precedence)
-                    if (!namedTemplates.containsKey(rule.getName())) {
+                    // For named templates, higher import precedence wins.
+                    // If same precedence, later declaration wins.
+                    TemplateRule existing = namedTemplates.get(rule.getName());
+                    if (existing == null) {
+                        namedTemplates.put(rule.getName(), rule);
+                    } else if (rule.getImportPrecedence() > existing.getImportPrecedence()) {
+                        // New rule has higher precedence - it wins
+                        namedTemplates.put(rule.getName(), rule);
+                    } else if (rule.getImportPrecedence() == existing.getImportPrecedence() &&
+                               rule.getDeclarationIndex() > existing.getDeclarationIndex()) {
+                        // Same precedence but later declaration - it wins
+                        namedTemplates.put(rule.getName(), rule);
+                    }
+                    // Otherwise keep existing (it has higher or equal precedence)
+                }
+            }
+            
+            // Continue with rest of merge...
+            mergeNonTemplates(imported, isImport);
+            
+            return this;
+        }
+        
+        /**
+         * Merges an included stylesheet, updating template precedences to match the including stylesheet.
+         * 
+         * <p>For includes, templates from the included stylesheet should have the SAME precedence
+         * as the including stylesheet. This method creates new TemplateRule instances with the
+         * correct precedence for templates that belong to the included stylesheet itself
+         * (not its imports).
+         *
+         * @param included the included stylesheet
+         * @param includingPrecedence the precedence of the including stylesheet
+         * @return this builder
+         */
+        public Builder mergeInclude(CompiledStylesheet included, int includingPrecedence) {
+            // Find the maximum precedence in the included stylesheet - that's its "own" precedence
+            int includedOwnPrecedence = -1;
+            for (TemplateRule rule : included.getTemplateRules()) {
+                if (rule.getImportPrecedence() > includedOwnPrecedence) {
+                    includedOwnPrecedence = rule.getImportPrecedence();
+                }
+            }
+            
+            // Add template rules with updated precedence
+            // Templates with the included stylesheet's own precedence get updated to the including precedence
+            // Templates from imports (lower precedence) keep their original precedence
+            for (TemplateRule rule : included.getTemplateRules()) {
+                TemplateRule adjusted = rule;
+                // Update precedence for templates that are at the included stylesheet's own level
+                if (rule.getImportPrecedence() == includedOwnPrecedence) {
+                    adjusted = new TemplateRule(
+                        rule.getMatchPattern(),
+                        rule.getName(),
+                        rule.getMode(),
+                        rule.getPriority(),
+                        includingPrecedence,  // Use including stylesheet's precedence
+                        rule.getDeclarationIndex(),
+                        rule.getParameters(),
+                        rule.getBody()
+                    );
+                }
+                templateRules.add(adjusted);
+                if (adjusted.getName() != null) {
+                    // For named templates, higher import precedence wins
+                    TemplateRule existing = namedTemplates.get(adjusted.getName());
+                    if (existing == null) {
+                        namedTemplates.put(adjusted.getName(), adjusted);
+                    } else if (adjusted.getImportPrecedence() > existing.getImportPrecedence()) {
+                        namedTemplates.put(adjusted.getName(), adjusted);
+                    } else if (adjusted.getImportPrecedence() == existing.getImportPrecedence() &&
+                               adjusted.getDeclarationIndex() > existing.getDeclarationIndex()) {
+                        namedTemplates.put(adjusted.getName(), adjusted);
+                    }
+                }
+            }
+            
+            // Merge non-template components
+            mergeNonTemplates(included, false);  // false = include, not import
+            
+            return this;
+        }
+        
+        /**
+         * Merges an included stylesheet without updating precedences yet.
+         * 
+         * <p>Templates from the included stylesheet are added with their current precedences.
+         * They will be updated to the including stylesheet's precedence later by
+         * {@link #finalizePrecedence(int)}.
+         *
+         * @param included the included stylesheet
+         * @return this builder
+         */
+        public Builder mergeIncludePending(CompiledStylesheet included) {
+            // Find the maximum precedence in the included stylesheet - that's its "own" precedence
+            int includedOwnPrecedence = -1;
+            for (TemplateRule rule : included.getTemplateRules()) {
+                if (rule.getImportPrecedence() > includedOwnPrecedence) {
+                    includedOwnPrecedence = rule.getImportPrecedence();
+                }
+            }
+            
+            // Mark this precedence for later update
+            pendingIncludePrecedences.add(includedOwnPrecedence);
+            
+            // Add template rules as-is (precedences will be updated later)
+            for (TemplateRule rule : included.getTemplateRules()) {
+                templateRules.add(rule);
+                if (rule.getName() != null) {
+                    // For named templates, higher import precedence wins
+                    TemplateRule existing = namedTemplates.get(rule.getName());
+                    if (existing == null) {
+                        namedTemplates.put(rule.getName(), rule);
+                    } else if (rule.getImportPrecedence() > existing.getImportPrecedence()) {
+                        namedTemplates.put(rule.getName(), rule);
+                    } else if (rule.getImportPrecedence() == existing.getImportPrecedence() &&
+                               rule.getDeclarationIndex() > existing.getDeclarationIndex()) {
                         namedTemplates.put(rule.getName(), rule);
                     }
                 }
             }
             
+            // Merge non-template components
+            mergeNonTemplates(included, false);  // false = include, not import
+            
+            return this;
+        }
+        
+        /**
+         * Merges non-template components from another stylesheet.
+         *
+         * @param imported the imported/included stylesheet
+         * @param isImport true for xsl:import, false for xsl:include
+         */
+        private void mergeNonTemplates(CompiledStylesheet imported, boolean isImport) {
             // Add global variables - first definition wins
             for (GlobalVariable var : imported.getGlobalVariables()) {
                 boolean exists = false;
@@ -437,13 +614,21 @@ public final class CompiledStylesheet {
                 }
             }
             
-            // Merge attribute sets - later definition wins
-            // Since imports are processed in order (first import first, last import last),
-            // and later imports have higher precedence, letting later merges override
-            // gives us correct import precedence behavior
+            // Merge attribute sets - must properly merge, not replace
+            // Per XSLT spec: Multiple attribute sets with the same name are merged.
+            // Later definitions (higher precedence) override for conflicting attribute names,
+            // but non-conflicting attributes from both sets are included.
             for (Map.Entry<String, AttributeSet> entry : imported.attributeSets.entrySet()) {
                 String name = entry.getKey();
-                attributeSets.put(name, entry.getValue());
+                AttributeSet existing = attributeSets.get(name);
+                if (existing != null) {
+                    // Merge: existing first, then imported (imported takes precedence for conflicts)
+                    // Since imports are processed in order, later imports override earlier ones.
+                    // In mergeWith(other), "other" takes precedence for conflicts.
+                    attributeSets.put(name, existing.mergeWith(entry.getValue()));
+                } else {
+                    attributeSets.put(name, entry.getValue());
+                }
             }
             
             // Merge output properties - importing stylesheet values take precedence
@@ -472,16 +657,15 @@ public final class CompiledStylesheet {
                 }
             }
             
-            // Add whitespace handling rules
-            for (String element : imported.getStripSpaceElements()) {
-                if (!stripSpaceElements.contains(element)) {
-                    stripSpaceElements.add(element);
-                }
+            // Add whitespace handling rules with proper precedence
+            // Imported declarations have lower precedence than existing ones
+            for (SpaceDeclaration decl : imported.getStripSpaceDeclarations()) {
+                // Add with lower precedence (imported declarations)
+                stripSpaceDeclarations.add(new SpaceDeclaration(decl.pattern, decl.importPrecedence - 1));
             }
-            for (String element : imported.getPreserveSpaceElements()) {
-                if (!preserveSpaceElements.contains(element)) {
-                    preserveSpaceElements.add(element);
-                }
+            for (SpaceDeclaration decl : imported.getPreserveSpaceDeclarations()) {
+                // Add with lower precedence (imported declarations)
+                preserveSpaceDeclarations.add(new SpaceDeclaration(decl.pattern, decl.importPrecedence - 1));
             }
             
             // Add accumulators - first definition wins
@@ -504,8 +688,6 @@ public final class CompiledStylesheet {
                     decimalFormats.put(entry.getKey(), entry.getValue());
                 }
             }
-            
-            return this;
         }
 
         /**
@@ -516,6 +698,47 @@ public final class CompiledStylesheet {
          */
         public Builder setDefaultValidation(StylesheetCompiler.ValidationMode mode) {
             this.defaultValidation = mode;
+            return this;
+        }
+
+        /**
+         * Finalizes template precedences, updating:
+         * <ul>
+         *   <li>Templates with precedence -1 (main stylesheet's own templates)</li>
+         *   <li>Templates with pending include precedences (included stylesheets)</li>
+         * </ul>
+         * 
+         * <p>This is called after all includes have been processed to ensure
+         * all templates that should share the main stylesheet's precedence get the
+         * correct (high) value.
+         *
+         * @param finalPrecedence the final import precedence for this stylesheet
+         * @return this builder
+         */
+        public Builder finalizePrecedence(int finalPrecedence) {
+            for (int i = 0; i < templateRules.size(); i++) {
+                TemplateRule rule = templateRules.get(i);
+                // Update templates that need the final precedence:
+                // - Templates with -1 (main stylesheet's templates compiled before precedence was assigned)
+                // - Templates from included stylesheets (their "own" precedence marked in pendingIncludePrecedences)
+                if (rule.getImportPrecedence() == -1 || pendingIncludePrecedences.contains(rule.getImportPrecedence())) {
+                    TemplateRule adjusted = new TemplateRule(
+                        rule.getMatchPattern(),
+                        rule.getName(),
+                        rule.getMode(),
+                        rule.getPriority(),
+                        finalPrecedence,
+                        rule.getDeclarationIndex(),
+                        rule.getParameters(),
+                        rule.getBody()
+                    );
+                    templateRules.set(i, adjusted);
+                    if (adjusted.getName() != null) {
+                        namedTemplates.put(adjusted.getName(), adjusted);
+                    }
+                }
+            }
+            pendingIncludePrecedences.clear();
             return this;
         }
 
@@ -551,8 +774,23 @@ public final class CompiledStylesheet {
         this.outputProperties = builder.outputProperties;
         this.keyDefinitions = Collections.unmodifiableMap(new HashMap<>(builder.keyDefinitions));
         this.namespaceAliases = Collections.unmodifiableMap(new HashMap<>(builder.namespaceAliases));
-        this.stripSpaceElements = Collections.unmodifiableList(new ArrayList<>(builder.stripSpaceElements));
-        this.preserveSpaceElements = Collections.unmodifiableList(new ArrayList<>(builder.preserveSpaceElements));
+        this.stripSpaceDeclarations = Collections.unmodifiableList(new ArrayList<>(builder.stripSpaceDeclarations));
+        this.preserveSpaceDeclarations = Collections.unmodifiableList(new ArrayList<>(builder.preserveSpaceDeclarations));
+        // Build legacy lists for backward compatibility
+        List<String> stripPatterns = new ArrayList<>();
+        for (SpaceDeclaration decl : builder.stripSpaceDeclarations) {
+            if (!stripPatterns.contains(decl.pattern)) {
+                stripPatterns.add(decl.pattern);
+            }
+        }
+        this.stripSpaceElements = Collections.unmodifiableList(stripPatterns);
+        List<String> preservePatterns = new ArrayList<>();
+        for (SpaceDeclaration decl : builder.preserveSpaceDeclarations) {
+            if (!preservePatterns.contains(decl.pattern)) {
+                preservePatterns.add(decl.pattern);
+            }
+        }
+        this.preserveSpaceElements = Collections.unmodifiableList(preservePatterns);
         this.decimalFormats = Collections.unmodifiableMap(new HashMap<>(builder.decimalFormats));
         this.accumulators = Collections.unmodifiableMap(new HashMap<>(builder.accumulators));
         this.modeDeclarations = Collections.unmodifiableMap(new HashMap<>(builder.modeDeclarations));
@@ -710,18 +948,117 @@ public final class CompiledStylesheet {
     public List<String> getPreserveSpaceElements() {
         return preserveSpaceElements;
     }
+    
+    /**
+     * Returns the strip-space declarations with import precedence information.
+     *
+     * @return the strip-space declarations (immutable)
+     */
+    public List<SpaceDeclaration> getStripSpaceDeclarations() {
+        return stripSpaceDeclarations;
+    }
+    
+    /**
+     * Returns the preserve-space declarations with import precedence information.
+     *
+     * @return the preserve-space declarations (immutable)
+     */
+    public List<SpaceDeclaration> getPreserveSpaceDeclarations() {
+        return preserveSpaceDeclarations;
+    }
 
     /**
      * Returns true if whitespace should be stripped for the given element.
+     * Uses import precedence and priority to resolve conflicts.
      *
      * @param namespaceURI the element namespace
      * @param localName the element local name
      * @return true if whitespace should be stripped
      */
     public boolean shouldStripWhitespace(String namespaceURI, String localName) {
-        // TODO: Implement proper pattern matching
-        String qName = localName;
-        return stripSpaceElements.contains(qName) || stripSpaceElements.contains("*");
+        // Find the highest-precedence matching strip declaration
+        SpaceDeclaration bestStrip = null;
+        for (SpaceDeclaration decl : stripSpaceDeclarations) {
+            if (matchesSpacePattern(decl.pattern, namespaceURI, localName)) {
+                if (bestStrip == null || 
+                    decl.importPrecedence > bestStrip.importPrecedence ||
+                    (decl.importPrecedence == bestStrip.importPrecedence && 
+                     decl.getPriority() > bestStrip.getPriority())) {
+                    bestStrip = decl;
+                }
+            }
+        }
+        
+        // Find the highest-precedence matching preserve declaration
+        SpaceDeclaration bestPreserve = null;
+        for (SpaceDeclaration decl : preserveSpaceDeclarations) {
+            if (matchesSpacePattern(decl.pattern, namespaceURI, localName)) {
+                if (bestPreserve == null || 
+                    decl.importPrecedence > bestPreserve.importPrecedence ||
+                    (decl.importPrecedence == bestPreserve.importPrecedence && 
+                     decl.getPriority() > bestPreserve.getPriority())) {
+                    bestPreserve = decl;
+                }
+            }
+        }
+        
+        // If no matches, default is to preserve (not strip)
+        if (bestStrip == null) {
+            return false;
+        }
+        if (bestPreserve == null) {
+            return true;
+        }
+        
+        // Both match - compare by import precedence
+        if (bestStrip.importPrecedence > bestPreserve.importPrecedence) {
+            return true;  // Strip has higher precedence
+        }
+        if (bestPreserve.importPrecedence > bestStrip.importPrecedence) {
+            return false;  // Preserve has higher precedence
+        }
+        
+        // Same import precedence - compare by priority (specificity)
+        if (bestStrip.getPriority() > bestPreserve.getPriority()) {
+            return true;  // Strip is more specific
+        }
+        if (bestPreserve.getPriority() > bestStrip.getPriority()) {
+            return false;  // Preserve is more specific
+        }
+        
+        // Equal precedence and priority - preserve wins (safer default)
+        return false;
+    }
+    
+    /**
+     * Checks if an element matches a strip-space/preserve-space pattern.
+     */
+    private boolean matchesSpacePattern(String pattern, String namespaceURI, String localName) {
+        if ("*".equals(pattern)) {
+            return true;
+        }
+        if (pattern.startsWith("{")) {
+            // Clark notation: {uri}localname or {uri}*
+            int closeBrace = pattern.indexOf('}');
+            if (closeBrace > 0) {
+                String patternUri = pattern.substring(1, closeBrace);
+                String patternLocal = pattern.substring(closeBrace + 1);
+                
+                // Check namespace match
+                String elemUri = namespaceURI != null ? namespaceURI : "";
+                if (!patternUri.equals(elemUri)) {
+                    return false;
+                }
+                
+                // Check local name match
+                return "*".equals(patternLocal) || patternLocal.equals(localName);
+            }
+        }
+        // Simple local name - matches elements in no namespace
+        if (namespaceURI != null && !namespaceURI.isEmpty()) {
+            return false;
+        }
+        return pattern.equals(localName);
     }
 
     /**

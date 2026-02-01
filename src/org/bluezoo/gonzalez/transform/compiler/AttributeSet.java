@@ -120,25 +120,33 @@ public final class AttributeSet {
      * First applies any included attribute sets, then the attributes defined
      * directly in this set.
      *
+     * <p>Per XSLT spec, attribute sets are evaluated with only top-level 
+     * variables and parameters in scope, not local variables from the 
+     * invoking template.
+     *
      * @param context the transform context
      * @param output the output handler
      * @throws SAXException if an error occurs
      */
     public void apply(TransformContext context, OutputHandler output) throws SAXException {
+        // Create a context with only global variables visible
+        // This ensures attribute sets don't see local variables
+        TransformContext globalContext = context.withGlobalVariablesOnly();
+        
         // First, apply included attribute sets (recursively)
         if (!useAttributeSets.isEmpty()) {
             CompiledStylesheet stylesheet = context.getStylesheet();
             for (String includedName : useAttributeSets) {
                 AttributeSet included = stylesheet.getAttributeSet(includedName);
                 if (included != null) {
-                    included.apply(context, output);
+                    included.apply(globalContext, output);
                 }
             }
         }
         
         // Then apply this set's attributes (can override included ones)
         if (attributes != null) {
-            attributes.execute(context, output);
+            attributes.execute(globalContext, output);
         }
     }
 

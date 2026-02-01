@@ -177,6 +177,7 @@ public enum Operator {
             case PLUS: return PLUS;
             case MINUS: return MINUS;
             case STAR: return MULTIPLY;
+            case STAR_MULTIPLY: return MULTIPLY;
             case DIV: return DIV;
             case MOD: return MOD;
             case PIPE: return UNION;

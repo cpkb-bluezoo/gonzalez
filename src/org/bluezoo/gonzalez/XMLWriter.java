@@ -94,6 +94,7 @@ public class XMLWriter {
     private final int sendThreshold;
     private final IndentConfig indentConfig;
     private final Charset charset;
+    private final boolean xml11;  // XML 1.1 mode for control character handling
 
     // Element stack for tracking open elements
     private final Deque<ElementInfo> elementStack = new ArrayDeque<>();
@@ -197,11 +198,25 @@ public class XMLWriter {
      * @param charset the character encoding to use, or null for UTF-8
      */
     public XMLWriter(WritableByteChannel channel, int bufferCapacity, IndentConfig indentConfig, Charset charset) {
+        this(channel, bufferCapacity, indentConfig, charset, false);
+    }
+
+    /**
+     * Creates a new XML writer with specified buffer capacity, indentation, character encoding, and XML version.
+     *
+     * @param channel the channel to write to
+     * @param bufferCapacity initial buffer capacity in bytes
+     * @param indentConfig the indentation configuration, or null for no indentation
+     * @param charset the character encoding to use, or null for UTF-8
+     * @param xml11 true for XML 1.1 output mode (escapes CR as &#13;)
+     */
+    public XMLWriter(WritableByteChannel channel, int bufferCapacity, IndentConfig indentConfig, Charset charset, boolean xml11) {
         this.channel = channel;
         this.buffer = ByteBuffer.allocate(bufferCapacity);
         this.sendThreshold = (int) (bufferCapacity * SEND_THRESHOLD);
         this.indentConfig = indentConfig;
         this.charset = charset != null ? charset : StandardCharsets.UTF_8;
+        this.xml11 = xml11;
         // Initialize root namespace scope
         namespaceStack.push(new HashMap<>());
     }
@@ -847,11 +862,17 @@ public class XMLWriter {
                 buffer.put((byte) 'm');
                 buffer.put((byte) 'p');
                 buffer.put((byte) ';');
-            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n' && codePoint != '\r') {
-                // Control character - write as character reference
+            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n' && 
+                       (codePoint != '\r' || xml11)) {
+                // Control character (C0) - write as character reference
+                // For XML 1.1, we also escape CR to preserve it (otherwise it gets normalized to LF)
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
                 buffer.put((byte) codePoint);
+            } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
+                // C1 control characters (0x7F-0x9F) in XML 1.1 mode
+                // These include NEL (0x85) which needs to be escaped to preserve it
+                writeCharacterReference(codePoint);
             } else {
                 writeEncodedCodePoint(codePoint);
             }

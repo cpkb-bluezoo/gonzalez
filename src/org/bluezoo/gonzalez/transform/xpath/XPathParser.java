@@ -75,7 +75,6 @@ public final class XPathParser {
     /**
      * Interface for resolving namespace prefixes during parsing.
      */
-    @FunctionalInterface
     public interface NamespaceResolver {
         /**
          * Resolves a namespace prefix to a URI.
@@ -1038,9 +1037,10 @@ public final class XPathParser {
             return true;
         }
         
-        // XPath 2.0 kind tests: element(), attribute(), document-node()
+        // XPath 2.0 kind tests: element(), attribute(), document-node(), schema-element(), schema-attribute()
         if (token == XPathToken.ELEMENT || token == XPathToken.ATTRIBUTE ||
-            token == XPathToken.DOCUMENT_NODE) {
+            token == XPathToken.DOCUMENT_NODE || token == XPathToken.SCHEMA_ELEMENT ||
+            token == XPathToken.SCHEMA_ATTRIBUTE) {
             // These are kind tests when followed by (
             if (lexer.peek() == XPathToken.LPAREN) {
                 return true;
@@ -1093,7 +1093,8 @@ public final class XPathParser {
     private Expr parseVariableReference() throws XPathSyntaxException {
         lexer.expect(XPathToken.DOLLAR);
 
-        if (lexer.current() != XPathToken.NCNAME) {
+        // Variable names can be any NCName, including keywords like 'in', 'and', 'or', etc.
+        if (!isNCNameOrKeyword()) {
             throw new XPathSyntaxException("Expected variable name",
                 lexer.getExpression(), lexer.tokenStart());
         }
@@ -1104,7 +1105,7 @@ public final class XPathParser {
         // Check for prefix:localname
         if (lexer.current() == XPathToken.COLON) {
             lexer.advance();
-            if (lexer.current() != XPathToken.NCNAME) {
+            if (!isNCNameOrKeyword()) {
                 throw new XPathSyntaxException("Expected local name after prefix",
                     lexer.getExpression(), lexer.tokenStart());
             }
@@ -1114,6 +1115,31 @@ public final class XPathParser {
         }
 
         return new VariableReference(name);
+    }
+    
+    /**
+     * Checks if the current token can be used as an NCName (including keywords).
+     * In XPath, keywords are context-sensitive and can be used as names in contexts
+     * where a name is expected (like variable names).
+     */
+    private boolean isNCNameOrKeyword() {
+        XPathToken t = lexer.current();
+        if (t == XPathToken.NCNAME) return true;
+        // Keywords that can also be used as NCNames
+        switch (t) {
+            case AND: case OR: case DIV: case MOD:
+            case IF: case THEN: case ELSE:
+            case FOR: case LET: case RETURN: case IN:
+            case SOME: case EVERY: case SATISFIES:
+            case INSTANCE: case OF: case AS:
+            case TREAT: case CASTABLE: case CAST:
+            case INTERSECT: case EXCEPT:
+            case TO: case EQ: case NE: case LT: case LE: case GT: case GE:
+            case IS: case PRECEDES: case FOLLOWS:
+                return true;
+            default:
+                return false;
+        }
     }
 
     /**
@@ -1220,11 +1246,15 @@ public final class XPathParser {
         }
         
         // Check for XPath 2.0 kind tests as steps: element(), attribute(), document-node()
-        // When these appear without an explicit axis, they use the default child axis
+        // When these appear without an explicit axis, use appropriate default axis:
+        // - attribute() uses ATTRIBUTE axis
+        // - element(), document-node() use CHILD axis
         if ((lexer.current() == XPathToken.ELEMENT || lexer.current() == XPathToken.ATTRIBUTE ||
              lexer.current() == XPathToken.DOCUMENT_NODE) && lexer.peek() == XPathToken.LPAREN) {
-            // Parse as kind test with implicit child axis
-            Step step = parseNodeTest(Step.Axis.CHILD);
+            // attribute() kind test uses attribute axis by default
+            Step.Axis defaultAxis = (lexer.current() == XPathToken.ATTRIBUTE) 
+                ? Step.Axis.ATTRIBUTE : Step.Axis.CHILD;
+            Step step = parseNodeTest(defaultAxis);
             return parseStepPredicates(step);
         }
 
@@ -1349,9 +1379,20 @@ public final class XPathParser {
     private Step parseNodeTest(Step.Axis axis) throws XPathSyntaxException {
         XPathToken token = lexer.current();
 
-        // Wildcard
+        // Wildcard or any-namespace wildcard (*:localname)
         if (token == XPathToken.STAR) {
             lexer.advance();
+            // XPath 2.0: Check for *:localname (any namespace with specific local name)
+            if (lexer.current() == XPathToken.COLON) {
+                lexer.advance();
+                if (lexer.current() == XPathToken.NCNAME) {
+                    String localName = lexer.value();
+                    lexer.advance();
+                    return Step.anyNamespace(axis, localName);
+                }
+                throw new XPathSyntaxException("Expected local name after *:",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
             return Step.wildcard(axis);
         }
 
@@ -1395,9 +1436,10 @@ public final class XPathParser {
             return new Step(axis, nodeTestType);
         }
         
-        // XPath 2.0 kind tests: element(), attribute(), document-node()
+        // XPath 2.0 kind tests: element(), attribute(), document-node(), schema-element(), schema-attribute()
         if (token == XPathToken.ELEMENT || token == XPathToken.ATTRIBUTE || 
-            token == XPathToken.DOCUMENT_NODE) {
+            token == XPathToken.DOCUMENT_NODE || token == XPathToken.SCHEMA_ELEMENT ||
+            token == XPathToken.SCHEMA_ATTRIBUTE) {
             Step.NodeTestType nodeTestType;
             switch (token) {
                 case ELEMENT:
@@ -1408,6 +1450,12 @@ public final class XPathParser {
                     break;
                 case DOCUMENT_NODE:
                     nodeTestType = Step.NodeTestType.DOCUMENT_NODE;
+                    break;
+                case SCHEMA_ELEMENT:
+                    nodeTestType = Step.NodeTestType.SCHEMA_ELEMENT;
+                    break;
+                case SCHEMA_ATTRIBUTE:
+                    nodeTestType = Step.NodeTestType.SCHEMA_ATTRIBUTE;
                     break;
                 default:
                     throw new XPathSyntaxException("Unexpected kind test: " + token,
@@ -1533,6 +1581,10 @@ public final class XPathParser {
      * Resolves a namespace prefix.
      */
     private String resolvePrefix(String prefix) throws XPathSyntaxException {
+        // The "xml" prefix is always implicitly bound to the XML namespace
+        if ("xml".equals(prefix)) {
+            return "http://www.w3.org/XML/1998/namespace";
+        }
         if (namespaceResolver != null) {
             String uri = namespaceResolver.resolve(prefix);
             if (uri != null) {
@@ -1787,6 +1839,7 @@ public final class XPathParser {
                 lexer.advance();
                 break;
             case STAR:
+            case STAR_MULTIPLY:  // Also accept * as occurrence indicator even if lexer thought it was multiplication
                 occurrence = SequenceType.Occurrence.ZERO_OR_MORE;
                 lexer.advance();
                 break;

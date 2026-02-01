@@ -31,30 +31,91 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
  */
 public final class TemplateParameter {
 
-    private final String name;
+    private final String namespaceURI;
+    private final String localName;
+    private final String expandedName; // Clark notation: {uri}localname or just localname
     private final XPathExpression selectExpr;
     private final SequenceNode defaultContent;
+    private final boolean tunnel; // XSLT 2.0: whether this is a tunnel parameter
 
     /**
-     * Creates a template parameter.
+     * Creates a template parameter without namespace.
      *
-     * @param name the parameter name
+     * @param localName the parameter local name
      * @param selectExpr the select expression (may be null)
      * @param defaultContent the default content (may be null)
      */
-    public TemplateParameter(String name, XPathExpression selectExpr, SequenceNode defaultContent) {
-        this.name = name;
-        this.selectExpr = selectExpr;
-        this.defaultContent = defaultContent;
+    public TemplateParameter(String localName, XPathExpression selectExpr, SequenceNode defaultContent) {
+        this(null, localName, selectExpr, defaultContent, false);
     }
 
     /**
-     * Returns the parameter name.
+     * Creates a template parameter with namespace.
      *
-     * @return the name
+     * @param namespaceURI the namespace URI (may be null)
+     * @param localName the parameter local name
+     * @param selectExpr the select expression (may be null)
+     * @param defaultContent the default content (may be null)
+     */
+    public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, SequenceNode defaultContent) {
+        this(namespaceURI, localName, selectExpr, defaultContent, false);
+    }
+
+    /**
+     * Creates a template parameter with namespace and tunnel flag.
+     *
+     * @param namespaceURI the namespace URI (may be null)
+     * @param localName the parameter local name
+     * @param selectExpr the select expression (may be null)
+     * @param defaultContent the default content (may be null)
+     * @param tunnel whether this is a tunnel parameter (XSLT 2.0)
+     */
+    public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, 
+                            SequenceNode defaultContent, boolean tunnel) {
+        this.namespaceURI = namespaceURI;
+        this.localName = localName;
+        this.expandedName = makeExpandedName(namespaceURI, localName);
+        this.selectExpr = selectExpr;
+        this.defaultContent = defaultContent;
+        this.tunnel = tunnel;
+    }
+
+    /**
+     * Returns the parameter namespace URI.
+     *
+     * @return the namespace URI, or null if no namespace
+     */
+    public String getNamespaceURI() {
+        return namespaceURI;
+    }
+
+    /**
+     * Returns the parameter local name.
+     *
+     * @return the local name
+     */
+    public String getLocalName() {
+        return localName;
+    }
+
+    /**
+     * Returns the parameter name in expanded form (Clark notation).
+     * This is used for parameter matching.
+     *
+     * @return the expanded name ({uri}localname or just localname)
      */
     public String getName() {
-        return name;
+        return expandedName;
+    }
+
+    /**
+     * Creates an expanded name in Clark notation.
+     */
+    private static String makeExpandedName(String namespaceURI, String localName) {
+        if (namespaceURI == null || namespaceURI.isEmpty()) {
+            return localName;
+        }
+        return "{" + namespaceURI + "}" + localName;
     }
 
     /**
@@ -84,9 +145,19 @@ public final class TemplateParameter {
         return selectExpr != null || (defaultContent != null && !defaultContent.isEmpty());
     }
 
+    /**
+     * Returns true if this is a tunnel parameter (XSLT 2.0).
+     * Tunnel parameters are passed automatically through intermediate templates.
+     *
+     * @return true if this is a tunnel parameter
+     */
+    public boolean isTunnel() {
+        return tunnel;
+    }
+
     @Override
     public String toString() {
-        return "param " + name;
+        return "param " + expandedName + (tunnel ? " (tunnel)" : "");
     }
 
 }

@@ -305,6 +305,7 @@ public class XSLTConformanceTest {
         private String expectedXml;
         private String expectedError;
         private boolean expectsError;
+        private boolean requiresErrorOnMultipleMatch;
 
         TestSetHandler(File testDir, Map<String, Environment> environments,
                        List<XSLTTestCase> tests) {
@@ -362,10 +363,19 @@ public class XSLTConformanceTest {
                 expectedXml = null;
                 expectedError = null;
                 expectsError = false;
+                requiresErrorOnMultipleMatch = false;
             } else if ("dependencies".equals(localName)) {
                 inDependencies = true;
             } else if ("spec".equals(localName) && inDependencies) {
                 specValue = attrs.getValue("value");
+            } else if ("on-multiple-match".equals(localName) && inDependencies) {
+                // Tests with on-multiple-match="error" require the processor to signal
+                // an error when multiple templates match with the same precedence/priority.
+                // We implement recovery behavior (pick last), so skip these tests.
+                String value = attrs.getValue("value");
+                if ("error".equals(value)) {
+                    requiresErrorOnMultipleMatch = true;
+                }
             } else if ("test".equals(localName) && inTestCase) {
                 inTest = true;
             } else if ("stylesheet".equals(localName) && inTest) {
@@ -438,7 +448,8 @@ public class XSLTConformanceTest {
                 inResult = false;
             } else if ("test-case".equals(localName)) {
                 // Finalize test case
-                if (currentTest != null && matchesVersionFilter(specValue)) {
+                // Skip tests that require on-multiple-match="error" - we use recovery behavior
+                if (currentTest != null && matchesVersionFilter(specValue) && !requiresErrorOnMultipleMatch) {
                     if (!stylesheetFiles.isEmpty()) {
                         currentTest.stylesheetFile = new File(testDir, stylesheetFiles.get(0));
                     }

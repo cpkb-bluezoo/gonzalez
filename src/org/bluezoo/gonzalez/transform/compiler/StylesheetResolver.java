@@ -62,6 +62,10 @@ public class StylesheetResolver {
     // Global precedence counter - increments each time an import is processed
     // Shared across the entire import tree via the precedenceCounter array
     private final int[] precedenceCounter;
+    
+    // Global template declaration counter - increments for each template
+    // Shared across the entire import tree to ensure unique declaration indices
+    private final int[] templateCounter;
 
     /**
      * Creates a new stylesheet resolver with no custom URI resolver.
@@ -79,25 +83,28 @@ public class StylesheetResolver {
         this.uriResolver = uriResolver;
         this.loadedStylesheets = new HashSet<>();
         this.precedenceCounter = new int[] { 0 };  // Shared mutable counter
+        this.templateCounter = new int[] { 0 };    // Shared mutable counter
     }
     
     /**
      * Private constructor for child resolvers that share state.
      */
-    private StylesheetResolver(URIResolver uriResolver, Set<String> loadedStylesheets, int[] precedenceCounter) {
+    private StylesheetResolver(URIResolver uriResolver, Set<String> loadedStylesheets, 
+                               int[] precedenceCounter, int[] templateCounter) {
         this.uriResolver = uriResolver;
         this.loadedStylesheets = loadedStylesheets;
         this.precedenceCounter = precedenceCounter;
+        this.templateCounter = templateCounter;
     }
 
     /**
-     * Creates a child resolver that shares the loaded stylesheet tracking
-     * and precedence counter. Used when compiling imported/included stylesheets.
+     * Creates a child resolver that shares the loaded stylesheet tracking,
+     * precedence counter, and template counter. Used when compiling imported/included stylesheets.
      *
-     * @return a new resolver sharing the loaded set and counter
+     * @return a new resolver sharing the loaded set and counters
      */
     StylesheetResolver createChild() {
-        return new StylesheetResolver(uriResolver, loadedStylesheets, precedenceCounter);
+        return new StylesheetResolver(uriResolver, loadedStylesheets, precedenceCounter, templateCounter);
     }
     
     /**
@@ -117,6 +124,16 @@ public class StylesheetResolver {
      */
     int currentPrecedence() {
         return precedenceCounter[0];
+    }
+    
+    /**
+     * Gets the next template declaration index and increments the counter.
+     * This ensures unique declaration indices across all included/imported stylesheets.
+     *
+     * @return the next template index
+     */
+    int nextTemplateIndex() {
+        return templateCounter[0]++;
     }
 
     /**

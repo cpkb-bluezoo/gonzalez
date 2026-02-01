@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.xml.sax.ContentHandler;
@@ -31,7 +32,9 @@ import org.xml.sax.helpers.DefaultHandler;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * An XPath value representing a Result Tree Fragment (RTF).
@@ -101,27 +104,50 @@ public final class XPathResultTreeFragment implements XPathValue {
 
     /**
      * Replays the buffered events to an output handler.
-     * This adapts the SAX events to OutputHandler calls.
+     * This adapts the SAX events to OutputHandler calls, including type annotations.
      *
      * @param output the target output handler
      * @throws SAXException if replay fails
      */
     public void replayToOutput(OutputHandler output) throws SAXException {
+        replayToOutput(output, true);
+    }
+    
+    /**
+     * Replays the buffered events to an output handler, optionally including type annotations.
+     *
+     * @param output the target output handler
+     * @param includeTypeAnnotations if true, type annotations are passed through
+     * @throws SAXException if replay fails
+     */
+    public void replayToOutput(OutputHandler output, boolean includeTypeAnnotations) throws SAXException {
         // Use an adapter that converts ContentHandler calls to OutputHandler calls
-        ContentHandler adapter = new OutputHandlerAdapter(output);
-        buffer.replayContent(adapter);
+        ContentHandler adapter = new OutputHandlerAdapter(output, includeTypeAnnotations);
+        if (includeTypeAnnotations) {
+            buffer.replayContentWithTypes(adapter);
+        } else {
+            buffer.replayContent(adapter);
+        }
     }
 
     /**
      * Adapter that converts ContentHandler calls to OutputHandler calls.
-     * Also implements LexicalHandler to capture comments.
+     * Also implements LexicalHandler to capture comments and TypeAwareHandler
+     * to pass type annotations.
      */
-    private static class OutputHandlerAdapter implements ContentHandler, LexicalHandler {
+    private static class OutputHandlerAdapter implements ContentHandler, LexicalHandler, 
+            SAXEventBuffer.TypeAwareHandler {
         private final OutputHandler output;
+        private final boolean includeTypeAnnotations;
         private List<String[]> pendingNamespaces = new ArrayList<String[]>();
 
         OutputHandlerAdapter(OutputHandler output) {
+            this(output, true);
+        }
+        
+        OutputHandlerAdapter(OutputHandler output, boolean includeTypeAnnotations) {
             this.output = output;
+            this.includeTypeAnnotations = includeTypeAnnotations;
         }
 
         @Override
@@ -253,6 +279,33 @@ public final class XPathResultTreeFragment implements XPathValue {
         public void endCDATA() throws SAXException {
             // Ignore CDATA markers
         }
+        
+        // TypeAwareHandler methods
+        @Override
+        public void setElementType(String namespaceURI, String localName) {
+            if (!includeTypeAnnotations) {
+                return;
+            }
+            try {
+                output.setElementType(namespaceURI, localName);
+            } catch (SAXException e) {
+                throw new RuntimeException(e);
+            }
+        }
+        
+        @Override
+        public void setAttributeType(int attrIndex, String namespaceURI, String localName) {
+            if (!includeTypeAnnotations) {
+                return;
+            }
+            // OutputHandler.setAttributeType doesn't take an index - it applies to
+            // the most recently added attribute
+            try {
+                output.setAttributeType(namespaceURI, localName);
+            } catch (SAXException e) {
+                throw new RuntimeException(e);
+            }
+        }
     }
 
     /**
@@ -300,15 +353,16 @@ public final class XPathResultTreeFragment implements XPathValue {
     /**
      * Converts this RTF to a boolean.
      *
-     * <p>RTFs are converted to string for boolean evaluation. Non-empty strings
-     * are truthy; empty strings are falsy.
+     * <p>RTFs always convert to true. Per XSLT 1.0 spec section 11.1, an RTF
+     * is treated as a node-set containing the root node for boolean conversion.
+     * A non-empty node-set is always true.
      *
-     * @return true if the text content is non-empty, false otherwise
+     * @return always true (an RTF always exists and contains a root node)
      */
     @Override
     public boolean asBoolean() {
-        // RTFs are converted to string for boolean - non-empty is true
-        return !asString().isEmpty();
+        // RTFs are always truthy - they contain a root node
+        return true;
     }
 
     /**
@@ -361,6 +415,7 @@ public final class XPathResultTreeFragment implements XPathValue {
         private RTFNode root;
         private RTFNode current;
         private StringBuilder textBuffer = new StringBuilder();
+        private List<String[]> pendingNamespaces = new ArrayList<>();
         
         RTFTreeBuilder(String baseUri) {
             this.baseUri = baseUri;
@@ -373,6 +428,17 @@ public final class XPathResultTreeFragment implements XPathValue {
         @Override
         public void startDocument() {
             // Root already created in constructor
+        }
+        
+        @Override
+        public void startPrefixMapping(String prefix, String uri) {
+            // Buffer namespace mappings to add to the next element
+            pendingNamespaces.add(new String[]{prefix, uri});
+        }
+        
+        @Override
+        public void endPrefixMapping(String prefix) {
+            // Nothing needed
         }
         
         @Override
@@ -389,10 +455,45 @@ public final class XPathResultTreeFragment implements XPathValue {
                 root.addChild(element);
             }
             
-            // Add attributes
+            // Add namespace nodes from pending prefix mappings
+            // Track prefix-to-namespace mappings for conflict detection
+            java.util.Map<String, String> prefixToUri = new java.util.HashMap<>();
+            for (String[] ns : pendingNamespaces) {
+                RTFNode nsNode = new RTFNode(NodeType.NAMESPACE, null, ns[0], null);
+                nsNode.value = ns[1];
+                nsNode.parent = element;
+                element.addNamespace(nsNode);
+                if (ns[0] != null && !ns[0].isEmpty()) {
+                    prefixToUri.put(ns[0], ns[1]);
+                }
+            }
+            pendingNamespaces.clear();
+            
+            // Add attributes, resolving prefix conflicts
             for (int i = 0; i < attrs.getLength(); i++) {
+                String attrQName = attrs.getQName(i);
+                String attrPrefix = (attrQName != null && attrQName.contains(":")) 
+                    ? attrQName.substring(0, attrQName.indexOf(':')) 
+                    : null;
+                String attrUri = attrs.getURI(i);
+                
+                // Check for prefix conflict: same prefix but different namespace
+                if (attrPrefix != null && attrUri != null && !attrUri.isEmpty()) {
+                    String existingUri = prefixToUri.get(attrPrefix);
+                    if (existingUri != null && !existingUri.equals(attrUri)) {
+                        // Prefix conflict! Generate a new unique prefix
+                        attrPrefix = generateUniquePrefix(attrPrefix, prefixToUri);
+                        // Add namespace declaration for the new prefix
+                        RTFNode nsNode = new RTFNode(NodeType.NAMESPACE, null, attrPrefix, null);
+                        nsNode.value = attrUri;
+                        nsNode.parent = element;
+                        element.addNamespace(nsNode);
+                    }
+                    prefixToUri.put(attrPrefix, attrUri);
+                }
+                
                 RTFNode attr = new RTFNode(NodeType.ATTRIBUTE, 
-                    attrs.getURI(i), attrs.getLocalName(i), null);
+                    attrUri, attrs.getLocalName(i), attrPrefix);
                 attr.value = attrs.getValue(i);
                 attr.parent = element;
                 element.addAttribute(attr);
@@ -434,6 +535,16 @@ public final class XPathResultTreeFragment implements XPathValue {
             }
         }
         
+        private int prefixCounter = 0;
+        
+        private String generateUniquePrefix(String basePrefix, java.util.Map<String, String> usedPrefixes) {
+            String newPrefix = basePrefix + "_" + prefixCounter++;
+            while (usedPrefixes.containsKey(newPrefix)) {
+                newPrefix = basePrefix + "_" + prefixCounter++;
+            }
+            return newPrefix;
+        }
+        
         private void flushText() {
             if (textBuffer.length() > 0 && current != null) {
                 RTFNode text = new RTFNode(NodeType.TEXT, null, null, null);
@@ -463,6 +574,7 @@ public final class XPathResultTreeFragment implements XPathValue {
         RTFNode parent;
         List<RTFNode> children = new ArrayList<RTFNode>();
         List<RTFNode> attributes = new ArrayList<RTFNode>();
+        List<RTFNode> namespaces = new ArrayList<RTFNode>();
         String baseUri;  // Base URI from xml:base
         
         // Type annotation (from xsl:type)
@@ -485,6 +597,7 @@ public final class XPathResultTreeFragment implements XPathValue {
         
         void addChild(RTFNode child) { children.add(child); }
         void addAttribute(RTFNode attr) { attributes.add(attr); }
+        void addNamespace(RTFNode ns) { namespaces.add(ns); }
         
         @Override public NodeType getNodeType() { return type; }
         @Override public String getNamespaceURI() { return namespaceURI; }
@@ -493,14 +606,32 @@ public final class XPathResultTreeFragment implements XPathValue {
         
         @Override
         public String getStringValue() {
-            if (type == NodeType.TEXT || type == NodeType.ATTRIBUTE) {
+            if (type == NodeType.TEXT) {
                 return value != null ? value : "";
+            }
+            if (type == NodeType.ATTRIBUTE || type == NodeType.NAMESPACE) {
+                // For attributes and namespaces, return the stored value directly
+                String rawValue = value != null ? value : "";
+                // If typed, return canonical form (only for attributes)
+                if (type == NodeType.ATTRIBUTE && typeLocalName != null && XSD_NAMESPACE.equals(typeNamespaceURI)) {
+                    return StylesheetCompiler.toCanonicalLexical(typeLocalName, rawValue);
+                }
+                return rawValue;
             }
             // For elements/root, concatenate text of descendants
             StringBuilder sb = new StringBuilder();
             collectText(sb);
-            return sb.toString();
+            String rawValue = sb.toString();
+            
+            // If element has a type annotation, convert to canonical form
+            if (type == NodeType.ELEMENT && typeLocalName != null 
+                    && XSD_NAMESPACE.equals(typeNamespaceURI)) {
+                return StylesheetCompiler.toCanonicalLexical(typeLocalName, rawValue);
+            }
+            return rawValue;
         }
+        
+        private static final String XSD_NAMESPACE = "http://www.w3.org/2001/XMLSchema";
         
         private void collectText(StringBuilder sb) {
             if (type == NodeType.TEXT) {
@@ -526,7 +657,38 @@ public final class XPathResultTreeFragment implements XPathValue {
         
         @Override
         public Iterator<XPathNode> getNamespaces() {
-            return Collections.emptyIterator();
+            // Return namespace nodes declared on this element and inherited from ancestors
+            // Build a map to handle redeclarations (closer declarations override)
+            Map<String, RTFNode> nsMap = new LinkedHashMap<>();
+            
+            // Start from this element and go up, but don't override closer declarations
+            RTFNode current = this;
+            while (current != null) {
+                if (current.type == NodeType.ELEMENT) {
+                    for (RTFNode ns : current.namespaces) {
+                        String prefix = ns.localName != null ? ns.localName : "";
+                        // Only add if not already declared by a closer element
+                        if (!nsMap.containsKey(prefix)) {
+                            // Skip empty URIs - they represent undeclarations, not actual bindings
+                            // (except for the xml namespace which is always present)
+                            String uri = ns.value;
+                            if (uri != null && !uri.isEmpty()) {
+                                nsMap.put(prefix, ns);
+                            }
+                        }
+                    }
+                }
+                current = current.parent;
+            }
+            
+            // Always include the xml namespace
+            if (!nsMap.containsKey("xml")) {
+                RTFNode xmlNs = new RTFNode(NodeType.NAMESPACE, null, "xml", null);
+                xmlNs.value = "http://www.w3.org/XML/1998/namespace";
+                nsMap.put("xml", xmlNs);
+            }
+            
+            return new ArrayList<XPathNode>(nsMap.values()).iterator();
         }
         
         @Override

@@ -25,6 +25,8 @@ import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -250,13 +252,12 @@ public final class InternalAccumulatorFactory {
         // In a full implementation, this would parse the node test
         return new Pattern() {
             @Override
-            public boolean matches(org.bluezoo.gonzalez.transform.xpath.type.XPathNode node,
-                                   TransformContext context) {
+            public boolean matches(XPathNode node, TransformContext context) {
                 if (node == null) {
                     return false;
                 }
                 if ("*".equals(nodeTest)) {
-                    return node.getNodeType() == org.bluezoo.gonzalez.transform.xpath.type.NodeType.ELEMENT;
+                    return node.getNodeType() == NodeType.ELEMENT;
                 }
                 return nodeTest.equals(node.getLocalName());
             }

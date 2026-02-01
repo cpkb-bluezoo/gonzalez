@@ -187,8 +187,11 @@ public final class UserFunction {
     public String toString() {
         StringBuilder sb = new StringBuilder();
         sb.append("function ");
-        sb.append("{").append(namespaceURI).append("}");
-        sb.append(localName).append("(");
+        sb.append("{");
+        sb.append(namespaceURI);
+        sb.append("}");
+        sb.append(localName);
+        sb.append("(");
         for (int i = 0; i < parameters.size(); i++) {
             if (i > 0) {
                 sb.append(", ");
@@ -197,7 +200,8 @@ public final class UserFunction {
         }
         sb.append(")");
         if (asType != null) {
-            sb.append(" as ").append(asType);
+            sb.append(" as ");
+            sb.append(asType);
         }
         return sb.toString();
     }

@@ -26,6 +26,11 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.regex.PatternSyntaxException;
+
+import javax.xml.transform.ErrorListener;
+import javax.xml.transform.TransformerConfigurationException;
+import javax.xml.transform.TransformerException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
@@ -106,6 +111,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     /** XSLT namespace URI. */
     public static final String XSLT_NS = "http://www.w3.org/1999/XSL/Transform";
+    
+    /** XML Schema namespace URI. */
+    private static final String XSD_NAMESPACE = "http://www.w3.org/2001/XMLSchema";
 
     // Compilation state
     private final CompiledStylesheet.Builder builder = CompiledStylesheet.builder();
@@ -122,7 +130,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private final StylesheetResolver resolver;
     private final String baseUri;
     private int importPrecedence = -1;  // Set lazily after imports are processed
-    private int templateCounter = 0;  // Counts templates for declaration order
+    private int localTemplateCounter = 0;  // Fallback counter when no resolver
     private boolean importsAllowed = true;
     private boolean precedenceAssigned = false;
     
@@ -184,6 +192,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         final Map<String, String> explicitNamespaces = new HashMap<>(); // Only declared on THIS element
         final Set<String> excludedByThisElement = new HashSet<>();  // URIs excluded by xsl:exclude-result-prefixes on this element
         String baseURI;  // Effective base URI for this element (from xml:base inheritance)
+        double effectiveVersion = -1;  // Effective XSLT version for backwards compatibility (-1 = inherit from parent)
         
         ElementContext(String namespaceURI, String localName) {
             this.namespaceURI = namespaceURI;
@@ -205,20 +214,26 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * @param baseUri the base URI of this stylesheet for relative resolution
      */
     public StylesheetCompiler(StylesheetResolver resolver, String baseUri) {
-        this(resolver, baseUri, 0);
+        this(resolver, baseUri, -1);  // -1 means assign precedence after includes are processed
     }
 
     /**
      * Creates a new stylesheet compiler with external stylesheet support.
-     * Import precedence is assigned lazily after all imports are processed.
-     *
+     * 
      * @param resolver the stylesheet resolver
      * @param baseUri the base URI of this stylesheet
-     * @param unusedPrecedence ignored - kept for API compatibility during transition
+     * @param fixedPrecedence if >= 0, use this as the import precedence (for includes);
+     *                        if < 0, assign precedence lazily (for imports and main)
      */
-    StylesheetCompiler(StylesheetResolver resolver, String baseUri, int unusedPrecedence) {
+    StylesheetCompiler(StylesheetResolver resolver, String baseUri, int fixedPrecedence) {
         this.resolver = resolver;
         this.baseUri = baseUri;
+        
+        // If a fixed precedence is specified (for includes), use it
+        if (fixedPrecedence >= 0) {
+            this.importPrecedence = fixedPrecedence;
+            this.precedenceAssigned = true;
+        }
         
         // Mark this stylesheet as loaded in the resolver
         if (resolver != null && baseUri != null) {
@@ -240,16 +255,31 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             precedenceAssigned = true;
         }
     }
+    
+    /**
+     * Gets the next template declaration index.
+     * Uses the resolver's shared counter if available, otherwise uses local counter.
+     */
+    private int nextTemplateIndex() {
+        if (resolver != null) {
+            return resolver.nextTemplateIndex();
+        }
+        return localTemplateCounter++;
+    }
 
     /**
      * Returns the compiled stylesheet.
      * Call this after parsing is complete.
      *
      * @return the compiled stylesheet
-     * @throws javax.xml.transform.TransformerConfigurationException if validation fails
+     * @throws TransformerConfigurationException if validation fails
      */
     public CompiledStylesheet getCompiledStylesheet() 
-            throws javax.xml.transform.TransformerConfigurationException {
+            throws TransformerConfigurationException {
+        // Ensure precedence is assigned (in case no includes were processed)
+        ensurePrecedenceAssigned();
+        // Fix up any templates that were compiled before precedence was assigned
+        builder.finalizePrecedence(importPrecedence);
         return builder.build();
     }
 
@@ -296,9 +326,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // Create a pattern matching "/"
                 Pattern rootPattern = new Pattern() {
                     @Override
-                    public boolean matches(org.bluezoo.gonzalez.transform.xpath.type.XPathNode node,
-                                          org.bluezoo.gonzalez.transform.runtime.TransformContext context) {
-                        return node.getNodeType() == org.bluezoo.gonzalez.transform.xpath.type.NodeType.ROOT;
+                    public boolean matches(XPathNode node, TransformContext context) {
+                        return node.getNodeType() == NodeType.ROOT;
                     }
                     @Override
                     public double getDefaultPriority() {
@@ -447,6 +476,19 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Copy attributes
         for (int i = 0; i < atts.getLength(); i++) {
             ctx.attributes.put(atts.getQName(i), atts.getValue(i));
+        }
+        
+        // Check for xsl:version on literal result elements (backward compatibility mode)
+        // This sets the effective version for this element and its descendants
+        if (!XSLT_NS.equals(uri)) {
+            String xslVersion = atts.getValue(XSLT_NS, "version");
+            if (xslVersion != null) {
+                try {
+                    ctx.effectiveVersion = Double.parseDouble(xslVersion);
+                } catch (NumberFormatException e) {
+                    // Ignore invalid version
+                }
+            }
         }
         
         // Copy current namespace bindings (all in-scope)
@@ -1322,7 +1364,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         List<String> useAttributeSets = new ArrayList<>();
         if (useAttrSetsValue != null) {
             for (String setName : splitOnWhitespace(useAttrSetsValue)) {
-                useAttributeSets.add(setName);
+                // Expand attribute set name using namespace bindings
+                useAttributeSets.add(expandAttributeSetName(setName.trim(), ctx.namespaceBindings));
             }
         }
         
@@ -1617,7 +1660,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // - Each stylesheet gets its precedence when its first non-import element is seen
             // - This ensures: D < B < E < C < A for the tree A→[B→D, C→E]
             // The imported stylesheet will assign its own precedence from the global counter
-            CompiledStylesheet imported = resolver.resolve(href, baseUri, true, 0);
+            // Pass -1 to indicate the imported stylesheet should assign its own precedence
+            CompiledStylesheet imported = resolver.resolve(href, baseUri, true, -1);
             if (imported != null) {
                 builder.merge(imported, true);
             }
@@ -1641,7 +1685,6 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Include is allowed anywhere in top-level, but once we see a non-import
         // element, no more imports are allowed
         importsAllowed = false;
-        ensurePrecedenceAssigned();  // Assign precedence before including (includes share our precedence)
         
         String href = ctx.attributes.get("href");
         if (href == null || href.isEmpty()) {
@@ -1653,10 +1696,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         try {
-            // Includes use the same import precedence as the including stylesheet
-            CompiledStylesheet included = resolver.resolve(href, baseUri, false, importPrecedence);
+            // For includes: compile the included stylesheet (which may have imports
+            // that need lower precedence). The included stylesheet uses -1 to assign
+            // its own precedence after its imports.
+            CompiledStylesheet included = resolver.resolve(href, baseUri, false, -1);
+            
+            // Don't assign our precedence here - wait until getCompiledStylesheet()
+            // to ensure our precedence is higher than ALL imports (including those
+            // in subsequent includes).
+            
             if (included != null) {
-                builder.merge(included, false);
+                // Merge the included stylesheet's templates, marking them for later
+                // precedence update. Templates from the included stylesheet (not its
+                // imports) will be updated to our precedence in getCompiledStylesheet().
+                builder.mergeIncludePending(included);
             }
         } catch (IOException e) {
             throw new SAXException("Failed to include stylesheet: " + href, e);
@@ -1732,7 +1785,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     private void processTemplateElement(ElementContext ctx) throws SAXException {
         importsAllowed = false;
-        ensurePrecedenceAssigned();  // Assign precedence after all imports are processed
+        // Don't assign precedence here - it will be done after all includes are processed
+        // Use the current importPrecedence value (-1 if not yet assigned)
         String match = ctx.attributes.get("match");
         String name = ctx.attributes.get("name");
         String mode = ctx.attributes.get("mode");
@@ -1740,6 +1794,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         // Expand mode QName to Clark notation for proper namespace comparison
         String expandedMode = expandModeQName(mode);
+        
+        // Expand template name to Clark notation for proper namespace comparison
+        // woo:a and hoo:a should match if both prefixes map to the same URI
+        String expandedName = expandQName(name);
         
         Pattern pattern = null;
         if (match != null) {
@@ -1757,17 +1815,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         // Extract parameters from children
         // XTSE0010: xsl:param must come before any other content
+        // Note: whitespace-only text nodes are ignored when checking param ordering
         List<TemplateParameter> params = new ArrayList<>();
         List<XSLTNode> bodyNodes = new ArrayList<>();
         boolean foundNonParam = false;
         
         for (XSLTNode child : ctx.children) {
+            // Check if this is whitespace-only text (for param ordering check only)
+            boolean isWhitespaceText = child instanceof LiteralText && 
+                isWhitespace(((LiteralText) child).getText());
+            
             if (child instanceof ParamNode) {
                 if (foundNonParam) {
                     throw new SAXException("XTSE0010: xsl:param must come before any other content in template");
                 }
                 ParamNode pn = (ParamNode) child;
-                params.add(new TemplateParameter(pn.getName(), pn.getSelectExpr(), pn.getContent()));
+                params.add(new TemplateParameter(pn.getNamespaceURI(), pn.getLocalName(), pn.getSelectExpr(), pn.getContent(), pn.isTunnel()));
             } else if (child instanceof WithParamNode) {
                 // XTSE0010: xsl:with-param not allowed directly in template
                 throw new SAXException("XTSE0010: xsl:with-param is not allowed directly in xsl:template");
@@ -1775,15 +1838,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // XTSE0010: xsl:sort not allowed directly in template
                 throw new SAXException("XTSE0010: xsl:sort is not allowed directly in xsl:template");
             } else {
-                foundNonParam = true;
+                // Only non-whitespace content counts as "found non-param" for ordering check
+                if (!isWhitespaceText) {
+                    foundNonParam = true;
+                }
+                // But ALL content (including whitespace) goes into the body
+                // (whitespace filtering was already done by flushCharacters based on xml:space)
                 bodyNodes.add(child);
             }
         }
         
         SequenceNode body = new SequenceNode(bodyNodes);
         
-        TemplateRule rule = new TemplateRule(pattern, name, expandedMode, priority, 
-            importPrecedence, templateCounter++, params, body);
+        TemplateRule rule = new TemplateRule(pattern, expandedName, expandedMode, priority, 
+            importPrecedence, nextTemplateIndex(), params, body);
         builder.addTemplateRule(rule);
     }
 
@@ -1816,6 +1884,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         return mode;
     }
 
+    /**
+     * Expands a QName to Clark notation {uri}localname for proper comparison.
+     * Names like woo:a and hoo:a should be equal if both prefixes map to the same URI.
+     */
+    private String expandQName(String qname) {
+        if (qname == null || qname.isEmpty()) {
+            return qname;
+        }
+        
+        int colonPos = qname.indexOf(':');
+        if (colonPos > 0) {
+            // Prefixed name - expand to Clark notation
+            String prefix = qname.substring(0, colonPos);
+            String localName = qname.substring(colonPos + 1);
+            String uri = resolve(prefix);
+            if (uri != null && !uri.isEmpty()) {
+                return "{" + uri + "}" + localName;
+            }
+        }
+        
+        // Unprefixed - return as-is (no namespace)
+        return qname;
+    }
+
     private void processOutputElement(ElementContext ctx) {
         importsAllowed = false;
         OutputProperties props = new OutputProperties();
@@ -1823,6 +1915,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String method = ctx.attributes.get("method");
         if (method != null) {
             props.setMethod(method);
+        }
+        
+        String version = ctx.attributes.get("version");
+        if (version != null) {
+            props.setVersion(version);
         }
         
         String encoding = ctx.attributes.get("encoding");
@@ -1931,15 +2028,55 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String name = ctx.attributes.get("name");
         String useAttrSets = ctx.attributes.get("use-attribute-sets");
         
+        // Expand attribute set name using namespace bindings
+        // This ensures that ap:set and as:set resolve to the same set if both
+        // prefixes map to the same namespace URI
+        String expandedName = expandAttributeSetName(name, ctx.namespaceBindings);
+        
         List<String> useSets = new ArrayList<>();
         if (useAttrSets != null) {
             for (String s : splitOnWhitespace(useAttrSets)) {
-                useSets.add(s);
+                // Also expand use-attribute-sets names
+                useSets.add(expandAttributeSetName(s.trim(), ctx.namespaceBindings));
             }
         }
         
         SequenceNode attrs = new SequenceNode(ctx.children);
-        builder.addAttributeSet(new AttributeSet(name, useSets, attrs));
+        builder.addAttributeSet(new AttributeSet(expandedName, useSets, attrs));
+    }
+    
+    /**
+     * Expands an attribute set name to its expanded form: {namespace}localname
+     * or just localname if no namespace.
+     */
+    private String expandAttributeSetName(String name, Map<String, String> namespaceBindings) {
+        int colonIdx = name.indexOf(':');
+        if (colonIdx > 0) {
+            String prefix = name.substring(0, colonIdx);
+            String localName = name.substring(colonIdx + 1);
+            String nsUri = namespaceBindings.get(prefix);
+            if (nsUri != null && !nsUri.isEmpty()) {
+                return "{" + nsUri + "}" + localName;
+            }
+        }
+        return name;
+    }
+    
+    /**
+     * Expands all attribute set names in a whitespace-separated list.
+     */
+    private String expandAttributeSetNames(String names, Map<String, String> namespaceBindings) {
+        if (names == null || names.isEmpty()) {
+            return names;
+        }
+        StringBuilder result = new StringBuilder();
+        for (String name : splitOnWhitespace(names)) {
+            if (result.length() > 0) {
+                result.append(' ');
+            }
+            result.append(expandAttributeSetName(name.trim(), namespaceBindings));
+        }
+        return result.toString();
     }
 
     private void processStripSpace(ElementContext ctx) throws SAXException {
@@ -2150,6 +2287,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String select = ctx.attributes.get("select");
         String asType = ctx.attributes.get("as"); // XSLT 2.0 type annotation
         String staticAttr = ctx.attributes.get("static");
+        String tunnelAttr = ctx.attributes.get("tunnel");
+        // XSLT 2.0 uses "yes"/"no", XSLT 3.0 also allows "true"/"false"
+        String tunnelVal = tunnelAttr != null ? tunnelAttr.trim() : null;
+        boolean tunnel = "yes".equals(tunnelVal) || "true".equals(tunnelVal) || "1".equals(tunnelVal);
         
         // Parse QName with resolved namespace
         QName paramName = parseQName(name, ctx.namespaceBindings);
@@ -2177,7 +2318,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             return null;
         }
         
-        return new ParamNode(paramName.getURI(), paramName.getLocalName(), selectExpr, content, asType);
+        return new ParamNode(paramName.getURI(), paramName.getLocalName(), selectExpr, content, asType, tunnel);
     }
     
     /**
@@ -2216,13 +2357,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
     }
 
+    /**
+     * Returns the effective XSLT version at the current point in the stylesheet.
+     * This considers xsl:version attributes on literal result element ancestors
+     * which establish backwards compatibility mode (XSLT 1.0 behavior).
+     */
+    private double getEffectiveVersion() {
+        // Walk up the element stack to find an explicitly set version
+        for (ElementContext ctx : elementStack) {
+            if (ctx.effectiveVersion > 0) {
+                return ctx.effectiveVersion;
+            }
+        }
+        // Fall back to the stylesheet version
+        return stylesheetVersion;
+    }
+    
     private XSLTNode compileValueOf(ElementContext ctx) throws SAXException {
         String select = ctx.attributes.get("select");
         boolean disableEscaping = "yes".equals(ctx.attributes.get("disable-output-escaping"));
         // XSLT 2.0+ separator attribute (default is single space for sequences)
         String separator = ctx.attributes.get("separator");
         // In XSLT 2.0+, value-of outputs all items; in 1.0, only the first
-        boolean xslt2Plus = stylesheetVersion >= 2.0;
+        // Use getEffectiveVersion() to respect xsl:version on ancestor LREs
+        boolean xslt2Plus = getEffectiveVersion() >= 2.0;
         
         if (select != null) {
             return new ValueOfNode(compileExpression(select), disableEscaping, separator, xslt2Plus);
@@ -2244,15 +2402,19 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 text.append(((LiteralText) child).getText());
             }
         }
-        return new LiteralText(text.toString(), disableEscaping);
+        // Mark as fromXslText=true so whitespace-only content is never stripped
+        return new LiteralText(text.toString(), disableEscaping, true);
     }
 
     private XSLTNode compileElement2(ElementContext ctx) throws SAXException {
         String name = ctx.attributes.get("name");
         String namespace = ctx.attributes.get("namespace");
-        String useAttrSets = ctx.attributes.get("use-attribute-sets");
+        String useAttrSetsRaw = ctx.attributes.get("use-attribute-sets");
         String typeValue = ctx.attributes.get("type");
         String validationValue = ctx.attributes.get("validation");
+        
+        // Expand use-attribute-sets names using namespace bindings
+        String useAttrSets = expandAttributeSetNames(useAttrSetsRaw, ctx.namespaceBindings);
         
         // Validation: name is required and must not be empty (XTSE0280)
         if (name == null || name.isEmpty()) {
@@ -2401,14 +2563,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     private XSLTNode compilePI(ElementContext ctx) throws SAXException {
         String name = ctx.attributes.get("name");
+        String select = ctx.attributes.get("select");
+        
         AttributeValueTemplate nameAvt = parseAvt(name);
-        return new ProcessingInstructionNode(nameAvt, new SequenceNode(ctx.children));
+        XPathExpression selectExpr = select != null ? compileExpression(select) : null;
+        SequenceNode content = ctx.children.isEmpty() ? null : new SequenceNode(ctx.children);
+        
+        return new ProcessingInstructionNode(nameAvt, selectExpr, content);
     }
 
     private XSLTNode compileCopy(ElementContext ctx) throws SAXException {
-        String useAttrSets = ctx.attributes.get("use-attribute-sets");
+        String useAttrSetsRaw = ctx.attributes.get("use-attribute-sets");
         String typeValue = ctx.attributes.get("type");
         String validationValue = ctx.attributes.get("validation");
+        
+        // Expand use-attribute-sets names using namespace bindings
+        String useAttrSets = expandAttributeSetNames(useAttrSetsRaw, ctx.namespaceBindings);
         
         // type and validation are mutually exclusive
         if (typeValue != null && validationValue != null) {
@@ -2550,11 +2720,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         // Extract sorts and with-params from children
         // XTSE0010: Only xsl:sort and xsl:with-param are allowed as children
+        // Note: whitespace-only text nodes are ignored per XSLT spec (even with xml:space="preserve")
         List<SortSpec> sorts = new ArrayList<>();
         List<WithParamNode> params = new ArrayList<>();
         boolean foundNonSort = false;
         
         for (XSLTNode child : ctx.children) {
+            // Ignore whitespace-only text (per XSLT spec section 3.4)
+            if (child instanceof LiteralText && isWhitespace(((LiteralText) child).getText())) {
+                continue;
+            }
             if (child instanceof SortSpecNode) {
                 if (foundNonSort) {
                     throw new SAXException("XTSE0010: xsl:sort must come before xsl:with-param in xsl:apply-templates");
@@ -2582,9 +2757,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XTSE0010: xsl:call-template requires name attribute");
         }
         
+        // Expand the template name to Clark notation for proper namespace matching
+        // e.g., woo:a and hoo:a should match if both prefixes map to the same URI
+        String expandedName = expandQName(name);
+        
         // XTSE0010: Only xsl:with-param is allowed as a child
+        // Note: whitespace-only text nodes are ignored per XSLT spec (even with xml:space="preserve")
         List<WithParamNode> params = new ArrayList<>();
         for (XSLTNode child : ctx.children) {
+            // Ignore whitespace-only text (per XSLT spec section 3.4)
+            if (child instanceof LiteralText && isWhitespace(((LiteralText) child).getText())) {
+                continue;
+            }
             if (child instanceof WithParamNode) {
                 params.add((WithParamNode) child);
             } else {
@@ -2592,11 +2776,23 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        return new CallTemplateNode(name, params);
+        return new CallTemplateNode(expandedName, params);
     }
 
-    private XSLTNode compileApplyImports(ElementContext ctx) {
-        return new ApplyImportsNode();
+    private XSLTNode compileApplyImports(ElementContext ctx) throws SAXException {
+        // XSLT 2.0+: xsl:apply-imports can have xsl:with-param children
+        List<WithParamNode> params = new ArrayList<>();
+        for (XSLTNode child : ctx.children) {
+            if (child instanceof LiteralText && isWhitespace(((LiteralText) child).getText())) {
+                continue;
+            }
+            if (child instanceof WithParamNode) {
+                params.add((WithParamNode) child);
+            } else {
+                throw new SAXException("XTSE0010: Only xsl:with-param is allowed in xsl:apply-imports");
+            }
+        }
+        return new ApplyImportsNode(params);
     }
 
     /**
@@ -2627,20 +2823,51 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         // Extract sorts from children
         // XTSE0010: xsl:sort must come before any other content
+        // Two-pass approach to correctly handle whitespace:
+        // 1. Find the index of the last xsl:sort
+        // 2. Everything after the last sort goes to body (including whitespace)
+        //    Whitespace before/between sorts is stripped
+        
+        int lastSortIndex = -1;
+        for (int i = 0; i < ctx.children.size(); i++) {
+            if (ctx.children.get(i) instanceof SortSpecNode) {
+                lastSortIndex = i;
+            }
+        }
+        
         List<SortSpec> sorts = new ArrayList<>();
         List<XSLTNode> bodyNodes = new ArrayList<>();
         boolean foundNonSort = false;
         
-        for (XSLTNode child : ctx.children) {
+        for (int i = 0; i < ctx.children.size(); i++) {
+            XSLTNode child = ctx.children.get(i);
+            
+            // Skip whitespace-only text when checking sort ordering
+            // BUT never skip text that came from xsl:text (it's explicit)
+            boolean isStrippableWhitespace = child instanceof LiteralText && 
+                isWhitespace(((LiteralText) child).getText()) &&
+                !((LiteralText) child).isFromXslText();
+            
             if (child instanceof SortSpecNode) {
                 if (foundNonSort) {
                     throw new SAXException("XTSE0010: xsl:sort must come before other content in xsl:for-each");
                 }
                 sorts.add(((SortSpecNode) child).getSortSpec());
-            } else {
+            } else if (i > lastSortIndex) {
+                // We're past all sorts - everything goes to body, including whitespace
+                bodyNodes.add(child);
+                if (!isStrippableWhitespace) {
+                    foundNonSort = true;
+                }
+            } else if (!isStrippableWhitespace) {
+                // Non-whitespace content before/between sorts - error
+                if (lastSortIndex >= 0) {
+                    throw new SAXException("XTSE0010: xsl:sort must come before other content in xsl:for-each");
+                }
                 foundNonSort = true;
                 bodyNodes.add(child);
             }
+            // else: whitespace before/between sorts - strip it
         }
         
         return new ForEachNode(compileExpression(select), sorts, new SequenceNode(bodyNodes));
@@ -2986,11 +3213,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private XSLTNode compileWithParam(ElementContext ctx) throws SAXException {
         String name = ctx.attributes.get("name");
         String select = ctx.attributes.get("select");
+        String tunnelAttr = ctx.attributes.get("tunnel");
+        // XSLT 2.0 uses "yes"/"no", XSLT 3.0 also allows "true"/"false"
+        String tunnelVal = tunnelAttr != null ? tunnelAttr.trim() : null;
+        boolean tunnel = "yes".equals(tunnelVal) || "true".equals(tunnelVal) || "1".equals(tunnelVal);
+        
+        // Parse QName to get namespace URI and local name
+        QName paramName = parseQName(name, ctx.namespaceBindings);
         
         XPathExpression selectExpr = select != null ? compileExpression(select) : null;
         SequenceNode content = ctx.children.isEmpty() ? null : new SequenceNode(ctx.children);
         
-        return new WithParamNode(name, selectExpr, content);
+        return new WithParamNode(paramName.getURI(), paramName.getLocalName(), selectExpr, content, tunnel);
     }
 
     private XSLTNode compileSort(ElementContext ctx) throws SAXException {
@@ -3003,12 +3237,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             selectExpr = compileExpression(".");
         }
         
+        // Parse sort parameters as AVTs (they can contain expressions like {$data-type})
         String dataType = ctx.attributes.get("data-type");  // "text" or "number"
         String order = ctx.attributes.get("order");          // "ascending" or "descending"
         String caseOrder = ctx.attributes.get("case-order"); // "upper-first" or "lower-first"
         String lang = ctx.attributes.get("lang");
         
-        SortSpec spec = new SortSpec(selectExpr, dataType, order, caseOrder, lang);
+        AttributeValueTemplate dataTypeAvt = dataType != null ? parseAvt(dataType) : null;
+        AttributeValueTemplate orderAvt = order != null ? parseAvt(order) : null;
+        AttributeValueTemplate caseOrderAvt = caseOrder != null ? parseAvt(caseOrder) : null;
+        AttributeValueTemplate langAvt = lang != null ? parseAvt(lang) : null;
+        
+        SortSpec spec = new SortSpec(selectExpr, dataTypeAvt, orderAvt, caseOrderAvt, langAvt);
         return new SortSpecNode(spec);
     }
 
@@ -3047,10 +3287,17 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             fromPattern = compilePattern(fromAttr);
         }
         
-        // format attribute - format string (default "1")
-        String format = ctx.attributes.get("format");
-        if (format == null) {
-            format = "1";
+        // format attribute - format string (default "1"), can be an AVT
+        String formatAttr = ctx.attributes.get("format");
+        AttributeValueTemplate formatAVT;
+        try {
+            if (formatAttr == null) {
+                formatAVT = AttributeValueTemplate.literal("1");
+            } else {
+                formatAVT = AttributeValueTemplate.parse(formatAttr, this);
+            }
+        } catch (XPathSyntaxException e) {
+            throw new SAXException("Invalid format AVT: " + e.getMessage(), e);
         }
         
         // grouping attributes
@@ -3070,7 +3317,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String letterValue = ctx.attributes.get("letter-value");
         
         return new NumberNode(valueExpr, selectExpr, level, countPattern, fromPattern, 
-                             format, groupingSeparator, groupingSize, lang, letterValue);
+                             formatAVT, groupingSeparator, groupingSize, lang, letterValue);
     }
 
     private XSLTNode compileMessage(ElementContext ctx) throws SAXException {
@@ -3395,6 +3642,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      */
     @Override
     public String resolve(String prefix) {
+        // The "xml" prefix is always implicitly bound to the XML namespace
+        if ("xml".equals(prefix)) {
+            return "http://www.w3.org/XML/1998/namespace";
+        }
         return namespaces.get(prefix);
     }
 
@@ -3547,18 +3798,25 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         private final XPathExpression selectExpr;
         private final SequenceNode content;
         private final String asType; // XSLT 2.0 type annotation
+        private final boolean tunnel; // XSLT 2.0 tunnel parameter
         
         ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, SequenceNode content) {
-            this(namespaceURI, localName, selectExpr, content, null);
+            this(namespaceURI, localName, selectExpr, content, null, false);
         }
         
         ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, 
                   SequenceNode content, String asType) {
+            this(namespaceURI, localName, selectExpr, content, asType, false);
+        }
+        
+        ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, 
+                  SequenceNode content, String asType, boolean tunnel) {
             this.namespaceURI = namespaceURI;
             this.localName = localName;
             this.selectExpr = selectExpr;
             this.content = content;
             this.asType = asType;
+            this.tunnel = tunnel;
         }
         
         String getNamespaceURI() { return namespaceURI; }
@@ -3567,6 +3825,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         XPathExpression getSelectExpr() { return selectExpr; }
         SequenceNode getContent() { return content; }
         String getAs() { return asType; }
+        boolean isTunnel() { return tunnel; }
         
         @Override public String getInstructionName() { return "param"; }
         
@@ -3931,9 +4190,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
                 
                 // Build qName - if we have a namespace but no prefix, generate one
+                // Special handling for xmlns prefix: per XSLT spec 11.7.1, the xmlns
+                // prefix may be used if namespace attribute is present, but is not required.
+                // Since xmlns is reserved in XML, we generate an alternative prefix.
                 String qName = name;
                 if (!namespace.isEmpty()) {
-                    if (prefix == null || prefix.isEmpty()) {
+                    if (prefix == null || prefix.isEmpty() || "xmlns".equals(prefix)) {
                         // Generate a prefix for this namespace
                         // Try to find an existing prefix, otherwise generate one
                         prefix = findOrGeneratePrefix(namespace, namespaceBindings);
@@ -3941,6 +4203,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     }
                     // Declare the namespace binding
                     output.namespace(prefix, namespace);
+                }
+                
+                // Convert value to canonical form if type annotation is specified
+                if (typeLocalName != null && XSD_NAMESPACE.equals(typeNamespaceURI)) {
+                    value = toCanonicalLexical(typeLocalName, value);
                 }
                 
                 output.attribute(namespace, localName, qName, value);
@@ -4030,15 +4297,46 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 content.execute(context, new BufferOutputHandler(buffer));
                 text = buffer.getTextContent();
             }
+            // Per XSLT spec: insert space after any "--" sequence and before trailing "-"
+            // to ensure well-formed XML output
+            text = sanitizeCommentText(text);
             output.comment(text);
+        }
+        
+        /**
+         * Sanitizes comment text to ensure well-formed XML output.
+         * XML comments cannot contain "--" or end with "-".
+         */
+        private static String sanitizeCommentText(String text) {
+            if (text == null || text.isEmpty()) {
+                return text;
+            }
+            // Replace all "--" with "- -" (insert space between adjacent hyphens)
+            StringBuilder sb = new StringBuilder();
+            char prev = 0;
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c == '-' && prev == '-') {
+                    sb.append(' '); // Insert space before this hyphen
+                }
+                sb.append(c);
+                prev = c;
+            }
+            // If comment ends with "-", append a space
+            if (sb.length() > 0 && sb.charAt(sb.length() - 1) == '-') {
+                sb.append(' ');
+            }
+            return sb.toString();
         }
     }
 
     private static class ProcessingInstructionNode extends XSLTInstruction {
         private final AttributeValueTemplate nameAvt;
+        private final XPathExpression selectExpr;
         private final SequenceNode content;
-        ProcessingInstructionNode(AttributeValueTemplate nameAvt, SequenceNode content) {
+        ProcessingInstructionNode(AttributeValueTemplate nameAvt, XPathExpression selectExpr, SequenceNode content) {
             this.nameAvt = nameAvt;
+            this.selectExpr = selectExpr;
             this.content = content;
         }
         @Override public String getInstructionName() { return "processing-instruction"; }
@@ -4047,16 +4345,35 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             try {
                 String target = nameAvt.evaluate(context);
                 String data = "";
-                if (content != null) {
+                
+                // select attribute takes precedence over content (XSLT 2.0+)
+                if (selectExpr != null) {
+                    XPathValue result = selectExpr.evaluate(context);
+                    data = result != null ? result.asString() : "";
+                } else if (content != null) {
                     SAXEventBuffer buffer = 
                         new SAXEventBuffer();
                     content.execute(context, new BufferOutputHandler(buffer));
                     data = buffer.getTextContent();
                 }
+                // Per XSLT spec: insert space in "?>" sequence to ensure well-formed XML
+                data = sanitizePIData(data);
                 output.processingInstruction(target, data);
             } catch (XPathException e) {
                 throw new SAXException("Error in xsl:processing-instruction", e);
             }
+        }
+        
+        /**
+         * Sanitizes PI data to ensure well-formed XML output.
+         * XML processing instructions cannot contain "?>".
+         */
+        private static String sanitizePIData(String data) {
+            if (data == null || data.isEmpty()) {
+                return data;
+            }
+            // Replace all "?>" with "? >" (insert space between ? and >)
+            return data.replace("?>", "? >");
         }
     }
 
@@ -4241,7 +4558,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         @Override public void execute(TransformContext context, 
                                       OutputHandler output) throws SAXException {
             try {
-                XPathValue result = selectExpr.evaluate(context);
+                // Use instruction's static base URI if set (for xml:base support and doc(''))
+                TransformContext evalContext = (staticBaseURI != null) 
+                    ? context.withStaticBaseURI(staticBaseURI) 
+                    : context;
+                    
+                XPathValue result = selectExpr.evaluate(evalContext);
                 
                 if (result == null) {
                     // Variable not found or expression returned null - output nothing
@@ -4256,8 +4578,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 
                 if (result instanceof XPathResultTreeFragment) {
                     // Result tree fragment - replay the buffered events
+                    // For validation="strip", don't include type annotations
                     XPathResultTreeFragment rtf = (XPathResultTreeFragment) result;
-                    rtf.replayToOutput(output);
+                    boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
+                    rtf.replayToOutput(output, includeTypes);
                 } else if (result instanceof XPathNodeSet) {
                     XPathNodeSet nodeSet = (XPathNodeSet) result;
                     for (XPathNode node : nodeSet.getNodes()) {
@@ -4668,30 +4992,74 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                             nodeContext.pushVariableScope()
                                 .withCurrentTemplateRule(rule);
                         
-                        // Collect template parameter names
-                        Set<String> templateParamNames = new HashSet<>();
-                        for (TemplateParameter tp : rule.getParameters()) {
-                            templateParamNames.add(tp.getName());
+                        // XSLT 2.0 tunnel parameter support:
+                        // - Non-tunnel with-param matches non-tunnel param only
+                        // - Tunnel with-param matches tunnel param only
+                        // - Tunnel params also receive values from context's tunnel params
+                        
+                        // Collect new tunnel parameters from with-param nodes
+                        Map<String, XPathValue> newTunnelParams = new HashMap<>();
+                        for (WithParamNode param : params) {
+                            if (param.isTunnel()) {
+                                try {
+                                    newTunnelParams.put(param.getName(), param.evaluate(context));
+                                } catch (XPathException e) {
+                                    throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                                }
+                            }
                         }
                         
-                        // Collect passed parameter names
+                        // Merge with existing tunnel params and update context
+                        if (!newTunnelParams.isEmpty()) {
+                            execContext = (TransformContext) execContext.withTunnelParameters(newTunnelParams);
+                        }
+                        
+                        // Collect passed parameter names (only non-tunnel, matching non-tunnel template params)
                         Set<String> passedParams = new HashSet<>();
                         
-                        // Set with-param values - ONLY for params the template declares
-                        for (WithParamNode param : params) {
-                            if (templateParamNames.contains(param.getName())) {
-                                XPathValue value = 
-                                    param.evaluate(context);
-                                execContext.getVariableScope().bind(param.getName(), value);
-                                passedParams.add(param.getName());
-                            }
-                            // Else: silently ignore (per XSLT 1.0)
-                        }
-                        
-                        // Set default values for template parameters not passed via with-param
+                        // Process each template parameter
                         for (TemplateParameter templateParam : rule.getParameters()) {
-                            if (!passedParams.contains(templateParam.getName())) {
-                                // Evaluate default value
+                            XPathValue value = null;
+                            boolean found = false;
+                            
+                            if (templateParam.isTunnel()) {
+                                // Tunnel param: first check tunnel with-param, then context tunnel params
+                                for (WithParamNode param : params) {
+                                    if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                                        try {
+                                            value = param.evaluate(context);
+                                            found = true;
+                                        } catch (XPathException e) {
+                                            throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                                        }
+                                        break;
+                                    }
+                                }
+                                // If not passed directly, check context's tunnel params
+                                if (!found) {
+                                    value = execContext.getTunnelParameters().get(templateParam.getName());
+                                    found = (value != null);
+                                }
+                            } else {
+                                // Non-tunnel param: only accept non-tunnel with-param
+                                for (WithParamNode param : params) {
+                                    if (!param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                                        try {
+                                            value = param.evaluate(context);
+                                            found = true;
+                                        } catch (XPathException e) {
+                                            throw new SAXException("Error evaluating param: " + e.getMessage(), e);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            if (found && value != null) {
+                                execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
+                                passedParams.add(templateParam.getName());
+                            } else {
+                                // Use default value
                                 XPathValue defaultValue = null;
                                 if (templateParam.getSelectExpr() != null) {
                                     try {
@@ -4707,7 +5075,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                                 } else {
                                     defaultValue = new XPathString(""); // Empty default
                                 }
-                                execContext.getVariableScope().bind(templateParam.getName(), defaultValue);
+                                execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
                             }
                         }
                         
@@ -4880,14 +5248,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         @Override public String getInstructionName() { return "call-template"; }
         @Override public void execute(TransformContext context, 
                                       OutputHandler output) throws SAXException {
-            // Find template by name
-            TemplateRule template = null;
-            for (TemplateRule rule : context.getStylesheet().getTemplateRules()) {
-                if (name.equals(rule.getName())) {
-                    template = rule;
-                    break;
-                }
-            }
+            // Find template by name - getNamedTemplate respects import precedence
+            TemplateRule template = context.getStylesheet().getNamedTemplate(name);
             
             if (template == null) {
                 throw new SAXException("Template not found: " + name);
@@ -4897,33 +5259,70 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             TransformContext callContext = 
                 context.pushVariableScope();
             
-            // Collect template parameter names (only these should be bound from with-param)
-            Set<String> templateParamNames = new HashSet<>();
-            for (TemplateParameter tp : template.getParameters()) {
-                templateParamNames.add(tp.getName());
+            // XSLT 2.0 tunnel parameter support for call-template
+            // Collect new tunnel parameters from with-param nodes
+            Map<String, XPathValue> newTunnelParams = new HashMap<>();
+            for (WithParamNode param : params) {
+                if (param.isTunnel()) {
+                    try {
+                        newTunnelParams.put(param.getName(), param.evaluate(context));
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                    }
+                }
             }
             
-            // Collect passed parameter names (only those that match template params)
+            // Merge with existing tunnel params and update context
+            if (!newTunnelParams.isEmpty()) {
+                callContext = callContext.withTunnelParameters(newTunnelParams);
+            }
+            
+            // Collect passed parameter names
             Set<String> passedParams = new HashSet<>();
             
-            // Set with-param values - ONLY for parameters the template declares
-            // Per XSLT spec, with-param for undeclared parameters is ignored
-            try {
-                for (WithParamNode param : params) {
-                    if (templateParamNames.contains(param.getName())) {
-                        XPathValue value = param.evaluate(context);
-                        callContext.getVariableScope().bind(param.getName(), value);
-                        passedParams.add(param.getName());
-                    }
-                    // Else: silently ignore (XSLT 1.0) - the param isn't declared by template
-                }
-            } catch (XPathException e) {
-                throw new SAXException("Error evaluating with-param", e);
-            }
-            
-            // Bind default values for template parameters not passed via with-param
+            // Process each template parameter
             for (TemplateParameter templateParam : template.getParameters()) {
-                if (!passedParams.contains(templateParam.getName())) {
+                XPathValue value = null;
+                boolean found = false;
+                
+                if (templateParam.isTunnel()) {
+                    // Tunnel param: first check tunnel with-param, then context tunnel params
+                    for (WithParamNode param : params) {
+                        if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                            try {
+                                value = param.evaluate(context);
+                                found = true;
+                            } catch (XPathException e) {
+                                throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                            }
+                            break;
+                        }
+                    }
+                    // If not passed directly, check context's tunnel params
+                    if (!found) {
+                        value = callContext.getTunnelParameters().get(templateParam.getName());
+                        found = (value != null);
+                    }
+                } else {
+                    // Non-tunnel param: only accept non-tunnel with-param
+                    for (WithParamNode param : params) {
+                        if (!param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                            try {
+                                value = param.evaluate(context);
+                                found = true;
+                            } catch (XPathException e) {
+                                throw new SAXException("Error evaluating param: " + e.getMessage(), e);
+                            }
+                            break;
+                        }
+                    }
+                }
+                
+                if (found && value != null) {
+                    callContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
+                    passedParams.add(templateParam.getName());
+                } else {
+                    // Use default value
                     XPathValue defaultValue = null;
                     if (templateParam.getSelectExpr() != null) {
                         try {
@@ -4940,7 +5339,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         defaultValue = new XPathString("");
                     }
                     if (defaultValue != null) {
-                        callContext.getVariableScope().bind(templateParam.getName(), defaultValue);
+                        callContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
                     }
                 }
             }
@@ -4951,6 +5350,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private static class ApplyImportsNode extends XSLTInstruction {
+        private final List<WithParamNode> params;
+        
+        ApplyImportsNode() {
+            this(new ArrayList<>());
+        }
+        
+        ApplyImportsNode(List<WithParamNode> params) {
+            this.params = params;
+        }
+        
         @Override public String getInstructionName() { return "apply-imports"; }
         @Override public void execute(TransformContext context, 
                                       OutputHandler output) throws SAXException {
@@ -4988,25 +5397,81 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             TransformContext execContext = context.pushVariableScope()
                 .withCurrentTemplateRule(importedRule);
             
-            // Bind template parameter defaults (apply-imports doesn't pass params)
-            for (TemplateParameter templateParam : importedRule.getParameters()) {
-                XPathValue defaultValue = null;
-                if (templateParam.getSelectExpr() != null) {
+            // XSLT 2.0 tunnel parameter support for apply-imports
+            Map<String, XPathValue> newTunnelParams = new HashMap<>();
+            for (WithParamNode param : params) {
+                if (param.isTunnel()) {
                     try {
-                        defaultValue = templateParam.getSelectExpr().evaluate(execContext);
+                        newTunnelParams.put(param.getName(), param.evaluate(context));
                     } catch (XPathException e) {
-                        throw new SAXException("Error evaluating parameter default: " + e.getMessage(), e);
+                        throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    // Execute content to get RTF as default value
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    templateParam.getDefaultContent().execute(execContext, new BufferOutputHandler(buffer));
-                    defaultValue = new XPathResultTreeFragment(buffer);
-                } else {
-                    defaultValue = new XPathString("");
                 }
-                if (defaultValue != null) {
-                    execContext.getVariableScope().bind(templateParam.getName(), defaultValue);
+            }
+            if (!newTunnelParams.isEmpty()) {
+                execContext = execContext.withTunnelParameters(newTunnelParams);
+            }
+            
+            // Process each template parameter
+            Set<String> passedParams = new HashSet<>();
+            for (TemplateParameter templateParam : importedRule.getParameters()) {
+                XPathValue value = null;
+                boolean found = false;
+                
+                if (templateParam.isTunnel()) {
+                    // Tunnel param: first check tunnel with-param, then context tunnel params
+                    for (WithParamNode param : params) {
+                        if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                            try {
+                                value = param.evaluate(context);
+                                found = true;
+                            } catch (XPathException e) {
+                                throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                            }
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        value = execContext.getTunnelParameters().get(templateParam.getName());
+                        found = (value != null);
+                    }
+                } else {
+                    // Non-tunnel param: only accept non-tunnel with-param
+                    for (WithParamNode param : params) {
+                        if (!param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                            try {
+                                value = param.evaluate(context);
+                                found = true;
+                            } catch (XPathException e) {
+                                throw new SAXException("Error evaluating param: " + e.getMessage(), e);
+                            }
+                            break;
+                        }
+                    }
+                }
+                
+                if (found && value != null) {
+                    execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
+                    passedParams.add(templateParam.getName());
+                } else {
+                    // Use default value
+                    XPathValue defaultValue = null;
+                    if (templateParam.getSelectExpr() != null) {
+                        try {
+                            defaultValue = templateParam.getSelectExpr().evaluate(execContext);
+                        } catch (XPathException e) {
+                            throw new SAXException("Error evaluating parameter default: " + e.getMessage(), e);
+                        }
+                    } else if (templateParam.getDefaultContent() != null) {
+                        SAXEventBuffer buffer = new SAXEventBuffer();
+                        templateParam.getDefaultContent().execute(execContext, new BufferOutputHandler(buffer));
+                        defaultValue = new XPathResultTreeFragment(buffer);
+                    } else {
+                        defaultValue = new XPathString("");
+                    }
+                    if (defaultValue != null) {
+                        execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
+                    }
                 }
             }
             
@@ -5237,7 +5702,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             for (WithParamNode param : params) {
                 try {
                     XPathValue value = param.evaluate(context);
-                    execContext.getVariableScope().bind(param.getName(), value);
+                    execContext.getVariableScope().bind(param.getNamespaceURI(), param.getLocalName(), value);
                 } catch (XPathException e) {
                     throw new SAXException("Error evaluating with-param: " + e.getMessage(), e);
                 }
@@ -5245,7 +5710,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             
             // Bind template parameter defaults for any not provided
             for (TemplateParameter templateParam : nextRule.getParameters()) {
-                if (execContext.getVariableScope().lookup(templateParam.getName()) == null) {
+                if (execContext.getVariableScope().lookup(templateParam.getNamespaceURI(), templateParam.getLocalName()) == null) {
                     XPathValue defaultValue = null;
                     if (templateParam.getSelectExpr() != null) {
                         try {
@@ -5261,7 +5726,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     } else {
                         defaultValue = new XPathString("");
                     }
-                    execContext.getVariableScope().bind(templateParam.getName(), defaultValue);
+                    execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
                 }
             }
             
@@ -5410,13 +5875,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     // Non-matching part before this match
                     if (lastEnd < matcher.start() && nonMatchingContent != null) {
                         String nonMatch = input.substring(lastEnd, matcher.start());
-                        executeWithStringContext(nonMatchingContent, nonMatch, context, output);
+                        executeWithStringContext(nonMatchingContent, nonMatch, null, context, output);
                     }
                     
-                    // Matching part
+                    // Matching part - pass the matcher for regex-group() access
                     if (matchingContent != null) {
                         String match = matcher.group();
-                        executeWithStringContext(matchingContent, match, context, output);
+                        executeWithStringContext(matchingContent, match, matcher, context, output);
                     }
                     
                     lastEnd = matcher.end();
@@ -5425,16 +5890,17 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // Non-matching part after last match
                 if (lastEnd < input.length() && nonMatchingContent != null) {
                     String nonMatch = input.substring(lastEnd);
-                    executeWithStringContext(nonMatchingContent, nonMatch, context, output);
+                    executeWithStringContext(nonMatchingContent, nonMatch, null, context, output);
                 }
             } catch (XPathException e) {
                 throw new SAXException("Error in xsl:analyze-string select: " + e.getMessage(), e);
-            } catch (java.util.regex.PatternSyntaxException e) {
+            } catch (PatternSyntaxException e) {
                 throw new SAXException("Invalid regex in xsl:analyze-string: " + e.getMessage(), e);
             }
         }
         
         private void executeWithStringContext(XSLTNode content, String contextString,
+                                              java.util.regex.Matcher matcher,
                                               TransformContext context, OutputHandler output) 
                 throws SAXException {
             // Create a context where the context node has the string as its value
@@ -5442,6 +5908,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // We create a text node wrapper for this
             XPathNode textNode = new StringContextNode(contextString);
             TransformContext strContext = context.withContextNode(textNode);
+            // Set the regex matcher for regex-group() function access
+            if (matcher != null) {
+                strContext = strContext.withRegexMatcher(matcher);
+            }
             content.execute(strContext, output);
         }
     }
@@ -5607,20 +6077,40 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
          */
         static void sortNodesStatic(List<XPathNode> nodes, List<SortSpec> sorts, 
                                TransformContext context) throws XPathException {
-            // Pre-compute sort keys for all nodes
+            // Pre-evaluate sort spec AVTs (these are constant for the entire sort)
             final int nodeCount = nodes.size();
             final int sortCount = sorts.size();
+            final String[] dataTypes = new String[sortCount];
+            final String[] orders = new String[sortCount];
+            final String[] caseOrders = new String[sortCount];
+            
+            for (int j = 0; j < sortCount; j++) {
+                SortSpec spec = sorts.get(j);
+                dataTypes[j] = spec.getDataType(context);
+                orders[j] = spec.getOrder(context);
+                caseOrders[j] = spec.getCaseOrder(context);
+            }
+            
+            // Pre-compute sort keys for all nodes
             final Object[][] sortKeys = new Object[nodeCount][sortCount];
             
             for (int i = 0; i < nodeCount; i++) {
                 XPathNode node = nodes.get(i);
                 // Set position/size for sort key evaluation (position is 1-based, original order)
-                TransformContext nodeCtx = context.withContextNode(node)
-                    .withPositionAndSize(i + 1, nodeCount);
+                // IMPORTANT: Use withXsltCurrentNode so current() returns the node being sorted,
+                // not some other node from an outer context (bug-2501 fix)
+                TransformContext nodeCtx;
+                if (context instanceof BasicTransformContext) {
+                    nodeCtx = ((BasicTransformContext) context)
+                        .withXsltCurrentNode(node).withPositionAndSize(i + 1, nodeCount);
+                } else {
+                    nodeCtx = context.withContextNode(node)
+                        .withPositionAndSize(i + 1, nodeCount);
+                }
                 for (int j = 0; j < sortCount; j++) {
                     SortSpec spec = sorts.get(j);
                     XPathValue val = spec.getSelectExpr().evaluate(nodeCtx);
-                    if ("number".equals(spec.getDataType())) {
+                    if ("number".equals(dataTypes[j])) {
                         sortKeys[i][j] = Double.valueOf(val.asNumber());
                     } else {
                         sortKeys[i][j] = val.asString();
@@ -5637,7 +6127,6 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             Arrays.sort(indices, new Comparator<Integer>() {
                 public int compare(Integer a, Integer b) {
                     for (int j = 0; j < sortCount; j++) {
-                        SortSpec spec = sorts.get(j);
                         Object keyA = sortKeys[a.intValue()][j];
                         Object keyB = sortKeys[b.intValue()][j];
                         
@@ -5657,7 +6146,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         } else {
                             String sa = (String) keyA;
                             String sb = (String) keyB;
-                            String caseOrder = spec.getCaseOrder();
+                            String caseOrder = caseOrders[j];
                             
                             if (caseOrder != null) {
                                 // Case-order specified - first compare case-insensitively
@@ -5693,7 +6182,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         }
                         
                         // Apply order direction
-                        if ("descending".equals(spec.getOrder())) {
+                        if ("descending".equals(orders[j])) {
                             cmp = -cmp;
                         }
                         
@@ -5790,17 +6279,35 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private static class WithParamNode extends XSLTInstruction {
-        private final String name;
+        private final String namespaceURI;
+        private final String localName;
+        private final String expandedName; // Clark notation: {uri}localname or just localname
         private final XPathExpression selectExpr;
         private final SequenceNode content;
-        WithParamNode(String name, XPathExpression selectExpr, SequenceNode content) {
-            this.name = name;
+        private final boolean tunnel; // XSLT 2.0: whether this is a tunnel parameter
+        WithParamNode(String namespaceURI, String localName, XPathExpression selectExpr, SequenceNode content) {
+            this(namespaceURI, localName, selectExpr, content, false);
+        }
+        WithParamNode(String namespaceURI, String localName, XPathExpression selectExpr, SequenceNode content, boolean tunnel) {
+            this.namespaceURI = namespaceURI;
+            this.localName = localName;
+            this.expandedName = makeExpandedName(namespaceURI, localName);
             this.selectExpr = selectExpr;
             this.content = content;
+            this.tunnel = tunnel;
         }
-        String getName() { return name; }
+        private static String makeExpandedName(String namespaceURI, String localName) {
+            if (namespaceURI == null || namespaceURI.isEmpty()) {
+                return localName;
+            }
+            return "{" + namespaceURI + "}" + localName;
+        }
+        String getNamespaceURI() { return namespaceURI; }
+        String getLocalName() { return localName; }
+        String getName() { return expandedName; }
         XPathExpression getSelectExpr() { return selectExpr; }
         SequenceNode getContent() { return content; }
+        boolean isTunnel() { return tunnel; }
         @Override public String getInstructionName() { return "with-param"; }
         @Override public void execute(TransformContext context, 
                                       OutputHandler output) throws SAXException {
@@ -5828,21 +6335,21 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         private final String level;
         private final Pattern countPattern;
         private final Pattern fromPattern;
-        private final String format;
+        private final AttributeValueTemplate formatAVT;
         private final String groupingSeparator;
         private final int groupingSize;
         private final String lang;
         private final String letterValue;
         
         NumberNode(XPathExpression valueExpr, XPathExpression selectExpr, String level, 
-                  Pattern countPattern, Pattern fromPattern, String format, String groupingSeparator,
+                  Pattern countPattern, Pattern fromPattern, AttributeValueTemplate formatAVT, String groupingSeparator,
                   int groupingSize, String lang, String letterValue) {
             this.valueExpr = valueExpr;
             this.selectExpr = selectExpr;
             this.level = level;
             this.countPattern = countPattern;
             this.fromPattern = fromPattern;
-            this.format = format;
+            this.formatAVT = formatAVT;
             this.groupingSeparator = groupingSeparator;
             this.groupingSize = groupingSize;
             this.lang = lang;
@@ -5877,8 +6384,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // Get the numbers to format
             List<Integer> numbers = getNumbers(context);
             
+            // Evaluate the format AVT
+            String format;
+            try {
+                format = formatAVT.evaluate(context);
+            } catch (XPathException e) {
+                throw new SAXException("Error evaluating xsl:number format: " + e.getMessage(), e);
+            }
+            
             // Format and output
-            String result = formatNumbers(numbers);
+            String result = formatNumbers(numbers, format);
             output.characters(result);
         }
         
@@ -6169,7 +6684,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             return true;
         }
         
-        private String formatNumbers(List<Integer> numbers) {
+        private String formatNumbers(List<Integer> numbers, String format) {
             if (numbers.isEmpty()) {
                 return "";
             }
@@ -6435,21 +6950,21 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             String message = buildMessage(context);
             
             // Get the error listener from context if available
-            javax.xml.transform.ErrorListener errorListener = context.getErrorListener();
+            ErrorListener errorListener = context.getErrorListener();
             
             if (errorListener != null) {
                 // Use ErrorListener for proper message handling
                 try {
                     String location = getLocationInfo(context);
-                    javax.xml.transform.TransformerException te = 
-                        new javax.xml.transform.TransformerException(message);
+                    TransformerException te = 
+                        new TransformerException(message);
                     
                     if (terminate) {
                         errorListener.fatalError(te);
                     } else {
                         errorListener.warning(te);
                     }
-                } catch (javax.xml.transform.TransformerException e) {
+                } catch (TransformerException e) {
                     // ErrorListener may re-throw
                     throw new SAXException(e);
                 }
@@ -6457,7 +6972,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // Default: output to stderr
                 StringBuilder sb = new StringBuilder();
                 if (errorCode != null) {
-                    sb.append("[").append(errorCode).append("] ");
+                    sb.append("[");
+                    sb.append(errorCode);
+                    sb.append("] ");
                 }
                 sb.append(message);
                 System.err.println("XSLT Message: " + sb.toString());
@@ -6530,8 +7047,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         SimplePattern(String patternStr) {
             this.patternStr = patternStr;
             
-            // Normalize: remove explicit child:: axis (equivalent to implicit child)
-            String normalized = patternStr.replace("child::", "");
+            // Normalize axis syntax to shorter forms:
+            // - child:: is implicit (remove it)
+            // - attribute:: is equivalent to @
+            String normalized = patternStr
+                .replace("child::", "")
+                .replace("attribute::", "@");
             
             // Check if this is a union pattern at the top level (| outside brackets)
             // If so, don't extract predicates - handle the union as-is
@@ -6539,19 +7060,34 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 this.basePattern = normalized;
                 this.predicateStr = null;
             } else {
-                // Extract predicate if present - need to find MATCHING ] not just last ]
+                // Extract ALL predicates at the end of the pattern
+                // Pattern might have multiple consecutive predicates like name[pred1][pred2]
                 int[] bracketRange = findPredicateRange(normalized);
                 if (bracketRange != null) {
-                    int bracketStart = bracketRange[0];
-                    int bracketEnd = bracketRange[1];
-                    // Pattern might have more steps after the predicate (e.g., *[pred]/* )
-                    String afterPredicate = normalized.substring(bracketEnd + 1);
-                    if (afterPredicate.isEmpty()) {
-                        // Simple case: pattern ends with predicate
-                        this.basePattern = normalized.substring(0, bracketStart);
-                        this.predicateStr = normalized.substring(bracketStart + 1, bracketEnd);
+                    int firstBracketStart = bracketRange[0];
+                    int lastBracketEnd = bracketRange[1];
+                    
+                    // Check for additional consecutive predicates
+                    String afterFirst = normalized.substring(lastBracketEnd + 1);
+                    while (afterFirst.startsWith("[")) {
+                        int[] nextRange = findPredicateRange(afterFirst);
+                        if (nextRange != null) {
+                            lastBracketEnd = lastBracketEnd + 1 + nextRange[1];
+                            afterFirst = normalized.substring(lastBracketEnd + 1);
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    String afterAllPredicates = normalized.substring(lastBracketEnd + 1);
+                    if (afterAllPredicates.isEmpty()) {
+                        // Pattern ends with predicate(s)
+                        this.basePattern = normalized.substring(0, firstBracketStart);
+                        // Combine all predicates into one expression with "and"
+                        String allPreds = normalized.substring(firstBracketStart, lastBracketEnd + 1);
+                        this.predicateStr = combinePredicates(allPreds);
                     } else {
-                        // Pattern continues after predicate - include predicate in base and pass to child
+                        // Pattern continues after predicates - include predicates in base
                         // For *[pred]/child, we match child nodes whose parent matches *[pred]
                         this.basePattern = normalized;
                         this.predicateStr = null;
@@ -6561,6 +7097,55 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     this.predicateStr = null;
                 }
             }
+        }
+        
+        /**
+         * Combines multiple consecutive predicates like [pred1][pred2] into "(pred1) and (pred2)".
+         */
+        private String combinePredicates(String allPredicates) {
+            List<String> preds = new ArrayList<>();
+            int depth = 0;
+            int start = -1;
+            boolean inQuote = false;
+            char quoteChar = 0;
+            
+            for (int i = 0; i < allPredicates.length(); i++) {
+                char c = allPredicates.charAt(i);
+                if (!inQuote && (c == '"' || c == '\'')) {
+                    inQuote = true;
+                    quoteChar = c;
+                } else if (inQuote && c == quoteChar) {
+                    inQuote = false;
+                } else if (!inQuote) {
+                    if (c == '[') {
+                        if (depth == 0) {
+                            start = i + 1;
+                        }
+                        depth++;
+                    } else if (c == ']') {
+                        depth--;
+                        if (depth == 0 && start >= 0) {
+                            preds.add(allPredicates.substring(start, i));
+                            start = -1;
+                        }
+                    }
+                }
+            }
+            
+            if (preds.size() == 1) {
+                return preds.get(0);
+            }
+            
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < preds.size(); i++) {
+                if (i > 0) {
+                    sb.append(" and ");
+                }
+                sb.append("(");
+                sb.append(preds.get(i));
+                sb.append(")");
+            }
+            return sb.toString();
         }
         
         /**
@@ -6713,6 +7298,50 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
          * The target node is the original node being matched (used for current() in predicates).
          */
         private boolean matchesWithTarget(XPathNode node, TransformContext context, XPathNode targetNode) {
+            // Handle except patterns (pattern except pattern) - XSLT 3.0
+            // Must check before union since except has higher precedence
+            int exceptIdx = findKeywordOutsideBrackets(patternStr, " except ");
+            if (exceptIdx > 0) {
+                String leftPart = patternStr.substring(0, exceptIdx).trim();
+                String rightPart = patternStr.substring(exceptIdx + 8).trim();
+                // Matches if node matches left pattern but NOT right pattern
+                return new SimplePattern(leftPart).matchesWithTarget(node, context, targetNode) &&
+                       !new SimplePattern(rightPart).matchesWithTarget(node, context, targetNode);
+            }
+            
+            // Handle intersect patterns (pattern intersect pattern) - XSLT 3.0
+            int intersectIdx = findKeywordOutsideBrackets(patternStr, " intersect ");
+            if (intersectIdx > 0) {
+                String leftPart = patternStr.substring(0, intersectIdx).trim();
+                String rightPart = patternStr.substring(intersectIdx + 11).trim();
+                // Matches if node matches BOTH left and right patterns
+                return new SimplePattern(leftPart).matchesWithTarget(node, context, targetNode) &&
+                       new SimplePattern(rightPart).matchesWithTarget(node, context, targetNode);
+            }
+            
+            // Handle union patterns (pattern | pattern or pattern union pattern)
+            // MUST check before function patterns like key(), id(), doc() since unions
+            // can contain these functions (e.g., key('k', 'v') | /)
+            int unionIdx = findKeywordOutsideBrackets(patternStr, " union ");
+            if (unionIdx > 0) {
+                String leftPart = patternStr.substring(0, unionIdx).trim();
+                String rightPart = patternStr.substring(unionIdx + 7).trim();
+                // Matches if node matches EITHER pattern
+                return new SimplePattern(leftPart).matchesWithTarget(node, context, targetNode) ||
+                       new SimplePattern(rightPart).matchesWithTarget(node, context, targetNode);
+            }
+            
+            // Check for | union at top level (outside brackets/parens)
+            if (hasTopLevelUnion(patternStr)) {
+                String[] parts = splitUnion(patternStr);
+                for (String part : parts) {
+                    if (new SimplePattern(part.trim()).matchesWithTarget(node, context, targetNode)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+            
             // Handle variable reference patterns (XSLT 3.0)
             // $x - matches nodes that are in the variable's value
             // $x//foo - matches foo descendants of nodes in $x
@@ -6741,37 +7370,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return matchesKeyPattern(node, context, patternStr);
             }
             
-            // Handle except patterns (pattern except pattern) - XSLT 3.0
-            // Must check before union since except has higher precedence
-            int exceptIdx = findKeywordOutsideBrackets(patternStr, " except ");
-            if (exceptIdx > 0) {
-                String leftPart = patternStr.substring(0, exceptIdx).trim();
-                String rightPart = patternStr.substring(exceptIdx + 8).trim();
-                // Matches if node matches left pattern but NOT right pattern
-                return new SimplePattern(leftPart).matchesWithTarget(node, context, targetNode) &&
-                       !new SimplePattern(rightPart).matchesWithTarget(node, context, targetNode);
-            }
-            
-            // Handle intersect patterns (pattern intersect pattern) - XSLT 3.0
-            int intersectIdx = findKeywordOutsideBrackets(patternStr, " intersect ");
-            if (intersectIdx > 0) {
-                String leftPart = patternStr.substring(0, intersectIdx).trim();
-                String rightPart = patternStr.substring(intersectIdx + 11).trim();
-                // Matches if node matches BOTH left and right patterns
-                return new SimplePattern(leftPart).matchesWithTarget(node, context, targetNode) &&
-                       new SimplePattern(rightPart).matchesWithTarget(node, context, targetNode);
-            }
-            
-            // Handle union patterns (pattern | pattern or pattern union pattern)
-            int unionIdx = findKeywordOutsideBrackets(patternStr, " union ");
-            if (unionIdx > 0) {
-                String leftPart = patternStr.substring(0, unionIdx).trim();
-                String rightPart = patternStr.substring(unionIdx + 7).trim();
-                // Matches if node matches EITHER pattern
-                return new SimplePattern(leftPart).matchesWithTarget(node, context, targetNode) ||
-                       new SimplePattern(rightPart).matchesWithTarget(node, context, targetNode);
-            }
-            
+            // Legacy union handling for basePattern (shouldn't reach here if hasTopLevelUnion works)
             if (basePattern.contains("|") && predicateStr == null) {
                 String[] parts = splitUnion(patternStr);
                 for (String part : parts) {
@@ -6994,9 +7593,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
             if ("node()".equals(basePattern)) {
-                // node() matches any node EXCEPT the root document node
-                // The root is matched by "/" pattern or built-in template
-                return node.getNodeType() != NodeType.ROOT;
+                // node() in a match pattern uses the implicit child axis
+                // It matches elements, text, comments, and PIs - NOT attributes or root
+                // Attributes require explicit @node() or attribute::node()
+                NodeType type = node.getNodeType();
+                return type == NodeType.ELEMENT || type == NodeType.TEXT ||
+                       type == NodeType.COMMENT || type == NodeType.PROCESSING_INSTRUCTION;
             }
             // document-node() matches the document root (XPath 2.0+)
             if (basePattern.equals("document-node()") || basePattern.startsWith("document-node(")) {
@@ -7262,6 +7864,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
             
+            // @node() - matches any attribute (node() includes all node types)
+            if ("node()".equals(attrTest)) {
+                return true;
+            }
+            
             // @{uri}localname or @{uri}* - Clark notation
             if (attrTest.startsWith("{")) {
                 int closeBrace = attrTest.indexOf('}');
@@ -7430,12 +8037,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         /**
          * Matches an id() function pattern with optional document argument (XSLT 2.0+).
-         * Patterns: id('x'), id('x', $doc)
+         * Patterns: id('x'), id('x', $doc), id('x')/path
          */
         private boolean matchesIdPattern(XPathNode node, TransformContext context, String pattern) {
-            // Extract the id() arguments
+            // Extract the id() arguments - need to find MATCHING paren, not last paren
             int parenStart = pattern.indexOf('(');
-            int parenEnd = pattern.lastIndexOf(')');
+            int parenEnd = findMatchingParen(pattern, parenStart);
             if (parenStart < 0 || parenEnd < 0) {
                 return false;
             }
@@ -7494,31 +8101,140 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
             }
             
-            // Check if node has one of the specified ids
-            // Note: id('a b c') should match elements with id='a', 'b', or 'c' (whitespace-separated)
-            if (node.isElement()) {
-                XPathNode idAttr = node.getAttribute("", "id");
-                if (idAttr == null) {
-                    idAttr = node.getAttribute("http://www.w3.org/XML/1998/namespace", "id");
-                }
-                if (idAttr != null) {
-                    String nodeId = idAttr.getStringValue();
-                    // Split idArg on whitespace and check if any ID matches
-                    String[] ids = idArg.trim().split("\\s+");
-                    for (String id : ids) {
-                        if (id.equals(nodeId)) {
-                            // id() alone matches, or check rest of pattern
-                            if (restOfPattern.isEmpty()) {
+            // Split idArg on whitespace - id('a b c') matches elements with id='a', 'b', or 'c'
+            String[] ids = idArg.trim().split("\\s+");
+            
+            // Case 1: No path after id() - node itself must have one of the specified IDs
+            if (restOfPattern.isEmpty()) {
+                if (node.isElement()) {
+                    XPathNode idAttr = node.getAttribute("", "id");
+                    if (idAttr == null) {
+                        idAttr = node.getAttribute("http://www.w3.org/XML/1998/namespace", "id");
+                    }
+                    if (idAttr != null) {
+                        String nodeId = idAttr.getStringValue();
+                        for (String id : ids) {
+                            if (id.equals(nodeId)) {
                                 return true;
                             }
-                            // Handle paths after id()
-                            return false; // TODO: implement id()/foo patterns
                         }
                     }
                 }
+                return false;
+            }
+            
+            // Case 2: id('x')//foo - node must match foo and have an ancestor with ID 'x'
+            if (restOfPattern.startsWith("//")) {
+                String descendantPattern = restOfPattern.substring(2);
+                if (!new SimplePattern(descendantPattern).matches(node, context)) {
+                    return false;
+                }
+                // Check if any ancestor has one of the specified IDs
+                XPathNode ancestor = node.getParent();
+                while (ancestor != null) {
+                    if (ancestor.isElement()) {
+                        XPathNode idAttr = ancestor.getAttribute("", "id");
+                        if (idAttr == null) {
+                            idAttr = ancestor.getAttribute("http://www.w3.org/XML/1998/namespace", "id");
+                        }
+                        if (idAttr != null) {
+                            String ancestorId = idAttr.getStringValue();
+                            for (String id : ids) {
+                                if (id.equals(ancestorId)) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    ancestor = ancestor.getParent();
+                }
+                return false;
+            }
+            
+            // Case 3: id('x')/foo/bar - node must match the path from the id() element
+            if (restOfPattern.startsWith("/")) {
+                String pathPattern = restOfPattern.substring(1);
+                // For pattern like id('x')/a/b/c matching a node, the node must match c,
+                // its parent must match b, grandparent must match a, great-grandparent must have id='x'
+                
+                // First, count how many steps are in the path
+                String[] steps = splitPathSteps(pathPattern);
+                if (steps.length == 0) {
+                    return false;
+                }
+                
+                // The last step must match the node
+                if (!new SimplePattern(steps[steps.length - 1]).matches(node, context)) {
+                    return false;
+                }
+                
+                // Walk up the ancestor chain checking each step
+                XPathNode current = node;
+                for (int i = steps.length - 2; i >= 0; i--) {
+                    current = current.getParent();
+                    if (current == null) {
+                        return false;
+                    }
+                    if (!new SimplePattern(steps[i]).matches(current, context)) {
+                        return false;
+                    }
+                }
+                
+                // Now current's parent must have one of the specified IDs
+                // For single-step patterns like id('x')/text(), current is the text node itself
+                // and its parent should be the element with the ID
+                XPathNode idElement = current.getParent();
+                if (idElement == null) {
+                    return false;
+                }
+                // For root node case
+                if (!idElement.isElement()) {
+                    return false;
+                }
+                
+                // Check all attributes for ID match - need to handle both regular id and xml:id
+                XPathNode idAttr = idElement.getAttribute("", "id");
+                if (idAttr == null) {
+                    idAttr = idElement.getAttribute("http://www.w3.org/XML/1998/namespace", "id");
+                }
+                if (idAttr != null) {
+                    String ancestorId = idAttr.getStringValue();
+                    for (String id : ids) {
+                        if (id.equals(ancestorId)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
             }
             
             return false;
+        }
+        
+        /**
+         * Split a path pattern into individual steps, handling Clark notation.
+         */
+        private String[] splitPathSteps(String path) {
+            List<String> steps = new ArrayList<>();
+            int depth = 0;
+            int start = 0;
+            for (int i = 0; i < path.length(); i++) {
+                char c = path.charAt(i);
+                if (c == '{') {
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                } else if (c == '/' && depth == 0) {
+                    if (i > start) {
+                        steps.add(path.substring(start, i));
+                    }
+                    start = i + 1;
+                }
+            }
+            if (start < path.length()) {
+                steps.add(path.substring(start));
+            }
+            return steps.toArray(new String[0]);
         }
         
         /**
@@ -7851,6 +8567,21 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             //      variable references ($x), function calls (doc(), id())
             // 0.0: simple names
             
+            // Union patterns: return the highest priority of all alternatives
+            // According to XSLT spec, each alternative should create a separate template rule,
+            // but when computing a single priority we use the highest (most specific)
+            if (hasTopLevelUnion(patternStr)) {
+                String[] parts = splitUnion(patternStr);
+                double maxPriority = Double.NEGATIVE_INFINITY;
+                for (String part : parts) {
+                    double partPriority = new SimplePattern(part.trim()).getDefaultPriority();
+                    if (partPriority > maxPriority) {
+                        maxPriority = partPriority;
+                    }
+                }
+                return maxPriority;
+            }
+            
             if ("*".equals(patternStr) || "node()".equals(patternStr) ||
                 "@*".equals(patternStr) || "text()".equals(patternStr) ||
                 "comment()".equals(patternStr) || "processing-instruction()".equals(patternStr)) {
@@ -7887,25 +8618,50 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     /** Sort specification. */
     public static class SortSpec {
         private final XPathExpression selectExpr;
-        private final String dataType;
-        private final String order;
-        private final String caseOrder;
-        private final String lang;
+        private final AttributeValueTemplate dataTypeAvt;
+        private final AttributeValueTemplate orderAvt;
+        private final AttributeValueTemplate caseOrderAvt;
+        private final AttributeValueTemplate langAvt;
         
-        public SortSpec(XPathExpression selectExpr, String dataType, String order, 
-                       String caseOrder, String lang) {
+        public SortSpec(XPathExpression selectExpr, AttributeValueTemplate dataTypeAvt, 
+                       AttributeValueTemplate orderAvt, AttributeValueTemplate caseOrderAvt, 
+                       AttributeValueTemplate langAvt) {
             this.selectExpr = selectExpr;
-            this.dataType = dataType != null ? dataType : "text";
-            this.order = order != null ? order : "ascending";
-            this.caseOrder = caseOrder;
-            this.lang = lang;
+            this.dataTypeAvt = dataTypeAvt;
+            this.orderAvt = orderAvt;
+            this.caseOrderAvt = caseOrderAvt;
+            this.langAvt = langAvt;
         }
         
         public XPathExpression getSelectExpr() { return selectExpr; }
-        public String getDataType() { return dataType; }
-        public String getOrder() { return order; }
-        public String getCaseOrder() { return caseOrder; }
-        public String getLang() { return lang; }
+        
+        /** Evaluate data-type AVT at runtime. Returns "text" or "number". */
+        public String getDataType(TransformContext context) throws XPathException {
+            if (dataTypeAvt == null) return "text";
+            String value = dataTypeAvt.evaluate(context);
+            return value != null && !value.isEmpty() ? value : "text";
+        }
+        
+        /** Evaluate order AVT at runtime. Returns "ascending" or "descending". */
+        public String getOrder(TransformContext context) throws XPathException {
+            if (orderAvt == null) return "ascending";
+            String value = orderAvt.evaluate(context);
+            return value != null && !value.isEmpty() ? value : "ascending";
+        }
+        
+        /** Evaluate case-order AVT at runtime. Returns "upper-first", "lower-first", or null. */
+        public String getCaseOrder(TransformContext context) throws XPathException {
+            if (caseOrderAvt == null) return null;
+            String value = caseOrderAvt.evaluate(context);
+            return value != null && !value.isEmpty() ? value : null;
+        }
+        
+        /** Evaluate lang AVT at runtime. */
+        public String getLang(TransformContext context) throws XPathException {
+            if (langAvt == null) return null;
+            String value = langAvt.evaluate(context);
+            return value != null && !value.isEmpty() ? value : null;
+        }
     }
 
     /**
@@ -8028,6 +8784,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         // For standalone attributes (not inside an element)
         private String pendingAttrUri, pendingAttrLocal, pendingAttrQName, pendingAttrValue;
+        private String pendingAttrTypeNs, pendingAttrTypeLocal;
         
         SequenceBuilderOutputHandler() {
         }
@@ -8067,19 +8824,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         private void flushPendingAttribute() throws SAXException {
             if (pendingAttrLocal != null) {
-                // Create a standalone attribute node
-                // Store as an RTF containing just the attribute
-                SAXEventBuffer attrBuffer = new SAXEventBuffer();
-                BufferOutputHandler attrHandler = new BufferOutputHandler(attrBuffer);
-                // We need a synthetic element to hold the attribute
-                attrHandler.startElement("", "__attr__", "__attr__");
-                attrHandler.attribute(pendingAttrUri, pendingAttrLocal, pendingAttrQName, pendingAttrValue);
-                attrHandler.endElement("", "__attr__", "__attr__");
-                attrHandler.flush();
-                // Store as a special attribute wrapper
+                // Create a standalone attribute node with type annotation
                 items.add(new SequenceAttributeItem(pendingAttrUri, pendingAttrLocal, 
-                    pendingAttrQName, pendingAttrValue));
+                    pendingAttrQName, pendingAttrValue, pendingAttrTypeNs, pendingAttrTypeLocal));
                 pendingAttrUri = pendingAttrLocal = pendingAttrQName = pendingAttrValue = null;
+                pendingAttrTypeNs = pendingAttrTypeLocal = null;
             }
         }
         
@@ -8206,40 +8955,97 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         public void itemBoundary() throws SAXException {
             markItemBoundary();
         }
+        
+        @Override
+        public void setElementType(String namespaceURI, String localName) throws SAXException {
+            if (elementHandler != null) {
+                elementHandler.setElementType(namespaceURI, localName);
+            }
+        }
+        
+        @Override
+        public void setAttributeType(String namespaceURI, String localName) throws SAXException {
+            if (elementHandler != null && elementDepth > 0) {
+                elementHandler.setAttributeType(namespaceURI, localName);
+            } else if (pendingAttrLocal != null) {
+                // Type annotation for pending standalone attribute
+                pendingAttrTypeNs = namespaceURI;
+                pendingAttrTypeLocal = localName;
+            }
+        }
     }
     
     /**
      * Represents an attribute node item in a sequence.
      * Unlike attributes in elements, these are standalone items.
+     * Implements XPathNode to support type annotations for schema-aware processing.
      */
-    private static class SequenceAttributeItem implements XPathValue {
+    private static class SequenceAttributeItem implements XPathValue, XPathNode {
         private final String namespaceURI;
         private final String localName;
         private final String qName;
         private final String value;
+        private final String typeNamespaceURI;
+        private final String typeLocalName;
         
         SequenceAttributeItem(String namespaceURI, String localName, String qName, String value) {
+            this(namespaceURI, localName, qName, value, null, null);
+        }
+        
+        SequenceAttributeItem(String namespaceURI, String localName, String qName, String value,
+                             String typeNamespaceURI, String typeLocalName) {
             this.namespaceURI = namespaceURI;
             this.localName = localName;
             this.qName = qName;
             this.value = value;
+            this.typeNamespaceURI = typeNamespaceURI;
+            this.typeLocalName = typeLocalName;
         }
         
-        @Override public Type getType() { return Type.STRING; } // Treat as string for now
+        @Override public Type getType() { return Type.NODESET; } // It's a node
         @Override public String asString() { return value != null ? value : ""; }
         @Override public double asNumber() { 
             try { return Double.parseDouble(value); } 
             catch (Exception e) { return Double.NaN; } 
         }
         @Override public boolean asBoolean() { return value != null && !value.isEmpty(); }
-        @Override public XPathNodeSet asNodeSet() { return XPathNodeSet.EMPTY; }
+        @Override public XPathNodeSet asNodeSet() { 
+            return new XPathNodeSet(Collections.singletonList(this)); 
+        }
         
-        public String getNamespaceURI() { return namespaceURI; }
-        public String getLocalName() { return localName; }
+        // XPathNode implementation
+        @Override public NodeType getNodeType() { return NodeType.ATTRIBUTE; }
+        @Override public String getNamespaceURI() { return namespaceURI; }
+        @Override public String getLocalName() { return localName; }
+        @Override public String getPrefix() { 
+            int colon = qName != null ? qName.indexOf(':') : -1;
+            return colon > 0 ? qName.substring(0, colon) : null;
+        }
+        @Override public String getStringValue() { return value != null ? value : ""; }
+        @Override public XPathNode getParent() { return null; }
+        @Override public Iterator<XPathNode> getChildren() { return Collections.emptyIterator(); }
+        @Override public Iterator<XPathNode> getAttributes() { return Collections.emptyIterator(); }
+        @Override public Iterator<XPathNode> getNamespaces() { return Collections.emptyIterator(); }
+        @Override public XPathNode getFollowingSibling() { return null; }
+        @Override public XPathNode getPrecedingSibling() { return null; }
+        @Override public long getDocumentOrder() { return 0; }
+        @Override public boolean isSameNode(XPathNode other) { return this == other; }
+        @Override public XPathNode getRoot() { return this; }
+        @Override public boolean isFullyNavigable() { return false; }
+        
+        // Type annotation methods
+        @Override public String getTypeNamespaceURI() { return typeNamespaceURI; }
+        @Override public String getTypeLocalName() { return typeLocalName; }
+        
         public String getQName() { return qName; }
         public String getValue() { return value; }
         
-        @Override public String toString() { return "attribute(" + qName + "=" + value + ")"; }
+        @Override public String toString() { 
+            if (typeLocalName != null) {
+                return "attribute(" + qName + "=" + value + " [" + typeLocalName + "])";
+            }
+            return "attribute(" + qName + "=" + value + ")"; 
+        }
     }
     
     /**
@@ -8322,6 +9128,106 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             result.add(s.substring(start));
         }
         return result;
+    }
+    
+    /**
+     * Converts a lexical value to its canonical form for the given XSD type.
+     * This is used when type annotations are specified on constructed attributes/elements.
+     *
+     * @param typeName the XSD type local name (e.g., "integer", "date")
+     * @param value the lexical value
+     * @return the canonical lexical form
+     */
+    public static String toCanonicalLexical(String typeName, String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        
+        try {
+            switch (typeName) {
+                case "integer":
+                case "nonPositiveInteger":
+                case "negativeInteger":
+                case "nonNegativeInteger":
+                case "positiveInteger":
+                case "long":
+                case "int":
+                case "short":
+                case "byte":
+                case "unsignedLong":
+                case "unsignedInt":
+                case "unsignedShort":
+                case "unsignedByte":
+                    // Remove leading zeros, handle sign
+                    String trimmed = value.trim();
+                    boolean negative = trimmed.startsWith("-");
+                    boolean positive = trimmed.startsWith("+");
+                    if (negative || positive) {
+                        trimmed = trimmed.substring(1);
+                    }
+                    // Remove leading zeros
+                    int i = 0;
+                    while (i < trimmed.length() - 1 && trimmed.charAt(i) == '0') {
+                        i++;
+                    }
+                    trimmed = trimmed.substring(i);
+                    // Reconstruct with sign if needed
+                    if (negative && !"0".equals(trimmed)) {
+                        return "-" + trimmed;
+                    }
+                    return trimmed;
+                    
+                case "decimal":
+                    // Remove trailing zeros after decimal point
+                    trimmed = value.trim();
+                    if (trimmed.contains(".")) {
+                        // Remove trailing zeros
+                        while (trimmed.endsWith("0") && !trimmed.endsWith(".0")) {
+                            trimmed = trimmed.substring(0, trimmed.length() - 1);
+                        }
+                        // Remove trailing decimal point if no fractional part
+                        if (trimmed.endsWith(".")) {
+                            trimmed = trimmed.substring(0, trimmed.length() - 1);
+                        }
+                    }
+                    return trimmed;
+                    
+                case "boolean":
+                    // Canonical form is "true" or "false"
+                    trimmed = value.trim();
+                    if ("1".equals(trimmed)) {
+                        return "true";
+                    } else if ("0".equals(trimmed)) {
+                        return "false";
+                    }
+                    return trimmed;
+                    
+                case "float":
+                case "double":
+                    // Handle special values
+                    trimmed = value.trim();
+                    if ("INF".equalsIgnoreCase(trimmed) || "+INF".equalsIgnoreCase(trimmed)) {
+                        return "INF";
+                    } else if ("-INF".equalsIgnoreCase(trimmed)) {
+                        return "-INF";
+                    } else if ("NaN".equalsIgnoreCase(trimmed)) {
+                        return "NaN";
+                    }
+                    // Parse and re-serialize for canonical form
+                    double d = Double.parseDouble(trimmed);
+                    if (d == (long) d) {
+                        return String.valueOf((long) d);
+                    }
+                    return String.valueOf(d);
+                    
+                default:
+                    // For other types, return as-is (normalized)
+                    return value.trim();
+            }
+        } catch (NumberFormatException e) {
+            // If conversion fails, return original value
+            return value;
+        }
     }
 
 }

@@ -601,6 +601,32 @@ public class SequenceType {
             return true;
         }
         
+        // Handle sequences - check each item matches
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (!matchesSingleAtomicItem(item)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        return matchesSingleAtomicItem(value);
+    }
+    
+    private boolean matchesSingleAtomicItem(XPathValue value) {
+        if (localName == null) {
+            return true;
+        }
+        
+        // Check if value is a typed atomic from data() function
+        if (value instanceof XPathTypedAtomic) {
+            XPathTypedAtomic typed = (XPathTypedAtomic) value;
+            String expectedNs = namespaceURI != null ? namespaceURI : XS_NAMESPACE;
+            return typed.isInstanceOf(expectedNs, localName);
+        }
+        
         // Check common atomic types
         switch (localName) {
             case "string":
@@ -694,6 +720,7 @@ public class SequenceType {
             case "anyAtomicType":
                 // These match any atomic value
                 return value instanceof XPathAtomicValue || 
+                       value instanceof XPathTypedAtomic ||
                        value instanceof XPathString ||
                        value instanceof XPathNumber ||
                        value instanceof XPathBoolean ||

@@ -47,6 +47,9 @@ public enum XPathToken {
     
     /** The wildcard '*' used in name tests. */
     STAR,
+    
+    /** The '*' used as multiplication operator. */
+    STAR_MULTIPLY,
 
     // Axis specifiers (recognized by name + ::)
     /** ancestor:: axis. */
@@ -348,6 +351,8 @@ public enum XPathToken {
             case ELEMENT:
             case ATTRIBUTE:
             case DOCUMENT_NODE:
+            case SCHEMA_ELEMENT:
+            case SCHEMA_ATTRIBUTE:
                 return true;
             default:
                 return isAxis();

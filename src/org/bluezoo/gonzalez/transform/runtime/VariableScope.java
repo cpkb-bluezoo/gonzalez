@@ -80,6 +80,22 @@ public final class VariableScope {
     }
 
     /**
+     * Returns a scope with only global (root-level) variables visible.
+     * Used for attribute sets which should only see top-level variables.
+     *
+     * @return a new VariableScope that only sees the root scope
+     */
+    public VariableScope globalOnly() {
+        // Find the root scope
+        Scope root = currentScope;
+        while (root.parent != null) {
+            root = root.parent;
+        }
+        // Create a scope that starts fresh from root
+        return new VariableScope(root);
+    }
+
+    /**
      * Binds a variable in the current scope.
      * Variables are immutable once bound - rebinding overwrites the value.
      *

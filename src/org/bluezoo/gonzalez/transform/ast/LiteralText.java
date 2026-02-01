@@ -37,6 +37,7 @@ public final class LiteralText implements XSLTNode {
 
     private final String text;
     private final boolean disableOutputEscaping;
+    private final boolean fromXslText;
 
     /**
      * Creates literal text.
@@ -44,7 +45,7 @@ public final class LiteralText implements XSLTNode {
      * @param text the text content
      */
     public LiteralText(String text) {
-        this(text, false);
+        this(text, false, false);
     }
 
     /**
@@ -54,8 +55,21 @@ public final class LiteralText implements XSLTNode {
      * @param disableOutputEscaping true to disable output escaping
      */
     public LiteralText(String text, boolean disableOutputEscaping) {
+        this(text, disableOutputEscaping, false);
+    }
+
+    /**
+     * Creates literal text with full control.
+     *
+     * @param text the text content
+     * @param disableOutputEscaping true to disable output escaping
+     * @param fromXslText true if this text came from an xsl:text element
+     *        (and should never be stripped even if whitespace-only)
+     */
+    public LiteralText(String text, boolean disableOutputEscaping, boolean fromXslText) {
         this.text = text != null ? text : "";
         this.disableOutputEscaping = disableOutputEscaping;
+        this.fromXslText = fromXslText;
     }
 
     @Override
@@ -90,6 +104,16 @@ public final class LiteralText implements XSLTNode {
      */
     public boolean isDisableOutputEscaping() {
         return disableOutputEscaping;
+    }
+
+    /**
+     * Returns true if this text came from an xsl:text element.
+     * Such text should never be stripped even if whitespace-only.
+     *
+     * @return true if from xsl:text
+     */
+    public boolean isFromXslText() {
+        return fromXslText;
     }
 
     /**

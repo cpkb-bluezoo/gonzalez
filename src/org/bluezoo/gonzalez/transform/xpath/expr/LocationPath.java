@@ -26,14 +26,17 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 
+import org.bluezoo.gonzalez.schema.xsd.XSDAttribute;
+import org.bluezoo.gonzalez.schema.xsd.XSDElement;
+import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
-import java.util.Collections;
-import java.util.Iterator;
-import java.util.List;
 
 /**
  * A location path expression.
@@ -57,6 +60,9 @@ import java.util.List;
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class LocationPath implements Expr {
+
+    /** Thread-local to pass atomic results from EXPR steps to evaluate() */
+    private static final ThreadLocal<List<XPathValue>> ATOMIC_STEP_RESULTS = new ThreadLocal<>();
 
     private final boolean absolute;
     private final List<Step> steps;
@@ -140,7 +146,22 @@ public final class LocationPath implements Expr {
 
         // Apply each step
         for (Step step : steps) {
+            // Clear any previous atomic results
+            ATOMIC_STEP_RESULTS.remove();
+            
             currentNodes = evaluateStep(step, currentNodes, context);
+            
+            // Check if the step produced atomic (non-node) results
+            List<XPathValue> atomicResults = ATOMIC_STEP_RESULTS.get();
+            if (atomicResults != null) {
+                ATOMIC_STEP_RESULTS.remove();
+                // Return the atomic results as a sequence
+                if (atomicResults.size() == 1) {
+                    return atomicResults.get(0);
+                }
+                return new XPathSequence(atomicResults);
+            }
+            
             if (currentNodes.isEmpty()) {
                 return XPathNodeSet.EMPTY;
             }
@@ -153,20 +174,58 @@ public final class LocationPath implements Expr {
                                           XPathContext context) throws XPathException {
         List<XPathNode> result = new ArrayList<>();
 
-        // XPath 3.0 EXPR step (simple mapping operator)
+        // XPath 2.0/3.0 EXPR step (simple mapping operator)
+        // When a function call appears as a path step (e.g., */local-name()),
+        // it is evaluated for each input node and results are collected.
+        // This can return atomic values, not just nodes.
         if (step.getNodeTestType() == Step.NodeTestType.EXPR) {
             Expr stepExpr = step.getStepExpr();
+            List<XPathValue> atomicResults = new ArrayList<>();
+            boolean hasAtomicResults = false;
+            
             for (XPathNode node : inputNodes) {
                 XPathContext nodeContext = context.withContextNode(node);
                 XPathValue value = stepExpr.evaluate(nodeContext);
                 
-                // Collect nodes from the result
+                // Collect results - can be nodes or atomic values
                 if (value.isNodeSet()) {
                     for (XPathNode resultNode : value.asNodeSet()) {
                         result.add(resultNode);
                     }
+                } else if (value.isSequence()) {
+                    // Sequence - iterate and collect
+                    for (XPathValue item : (XPathSequence) value) {
+                        if (item instanceof XPathNode) {
+                            result.add((XPathNode) item);
+                        } else {
+                            atomicResults.add(item);
+                            hasAtomicResults = true;
+                        }
+                    }
+                } else if (value instanceof XPathNode) {
+                    result.add((XPathNode) value);
+                } else {
+                    // Atomic value (string, number, etc.)
+                    atomicResults.add(value);
+                    hasAtomicResults = true;
                 }
-                // Note: Non-node results are silently ignored in path expressions
+            }
+            
+            // If we have atomic results, we need to return them
+            // Store them in a special marker for the evaluate() method to handle
+            if (hasAtomicResults) {
+                // Mark that this step produced atomic values
+                // We'll convert nodes to values and return a sequence
+                List<XPathValue> allResults = new ArrayList<>();
+                for (XPathNode node : result) {
+                    allResults.add(new XPathNodeSet(Collections.singletonList(node)));
+                }
+                allResults.addAll(atomicResults);
+                
+                // Store in thread-local for evaluate() to retrieve
+                ATOMIC_STEP_RESULTS.set(allResults);
+                // Return empty nodes to signal that atomic results are available
+                return Collections.emptyList();
             }
             
             // Apply predicates if any
@@ -276,6 +335,13 @@ public final class LocationPath implements Expr {
                 String stepNs = step.getNamespaceURI();
                 return (nodeNs == null ? "" : nodeNs).equals(stepNs == null ? "" : stepNs);
                 
+            case ANY_NAMESPACE:
+                // *:localname - matches any node with the given local name regardless of namespace
+                if (!isPrincipalNodeType(step.getAxis(), node)) {
+                    return false;
+                }
+                return step.getLocalName().equals(node.getLocalName());
+                
             case NAME:
                 if (!isPrincipalNodeType(step.getAxis(), node)) {
                     return false;
@@ -319,6 +385,19 @@ public final class LocationPath implements Expr {
                 
             case DOCUMENT_NODE:
                 return node.getNodeType() == NodeType.ROOT;
+            
+            // XPath 2.0 schema-aware kind tests
+            case SCHEMA_ELEMENT:
+                if (!node.isElement()) {
+                    return false;
+                }
+                return matchesSchemaElement(step, node, context);
+                
+            case SCHEMA_ATTRIBUTE:
+                if (!node.isAttribute()) {
+                    return false;
+                }
+                return matchesSchemaAttribute(step, node, context);
                 
             default:
                 return false;
@@ -355,6 +434,168 @@ public final class LocationPath implements Expr {
             localPart = elementName.substring(colonIdx + 1);
         }
         return localPart.equals(node.getLocalName());
+    }
+    
+    /**
+     * Checks if a node matches a schema-element() kind test.
+     *
+     * <p>schema-element(name) matches elements that:
+     * <ul>
+     *   <li>Have a name that matches a global element declaration, OR</li>
+     *   <li>Are members of the substitution group headed by that element, OR</li>
+     *   <li>Have a type that is derived from the declared element's type</li>
+     * </ul>
+     *
+     * @param step the step containing the schema element name
+     * @param node the element node to test
+     * @param context the evaluation context
+     * @return true if the node matches the schema-element test
+     */
+    private boolean matchesSchemaElement(Step step, XPathNode node, XPathContext context) {
+        String schemaElemName = step.getLocalName();
+        if (schemaElemName == null) {
+            return false;  // schema-element() requires a name
+        }
+        
+        // Extract local part if prefixed
+        String localPart = schemaElemName;
+        String prefix = null;
+        int colonIdx = schemaElemName.indexOf(':');
+        if (colonIdx > 0) {
+            prefix = schemaElemName.substring(0, colonIdx);
+            localPart = schemaElemName.substring(colonIdx + 1);
+        }
+        
+        // Get the compiled stylesheet to access imported schemas
+        if (!(context instanceof TransformContext)) {
+            // Not in XSLT context - can't access schemas
+            // Fall back to simple name matching
+            return localPart.equals(node.getLocalName());
+        }
+        
+        TransformContext transformContext = (TransformContext) context;
+        CompiledStylesheet stylesheet = transformContext.getStylesheet();
+        if (stylesheet == null) {
+            return localPart.equals(node.getLocalName());
+        }
+        
+        // Resolve prefix to namespace URI if present
+        String schemaNamespace = step.getNamespaceURI();  // May be stored here from parsing
+        
+        // Look up the schema element declaration
+        // Try all imported schemas if no specific namespace
+        XSDElement schemaElement = null;
+        if (schemaNamespace != null && !schemaNamespace.isEmpty()) {
+            XSDSchema schema = stylesheet.getImportedSchema(schemaNamespace);
+            if (schema != null) {
+                schemaElement = schema.getElement(localPart);
+            }
+        } else {
+            // Check all imported schemas
+            for (XSDSchema schema : stylesheet.getImportedSchemas().values()) {
+                schemaElement = schema.getElement(localPart);
+                if (schemaElement != null) {
+                    schemaNamespace = schema.getTargetNamespace();
+                    break;
+                }
+            }
+        }
+        
+        if (schemaElement == null) {
+            // No matching schema element declaration found
+            // Fall back to name matching only
+            return localPart.equals(node.getLocalName());
+        }
+        
+        // Check if node matches the schema element declaration
+        // Primary check: name and namespace match
+        String nodeNs = node.getNamespaceURI();
+        if (nodeNs == null) nodeNs = "";
+        String schemaElemNs = schemaElement.getNamespaceURI();
+        if (schemaElemNs == null) schemaElemNs = "";
+        
+        if (schemaElement.getName().equals(node.getLocalName()) && schemaElemNs.equals(nodeNs)) {
+            return true;
+        }
+        
+        // TODO: Check substitution group membership
+        // This requires tracking substitution groups in XSDSchema/XSDElement
+        
+        // TODO: Check if node's type derives from schema element's type
+        // This requires type annotations on the node (PSVI) and type hierarchy checking
+        
+        return false;
+    }
+    
+    /**
+     * Checks if a node matches a schema-attribute() kind test.
+     *
+     * <p>schema-attribute(name) matches attributes that:
+     * <ul>
+     *   <li>Have a name that matches a global attribute declaration</li>
+     * </ul>
+     *
+     * @param step the step containing the schema attribute name
+     * @param node the attribute node to test
+     * @param context the evaluation context
+     * @return true if the node matches the schema-attribute test
+     */
+    private boolean matchesSchemaAttribute(Step step, XPathNode node, XPathContext context) {
+        String schemaAttrName = step.getLocalName();
+        if (schemaAttrName == null) {
+            return false;  // schema-attribute() requires a name
+        }
+        
+        // Extract local part if prefixed
+        String localPart = schemaAttrName;
+        int colonIdx = schemaAttrName.indexOf(':');
+        if (colonIdx > 0) {
+            localPart = schemaAttrName.substring(colonIdx + 1);
+        }
+        
+        // Get the compiled stylesheet to access imported schemas
+        if (!(context instanceof TransformContext)) {
+            return localPart.equals(node.getLocalName());
+        }
+        
+        TransformContext transformContext = (TransformContext) context;
+        CompiledStylesheet stylesheet = transformContext.getStylesheet();
+        if (stylesheet == null) {
+            return localPart.equals(node.getLocalName());
+        }
+        
+        // Look up the schema attribute declaration
+        String schemaNamespace = step.getNamespaceURI();
+        XSDAttribute schemaAttribute = null;
+        
+        if (schemaNamespace != null && !schemaNamespace.isEmpty()) {
+            XSDSchema schema = stylesheet.getImportedSchema(schemaNamespace);
+            if (schema != null) {
+                schemaAttribute = schema.getAttribute(localPart);
+            }
+        } else {
+            // Check all imported schemas
+            for (XSDSchema schema : stylesheet.getImportedSchemas().values()) {
+                schemaAttribute = schema.getAttribute(localPart);
+                if (schemaAttribute != null) {
+                    schemaNamespace = schema.getTargetNamespace();
+                    break;
+                }
+            }
+        }
+        
+        if (schemaAttribute == null) {
+            // No matching schema attribute declaration found
+            return localPart.equals(node.getLocalName());
+        }
+        
+        // Check if node matches the schema attribute declaration
+        String nodeNs = node.getNamespaceURI();
+        if (nodeNs == null) nodeNs = "";
+        String schemaAttrNs = schemaAttribute.getNamespaceURI();
+        if (schemaAttrNs == null) schemaAttrNs = "";
+        
+        return schemaAttribute.getName().equals(node.getLocalName()) && schemaAttrNs.equals(nodeNs);
     }
 
     private List<XPathNode> removeDuplicates(List<XPathNode> nodes) {

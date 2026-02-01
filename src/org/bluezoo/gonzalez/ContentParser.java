@@ -352,6 +352,10 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 
             case AFTER_ROOT:
                 // This is fine - we've closed the root element
+                // Now fire endDocument after any trailing comments/PIs have been processed
+                if (contentHandler != null) {
+                    contentHandler.endDocument();
+                }
                 break;
                 
             case INIT:
@@ -1208,10 +1212,8 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                             reportValidationError(error);
                         }
                     }
-                    
-                    if (contentHandler != null) {
-                        contentHandler.endDocument();
-                    }
+                    // Note: endDocument() is NOT called here - it's called in close()
+                    // after processing any trailing comments/PIs
                 } else {
                     state = State.ELEMENT_CONTENT;
                 }
@@ -1286,10 +1288,8 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                             reportValidationError(error);
                         }
                     }
-                    
-                    if (contentHandler != null) {
-                        contentHandler.endDocument();
-                    }
+                    // Note: endDocument() is NOT called here - it's called in close()
+                    // after processing any trailing comments/PIs
                 } else {
                     state = State.ELEMENT_CONTENT;
                 }
@@ -1652,10 +1652,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                             reportValidationError(error);
                         }
                     }
-                    
-                    if (contentHandler != null) {
-                        contentHandler.endDocument();
-                    }
+                    // Note: endDocument() is NOT called here - it's called in close()
+                    // after processing any trailing comments/PIs
                 } else {
                     state = State.ELEMENT_CONTENT;
                 }
@@ -1788,6 +1786,26 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 
             case END_CDATA:
                 // End of CDATA section
+                // The data buffer contains the accumulated characters before ]]>
+                // For ]]]]> (4 brackets + >), the data is "]]]]>" and we need to emit
+                // the first 2 brackets as content (the last 3 chars "]]>" are the end marker).
+                // We emit (length - 3) characters as content before ending CDATA.
+                if (data != null && data.remaining() > 3 && contentHandler != null) {
+                    // Emit extra brackets as content (all but the last 3 for "]]>")
+                    int extraContent = data.remaining() - 3;
+                    if (data.hasArray()) {
+                        char[] array = data.array();
+                        int offset = data.arrayOffset() + data.position();
+                        contentHandler.characters(array, offset, extraContent);
+                    } else {
+                        // Fallback for non-heap buffers
+                        char[] brackets = new char[extraContent];
+                        for (int i = 0; i < extraContent; i++) {
+                            brackets[i] = ']';
+                        }
+                        contentHandler.characters(brackets, 0, extraContent);
+                    }
+                }
                 if (lexicalHandler != null) {
                     lexicalHandler.endCDATA();
                 }

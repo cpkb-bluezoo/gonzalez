@@ -53,6 +53,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -101,6 +102,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         map.put("key", new KeyFunction());
         map.put("document", new DocumentFunction());
         map.put("doc", new DocFunction());
+        map.put("doc-available", new DocAvailableFunction());
         map.put("format-number", new FormatNumberFunction());
         map.put("generate-id", new GenerateIdFunction());
         map.put("system-property", new SystemPropertyFunction());
@@ -116,6 +118,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         // XSLT 2.0 grouping functions
         map.put("current-group", new CurrentGroupFunction());
         map.put("current-grouping-key", new CurrentGroupingKeyFunction());
+        
+        // XSLT 2.0 analyze-string function
+        map.put("regex-group", new RegexGroupFunction());
         
         this.xsltFunctions = Collections.unmodifiableMap(map);
     }
@@ -340,7 +345,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
         
         // Create new variable scope for function execution
-        TransformContext funcContext = context.pushVariableScope();
+        // Per XSLT spec, user-defined functions start with empty tunnel parameter context
+        TransformContext funcContext = context.pushVariableScope().withNoTunnelParameters();
         
         // Bind parameters to arguments
         List<UserFunction.FunctionParameter> params = function.getParameters();
@@ -615,6 +621,49 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             }
             
+            // Check attributes if this is an element (for keys matching @*)
+            if (node.isElement()) {
+                Iterator<XPathNode> attrs = node.getAttributes();
+                while (attrs.hasNext()) {
+                    XPathNode attr = attrs.next();
+                    if (matchPattern.matches(attr, context)) {
+                        // Evaluate the use expression for this attribute
+                        XPathContext attrContext = context.withContextNode(attr);
+                        XPathValue useValue = useExpr.evaluate(attrContext);
+                        
+                        // Get the key value(s) for this attribute
+                        List<String> attrKeyValues = new ArrayList<>();
+                        if (useValue instanceof XPathNodeSet) {
+                            for (XPathNode n : ((XPathNodeSet) useValue).getNodes()) {
+                                attrKeyValues.add(n.getStringValue());
+                            }
+                        } else {
+                            attrKeyValues.add(useValue.asString());
+                        }
+                        
+                        // Check if any of this attribute's key values match our search values
+                        for (String attrKey : attrKeyValues) {
+                            for (String searchKey : searchValues) {
+                                if (attrKey.equals(searchKey)) {
+                                    // Avoid duplicates
+                                    boolean found = false;
+                                    for (XPathNode existing : result) {
+                                        if (existing.isSameNode(attr)) {
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                    if (!found) {
+                                        result.add(attr);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
             // Recurse into children
             Iterator<XPathNode> children = node.getChildren();
             while (children.hasNext()) {
@@ -685,9 +734,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                         if (baseNode instanceof XPathNodeWithBaseURI) {
                             baseUri = ((XPathNodeWithBaseURI) baseNode).getBaseURI();
                         }
-                        if (baseUri == null) {
-                            baseUri = baseNode.getStringValue();
-                        }
+                        // Note: if node doesn't have a base URI, baseUri stays null
+                        // and we'll fall back to the static base URI below.
+                        // Don't use getStringValue() - that returns text content, not a URI!
                     }
                 } else {
                     baseUri = baseArg.asString();
@@ -710,7 +759,17 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     if ((nodeBaseUri == null || nodeBaseUri.isEmpty()) && node instanceof XPathNodeWithBaseURI) {
                         nodeBaseUri = ((XPathNodeWithBaseURI) node).getBaseURI();
                     }
-                    XPathNode doc = loadDocument(uri, nodeBaseUri);
+                    // Get strip-space rules from stylesheet if available
+                    List<String> stripSpace = null;
+                    List<String> preserveSpace = null;
+                    if (context instanceof TransformContext) {
+                        CompiledStylesheet stylesheet = ((TransformContext) context).getStylesheet();
+                        if (stylesheet != null) {
+                            stripSpace = stylesheet.getStripSpaceElements();
+                            preserveSpace = stylesheet.getPreserveSpaceElements();
+                        }
+                    }
+                    XPathNode doc = loadDocument(uri, nodeBaseUri, stripSpace, preserveSpace);
                     if (doc != null) {
                         results.add(doc);
                     }
@@ -725,7 +784,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 // Per XSLT spec, document('') returns the document node of the stylesheet module
                 String stylesheetUri = context.getStaticBaseURI();
                 if (stylesheetUri != null && !stylesheetUri.isEmpty()) {
-                    XPathNode doc = loadDocument(stylesheetUri, null);
+                    // Don't apply strip-space to the stylesheet document itself
+                    XPathNode doc = loadDocument(stylesheetUri, null, null, null);
                     if (doc != null) {
                         return new XPathNodeSet(Collections.singletonList(doc));
                     }
@@ -734,7 +794,18 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 return XPathNodeSet.empty();
             }
             
-            XPathNode doc = loadDocument(uri, baseUri);
+            // Get strip-space rules from stylesheet if available
+            List<String> stripSpace = null;
+            List<String> preserveSpace = null;
+            if (context instanceof TransformContext) {
+                CompiledStylesheet stylesheet = ((TransformContext) context).getStylesheet();
+                if (stylesheet != null) {
+                    stripSpace = stylesheet.getStripSpaceElements();
+                    preserveSpace = stylesheet.getPreserveSpaceElements();
+                }
+            }
+            
+            XPathNode doc = loadDocument(uri, baseUri, stripSpace, preserveSpace);
             if (doc != null) {
                 return new XPathNodeSet(Collections.singletonList(doc));
             }
@@ -772,14 +843,35 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             }
             
             String uri = uriArg.asString();
-            if (uri.isEmpty()) {
-                throw new XPathException("FODC0002: Empty URI passed to doc()");
-            }
             
             // Get base URI from static context (stylesheet base URI)
             String baseUri = context.getStaticBaseURI();
             
-            XPathNode doc = loadDocument(uri, baseUri);
+            if (uri.isEmpty()) {
+                // Empty string returns the stylesheet document containing the doc() call
+                // Per XSLT spec, doc('') behaves like document('') - returns the stylesheet module
+                if (baseUri != null && !baseUri.isEmpty()) {
+                    // Don't apply strip-space to the stylesheet document itself
+                    XPathNode doc = loadDocument(baseUri, null, null, null);
+                    if (doc != null) {
+                        return new XPathNodeSet(Collections.singletonList(doc));
+                    }
+                }
+                throw new XPathException("FODC0002: Cannot determine stylesheet document for doc('')");
+            }
+            
+            // Get strip-space rules from stylesheet if available
+            List<String> stripSpace = null;
+            List<String> preserveSpace = null;
+            if (context instanceof TransformContext) {
+                CompiledStylesheet stylesheet = ((TransformContext) context).getStylesheet();
+                if (stylesheet != null) {
+                    stripSpace = stylesheet.getStripSpaceElements();
+                    preserveSpace = stylesheet.getPreserveSpaceElements();
+                }
+            }
+            
+            XPathNode doc = loadDocument(uri, baseUri, stripSpace, preserveSpace);
             if (doc == null) {
                 throw new XPathException("FODC0002: Cannot retrieve document at " + uri);
             }
@@ -787,7 +879,59 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
     }
     
-    // Cache for loaded documents (same document URI should return same tree)
+    /**
+     * Implements the XPath 2.0+ doc-available() function.
+     *
+     * <p>Returns true if a document at the specified URI can be loaded.
+     * Returns false (rather than throwing an error) if the document cannot be loaded.
+     * 
+     * <p>Signature: doc-available(string?) → boolean
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-doc-available">XPath 3.0 doc-available()</a>
+     */
+    private static class DocAvailableFunction implements Function {
+        @Override
+        public String getName() { return "doc-available"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 1; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue uriArg = args.get(0);
+            
+            // Handle empty sequence - returns false
+            if (uriArg == null || (uriArg instanceof XPathSequence && ((XPathSequence)uriArg).isEmpty())) {
+                return XPathBoolean.FALSE;
+            }
+            
+            String uri = uriArg.asString();
+            
+            // Empty string is a special case - check if stylesheet document is available
+            if (uri.isEmpty()) {
+                String baseUri = context.getStaticBaseURI();
+                return XPathBoolean.of(baseUri != null && !baseUri.isEmpty());
+            }
+            
+            // Get base URI from static context
+            String baseUri = context.getStaticBaseURI();
+            
+            // Try to load the document - catch any errors
+            try {
+                XPathNode doc = loadDocument(uri, baseUri, null, null);
+                return XPathBoolean.of(doc != null);
+            } catch (Exception e) {
+                // Any error means the document is not available
+                return XPathBoolean.FALSE;
+            }
+        }
+    }
+    
+    // Cache for loaded documents - keyed by absolute URI + strip-space rules
+    // Note: Documents with different strip-space rules need separate cache entries
     private static final Map<String, XPathNode> documentCache = new ConcurrentHashMap<>();
     
     /**
@@ -796,9 +940,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
      *
      * @param uri the document URI (may be relative)
      * @param baseUri the base URI for resolving relative URIs
+     * @param stripSpace element patterns for strip-space (or null)
+     * @param preserveSpace element patterns for preserve-space (or null)
      * @return the document node, or null if loading fails
      */
-    private static XPathNode loadDocument(String uri, String baseUri) {
+    private static XPathNode loadDocument(String uri, String baseUri,
+            List<String> stripSpace, List<String> preserveSpace) {
         try {
             // Resolve the URI against the base URI
             URI resolved;
@@ -811,8 +958,18 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             String absoluteUri = resolved.toString();
             
+            // Build cache key including strip-space rules
+            // Different strip-space rules produce different trees
+            String cacheKey = absoluteUri;
+            if (stripSpace != null && !stripSpace.isEmpty()) {
+                cacheKey += "#strip=" + stripSpace.hashCode();
+            }
+            if (preserveSpace != null && !preserveSpace.isEmpty()) {
+                cacheKey += "#preserve=" + preserveSpace.hashCode();
+            }
+            
             // Check cache
-            XPathNode cached = documentCache.get(absoluteUri);
+            XPathNode cached = documentCache.get(cacheKey);
             if (cached != null) {
                 return cached;
             }
@@ -823,7 +980,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             factory.setNamespaceAware(true);
             SAXParser parser = factory.newSAXParser();
             
-            DocumentTreeBuilder builder = new DocumentTreeBuilder(absoluteUri);
+            DocumentTreeBuilder builder = new DocumentTreeBuilder(absoluteUri, stripSpace, preserveSpace);
             try (InputStream in = url.openStream()) {
                 InputSource source = new InputSource(in);
                 source.setSystemId(absoluteUri);
@@ -834,7 +991,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             // Cache the result
             if (root != null) {
-                documentCache.put(absoluteUri, root);
+                documentCache.put(cacheKey, root);
             }
             
             return root;
@@ -849,13 +1006,18 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
      */
     private static class DocumentTreeBuilder extends DefaultHandler {
         private final String baseUri;
+        private final List<String> stripSpace;
+        private final List<String> preserveSpace;
         private DocumentNode root;
         private DocumentNode current;
         private StringBuilder textBuffer = new StringBuilder();
         private int documentOrder = 0;
+        private List<String[]> pendingNamespaces = new ArrayList<>();
         
-        DocumentTreeBuilder(String baseUri) {
+        DocumentTreeBuilder(String baseUri, List<String> stripSpace, List<String> preserveSpace) {
             this.baseUri = baseUri;
+            this.stripSpace = stripSpace;
+            this.preserveSpace = preserveSpace;
         }
         
         XPathNode getRoot() {
@@ -870,6 +1032,17 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
         
         @Override
+        public void startPrefixMapping(String prefix, String uri) {
+            // Buffer namespace mappings to add to the next element
+            pendingNamespaces.add(new String[]{prefix, uri});
+        }
+        
+        @Override
+        public void endPrefixMapping(String prefix) {
+            // Nothing needed
+        }
+        
+        @Override
         public void startElement(String uri, String localName, String qName, Attributes attrs) {
             flushText();
             DocumentNode element = new DocumentNode(NodeType.ELEMENT, uri, localName, 
@@ -879,6 +1052,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             if (current != null) {
                 current.addChild(element);
             }
+            
+            // Add namespace nodes from pending prefix mappings
+            for (String[] ns : pendingNamespaces) {
+                DocumentNode nsNode = new DocumentNode(NodeType.NAMESPACE, null, ns[0], null, baseUri);
+                nsNode.documentOrder = documentOrder++;
+                nsNode.value = ns[1];
+                nsNode.parent = element;
+                element.addNamespace(nsNode);
+            }
+            pendingNamespaces.clear();
             
             // Add attributes
             for (int i = 0; i < attrs.getLength(); i++) {
@@ -933,15 +1116,104 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         private void flushText() {
             if (textBuffer.length() > 0) {
-                DocumentNode text = new DocumentNode(NodeType.TEXT, null, null, null, baseUri);
-                text.documentOrder = documentOrder++;
-                text.value = textBuffer.toString();
-                text.parent = current;
-                if (current != null) {
-                    current.addChild(text);
-                }
+                String text = textBuffer.toString();
                 textBuffer.setLength(0);
+                
+                // Check if whitespace should be stripped
+                if (shouldStripWhitespace(text)) {
+                    return; // Don't add whitespace-only text node
+                }
+                
+                DocumentNode textNode = new DocumentNode(NodeType.TEXT, null, null, null, baseUri);
+                textNode.documentOrder = documentOrder++;
+                textNode.value = text;
+                textNode.parent = current;
+                if (current != null) {
+                    current.addChild(textNode);
+                }
             }
+        }
+        
+        /**
+         * Checks if whitespace-only text should be stripped based on xsl:strip-space rules.
+         */
+        private boolean shouldStripWhitespace(String text) {
+            // Only strip if it's whitespace-only
+            if (!isWhitespaceOnly(text)) {
+                return false;
+            }
+            
+            // No strip-space rules means no stripping
+            if (stripSpace == null || stripSpace.isEmpty()) {
+                return false;
+            }
+            
+            // Must be in an element context
+            if (current == null || current.type != NodeType.ELEMENT) {
+                return false;
+            }
+            
+            String localName = current.localName;
+            String namespaceURI = current.namespaceURI;
+            
+            // Check preserve-space first (it takes precedence)
+            if (preserveSpace != null) {
+                for (String pattern : preserveSpace) {
+                    if (matchesElementPattern(pattern, localName, namespaceURI)) {
+                        return false;
+                    }
+                }
+            }
+            
+            // Check strip-space
+            for (String pattern : stripSpace) {
+                if (matchesElementPattern(pattern, localName, namespaceURI)) {
+                    return true;
+                }
+            }
+            
+            return false;
+        }
+        
+        private boolean isWhitespaceOnly(String text) {
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        /**
+         * Checks if an element matches a strip-space/preserve-space pattern.
+         * Patterns use Clark notation {uri}localname for namespace-qualified names.
+         */
+        private boolean matchesElementPattern(String pattern, String localName, String namespaceURI) {
+            if ("*".equals(pattern)) {
+                return true;
+            }
+            if (pattern.startsWith("{")) {
+                // Clark notation: {uri}localname or {*}localname
+                int closeBrace = pattern.indexOf('}');
+                if (closeBrace > 0) {
+                    String patternUri = pattern.substring(1, closeBrace);
+                    String patternLocal = pattern.substring(closeBrace + 1);
+                    
+                    // {*}localname - matches any namespace
+                    if ("*".equals(patternUri)) {
+                        return "*".equals(patternLocal) || patternLocal.equals(localName);
+                    }
+                    // {uri}* - matches any element in namespace
+                    if ("*".equals(patternLocal)) {
+                        return patternUri.equals(namespaceURI);
+                    }
+                    // {uri}localname - exact match
+                    return patternUri.equals(namespaceURI) && patternLocal.equals(localName);
+                }
+            }
+            // No namespace prefix - matches elements in no namespace with this local name
+            return (namespaceURI == null || namespaceURI.isEmpty()) && pattern.equals(localName);
         }
     }
     
@@ -958,6 +1230,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         DocumentNode parent;
         List<DocumentNode> children;
         List<DocumentNode> attributes;
+        List<DocumentNode> namespaces;
         long documentOrder;
         
         DocumentNode(NodeType type, String namespaceURI, String localName, String prefix, String baseUri) {
@@ -980,6 +1253,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 attributes = new ArrayList<>();
             }
             attributes.add(attr);
+        }
+        
+        void addNamespace(DocumentNode ns) {
+            if (namespaces == null) {
+                namespaces = new ArrayList<>();
+            }
+            namespaces.add(ns);
         }
         
         @Override public NodeType getNodeType() { return type; }
@@ -1030,7 +1310,36 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public Iterator<XPathNode> getNamespaces() {
-            return Collections.<XPathNode>emptyList().iterator();
+            // Return namespace nodes declared on this element and inherited from ancestors
+            // Build a map to handle redeclarations (closer declarations override)
+            Map<String, DocumentNode> nsMap = new LinkedHashMap<>();
+            
+            // Start from this element and go up
+            DocumentNode current = this;
+            while (current != null) {
+                if (current.type == NodeType.ELEMENT && current.namespaces != null) {
+                    for (DocumentNode ns : current.namespaces) {
+                        String nsPrefix = ns.localName != null ? ns.localName : "";
+                        // Only add if not already declared by a closer element
+                        if (!nsMap.containsKey(nsPrefix)) {
+                            String uri = ns.value;
+                            if (uri != null && !uri.isEmpty()) {
+                                nsMap.put(nsPrefix, ns);
+                            }
+                        }
+                    }
+                }
+                current = current.parent;
+            }
+            
+            // Always include the xml namespace
+            if (!nsMap.containsKey("xml")) {
+                DocumentNode xmlNs = new DocumentNode(NodeType.NAMESPACE, null, "xml", null, baseUri);
+                xmlNs.value = "http://www.w3.org/XML/1998/namespace";
+                nsMap.put("xml", xmlNs);
+            }
+            
+            return new ArrayList<XPathNode>(nsMap.values()).iterator();
         }
         
         @Override
@@ -1648,6 +1957,53 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 return key;
             }
             // Return empty string if not in grouping context
+            return XPathString.of("");
+        }
+    }
+
+    // ========================================================================
+    // XSLT 2.0 analyze-string Functions
+    // ========================================================================
+
+    /**
+     * regex-group(n) - Returns the captured group from the current regex match.
+     *
+     * <p>This function is used inside xsl:matching-substring within xsl:analyze-string
+     * to access captured groups from the regular expression match.
+     *
+     * <p>regex-group(0) returns the entire matched string.
+     * regex-group(1) returns the first captured group, etc.
+     */
+    private static class RegexGroupFunction implements Function {
+        @Override
+        public String getName() { return "regex-group"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 1; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            int groupNum = (int) args.get(0).asNumber();
+            
+            // Get the regex matcher from context
+            if (context instanceof TransformContext) {
+                java.util.regex.Matcher matcher = ((TransformContext) context).getRegexMatcher();
+                if (matcher != null) {
+                    try {
+                        if (groupNum >= 0 && groupNum <= matcher.groupCount()) {
+                            String group = matcher.group(groupNum);
+                            return XPathString.of(group != null ? group : "");
+                        }
+                    } catch (IllegalStateException e) {
+                        // No match available
+                    }
+                }
+            }
+            
+            // No match context or invalid group number - return empty string
             return XPathString.of("");
         }
     }

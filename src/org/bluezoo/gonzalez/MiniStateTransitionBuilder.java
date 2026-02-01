@@ -671,6 +671,11 @@ class MiniStateTransitionBuilder {
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // SEEN_CLOSE_BRACKET_CLOSE_BRACKET - After ']]' in CDATA
+        // When we see ']]' in a CDATA section, we need to check the next character:
+        // - If '>' follows, it's the end of CDATA (emit END_CDATA)
+        // - If ']' follows, we're accumulating more brackets - stay in this state
+        //   The extra brackets will be handled when we see the final '>' or a non-bracket
+        // - If anything else follows, the ']]' was content - emit it and continue accumulating
         builder.state(TokenizerState.CDATA_SECTION)
             .miniState(MiniState.SEEN_CLOSE_BRACKET_CLOSE_BRACKET)
                 .on(CharClass.GT)
@@ -687,6 +692,7 @@ class MiniStateTransitionBuilder {
                        CharClass.PIPE, CharClass.COMMA, CharClass.STAR, CharClass.PLUS,
                        CharClass.DASH, CharClass.BANG, CharClass.QUERY, CharClass.SLASH,
                        CharClass.PERCENT, CharClass.OPEN_BRACKET)
+                    .emit(Token.CDATA)  // Emit the ']]' as content before accumulating more
                     .to(MiniState.ACCUMULATING_CDATA).done();
         
         // ===== State.PI_TARGET Transitions =====
