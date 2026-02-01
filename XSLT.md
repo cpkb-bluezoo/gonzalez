@@ -12,8 +12,21 @@ architecture that enables processing of arbitrarily large documents.
 
 The transformer supports XSLT 1.0, 2.0, and 3.0 stylesheets with a focus on
 streaming execution. XSLT 3.0's explicit streaming constructs (`xsl:stream`,
-`xsl:accumulator`, `xsl:iterate`) are fully supported, and XSLT 1.0/2.0
+`xsl:accumulator`, `xsl:iterate`) are supported, and XSLT 1.0/2.0
 stylesheets are automatically analyzed for streamability.
+
+## Conformance
+
+Current pass rates against the W3C XSLT 3.0 Conformance Test Suite:
+
+| Version | Tests | Passed | Rate |
+|---------|-------|--------|------|
+| XSLT 1.0 | 2,024 | 1,989 | 98.3% |
+| XSLT 2.0 | 5,304 | 3,734 | 70.4% |
+| XSLT 3.0 | 6,492 | 4,385 | 67.5% |
+
+*Note: Many XSLT 2.0/3.0 failures are due to schema-aware tests (import-schema), 
+advanced date/time formatting, collations, and pattern matching features.*
 
 ## Design Goals
 
@@ -144,7 +157,9 @@ XSLT 3.0 streaming transformations.
 | If expressions | `if (test) then expr else expr` | `if ($x > 0) then "+" else "-"` |
 | Quantified expressions | `some`/`every` | `some $x in //item satisfies $x > 10` |
 | Node comparisons | `is`, `<<`, `>>` | `$a is $b`, `$a << $b` |
-| Set operations | `intersect`, `except` | `$a intersect $b` |
+| Set operations | `union`, `intersect`, `except` | `$a intersect $b` |
+| Kind tests | `element()`, `attribute()`, `document-node()` | `child::element(foo)` |
+| Type constructors | `xs:integer()`, `xs:string()` | `xs:integer("42")` |
 
 **Supported (XPath 3.0/3.1):**
 
@@ -155,13 +170,13 @@ XSLT 3.0 streaming transformations.
 | Simple map | `!` | `//item ! @name` |
 | Arrow operator | `=>` | `$x => upper-case()` |
 
-**Deferred (Requires Schema Support):**
+**Partial Support (Schema-Aware):**
 
-| Feature | Syntax | Notes |
+| Feature | Status | Notes |
 |---------|--------|-------|
-| Type expressions | `instance of`, `cast as` | Requires XSD |
-| Typed atomic values | `xs:integer`, `xs:date` | Requires XSD |
-| Schema element tests | `schema-element()` | Requires XSD |
+| `schema-element()` | Parsing + basic matching | Matches by element name; substitution groups not yet supported |
+| `schema-attribute()` | Parsing + basic matching | Matches by attribute name |
+| `xsl:import-schema` | Parsing | Schema loaded but not fully used for type validation |
 
 **Not Planned (Complexity vs. Streaming Benefit):**
 
@@ -170,6 +185,7 @@ XSLT 3.0 streaming transformations.
 | Higher-order functions | Complex; limited streaming benefit |
 | Maps and arrays | XPath 3.1; adds significant complexity |
 | Dynamic function calls | Requires higher-order functions |
+| Full PSVI support | Requires deep XSD integration |
 
 #### Iterative Parser Design
 
@@ -271,8 +287,22 @@ parser.parse(inputSource);
 | Element | Description |
 |---------|-------------|
 | `xsl:result-document` | Multiple output documents |
-| `xsl:for-each-group` | Grouping with group-by/group-adjacent |
+| `xsl:for-each-group` | Grouping with group-by/group-adjacent/group-starting-with/group-ending-with |
 | `xsl:sequence` | Sequence construction |
+| `xsl:analyze-string` | Regex-based string analysis with matching-substring/non-matching-substring |
+| `xsl:function` | User-defined functions |
+| `xsl:import-schema` | Schema import (parsing only, limited runtime support) |
+| `xsl:next-match` | Continue matching with next template rule |
+
+### XSLT 2.0 Features
+
+| Feature | Description |
+|---------|-------------|
+| Tunnel parameters | `tunnel="yes"` on `xsl:param` and `xsl:with-param` |
+| Multiple output | `xsl:result-document` for multiple output files |
+| Temporary trees | Variables containing tree fragments |
+| Regular expressions | `matches()`, `replace()`, `tokenize()`, `xsl:analyze-string` |
+| Date/time support | Basic date/time types and formatting |
 
 ### XSLT 1.0 Elements
 
@@ -296,7 +326,9 @@ parser.parse(inputSource);
 | `xsl:copy-of` | Complete | Deep copy |
 | `xsl:comment` | Complete | Comment output |
 | `xsl:processing-instruction` | Complete | PI output |
-| `xsl:number` | Complete | value, level, count, from, format (1/a/A/i/I), grouping |
+| `xsl:number` | Mostly Complete | value, level, count, from, format (1/a/A/i/I), grouping; ordinal/word formats partial |
+| `xsl:apply-imports` | Complete | With parameter passing |
+| `xsl:message` | Complete | With terminate attribute |
 | `xsl:output` | Complete | Method, encoding, indent |
 | `xsl:strip-space` | Complete | Whitespace stripping |
 | `xsl:preserve-space` | Complete | Whitespace preservation |
@@ -310,29 +342,40 @@ parser.parse(inputSource);
 
 ### XPath Functions
 
-#### Node Set Functions
+#### XPath 1.0 Node Set Functions
 - `last()`, `position()`, `count()`, `id()`, `local-name()`, `namespace-uri()`, `name()`
 
-#### String Functions
+#### XPath 1.0 String Functions
 - `string()`, `concat()`, `starts-with()`, `contains()`, `substring-before()`,
   `substring-after()`, `substring()`, `string-length()`, `normalize-space()`,
   `translate()`
 
-#### Boolean Functions
+#### XPath 1.0 Boolean Functions
 - `boolean()`, `not()`, `true()`, `false()`, `lang()`
 
-#### Number Functions
+#### XPath 1.0 Number Functions
 - `number()`, `sum()`, `floor()`, `ceiling()`, `round()`
+
+#### XPath 2.0 Functions
+- `abs()`, `avg()`, `min()`, `max()`, `empty()`, `exists()`, `distinct-values()`
+- `index-of()`, `subsequence()`, `reverse()`, `insert-before()`, `remove()`
+- `string-join()`, `upper-case()`, `lower-case()`, `matches()`, `replace()`, `tokenize()`
+- `compare()`, `codepoints-to-string()`, `string-to-codepoints()`
+- `base-uri()`, `document-uri()`, `root()`, `nilled()`
+- `data()`, `deep-equal()`
 
 #### XSLT 1.0 Functions
 - `document()`, `key()`, `format-number()`, `current()`, `unparsed-entity-uri()`,
   `generate-id()`, `system-property()`, `element-available()`, `function-available()`
 
-#### XSLT 2.0 Grouping Functions
-- `current-group()`, `current-grouping-key()`
+#### XSLT 2.0 Functions
+- `current-group()`, `current-grouping-key()` - Grouping context
+- `regex-group()` - Regex group access in `xsl:analyze-string`
+- `doc()`, `doc-available()` - Document loading
+- `type-available()` - Type availability test
 
-#### XSLT 3.0 Accumulator Functions
-- `accumulator-before()`, `accumulator-after()`
+#### XSLT 3.0 Functions
+- `accumulator-before()`, `accumulator-after()` - Accumulator access
 
 ### Forward-Compatible Processing
 
@@ -409,13 +452,17 @@ The extraction script:
 ### Running Tests
 
 ```bash
-# Compile and run all conformance tests
-ant test-xslt
-
 # Run tests for a specific XSLT version
-ant test-xslt -Dxslt.version=1.0
-ant test-xslt -Dxslt.version=2.0
-ant test-xslt -Dxslt.version=3.0
+ant test-xslt10    # XSLT 1.0 tests (~2,024 tests)
+ant test-xslt20    # XSLT 2.0 tests (~5,304 tests)
+ant test-xslt30    # XSLT 3.0 tests (~6,492 tests)
+
+# Run filtered tests
+ant test-xslt-filter -Dxslt.filter=namespace          # Tests matching "namespace"
+ant test-xslt-filter -Dxslt.filter=key -Dxslt.version=1.0  # key tests, XSLT 1.0 only
+
+# View results
+cat test/output/xslt-conformance-report.txt
 ```
 
 ## Performance
@@ -470,8 +517,12 @@ registry.registerElement("http://example.com/xsl", "custom",
 
 ### Current Limitations
 
-1. **No schema awareness** - Type information is not available (XSD types not recognized)
-2. **`xsl:number`** - Basic formatting; some advanced features (ordinals, words) not implemented
+1. **Partial schema awareness** - `xsl:import-schema` parses schemas but full type validation 
+   is not performed. `schema-element()` matches by name only (substitution groups not supported).
+2. **Collations** - Default Unicode collation only; custom collations not supported
+3. **Date/time formatting** - Basic support; some locale-specific formats incomplete
+4. **Pattern matching** - Complex patterns with predicates may not match in all edge cases
+5. **`xsl:number`** - Basic formatting; ordinal/word formats not fully implemented
 
 ### By Design
 
@@ -481,17 +532,25 @@ registry.registerElement("http://example.com/xsl", "custom",
    encoding detection (BOM, XML declaration). Use `InputStream` or system ID instead of `Reader`
 4. **No higher-order functions** - Complex feature with limited streaming benefit
 5. **No maps/arrays** - XPath 3.1 feature that adds significant complexity
+6. **No full PSVI** - Post-Schema Validation Infoset not maintained on nodes
 
 ## Future Work
 
 ### XSLT Enhancements
 
 - [ ] Advanced `xsl:number` formatting (ordinals, words, letter-value)
+- [ ] Custom collation support
+- [ ] Improved pattern matching edge cases
 - [ ] Performance optimization passes
+
+### Schema Support
+
+- [ ] Full `schema-element()` matching with substitution groups
+- [ ] Type annotations on nodes (PSVI)
+- [ ] Validation modes (`validation="strict|lax"`)
 
 ### Future Considerations
 
-- [ ] Schema-aware processing (when Gonzalez adds XSD support)
 - [ ] Higher-order functions (XSLT 3.0) - complex, limited streaming benefit
 - [ ] Maps and arrays (XPath 3.1) - adds significant complexity
 
