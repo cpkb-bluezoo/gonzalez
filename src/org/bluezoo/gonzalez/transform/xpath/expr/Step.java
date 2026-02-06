@@ -150,6 +150,9 @@ public final class Step {
     private final String piTarget; // For processing-instruction('target')
     private final Expr stepExpr;   // For EXPR node test type (XPath 3.0)
     private final List<Expr> predicates;
+    // For kind tests with type: element(name, type) or attribute(name, type)
+    private final String typeNamespaceURI;
+    private final String typeLocalName;
 
     /**
      * Creates a step with a name test.
@@ -190,9 +193,25 @@ public final class Step {
      * @param nodeTestType the node test type (ELEMENT, ATTRIBUTE, or DOCUMENT_NODE)
      * @param elementName the element/attribute name to match (may be null or "*" for any)
      * @param typeName the type name to match (may be null for any type)
+     * @deprecated Use the version with separate type namespace and local name
      */
     public Step(Axis axis, NodeTestType nodeTestType, String elementName, String typeName) {
-        this(axis, nodeTestType, typeName, elementName, null, null, null);
+        this(axis, nodeTestType, null, elementName, null, null, null, null, typeName);
+    }
+    
+    /**
+     * Creates a step with a kind test that specifies a name and resolved type.
+     * Used for element(name, type), attribute(name, type), etc.
+     *
+     * @param axis the axis
+     * @param nodeTestType the node test type (ELEMENT, ATTRIBUTE, or DOCUMENT_NODE)
+     * @param elementName the element/attribute name to match (may be null or "*" for any)
+     * @param typeNamespaceURI the type namespace URI (null for any type)
+     * @param typeLocalName the type local name (null for any type)
+     */
+    public Step(Axis axis, NodeTestType nodeTestType, String elementName, 
+                String typeNamespaceURI, String typeLocalName) {
+        this(axis, nodeTestType, null, elementName, null, null, null, typeNamespaceURI, typeLocalName);
     }
 
     /**
@@ -250,6 +269,15 @@ public final class Step {
      */
     private Step(Axis axis, NodeTestType nodeTestType, String namespaceURI, 
                  String localName, String piTarget, Expr stepExpr, List<Expr> predicates) {
+        this(axis, nodeTestType, namespaceURI, localName, piTarget, stepExpr, predicates, null, null);
+    }
+    
+    /**
+     * Full constructor with type annotation fields.
+     */
+    private Step(Axis axis, NodeTestType nodeTestType, String namespaceURI, 
+                 String localName, String piTarget, Expr stepExpr, List<Expr> predicates,
+                 String typeNamespaceURI, String typeLocalName) {
         this.axis = axis != null ? axis : Axis.CHILD;
         this.nodeTestType = nodeTestType;
         this.namespaceURI = namespaceURI;
@@ -259,6 +287,8 @@ public final class Step {
         this.predicates = predicates != null ? 
             Collections.unmodifiableList(new ArrayList<>(predicates)) : 
             Collections.emptyList();
+        this.typeNamespaceURI = typeNamespaceURI;
+        this.typeLocalName = typeLocalName;
     }
 
     /**
@@ -273,7 +303,8 @@ public final class Step {
         }
         List<Expr> combined = new ArrayList<>(this.predicates);
         combined.addAll(predicates);
-        return new Step(axis, nodeTestType, namespaceURI, localName, piTarget, stepExpr, combined);
+        return new Step(axis, nodeTestType, namespaceURI, localName, piTarget, stepExpr, combined,
+                       typeNamespaceURI, typeLocalName);
     }
 
     /**
@@ -346,6 +377,39 @@ public final class Step {
      */
     public boolean hasPredicates() {
         return !predicates.isEmpty();
+    }
+    
+    /**
+     * Returns the type namespace URI for kind tests with type annotation.
+     *
+     * <p>For element(name, type) or attribute(name, type), this returns
+     * the resolved namespace URI of the type.
+     *
+     * @return the type namespace URI, or null if no type specified
+     */
+    public String getTypeNamespaceURI() {
+        return typeNamespaceURI;
+    }
+    
+    /**
+     * Returns the type local name for kind tests with type annotation.
+     *
+     * <p>For element(name, type) or attribute(name, type), this returns
+     * the local name of the type.
+     *
+     * @return the type local name, or null if no type specified
+     */
+    public String getTypeLocalName() {
+        return typeLocalName;
+    }
+    
+    /**
+     * Returns true if this step has a type constraint.
+     *
+     * @return true if a type is specified in this kind test
+     */
+    public boolean hasTypeConstraint() {
+        return typeLocalName != null;
     }
 
     @Override

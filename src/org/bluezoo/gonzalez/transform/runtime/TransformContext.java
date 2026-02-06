@@ -28,9 +28,11 @@ import javax.xml.transform.ErrorListener;
 
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
+import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -48,7 +50,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public interface TransformContext extends XPathContext {
+public interface TransformContext extends XPathContext, SchemaContext {
 
     /**
      * Returns the compiled stylesheet.
@@ -227,5 +229,55 @@ public interface TransformContext extends XPathContext {
      * @return a new context with empty tunnel parameters
      */
     TransformContext withNoTunnelParameters();
+
+    /**
+     * Returns the principal output handler for the transformation.
+     *
+     * <p>The principal output is the main output destination for the transformation.
+     * When xsl:result-document has no href attribute, it should write to the
+     * principal output rather than the current (possibly secondary) output.
+     *
+     * @return the principal output handler, or null if not set
+     */
+    OutputHandler getPrincipalOutput();
+
+    /**
+     * Sets the principal output handler for the transformation.
+     *
+     * <p>This should be called once at the start of the transformation
+     * with the main output handler.
+     *
+     * @param output the principal output handler
+     */
+    void setPrincipalOutput(OutputHandler output);
+
+    /**
+     * Returns the error handling mode for this transformation.
+     *
+     * <p>The error handling mode controls how type errors (XTTE*) are handled:
+     * <ul>
+     *   <li>STRICT - fail immediately (spec-compliant)</li>
+     *   <li>RECOVER - log warnings and continue</li>
+     *   <li>SILENT - ignore errors</li>
+     * </ul>
+     *
+     * @return the error handling mode (never null, defaults to STRICT)
+     */
+    ErrorHandlingMode getErrorHandlingMode();
+
+    /**
+     * Returns the default collation URI for string comparisons (XSLT 2.0+).
+     *
+     * <p>The default collation is used when no explicit collation is specified
+     * for operations like xsl:sort, string comparison functions, and value/general
+     * comparisons. It can be set at the stylesheet level with the default-collation
+     * attribute, and overridden at element level.
+     *
+     * <p>If no default collation is set, returns null (meaning Unicode codepoint
+     * collation should be used).
+     *
+     * @return the default collation URI, or null for Unicode codepoint collation
+     */
+    String getDefaultCollation();
 
 }

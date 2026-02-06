@@ -25,6 +25,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Set;
 
@@ -181,6 +182,7 @@ public class XSDContentModelValidator {
     
     private XSDComplexType currentType;
     private Deque<ParticleState> stateStack;
+    private IdentityHashMap<XSDParticle, ParticleState> stateMap;
     private List<XSDParticle> topLevelParticles;
     private int topLevelIndex;
     private String lastError;
@@ -194,6 +196,7 @@ public class XSDContentModelValidator {
      */
     public XSDContentModelValidator() {
         this.stateStack = new ArrayDeque<>();
+        this.stateMap = new IdentityHashMap<>();
     }
     
     /**
@@ -209,6 +212,7 @@ public class XSDContentModelValidator {
     public void startValidation(XSDComplexType type) {
         this.currentType = type;
         this.stateStack.clear();
+        this.stateMap.clear();
         this.topLevelParticles = type.getParticles();
         this.topLevelIndex = 0;
         this.lastError = null;
@@ -638,27 +642,26 @@ public class XSDContentModelValidator {
     
     /**
      * Gets or creates a state for the given particle.
+     * Uses IdentityHashMap for O(1) lookup instead of linear search.
      */
     private ParticleState getOrCreateState(XSDParticle particle) {
-        // Check if we already have a state for this particle
-        for (ParticleState state : stateStack) {
-            if (state.particle == particle) {
-                return state;
-            }
+        // Check cache first
+        ParticleState state = stateMap.get(particle);
+        if (state != null) {
+            return state;
         }
-        return new ParticleState(particle);
+        // Create new state and cache it
+        state = new ParticleState(particle);
+        stateMap.put(particle, state);
+        return state;
     }
     
     /**
      * Gets existing state for a child particle, if any.
+     * Uses IdentityHashMap for O(1) lookup instead of linear search.
      */
     private ParticleState getChildState(XSDParticle particle) {
-        for (ParticleState state : stateStack) {
-            if (state.particle == particle) {
-                return state;
-            }
-        }
-        return null;
+        return stateMap.get(particle);
     }
     
     /**

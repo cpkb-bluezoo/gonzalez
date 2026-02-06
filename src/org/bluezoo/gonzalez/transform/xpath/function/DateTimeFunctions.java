@@ -107,6 +107,12 @@ public final class DateTimeFunctions {
         functions.add(FORMAT_DATE);
         functions.add(FORMAT_TIME);
         
+        // Timezone adjustment functions
+        functions.add(ADJUST_DATE_TIME_TO_TIMEZONE);
+        functions.add(ADJUST_DATE_TO_TIMEZONE);
+        functions.add(ADJUST_TIME_TO_TIMEZONE);
+        functions.add(IMPLICIT_TIMEZONE);
+        
         return functions;
     }
 
@@ -128,7 +134,9 @@ public final class DateTimeFunctions {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            return XPathDateTime.now();
+            // Per XPath/XSLT spec, current-dateTime() returns the same value
+            // throughout a single transformation
+            return context.getCurrentDateTime();
         }
     };
     
@@ -581,7 +589,7 @@ public final class DateTimeFunctions {
             String calendar = args.size() > 3 && !isEmpty(args.get(3)) ? args.get(3).asString() : null;
             String place = args.size() > 4 && !isEmpty(args.get(4)) ? args.get(4).asString() : null;
             Locale locale = parseLocale(language, place);
-            return XPathString.of(formatDateTime(dt, picture, true, true, locale));
+            return XPathString.of(formatDateTime(dt, picture, true, true, locale, calendar));
         }
     };
     
@@ -609,7 +617,7 @@ public final class DateTimeFunctions {
             String calendar = args.size() > 3 && !isEmpty(args.get(3)) ? args.get(3).asString() : null;
             String place = args.size() > 4 && !isEmpty(args.get(4)) ? args.get(4).asString() : null;
             Locale locale = parseLocale(language, place);
-            return XPathString.of(formatDateTime(dt, picture, true, false, locale));
+            return XPathString.of(formatDateTime(dt, picture, true, false, locale, calendar));
         }
     };
     
@@ -637,9 +645,174 @@ public final class DateTimeFunctions {
             String calendar = args.size() > 3 && !isEmpty(args.get(3)) ? args.get(3).asString() : null;
             String place = args.size() > 4 && !isEmpty(args.get(4)) ? args.get(4).asString() : null;
             Locale locale = parseLocale(language, place);
-            return XPathString.of(formatDateTime(dt, picture, false, true, locale));
+            return XPathString.of(formatDateTime(dt, picture, false, true, locale, calendar));
         }
     };
+    
+    // ========== Timezone adjustment functions ==========
+    
+    /**
+     * XPath 2.0 adjust-dateTime-to-timezone() function.
+     * 
+     * <p>Adjusts an xs:dateTime value to a specific timezone.
+     * 
+     * <p>Signature: adjust-dateTime-to-timezone(dateTime?, dayTimeDuration?) → dateTime?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-adjust-dateTime-to-timezone">XPath 3.0 adjust-dateTime-to-timezone()</a>
+     */
+    public static final Function ADJUST_DATE_TIME_TO_TIMEZONE = new Function() {
+        @Override public String getName() { return "adjust-dateTime-to-timezone"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (isEmpty(arg)) return XPathSequence.EMPTY;
+            XPathDateTime dt = toDateTime(arg);
+            
+            // Get timezone argument (null means remove timezone)
+            Integer tzMinutes = null;
+            if (args.size() > 1 && !isEmpty(args.get(1))) {
+                XPathDateTime tz = toDayTimeDuration(args.get(1));
+                tzMinutes = getTzMinutes(tz);
+                validateTimezone(tzMinutes);
+            }
+            
+            return dt.adjustToTimezone(tzMinutes);
+        }
+    };
+    
+    /**
+     * XPath 2.0 adjust-date-to-timezone() function.
+     * 
+     * <p>Adjusts an xs:date value to a specific timezone.
+     * 
+     * <p>Signature: adjust-date-to-timezone(date?, dayTimeDuration?) → date?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-adjust-date-to-timezone">XPath 3.0 adjust-date-to-timezone()</a>
+     */
+    public static final Function ADJUST_DATE_TO_TIMEZONE = new Function() {
+        @Override public String getName() { return "adjust-date-to-timezone"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (isEmpty(arg)) return XPathSequence.EMPTY;
+            XPathDateTime dt = toDate(arg);
+            
+            // Get timezone argument (null means remove timezone)
+            Integer tzMinutes = null;
+            if (args.size() > 1 && !isEmpty(args.get(1))) {
+                XPathDateTime tz = toDayTimeDuration(args.get(1));
+                tzMinutes = getTzMinutes(tz);
+                validateTimezone(tzMinutes);
+            }
+            
+            return dt.adjustToTimezone(tzMinutes);
+        }
+    };
+    
+    /**
+     * XPath 2.0 adjust-time-to-timezone() function.
+     * 
+     * <p>Adjusts an xs:time value to a specific timezone.
+     * 
+     * <p>Signature: adjust-time-to-timezone(time?, dayTimeDuration?) → time?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-adjust-time-to-timezone">XPath 3.0 adjust-time-to-timezone()</a>
+     */
+    public static final Function ADJUST_TIME_TO_TIMEZONE = new Function() {
+        @Override public String getName() { return "adjust-time-to-timezone"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (isEmpty(arg)) return XPathSequence.EMPTY;
+            XPathDateTime dt = toTime(arg);
+            
+            // Get timezone argument (null means remove timezone)
+            Integer tzMinutes = null;
+            if (args.size() > 1 && !isEmpty(args.get(1))) {
+                XPathDateTime tz = toDayTimeDuration(args.get(1));
+                tzMinutes = getTzMinutes(tz);
+                validateTimezone(tzMinutes);
+            }
+            
+            return dt.adjustToTimezone(tzMinutes);
+        }
+    };
+    
+    /**
+     * Extracts timezone offset in minutes from a dayTimeDuration.
+     */
+    private static Integer getTzMinutes(XPathDateTime duration) {
+        if (duration == null) {
+            return null;
+        }
+        int totalMinutes = 0;
+        if (duration.getDurationDays() != null) {
+            totalMinutes += duration.getDurationDays() * 24 * 60;
+        }
+        if (duration.getDurationHours() != null) {
+            totalMinutes += duration.getDurationHours() * 60;
+        }
+        if (duration.getDurationMinutes() != null) {
+            totalMinutes += duration.getDurationMinutes();
+        }
+        // Seconds are not used for timezone offsets
+        if (duration.isNegative()) {
+            totalMinutes = -totalMinutes;
+        }
+        return totalMinutes;
+    }
+    
+    /**
+     * XPath 2.0 implicit-timezone() function.
+     * 
+     * <p>Returns the implicit timezone from the dynamic context as a dayTimeDuration.
+     * 
+     * <p>Signature: implicit-timezone() → dayTimeDuration
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-implicit-timezone">XPath 3.0 implicit-timezone()</a>
+     */
+    public static final Function IMPLICIT_TIMEZONE = new Function() {
+        @Override public String getName() { return "implicit-timezone"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 0; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // Get the system's default timezone offset
+            java.time.ZoneOffset offset = java.time.ZonedDateTime.now().getOffset();
+            int totalSeconds = offset.getTotalSeconds();
+            int hours = totalSeconds / 3600;
+            int minutes = (Math.abs(totalSeconds) % 3600) / 60;
+            
+            // Create a dayTimeDuration representation
+            boolean negative = totalSeconds < 0;
+            String lexical = (negative ? "-" : "") + "PT" + Math.abs(hours) + "H" + 
+                             (minutes > 0 ? minutes + "M" : "");
+            if (hours == 0 && minutes == 0) {
+                lexical = "PT0S";
+            }
+            
+            return XPathDateTime.parseDayTimeDuration(lexical);
+        }
+    };
+    
+    /**
+     * Validates that a timezone offset is within the allowed range (-14:00 to +14:00).
+     */
+    private static void validateTimezone(Integer tzMinutes) throws XPathException {
+        if (tzMinutes != null && (tzMinutes < -14 * 60 || tzMinutes > 14 * 60)) {
+            throw new XPathException("FODT0003: Timezone offset out of range: " + tzMinutes + " minutes");
+        }
+    }
     
     /**
      * Parses language and place into a Java Locale.
@@ -672,12 +845,15 @@ public final class DateTimeFunctions {
      * @param hasDate true if date components should be included
      * @param hasTime true if time components should be included
      * @param locale the locale for localization
+     * @param calendar the calendar system (e.g., "ISO" for ISO week numbering)
      * @return the formatted string
      * @throws XPathException if the picture string is invalid
      */
     private static String formatDateTime(XPathDateTime dt, String picture, 
-                                         boolean hasDate, boolean hasTime, Locale locale) throws XPathException {
+                                         boolean hasDate, boolean hasTime, Locale locale,
+                                         String calendar) throws XPathException {
         DateTimeLocale dtLocale = DateTimeLocale.forLocale(locale);
+        boolean useIsoCalendar = "ISO".equalsIgnoreCase(calendar);
         StringBuilder result = new StringBuilder();
         int i = 0;
         while (i < picture.length()) {
@@ -695,7 +871,7 @@ public final class DateTimeFunctions {
                     throw new XPathException("Unclosed '[' in format picture: " + picture);
                 }
                 String component = picture.substring(i + 1, end);
-                result.append(formatComponent(dt, component, hasDate, hasTime, dtLocale));
+                result.append(formatComponent(dt, component, hasDate, hasTime, dtLocale, useIsoCalendar));
                 i = end + 1;
             } else if (c == ']') {
                 // Literal ] is escaped as ]]
@@ -732,12 +908,13 @@ public final class DateTimeFunctions {
      * @param hasDate true if date components are available
      * @param hasTime true if time components are available
      * @param dtLocale the locale for localization
+     * @param useIsoCalendar true to use ISO calendar (Monday=1, Sunday=7 for [F]; ISO week numbering for [W])
      * @return the formatted component string
      * @throws XPathException if the component specification is invalid
      */
     private static String formatComponent(XPathDateTime dt, String component,
                                           boolean hasDate, boolean hasTime,
-                                          DateTimeLocale dtLocale) throws XPathException {
+                                          DateTimeLocale dtLocale, boolean useIsoCalendar) throws XPathException {
         if (component.isEmpty()) {
             return "";
         }
@@ -845,6 +1022,10 @@ public final class DateTimeFunctions {
         
         switch (specifier) {
             case 'Y':  // Year
+                // XTDE1350: Year requires date component
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [Y] is not available for formatting a time value");
+                }
                 Integer yearVal = dt.getYear();
                 if (yearVal != null) {
                     // For short year formats with explicit width (minWidth < 4), use modulo to get last N digits
@@ -861,6 +1042,10 @@ public final class DateTimeFunctions {
                 }
                 break;
             case 'M':  // Month
+                // XTDE1350: Month requires date component
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [M] is not available for formatting a time value");
+                }
                 value = dt.getMonth();
                 if (presentation.startsWith("N") || presentation.startsWith("n")) {
                     // Pass width constraints to name selection
@@ -869,29 +1054,59 @@ public final class DateTimeFunctions {
                 }
                 break;
             case 'D':  // Day of month
+                // XTDE1350: Day of month requires date component
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [D] is not available for formatting a time value");
+                }
                 value = dt.getDay();
                 break;
             case 'd':  // Day of year
+                // XTDE1350: Day of year requires date component
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [d] is not available for formatting a time value");
+                }
                 value = getDayOfYear(dt);
                 break;
             case 'F':  // Day of week
-                value = getDayOfWeek(dt);
+                // XTDE1350: Day of week requires date component
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [F] is not available for formatting a time value");
+                }
+                value = getDayOfWeek(dt, useIsoCalendar);
                 if (presentation.startsWith("N") || presentation.startsWith("n")) {
                     // Pass width constraints to name selection
-                    strValue = dtLocale.getDayName(value, minWidth, maxWidth);
+                    // For day names, ISO calendar day number (Mon=1) needs to map to locale day name
+                    int dayForName = useIsoCalendar ? (value == 7 ? 1 : value + 1) : value;
+                    strValue = dtLocale.getDayName(dayForName, minWidth, maxWidth);
                     strValue = formatName(strValue, presentation);
                 }
                 break;
             case 'W':  // Week of year
-                value = getWeekOfYear(dt);
+                // XTDE1350: Week of year requires date component
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [W] is not available for formatting a time value");
+                }
+                value = getWeekOfYear(dt, useIsoCalendar);
                 break;
             case 'w':  // Week of month
-                value = getWeekOfMonth(dt);
+                // XTDE1350: Week of month requires date component
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [w] is not available for formatting a time value");
+                }
+                value = getWeekOfMonth(dt, useIsoCalendar);
                 break;
             case 'H':  // Hour (24)
+                // XTDE1350: Hour requires time component
+                if (!hasTime) {
+                    throw new XPathException("XTDE1350: Component [H] is not available for formatting a date value");
+                }
                 value = dt.getHour();
                 break;
             case 'h':  // Hour (12)
+                // XTDE1350: Hour requires time component
+                if (!hasTime) {
+                    throw new XPathException("XTDE1350: Component [h] is not available for formatting a date value");
+                }
                 Integer hour = dt.getHour();
                 if (hour != null) {
                     value = hour % 12;
@@ -901,6 +1116,10 @@ public final class DateTimeFunctions {
                 }
                 break;
             case 'P':  // AM/PM
+                // XTDE1350: AM/PM requires time component
+                if (!hasTime) {
+                    throw new XPathException("XTDE1350: Component [P] is not available for formatting a date value");
+                }
                 Integer h = dt.getHour();
                 if (h != null) {
                     // Default is lowercase; uppercase requires N presentation
@@ -909,6 +1128,10 @@ public final class DateTimeFunctions {
                 }
                 break;
             case 'm':  // Minute
+                // XTDE1350: Minute requires time component
+                if (!hasTime) {
+                    throw new XPathException("XTDE1350: Component [m] is not available for formatting a date value");
+                }
                 value = dt.getMinute();
                 // Default minimum width for minutes is 2
                 if (minWidth == 1 && !explicitWidth) {
@@ -916,6 +1139,10 @@ public final class DateTimeFunctions {
                 }
                 break;
             case 's':  // Second
+                // XTDE1350: Second requires time component
+                if (!hasTime) {
+                    throw new XPathException("XTDE1350: Component [s] is not available for formatting a date value");
+                }
                 BigDecimal sec = dt.getSecond();
                 if (sec != null) {
                     value = sec.intValue();
@@ -926,6 +1153,10 @@ public final class DateTimeFunctions {
                 }
                 break;
             case 'f':  // Fractional seconds
+                // XTDE1350: Fractional seconds requires time component
+                if (!hasTime) {
+                    throw new XPathException("XTDE1350: Component [f] is not available for formatting a date value");
+                }
                 BigDecimal sec2 = dt.getSecond();
                 if (sec2 != null) {
                     BigDecimal frac = sec2.remainder(BigDecimal.ONE);
@@ -958,6 +1189,10 @@ public final class DateTimeFunctions {
                 }
                 break;
             case 'E':  // Era
+                // XTDE1350: Era requires date component (specifically year)
+                if (!hasDate) {
+                    throw new XPathException("XTDE1350: Component [E] is not available for formatting a time value");
+                }
                 Integer year = dt.getYear();
                 if (year != null) {
                     strValue = dtLocale.getEra(year);
@@ -967,8 +1202,8 @@ public final class DateTimeFunctions {
                 strValue = "ISO";
                 break;
             default:
-                // Unknown component - return as-is
-                return "[" + component + "]";
+                // XTDE1340: Unknown/invalid component specifier
+                throw new XPathException("XTDE1340: Unknown component specifier '" + specifier + "' in format picture");
         }
         
         if (strValue != null) {
@@ -1156,25 +1391,64 @@ public final class DateTimeFunctions {
         return date.getDayOfYear();
     }
     
-    private static Integer getDayOfWeek(XPathDateTime dt) {
+    /**
+     * Gets the day of week for formatting.
+     * 
+     * @param dt the datetime value
+     * @param useIsoCalendar if true, returns ISO numbering (Monday=1 through Sunday=7);
+     *                       if false, returns traditional XPath numbering (Sunday=1 through Saturday=7)
+     * @return the day of week number
+     */
+    private static Integer getDayOfWeek(XPathDateTime dt, boolean useIsoCalendar) {
         if (dt.getYear() == null || dt.getMonth() == null || dt.getDay() == null) return null;
         LocalDate date = LocalDate.of(dt.getYear(), dt.getMonth(), dt.getDay());
-        // XPath: Sunday=1, Monday=2, ... Saturday=7
         // Java DayOfWeek: Monday=1, Tuesday=2, ... Sunday=7
-        int dow = date.getDayOfWeek().getValue();  // Monday=1 through Sunday=7
-        return dow == 7 ? 1 : dow + 1;  // Convert to Sunday=1 through Saturday=7
+        int dow = date.getDayOfWeek().getValue();
+        if (useIsoCalendar) {
+            // ISO: Monday=1 through Sunday=7 (same as Java)
+            return dow;
+        } else {
+            // Traditional XPath: Sunday=1, Monday=2, ... Saturday=7
+            return dow == 7 ? 1 : dow + 1;
+        }
     }
     
-    private static Integer getWeekOfYear(XPathDateTime dt) {
+    /**
+     * Gets the week of year for formatting.
+     * 
+     * @param dt the datetime value
+     * @param useIsoCalendar if true, uses ISO week numbering (week 1 contains first Thursday);
+     *                       if false, uses locale-specific week numbering
+     * @return the week of year number
+     */
+    private static Integer getWeekOfYear(XPathDateTime dt, boolean useIsoCalendar) {
         if (dt.getYear() == null || dt.getMonth() == null || dt.getDay() == null) return null;
         LocalDate date = LocalDate.of(dt.getYear(), dt.getMonth(), dt.getDay());
-        return date.get(WeekFields.ISO.weekOfYear());
+        if (useIsoCalendar) {
+            // Use weekOfWeekBasedYear for proper ISO week numbering
+            // This handles edge cases like Jan 1 being in week 52/53 of the previous year
+            return date.get(WeekFields.ISO.weekOfWeekBasedYear());
+        } else {
+            // Use locale-specific (default locale) week fields
+            return date.get(WeekFields.of(Locale.getDefault()).weekOfYear());
+        }
     }
     
-    private static Integer getWeekOfMonth(XPathDateTime dt) {
+    /**
+     * Gets the week of month for formatting.
+     * 
+     * @param dt the datetime value
+     * @param useIsoCalendar if true, uses ISO week rules; if false, uses locale-specific rules
+     * @return the week of month number
+     */
+    private static Integer getWeekOfMonth(XPathDateTime dt, boolean useIsoCalendar) {
         if (dt.getYear() == null || dt.getMonth() == null || dt.getDay() == null) return null;
         LocalDate date = LocalDate.of(dt.getYear(), dt.getMonth(), dt.getDay());
-        return date.get(WeekFields.ISO.weekOfMonth());
+        if (useIsoCalendar) {
+            return date.get(WeekFields.ISO.weekOfMonth());
+        } else {
+            return date.get(WeekFields.of(Locale.getDefault()).weekOfMonth());
+        }
     }
     
     // ========== Helper methods ==========
@@ -1262,5 +1536,29 @@ public final class DateTimeFunctions {
         }
         // Try to parse as duration
         return XPathDateTime.parseDuration(value.asString());
+    }
+    
+    /**
+     * Converts an XPath value to an xs:dayTimeDuration.
+     *
+     * @param value the value to convert
+     * @return the dayTimeDuration value
+     * @throws XPathException if conversion fails
+     */
+    private static XPathDateTime toDayTimeDuration(XPathValue value) throws XPathException {
+        if (value instanceof XPathDateTime) {
+            XPathDateTime dt = (XPathDateTime) value;
+            XPathDateTime.DateTimeType type = dt.getDateTimeType();
+            if (type == XPathDateTime.DateTimeType.DAY_TIME_DURATION) {
+                return dt;
+            }
+            // Allow any duration type and extract day/time components
+            if (type == XPathDateTime.DateTimeType.DURATION ||
+                type == XPathDateTime.DateTimeType.YEAR_MONTH_DURATION) {
+                return dt;  // Will extract day/time components
+            }
+        }
+        // Try to parse as dayTimeDuration
+        return XPathDateTime.parseDayTimeDuration(value.asString());
     }
 }

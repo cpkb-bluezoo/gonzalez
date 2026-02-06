@@ -53,7 +53,9 @@ public class XSDSchemaParser extends DefaultHandler {
     
     private XSDSchema schema;
     private final Deque<Object> stack = new ArrayDeque<>();
-    private final Deque<XSDParticle> particleStack = new ArrayDeque<>();
+    private Deque<XSDParticle> particleStack = new ArrayDeque<>();
+    // Stack of saved particle stacks, used when entering nested complex types
+    private final Deque<Deque<XSDParticle>> savedParticleStacks = new ArrayDeque<>();
     private StringBuilder textContent;
     
     // For resolving type references after parsing
@@ -143,8 +145,31 @@ public class XSDSchemaParser extends DefaultHandler {
         } finally {
             stack.clear();
             particleStack.clear();
+            savedParticleStacks.clear();
             pendingTypeResolutions.clear();
         }
+    }
+    
+    /**
+     * Finalizes the schema after inline SAX events have been processed.
+     * This resolves pending type references and returns the parsed schema.
+     * 
+     * @return the parsed schema, or null if no schema element was processed
+     */
+    public XSDSchema finalizeParsing() {
+        // Resolve pending type references
+        for (Runnable resolver : pendingTypeResolutions) {
+            resolver.run();
+        }
+        return schema;
+    }
+    
+    /**
+     * Returns the current schema being built.
+     * Use finalizeParsing() to get the completed schema.
+     */
+    public XSDSchema getCurrentSchema() {
+        return schema;
     }
     
     @Override
@@ -298,7 +323,7 @@ public class XSDSchemaParser extends DefaultHandler {
         if (ref != null) {
             // Element reference - resolve later
             // For now, create placeholder
-            name = extractLocalName(ref);
+            name = XSDUtils.extractLocalName(ref);
         }
         
         String ns = schema.getTargetNamespace();
@@ -374,7 +399,7 @@ public class XSDSchemaParser extends DefaultHandler {
         String ref = atts.getValue("ref");
         
         if (ref != null) {
-            name = extractLocalName(ref);
+            name = XSDUtils.extractLocalName(ref);
         }
         
         XSDAttribute attribute = new XSDAttribute(name, null);
@@ -439,6 +464,16 @@ public class XSDSchemaParser extends DefaultHandler {
             type.setMixed(true);
         }
         
+        // Save current particle stack and start fresh for this complex type's content model
+        // This is needed for nested elements that have their own complex types (e.g., 
+        // <xs:element name="row"><xs:complexType>...</xs:complexType></xs:element>)
+        savedParticleStacks.push(particleStack);
+        particleStack = new ArrayDeque<>();
+        
+        if (Boolean.getBoolean("debug.schema")) {
+            System.err.println("DEBUG SCHEMA: handleComplexType name=" + name + ", saved " + savedParticleStacks.size() + " stacks");
+        }
+        
         stack.push(type);
     }
     
@@ -450,6 +485,15 @@ public class XSDSchemaParser extends DefaultHandler {
         
         XSDComplexType type = (XSDComplexType) top;
         
+        if (Boolean.getBoolean("debug.schema")) {
+            System.err.println("DEBUG SCHEMA: endComplexType name=" + type.getName() + ", particles=" + type.getParticles().size());
+        }
+        
+        // Restore the saved particle stack
+        if (!savedParticleStacks.isEmpty()) {
+            particleStack = savedParticleStacks.pop();
+        }
+        
         // Check if this is a named type or anonymous
         if (type.getName() != null) {
             schema.addType(type.getName(), type);
@@ -459,6 +503,9 @@ public class XSDSchemaParser extends DefaultHandler {
         if (!stack.isEmpty()) {
             Object parent = stack.peek();
             if (parent instanceof XSDElement) {
+                if (Boolean.getBoolean("debug.schema")) {
+                    System.err.println("DEBUG SCHEMA: Setting type " + type + " on element " + ((XSDElement)parent).getName());
+                }
                 ((XSDElement) parent).setType(type);
             }
         }
@@ -541,11 +588,16 @@ public class XSDSchemaParser extends DefaultHandler {
         XSDParticle particle = particleStack.pop();
         
         // If this is the top-level model group, add to complex type
+        // Find the most recently pushed (topmost) complex type on the stack
         if (particleStack.isEmpty()) {
-            for (int i = stack.size() - 1; i >= 0; i--) {
-                Object item = ((ArrayDeque<?>) stack).toArray()[i];
+            for (Object item : stack) {
                 if (item instanceof XSDComplexType) {
-                    ((XSDComplexType) item).addParticle(particle);
+                    XSDComplexType ct = (XSDComplexType) item;
+                    ct.addParticle(particle);
+                    // Debug
+                    if (Boolean.getBoolean("debug.schema")) {
+                        System.err.println("DEBUG SCHEMA: Added particle " + particle + " to " + ct.getName() + ", now has " + ct.getParticles().size() + " particles");
+                    }
                     break;
                 }
             }
@@ -706,8 +758,8 @@ public class XSDSchemaParser extends DefaultHandler {
     }
     
     private XSDType resolveType(String typeName) {
-        String localName = extractLocalName(typeName);
-        String prefix = extractPrefix(typeName);
+        String localName = XSDUtils.extractLocalName(typeName);
+        String prefix = XSDUtils.extractPrefix(typeName);
         
         // Check if it's an XSD built-in type
         if (prefix == null || "xs".equals(prefix) || "xsd".equals(prefix)) {
@@ -721,13 +773,4 @@ public class XSDSchemaParser extends DefaultHandler {
         return schema.getType(localName);
     }
     
-    private String extractLocalName(String qname) {
-        int colon = qname.indexOf(':');
-        return colon >= 0 ? qname.substring(colon + 1) : qname;
-    }
-    
-    private String extractPrefix(String qname) {
-        int colon = qname.indexOf(':');
-        return colon >= 0 ? qname.substring(0, colon) : null;
-    }
 }

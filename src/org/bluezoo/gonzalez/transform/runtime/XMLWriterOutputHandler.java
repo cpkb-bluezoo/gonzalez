@@ -82,6 +82,10 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
 
     private final XMLWriter writer;
     private final OutputProperties outputProperties;
+    
+    // Character map for XSLT 2.0+ character mapping during serialization
+    // Keys are Unicode code points (int) to support supplementary characters
+    private Map<Integer, String> characterMappings;
 
     // Deferred element state for OutputHandler mode
     private String pendingUri;
@@ -98,6 +102,13 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     // Buffered namespace prefixes from startPrefixMapping (for ContentHandler mode)
     private final Deque<PrefixMapping> pendingPrefixes = new ArrayDeque<>();
     
+    // Reusable prefix-to-namespace map (for performance)
+    private final Map<String, String> prefixToNamespaceMap = new HashMap<>();
+    
+    // XSLT 2.0 atomic value spacing state
+    private boolean atomicValuePending = false;
+    private boolean inAttributeContent = false;
+
     /** Buffered attribute. */
     private static class PendingAttribute {
         final String namespaceURI;
@@ -175,6 +186,54 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
      */
     public XMLWriterOutputHandler(OutputStream out, OutputProperties properties) {
         this(Channels.newChannel(out), properties);
+    }
+
+    /**
+     * Sets the character mappings for XSLT 2.0+ character mapping during serialization.
+     *
+     * @param mappings the character-to-string mappings, or null to disable
+     */
+    public void setCharacterMappings(Map<Integer, String> mappings) {
+        this.characterMappings = mappings;
+    }
+    
+    /**
+     * Applies character mappings to a string.
+     * Supports supplementary characters (code points > 0xFFFF).
+     *
+     * @param text the input text
+     * @return the text with character mappings applied
+     */
+    private String applyCharacterMappings(String text) {
+        if (characterMappings == null || characterMappings.isEmpty()) {
+            return text;
+        }
+        
+        StringBuilder result = null;
+        int i = 0;
+        int lastCopied = 0;
+        
+        while (i < text.length()) {
+            int codePoint = text.codePointAt(i);
+            String replacement = characterMappings.get(codePoint);
+            if (replacement != null) {
+                if (result == null) {
+                    result = new StringBuilder(text.length() + replacement.length());
+                }
+                result.append(text, lastCopied, i);
+                result.append(replacement);
+                lastCopied = i + Character.charCount(codePoint);
+            }
+            i += Character.charCount(codePoint);
+        }
+        
+        if (result == null) {
+            return text;
+        }
+        if (lastCopied < text.length()) {
+            result.append(text, lastCopied, text.length());
+        }
+        return result.toString();
     }
 
     /**
@@ -272,6 +331,11 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             throw new SAXException("namespace() called outside of element start");
         }
         
+        // Skip the xml prefix - it's implicitly bound and should never be declared
+        if (OutputHandlerUtils.isXmlPrefix(prefix)) {
+            return;
+        }
+        
         // Buffer namespace declaration
         pendingNamespaces.add(new PendingNamespace(prefix, uri));
     }
@@ -281,9 +345,48 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         flushPendingElement();
         
         try {
-            writer.writeCharacters(text);
+            if (characterMappings == null || characterMappings.isEmpty()) {
+                writer.writeCharacters(text);
+            } else {
+                writeCharactersWithMapping(text);
+            }
         } catch (IOException e) {
             throw new SAXException("Error writing characters", e);
+        }
+    }
+    
+    /**
+     * Writes characters with character mapping applied.
+     * Characters with mappings are written raw (unescaped), others are escaped.
+     */
+    private void writeCharactersWithMapping(String text) throws IOException {
+        StringBuilder normalChars = null;
+        
+        int i = 0;
+        while (i < text.length()) {
+            int codePoint = text.codePointAt(i);
+            String replacement = characterMappings.get(codePoint);
+            
+            if (replacement != null) {
+                // Flush any accumulated normal characters
+                if (normalChars != null && normalChars.length() > 0) {
+                    writer.writeCharacters(normalChars.toString());
+                    normalChars.setLength(0);
+                }
+                // Write replacement raw (unescaped) - per XSLT spec
+                writer.writeRaw(replacement);
+            } else {
+                if (normalChars == null) {
+                    normalChars = new StringBuilder();
+                }
+                normalChars.appendCodePoint(codePoint);
+            }
+            i += Character.charCount(codePoint);
+        }
+        
+        // Flush any remaining normal characters
+        if (normalChars != null && normalChars.length() > 0) {
+            writer.writeCharacters(normalChars.toString());
         }
     }
 
@@ -357,7 +460,7 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         
         try {
             // Write the start element
-            String prefix = extractPrefix(qName);
+            String prefix = OutputHandlerUtils.extractPrefix(qName);
             writer.writeStartElement(prefix, localName, uri);
             
             // Write any buffered namespace declarations
@@ -372,7 +475,7 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             
             // Write attributes
             for (int i = 0; i < atts.getLength(); i++) {
-                String attrPrefix = extractPrefix(atts.getQName(i));
+                String attrPrefix = OutputHandlerUtils.extractPrefix(atts.getQName(i));
                 if (attrPrefix != null && !attrPrefix.isEmpty()) {
                     writer.writeAttribute(attrPrefix, atts.getURI(i), atts.getLocalName(i), atts.getValue(i));
                 } else {
@@ -392,7 +495,12 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         flushPendingElement();
         
         try {
-            writer.writeCharacters(ch, start, length);
+            if (characterMappings == null || characterMappings.isEmpty()) {
+                writer.writeCharacters(ch, start, length);
+            } else {
+                // Delegate to String version for character mapping
+                writeCharactersWithMapping(new String(ch, start, length));
+            }
         } catch (IOException e) {
             throw new SAXException("Error writing characters", e);
         }
@@ -440,7 +548,7 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         }
         
         try {
-            String elementPrefix = extractPrefix(pendingQName);
+            String elementPrefix = OutputHandlerUtils.extractPrefix(pendingQName);
             String actualElementPrefix = elementPrefix;
             String actualQName = pendingQName;
             
@@ -472,8 +580,8 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             
             writer.writeStartElement(actualElementPrefix, pendingLocalName, pendingUri);
             
-            // Track prefix-to-namespace mappings (built BEFORE clearing pendingNamespaces)
-            Map<String, String> prefixToNamespace = new HashMap<>();
+            // Track prefix-to-namespace mappings (reuse map for performance)
+            prefixToNamespaceMap.clear();
             
             // Write buffered namespace declarations and track them
             for (PendingNamespace ns : pendingNamespaces) {
@@ -481,14 +589,14 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
                     writer.writeDefaultNamespace(ns.uri);
                 } else {
                     writer.writeNamespace(ns.prefix, ns.uri);
-                    prefixToNamespace.put(ns.prefix, ns.uri);
+                    prefixToNamespaceMap.put(ns.prefix, ns.uri);
                 }
             }
             pendingNamespaces.clear();
             
             // Write buffered attributes (already deduplicated), applying fixup to attribute prefixes
             for (PendingAttribute attr : pendingAttributes.values()) {
-                String attrPrefix = extractPrefix(attr.qName);
+                String attrPrefix = OutputHandlerUtils.extractPrefix(attr.qName);
                 String actualAttrPrefix = attrPrefix;
                 String actualAttrQName = attr.qName;
                 
@@ -499,20 +607,22 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
                 }
                 
                 // Handle namespaced attributes
+                // Skip xml prefix - it's implicitly bound and should never be declared
                 if (actualAttrPrefix != null && !actualAttrPrefix.isEmpty() && 
+                    !OutputHandlerUtils.isXmlPrefix(actualAttrPrefix) &&
                     attr.namespaceURI != null && !attr.namespaceURI.isEmpty()) {
-                    String existingUri = prefixToNamespace.get(actualAttrPrefix);
+                    String existingUri = prefixToNamespaceMap.get(actualAttrPrefix);
                     if (existingUri == null) {
                         // Prefix not declared - add namespace declaration
                         writer.writeNamespace(actualAttrPrefix, attr.namespaceURI);
-                        prefixToNamespace.put(actualAttrPrefix, attr.namespaceURI);
+                        prefixToNamespaceMap.put(actualAttrPrefix, attr.namespaceURI);
                     } else if (!existingUri.equals(attr.namespaceURI)) {
                         // Prefix conflict! Generate a new unique prefix
                         actualAttrPrefix = generateUniquePrefix(actualAttrPrefix);
                         actualAttrQName = actualAttrPrefix + ":" + attr.localName;
                         // Add namespace declaration for the new prefix
                         writer.writeNamespace(actualAttrPrefix, attr.namespaceURI);
-                        prefixToNamespace.put(actualAttrPrefix, attr.namespaceURI);
+                        prefixToNamespaceMap.put(actualAttrPrefix, attr.namespaceURI);
                     }
                 }
                 
@@ -542,23 +652,6 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     }
 
     /**
-     * Extracts the prefix from a qualified name.
-     *
-     * @param qName the qualified name
-     * @return the prefix, or null if no prefix
-     */
-    private static String extractPrefix(String qName) {
-        if (qName == null) {
-            return null;
-        }
-        int colon = qName.indexOf(':');
-        if (colon > 0) {
-            return qName.substring(0, colon);
-        }
-        return null;
-    }
-
-    /**
      * Holds a prefix-to-URI mapping from startPrefixMapping.
      */
     private static final class PrefixMapping {
@@ -568,6 +661,40 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
         PrefixMapping(String prefix, String uri) {
             this.prefix = prefix;
             this.uri = uri;
+        }
+    }
+    
+    @Override
+    public boolean isAtomicValuePending() {
+        return atomicValuePending;
+    }
+    
+    @Override
+    public void setAtomicValuePending(boolean pending) {
+        this.atomicValuePending = pending;
+    }
+    
+    @Override
+    public boolean isInAttributeContent() {
+        return inAttributeContent;
+    }
+    
+    @Override
+    public void setInAttributeContent(boolean inAttributeContent) {
+        this.inAttributeContent = inAttributeContent;
+    }
+    
+    @Override
+    public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
+            throws org.xml.sax.SAXException {
+        if (value != null) {
+            // In element content, add space between adjacent atomic values (XSLT 2.0+)
+            // But NOT in attribute content
+            if (atomicValuePending && !inAttributeContent) {
+                characters(" ");
+            }
+            characters(value.asString());
+            atomicValuePending = true;
         }
     }
 }

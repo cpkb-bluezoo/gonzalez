@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.xpath.function;
 
+import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.*;
@@ -29,6 +30,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -92,6 +94,17 @@ public final class SequenceFunctions {
         functions.add(NAMESPACE_URI_FOR_PREFIX);
         functions.add(NODE_NAME);
         functions.add(RESOLVE_QNAME);
+        functions.add(COPY_OF);
+        // XPath 2.0/3.0 additional functions
+        functions.add(ROOT);
+        functions.add(NILLED);
+        functions.add(TRACE);
+        functions.add(DEFAULT_COLLATION);
+        functions.add(PATH);
+        functions.add(COLLECTION);
+        functions.add(AVAILABLE_ENVIRONMENT_VARIABLES);
+        functions.add(ENVIRONMENT_VARIABLE);
+        functions.add(SORT);
         return functions;
     }
 
@@ -148,31 +161,46 @@ public final class SequenceFunctions {
             XPathValue seq = args.get(0);
             double startLoc = args.get(1).asNumber();
             
-            // Handle NaN or negative infinity
+            // Handle NaN starting location
             if (Double.isNaN(startLoc)) {
                 return XPathSequence.EMPTY;
             }
             
-            // Round starting location
-            int start = (int) Math.round(startLoc);
-            
-            int length = Integer.MAX_VALUE;
-            if (args.size() > 2) {
-                double lenArg = args.get(2).asNumber();
-                if (Double.isNaN(lenArg)) {
-                    return XPathSequence.EMPTY;
-                }
-                length = (int) Math.round(lenArg);
+            // Handle -INF starting location (always empty)
+            if (Double.isInfinite(startLoc) && startLoc < 0) {
+                return XPathSequence.EMPTY;
             }
             
-            // Convert to 0-based index (XPath uses 1-based)
-            int startIndex = start - 1;
+            // Get length argument (defaults to infinite if not specified)
+            double lengthArg = Double.POSITIVE_INFINITY;
+            if (args.size() > 2) {
+                lengthArg = args.get(2).asNumber();
+                if (Double.isNaN(lengthArg)) {
+                    return XPathSequence.EMPTY;
+                }
+            }
+            
+            // Per XPath spec: item at position p is included if
+            // round(startingLoc) <= p < round(startingLoc) + round(length)
+            // Positions are 1-based
+            double roundedStart = Math.round(startLoc);
+            double roundedLength = Math.round(lengthArg);
+            
+            // Calculate the end position (exclusive)
+            double endPos = roundedStart + roundedLength;
+            
+            // Handle cases where range is entirely outside valid positions
+            if (endPos < 1) {
+                return XPathSequence.EMPTY;
+            }
             
             List<XPathValue> items = toList(seq);
             List<XPathValue> result = new ArrayList<>();
             
+            // Iterate through items (1-based position)
             for (int i = 0; i < items.size(); i++) {
-                if (i >= startIndex && result.size() < length) {
+                int position = i + 1;  // Convert to 1-based
+                if (position >= roundedStart && position < endPos) {
                     result.add(items.get(i));
                 }
             }
@@ -198,14 +226,47 @@ public final class SequenceFunctions {
             XPathValue seq = args.get(0);
             List<XPathValue> items = toList(seq);
             
-            Set<String> seen = new HashSet<>();
+            // Get collation from 2nd argument or use default
+            Collation collation;
+            if (args.size() > 1) {
+                String collUri = args.get(1).asString();
+                collation = Collation.forUri(collUri);
+            } else {
+                String defaultUri = context.getDefaultCollation();
+                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+            }
+            
             List<XPathValue> result = new ArrayList<>();
+            List<String> seenStrings = new ArrayList<>();  // For collation-based matching
+            Set<Double> seenNumbers = new HashSet<>();      // Numbers use exact equality
+            boolean seenNaN = false;
             
             for (XPathValue item : items) {
-                String key = item.asString();
-                if (!seen.contains(key)) {
-                    seen.add(key);
-                    result.add(item);
+                if (item instanceof XPathNumber) {
+                    double num = item.asNumber();
+                    if (Double.isNaN(num)) {
+                        // NaN is equal to nothing, including itself, so distinct-values treats it as one value
+                        if (!seenNaN) {
+                            seenNaN = true;
+                            result.add(item);
+                        }
+                    } else if (!seenNumbers.contains(num)) {
+                        seenNumbers.add(num);
+                        result.add(item);
+                    }
+                } else {
+                    String str = item.asString();
+                    boolean found = false;
+                    for (String seen : seenStrings) {
+                        if (collation.equals(str, seen)) {
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        seenStrings.add(str);
+                        result.add(item);
+                    }
                 }
             }
             
@@ -315,12 +376,31 @@ public final class SequenceFunctions {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             List<XPathValue> items = toList(args.get(0));
-            String search = args.get(1).asString();
+            XPathValue searchVal = args.get(1);
+            
+            // Get collation from 3rd argument or use default (used for string comparison)
+            Collation collation;
+            if (args.size() > 2) {
+                String collUri = args.get(2).asString();
+                collation = Collation.forUri(collUri);
+            } else {
+                String defaultUri = context.getDefaultCollation();
+                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+            }
             
             List<XPathValue> result = new ArrayList<>();
             for (int i = 0; i < items.size(); i++) {
-                if (search.equals(items.get(i).asString())) {
-                    result.add(XPathNumber.of(i + 1));  // 1-based
+                XPathValue item = items.get(i);
+                // For numeric types, use numeric comparison
+                if (searchVal instanceof XPathNumber && item instanceof XPathNumber) {
+                    if (searchVal.asNumber() == item.asNumber()) {
+                        result.add(XPathNumber.of(i + 1));  // 1-based
+                    }
+                } else {
+                    // Use collation for string comparison
+                    if (collation.equals(searchVal.asString(), item.asString())) {
+                        result.add(XPathNumber.of(i + 1));  // 1-based
+                    }
                 }
             }
             
@@ -1269,11 +1349,646 @@ public final class SequenceFunctions {
         } else if (value instanceof XPathNodeSet) {
             XPathNodeSet nodeSet = (XPathNodeSet) value;
             for (XPathNode node : nodeSet) {
-                result.add(XPathString.of(node.getStringValue()));
+                // Wrap each node in a singleton node-set to preserve node identity
+                result.add(new XPathNodeSet(Collections.singletonList(node)));
             }
         } else {
             result.add(value);
         }
         return result;
     }
+    
+    /**
+     * XPath 3.0 copy-of() function.
+     * 
+     * <p>Returns a deep copy of each item in the input sequence.
+     * For nodes, creates a deep copy. For atomic values, returns the same value.
+     * 
+     * <p>Signature: copy-of(item()*) → item()*
+     * <p>Signature: copy-of() → item() (uses context item)
+     * 
+     * @see XSLT 3.0 specification
+     */
+    public static final Function COPY_OF = new Function() {
+        @Override public String getName() { return "copy-of"; }
+        @Override public int getMinArgs() { return 0; }  // 0 args = use context item
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue input;
+            if (args.isEmpty()) {
+                // Use context item
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode == null) {
+                    throw new XPathException("XPDY0002: Context item is absent for copy-of()");
+                }
+                input = XPathNodeSet.of(contextNode);
+            } else {
+                input = args.get(0);
+            }
+            
+            // For atomic values, just return them (they're immutable)
+            // For nodes, we create a deep copy with new identity
+            if (input instanceof XPathNodeSet) {
+                XPathNodeSet nodeSet = (XPathNodeSet) input;
+                List<XPathNode> copiedNodes = new ArrayList<>();
+                for (XPathNode node : nodeSet.getNodes()) {
+                    copiedNodes.add(new CopiedNode(node));
+                }
+                return XPathNodeSet.of(copiedNodes.toArray(new XPathNode[0]));
+            } else if (input instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) input;
+                List<XPathValue> copies = new ArrayList<>();
+                for (XPathValue item : seq) {
+                    if (item instanceof XPathNodeSet) {
+                        XPathNodeSet ns = (XPathNodeSet) item;
+                        List<XPathNode> copiedNodes = new ArrayList<>();
+                        for (XPathNode node : ns.getNodes()) {
+                            copiedNodes.add(new CopiedNode(node));
+                        }
+                        copies.add(XPathNodeSet.of(copiedNodes.toArray(new XPathNode[0])));
+                    } else {
+                        copies.add(item);  // Atomic values are immutable
+                    }
+                }
+                return new XPathSequence(copies);
+            } else {
+                // Atomic values are immutable, return as-is
+                return input;
+            }
+        }
+    };
+    
+    /**
+     * A copied node that wraps an original node with new identity.
+     * 
+     * <p>Per XPath 3.0 copy-of() semantics, copied nodes:
+     * <ul>
+     *   <li>Have different node identity (is comparison returns false)</li>
+     *   <li>Have no parent (they are orphaned)</li>
+     *   <li>Have no siblings</li>
+     *   <li>Preserve the same name, value, and structure</li>
+     * </ul>
+     */
+    private static class CopiedNode implements XPathNode {
+        private final XPathNode original;
+        private final long uniqueId;
+        private static long nextId = Long.MIN_VALUE;
+        
+        CopiedNode(XPathNode original) {
+            this.original = original;
+            this.uniqueId = nextId++;
+        }
+        
+        @Override public NodeType getNodeType() { return original.getNodeType(); }
+        @Override public String getNamespaceURI() { return original.getNamespaceURI(); }
+        @Override public String getLocalName() { return original.getLocalName(); }
+        @Override public String getPrefix() { return original.getPrefix(); }
+        @Override public String getStringValue() { return original.getStringValue(); }
+        
+        // Orphaned node - no parent or siblings
+        @Override public XPathNode getParent() { return null; }
+        @Override public XPathNode getFollowingSibling() { return null; }
+        @Override public XPathNode getPrecedingSibling() { return null; }
+        
+        // Children and attributes are also copied (wrapped)
+        @Override 
+        public Iterator<XPathNode> getChildren() {
+            List<XPathNode> copiedChildren = new ArrayList<>();
+            Iterator<XPathNode> origChildren = original.getChildren();
+            while (origChildren.hasNext()) {
+                copiedChildren.add(new CopiedNode(origChildren.next()));
+            }
+            return copiedChildren.iterator();
+        }
+        
+        @Override 
+        public Iterator<XPathNode> getAttributes() {
+            List<XPathNode> copiedAttrs = new ArrayList<>();
+            Iterator<XPathNode> origAttrs = original.getAttributes();
+            while (origAttrs.hasNext()) {
+                copiedAttrs.add(new CopiedNode(origAttrs.next()));
+            }
+            return copiedAttrs.iterator();
+        }
+        
+        @Override 
+        public Iterator<XPathNode> getNamespaces() {
+            List<XPathNode> copiedNs = new ArrayList<>();
+            Iterator<XPathNode> origNs = original.getNamespaces();
+            while (origNs.hasNext()) {
+                copiedNs.add(new CopiedNode(origNs.next()));
+            }
+            return copiedNs.iterator();
+        }
+        
+        // Different identity - unique document order
+        @Override public long getDocumentOrder() { return uniqueId; }
+        
+        // Never the same as any other node (different identity)
+        @Override 
+        public boolean isSameNode(XPathNode other) { 
+            return this == other; // Only same if same Java object
+        }
+        
+        // Copied node is its own root
+        @Override public XPathNode getRoot() { return this; }
+        
+        // Copied nodes are fully navigable since they have all children materialized
+        @Override public boolean isFullyNavigable() { return true; }
+    }
+
+    /**
+     * XPath 2.0 root() function.
+     * 
+     * <p>Returns the root of the tree to which the argument node belongs.
+     * 
+     * <p>Signature: root() → node()
+     * <p>Signature: root($arg as node()?) → node()?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-root">XPath root()</a>
+     */
+    public static final Function ROOT = new Function() {
+        @Override public String getName() { return "root"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathNode node;
+            if (args.isEmpty()) {
+                node = context.getContextNode();
+            } else {
+                XPathValue arg = args.get(0);
+                if (arg == null || (arg instanceof XPathSequence && ((XPathSequence)arg).isEmpty())) {
+                    return XPathSequence.EMPTY;
+                }
+                if (arg instanceof XPathNode) {
+                    node = (XPathNode) arg;
+                } else if (arg instanceof XPathNodeSet) {
+                    XPathNodeSet ns = (XPathNodeSet) arg;
+                    Iterator<XPathNode> iter = ns.iterator();
+                    if (!iter.hasNext()) {
+                        return XPathSequence.EMPTY;
+                    }
+                    node = iter.next();
+                } else {
+                    throw new XPathException("Argument to root() must be a node");
+                }
+            }
+            
+            // Navigate to root
+            XPathNode root = node.getRoot();
+            if (root != null) {
+                return XPathNodeSet.of(root);
+            }
+            
+            // Fallback: traverse parent chain
+            while (node.getParent() != null) {
+                node = node.getParent();
+            }
+            return XPathNodeSet.of(node);
+        }
+    };
+
+    /**
+     * XPath 2.0 nilled() function.
+     * 
+     * <p>Returns true if the argument node is nilled (xs:nil="true").
+     * 
+     * <p>Signature: nilled($arg as node()?) → boolean?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-nilled">XPath nilled()</a>
+     */
+    public static final Function NILLED = new Function() {
+        @Override public String getName() { return "nilled"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathNode node;
+            if (args.isEmpty()) {
+                node = context.getContextNode();
+            } else {
+                XPathValue arg = args.get(0);
+                if (arg == null || (arg instanceof XPathSequence && ((XPathSequence)arg).isEmpty())) {
+                    return XPathSequence.EMPTY;
+                }
+                if (arg instanceof XPathNode) {
+                    node = (XPathNode) arg;
+                } else if (arg instanceof XPathNodeSet) {
+                    XPathNodeSet ns = (XPathNodeSet) arg;
+                    Iterator<XPathNode> iter = ns.iterator();
+                    if (!iter.hasNext()) {
+                        return XPathSequence.EMPTY;
+                    }
+                    node = iter.next();
+                } else {
+                    return XPathSequence.EMPTY;
+                }
+            }
+            
+            // Only element nodes can be nilled
+            if (node.getNodeType() != NodeType.ELEMENT) {
+                return XPathSequence.EMPTY;
+            }
+            
+            // Check for xsi:nil attribute
+            Iterator<XPathNode> attrs = node.getAttributes();
+            if (attrs != null) {
+                while (attrs.hasNext()) {
+                    XPathNode attr = attrs.next();
+                    if ("nil".equals(attr.getLocalName()) && 
+                        "http://www.w3.org/2001/XMLSchema-instance".equals(attr.getNamespaceURI())) {
+                        String value = attr.getStringValue();
+                        return XPathBoolean.of("true".equals(value) || "1".equals(value));
+                    }
+                }
+            }
+            return XPathBoolean.FALSE;
+        }
+    };
+
+    /**
+     * XPath 2.0 trace() function.
+     * 
+     * <p>Returns its first argument and outputs debugging information.
+     * The debugging output is implementation-defined.
+     * 
+     * <p>Signature: trace($value as item()*, $label as xs:string) → item()*
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-trace">XPath trace()</a>
+     */
+    public static final Function TRACE = new Function() {
+        @Override public String getName() { return "trace"; }
+        @Override public int getMinArgs() { return 2; }
+        @Override public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue value = args.get(0);
+            String label = args.get(1).asString();
+            
+            // Output trace info to stderr (implementation-defined)
+            System.err.println("TRACE [" + label + "]: " + (value != null ? value.asString() : "(empty)"));
+            
+            // Return the value unchanged
+            return value;
+        }
+    };
+
+    /**
+     * XPath 2.0 default-collation() function.
+     * 
+     * <p>Returns the URI of the default collation.
+     * 
+     * <p>Signature: default-collation() → xs:string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-default-collation">XPath default-collation()</a>
+     */
+    public static final Function DEFAULT_COLLATION = new Function() {
+        @Override public String getName() { return "default-collation"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 0; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // Return the Unicode codepoint collation as default
+            return XPathString.of("http://www.w3.org/2005/xpath-functions/collation/codepoint");
+        }
+    };
+
+    /**
+     * XPath 3.0 path() function.
+     * 
+     * <p>Returns a path expression that can be used to select the argument node.
+     * 
+     * <p>Signature: path() → xs:string?
+     * <p>Signature: path($arg as node()?) → xs:string?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-path">XPath path()</a>
+     */
+    public static final Function PATH = new Function() {
+        @Override public String getName() { return "path"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathNode node;
+            if (args.isEmpty()) {
+                node = context.getContextNode();
+            } else {
+                XPathValue arg = args.get(0);
+                if (arg == null || (arg instanceof XPathSequence && ((XPathSequence)arg).isEmpty())) {
+                    return XPathSequence.EMPTY;
+                }
+                if (arg instanceof XPathNode) {
+                    node = (XPathNode) arg;
+                } else if (arg instanceof XPathNodeSet) {
+                    XPathNodeSet ns = (XPathNodeSet) arg;
+                    Iterator<XPathNode> iter = ns.iterator();
+                    if (!iter.hasNext()) {
+                        return XPathSequence.EMPTY;
+                    }
+                    node = iter.next();
+                } else {
+                    throw new XPathException("Argument to path() must be a node");
+                }
+            }
+            
+            return XPathString.of(buildPath(node));
+        }
+        
+        private String buildPath(XPathNode node) {
+            if (node == null) {
+                return "";
+            }
+            
+            NodeType type = node.getNodeType();
+            if (type == NodeType.ROOT) {
+                return "/";
+            }
+            
+            StringBuilder sb = new StringBuilder();
+            XPathNode parent = node.getParent();
+            if (parent != null && parent.getNodeType() != NodeType.ROOT) {
+                sb.append(buildPath(parent));
+            }
+            
+            switch (type) {
+                case ELEMENT:
+                    String uri = node.getNamespaceURI();
+                    String local = node.getLocalName();
+                    sb.append("/");
+                    if (uri != null && !uri.isEmpty()) {
+                        sb.append("Q{").append(uri).append("}");
+                    }
+                    sb.append(local);
+                    // Add position predicate
+                    int pos = getElementPosition(node);
+                    sb.append("[").append(pos).append("]");
+                    break;
+                case ATTRIBUTE:
+                    uri = node.getNamespaceURI();
+                    local = node.getLocalName();
+                    sb.append("/@");
+                    if (uri != null && !uri.isEmpty()) {
+                        sb.append("Q{").append(uri).append("}");
+                    }
+                    sb.append(local);
+                    break;
+                case TEXT:
+                    sb.append("/text()[").append(getTextPosition(node)).append("]");
+                    break;
+                case COMMENT:
+                    sb.append("/comment()[").append(getCommentPosition(node)).append("]");
+                    break;
+                case PROCESSING_INSTRUCTION:
+                    sb.append("/processing-instruction(").append(node.getLocalName()).append(")");
+                    sb.append("[").append(getPIPosition(node)).append("]");
+                    break;
+                case NAMESPACE:
+                    String prefix = node.getLocalName();
+                    sb.append("/namespace::").append(prefix != null && !prefix.isEmpty() ? prefix : "*[Q{http://www.w3.org/2005/xpath-functions}local-name()=\"\"]");
+                    break;
+                default:
+                    break;
+            }
+            return sb.toString();
+        }
+        
+        private int getElementPosition(XPathNode node) {
+            XPathNode parent = node.getParent();
+            if (parent == null) {
+                return 1;
+            }
+            
+            String uri = node.getNamespaceURI();
+            String local = node.getLocalName();
+            int pos = 0;
+            
+            Iterator<XPathNode> siblings = parent.getChildren();
+            if (siblings != null) {
+                while (siblings.hasNext()) {
+                    XPathNode sibling = siblings.next();
+                    if (sibling.getNodeType() == NodeType.ELEMENT) {
+                        String sibUri = sibling.getNamespaceURI();
+                        String sibLocal = sibling.getLocalName();
+                        if (local.equals(sibLocal) && 
+                            ((uri == null && sibUri == null) || (uri != null && uri.equals(sibUri)))) {
+                            pos++;
+                            if (sibling.isSameNode(node)) {
+                                return pos;
+                            }
+                        }
+                    }
+                }
+            }
+            return 1;
+        }
+        
+        private int getTextPosition(XPathNode node) {
+            XPathNode parent = node.getParent();
+            if (parent == null) {
+                return 1;
+            }
+            
+            int pos = 0;
+            Iterator<XPathNode> siblings = parent.getChildren();
+            if (siblings != null) {
+                while (siblings.hasNext()) {
+                    XPathNode sibling = siblings.next();
+                    if (sibling.getNodeType() == NodeType.TEXT) {
+                        pos++;
+                        if (sibling.isSameNode(node)) {
+                            return pos;
+                        }
+                    }
+                }
+            }
+            return 1;
+        }
+        
+        private int getCommentPosition(XPathNode node) {
+            XPathNode parent = node.getParent();
+            if (parent == null) {
+                return 1;
+            }
+            
+            int pos = 0;
+            Iterator<XPathNode> siblings = parent.getChildren();
+            if (siblings != null) {
+                while (siblings.hasNext()) {
+                    XPathNode sibling = siblings.next();
+                    if (sibling.getNodeType() == NodeType.COMMENT) {
+                        pos++;
+                        if (sibling.isSameNode(node)) {
+                            return pos;
+                        }
+                    }
+                }
+            }
+            return 1;
+        }
+        
+        private int getPIPosition(XPathNode node) {
+            XPathNode parent = node.getParent();
+            if (parent == null) {
+                return 1;
+            }
+            
+            String target = node.getLocalName();
+            int pos = 0;
+            Iterator<XPathNode> siblings = parent.getChildren();
+            if (siblings != null) {
+                while (siblings.hasNext()) {
+                    XPathNode sibling = siblings.next();
+                    if (sibling.getNodeType() == NodeType.PROCESSING_INSTRUCTION &&
+                        target.equals(sibling.getLocalName())) {
+                        pos++;
+                        if (sibling.isSameNode(node)) {
+                            return pos;
+                        }
+                    }
+                }
+            }
+            return 1;
+        }
+    };
+
+    /**
+     * XPath 2.0 collection() function.
+     * 
+     * <p>Returns a sequence of nodes retrieved from a collection.
+     * The default collection is returned if no argument is given.
+     * 
+     * <p>Signature: collection() → node()*
+     * <p>Signature: collection($arg as xs:string?) → node()*
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-collection">XPath collection()</a>
+     */
+    public static final Function COLLECTION = new Function() {
+        @Override public String getName() { return "collection"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // Collection support is implementation-defined
+            // Return empty sequence for now (most collections are not accessible in streaming context)
+            if (args.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            String uri = args.get(0).asString();
+            if (uri == null || uri.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            // For file: URIs pointing to directories, we could list files
+            // For now, return empty - full implementation requires catalog support
+            return XPathSequence.EMPTY;
+        }
+    };
+
+    /**
+     * XPath 3.0 available-environment-variables() function.
+     * 
+     * <p>Returns a list of environment variable names available to the processor.
+     * 
+     * <p>Signature: available-environment-variables() → xs:string*
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-available-environment-variables">XPath available-environment-variables()</a>
+     */
+    public static final Function AVAILABLE_ENVIRONMENT_VARIABLES = new Function() {
+        @Override public String getName() { return "available-environment-variables"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 0; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            java.util.Map<String, String> env = System.getenv();
+            List<XPathValue> names = new ArrayList<>();
+            for (String name : env.keySet()) {
+                names.add(XPathString.of(name));
+            }
+            return new XPathSequence(names);
+        }
+    };
+
+    /**
+     * XPath 3.0 environment-variable() function.
+     * 
+     * <p>Returns the value of a system environment variable.
+     * 
+     * <p>Signature: environment-variable($name as xs:string) → xs:string?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-environment-variable">XPath environment-variable()</a>
+     */
+    public static final Function ENVIRONMENT_VARIABLE = new Function() {
+        @Override public String getName() { return "environment-variable"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String name = args.get(0).asString();
+            String value = System.getenv(name);
+            if (value == null) {
+                return XPathSequence.EMPTY;
+            }
+            return XPathString.of(value);
+        }
+    };
+
+    /**
+     * XPath 3.1 sort() function.
+     * 
+     * <p>Returns a sequence containing the items in the input sequence sorted according to
+     * the supplied collation and key function.
+     * 
+     * <p>Signature: sort($input as item()*) → item()*
+     * <p>Signature: sort($input as item()*, $collation as xs:string?) → item()*
+     * <p>Signature: sort($input as item()*, $collation as xs:string?, $key as function(item()) as xs:anyAtomicType*) → item()*
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-sort">XPath sort()</a>
+     */
+    public static final Function SORT = new Function() {
+        @Override public String getName() { return "sort"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 3; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue input = args.get(0);
+            // Collation argument (args[1]) is ignored - we use default string comparison
+            // Key function (args[2]) is not supported - higher-order functions not implemented
+            
+            List<XPathValue> items = new ArrayList<>();
+            if (input instanceof XPathSequence) {
+                for (XPathValue item : (XPathSequence) input) {
+                    items.add(item);
+                }
+            } else if (input instanceof XPathNodeSet) {
+                for (XPathNode node : (XPathNodeSet) input) {
+                    items.add(XPathString.of(node.getStringValue()));
+                }
+            } else if (input != null) {
+                items.add(input);
+            }
+            
+            // Sort by string value
+            Collections.sort(items, new Comparator<XPathValue>() {
+                @Override
+                public int compare(XPathValue a, XPathValue b) {
+                    String sa = a != null ? a.asString() : "";
+                    String sb = b != null ? b.asString() : "";
+                    return sa.compareTo(sb);
+                }
+            });
+            
+            return new XPathSequence(items);
+        }
+    };
 }

@@ -182,7 +182,7 @@ public final class NodeSetFunctions {
             
             // Search for elements with matching IDs
             List<XPathNode> result = new ArrayList<>();
-            collectElementsById(root, idValues, result);
+            collectElementsById(root, idValues, result, context);
             
             return new XPathNodeSet(result);
         }
@@ -209,25 +209,33 @@ public final class NodeSetFunctions {
             }
         }
         
-        private void collectElementsById(XPathNode node, List<String> idValues, List<XPathNode> result) {
+        private void collectElementsById(XPathNode node, List<String> idValues, 
+                List<XPathNode> result, XPathContext context) {
             if (node.isElement()) {
                 // Check for DTD-declared ID attributes and common ID attributes
-                String idAttr = getIdAttribute(node);
+                String idAttr = getIdAttribute(node, context);
                 if (idAttr != null) {
                     for (String searchId : idValues) {
                         if (searchId.equals(idAttr)) {
                             // Avoid duplicates
-                            boolean found = false;
-                            for (XPathNode existing : result) {
-                                if (existing.isSameNode(node)) {
-                                    found = true;
-                                    break;
-                                }
-                            }
-                            if (!found) {
-                                result.add(node);
-                            }
+                            addIfNotPresent(result, node);
                             break;
+                        }
+                    }
+                }
+                
+                // Also check if this element itself is ID-typed (XSLT 2.0+)
+                // ID-typed elements have their text content as the ID value
+                if (node.hasTypeAnnotation()) {
+                    String typeLocal = node.getTypeLocalName();
+                    String typeNs = node.getTypeNamespaceURI();
+                    if (context != null && context.isIdDerivedType(typeNs, typeLocal)) {
+                        String elementId = node.getStringValue().trim();
+                        for (String searchId : idValues) {
+                            if (searchId.equals(elementId)) {
+                                addIfNotPresent(result, node);
+                                break;
+                            }
                         }
                     }
                 }
@@ -236,11 +244,20 @@ public final class NodeSetFunctions {
             // Recurse into children
             Iterator<XPathNode> children = node.getChildren();
             while (children.hasNext()) {
-                collectElementsById(children.next(), idValues, result);
+                collectElementsById(children.next(), idValues, result, context);
             }
         }
         
-        private String getIdAttribute(XPathNode element) {
+        private void addIfNotPresent(List<XPathNode> result, XPathNode node) {
+            for (XPathNode existing : result) {
+                if (existing.isSameNode(node)) {
+                    return;
+                }
+            }
+            result.add(node);
+        }
+        
+        private String getIdAttribute(XPathNode element, XPathContext context) {
             // First priority: Check for DTD-declared ID attributes
             Iterator<XPathNode> attrs = element.getAttributes();
             while (attrs.hasNext()) {
@@ -255,7 +272,22 @@ public final class NodeSetFunctions {
                 }
             }
             
-            // Second priority: xml:id (XML standard)
+            // Second priority: Schema-typed ID attributes (XSLT 2.0+)
+            // Check for attributes whose type annotation is xs:ID or derives from xs:ID
+            attrs = element.getAttributes();
+            while (attrs.hasNext()) {
+                XPathNode attr = attrs.next();
+                if (attr.hasTypeAnnotation()) {
+                    String typeLocal = attr.getTypeLocalName();
+                    String typeNs = attr.getTypeNamespaceURI();
+                    // Use context to check ID derivation (handles both built-in and user-defined types)
+                    if (context != null && context.isIdDerivedType(typeNs, typeLocal)) {
+                        return attr.getStringValue();
+                    }
+                }
+            }
+            
+            // Third priority: xml:id (XML standard)
             attrs = element.getAttributes();
             while (attrs.hasNext()) {
                 XPathNode attr = attrs.next();
@@ -267,7 +299,7 @@ public final class NodeSetFunctions {
                 }
             }
             
-            // Third priority: Check for plain "id" or "ID" attribute (fallback)
+            // Fourth priority: Check for plain "id" or "ID" attribute (fallback)
             attrs = element.getAttributes();
             while (attrs.hasNext()) {
                 XPathNode attr = attrs.next();
@@ -405,12 +437,131 @@ public final class NodeSetFunctions {
     };
 
     /**
-     * Returns all node-set functions (XPath 1.0).
+     * XPath 1.0 idref() function.
+     * 
+     * <p>Returns elements that have IDREF attributes matching the given ID values.
+     * 
+     * <p>Signature: idref(object) → node-set
+     * <p>Signature: idref(object, node) → node-set
+     * 
+     * <p>Note: This function requires DTD validation to identify IDREF attributes.
+     * Without DTD information, it searches for common IDREF attribute names.
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-idref">XPath idref()</a>
+     */
+    public static final Function IDREF = new Function() {
+        @Override public String getName() { return "idref"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // Get the ID values to search for
+            java.util.Set<String> idValues = new java.util.HashSet<>();
+            XPathValue arg = args.get(0);
+            if (arg instanceof XPathNodeSet) {
+                for (XPathNode n : (XPathNodeSet) arg) {
+                    addIdValues(idValues, n.getStringValue());
+                }
+            } else if (arg instanceof XPathSequence) {
+                for (XPathValue v : (XPathSequence) arg) {
+                    addIdValues(idValues, v.asString());
+                }
+            } else {
+                addIdValues(idValues, arg.asString());
+            }
+            
+            if (idValues.isEmpty()) {
+                return XPathNodeSet.EMPTY;
+            }
+            
+            // Get the document to search
+            XPathNode docNode;
+            if (args.size() > 1) {
+                XPathValue nodeArg = args.get(1);
+                if (nodeArg instanceof XPathNode) {
+                    docNode = ((XPathNode) nodeArg).getRoot();
+                } else if (nodeArg instanceof XPathNodeSet) {
+                    Iterator<XPathNode> iter = ((XPathNodeSet) nodeArg).iterator();
+                    if (iter.hasNext()) {
+                        docNode = iter.next().getRoot();
+                    } else {
+                        return XPathNodeSet.EMPTY;
+                    }
+                } else {
+                    return XPathNodeSet.EMPTY;
+                }
+            } else {
+                docNode = context.getContextNode().getRoot();
+            }
+            
+            // Search for elements with IDREF/IDREFS attributes matching the IDs
+            List<XPathNode> result = new ArrayList<>();
+            findIdrefElements(docNode, idValues, result);
+            
+            return new XPathNodeSet(result);
+        }
+        
+        private void addIdValues(java.util.Set<String> idValues, String value) {
+            if (value != null) {
+                // Split on whitespace for IDREFS
+                for (String id : value.trim().split("\\s+")) {
+                    if (!id.isEmpty()) {
+                        idValues.add(id);
+                    }
+                }
+            }
+        }
+        
+        private void findIdrefElements(XPathNode node, java.util.Set<String> idValues, List<XPathNode> result) {
+            if (node == null) {
+                return;
+            }
+            
+            NodeType type = node.getNodeType();
+            if (type == NodeType.ELEMENT || type == NodeType.ROOT) {
+                // Check attributes for IDREF values
+                if (type == NodeType.ELEMENT) {
+                    Iterator<XPathNode> attrs = node.getAttributes();
+                    if (attrs != null) {
+                        while (attrs.hasNext()) {
+                            XPathNode attr = attrs.next();
+                            String attrValue = attr.getStringValue();
+                            // Check if this attribute value contains any of our ID values
+                            // (for IDREFS, split on whitespace)
+                            if (attrValue != null) {
+                                for (String part : attrValue.trim().split("\\s+")) {
+                                    if (idValues.contains(part)) {
+                                        // Found a match - add this element (not the attribute)
+                                        if (!result.contains(node)) {
+                                            result.add(node);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Recurse into children
+                Iterator<XPathNode> children = node.getChildren();
+                if (children != null) {
+                    while (children.hasNext()) {
+                        findIdrefElements(children.next(), idValues, result);
+                    }
+                }
+            }
+        }
+    };
+
+    /**
+     * Returns all node-set functions (XPath 1.0 and 2.0).
      *
      * @return array of all node-set function implementations
      */
     public static Function[] getAll() {
-        return new Function[] { LAST, POSITION, COUNT, ID, LOCAL_NAME, NAMESPACE_URI, NAME };
+        return new Function[] { LAST, POSITION, COUNT, ID, IDREF, LOCAL_NAME, NAMESPACE_URI, NAME };
     }
 
 }

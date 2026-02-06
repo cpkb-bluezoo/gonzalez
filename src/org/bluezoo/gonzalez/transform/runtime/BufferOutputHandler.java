@@ -44,7 +44,7 @@ public class BufferOutputHandler implements OutputHandler {
     private final SAXEventBuffer buffer;
     
     // Pending namespace declarations for current element
-    private List<String[]> pendingNamespaces = new ArrayList<>();
+    private List<String[]> pendingNamespaces = new ArrayList<>(4);
     
     // Pending attributes for current element
     private AttributesImpl pendingAttributes = new AttributesImpl();
@@ -60,7 +60,11 @@ public class BufferOutputHandler implements OutputHandler {
     private String pendingTypeLocalName;
     
     // Pending attribute type annotations (stored by index)
-    private List<String[]> pendingAttributeTypes = new ArrayList<>();
+    private List<String[]> pendingAttributeTypes = new ArrayList<>(4);
+    
+    // XSLT 2.0 atomic value spacing state
+    private boolean atomicValuePending = false;
+    private boolean inAttributeContent = false;
     
     /**
      * Creates a new buffer output handler.
@@ -132,6 +136,10 @@ public class BufferOutputHandler implements OutputHandler {
     
     @Override
     public void namespace(String prefix, String uri) throws SAXException {
+        // Skip the xml prefix - it's implicitly bound and should never be declared
+        if (OutputHandlerUtils.isXmlPrefix(prefix)) {
+            return;
+        }
         if (hasPendingElement) {
             // Buffer namespace for emission before startElement
             pendingNamespaces.add(new String[]{prefix, uri});
@@ -161,8 +169,10 @@ public class BufferOutputHandler implements OutputHandler {
     @Override
     public void comment(String text) throws SAXException {
         flushPendingElement();
-        // SAXEventBuffer doesn't support comments directly
-        // Comments in RTF are typically not preserved
+        if (text != null) {
+            System.err.println("DEBUG runtime.BufferOutputHandler.comment: '" + text + "'");
+            buffer.comment(text.toCharArray(), 0, text.length());
+        }
     }
     
     @Override
@@ -206,7 +216,7 @@ public class BufferOutputHandler implements OutputHandler {
             return;
         }
         
-        String elementPrefix = extractPrefix(pendingQName);
+        String elementPrefix = OutputHandlerUtils.extractPrefix(pendingQName);
         String actualElementPrefix = elementPrefix;
         String actualQName = pendingQName;
         
@@ -252,17 +262,6 @@ public class BufferOutputHandler implements OutputHandler {
     }
     
     /**
-     * Extracts the prefix from a qualified name.
-     */
-    private static String extractPrefix(String qName) {
-        if (qName == null) {
-            return null;
-        }
-        int colon = qName.indexOf(':');
-        return colon > 0 ? qName.substring(0, colon) : null;
-    }
-    
-    /**
      * Generates a unique prefix by appending a number suffix.
      */
     private int prefixCounter = 0;
@@ -277,12 +276,46 @@ public class BufferOutputHandler implements OutputHandler {
     private void updateAttributePrefixes(String oldPrefix, String newPrefix) {
         for (int i = 0; i < pendingAttributes.getLength(); i++) {
             String attrQName = pendingAttributes.getQName(i);
-            String attrPrefix = extractPrefix(attrQName);
+            String attrPrefix = OutputHandlerUtils.extractPrefix(attrQName);
             if (oldPrefix.equals(attrPrefix)) {
                 String attrLocalName = pendingAttributes.getLocalName(i);
                 String newQName = newPrefix + ":" + attrLocalName;
                 pendingAttributes.setQName(i, newQName);
             }
+        }
+    }
+    
+    @Override
+    public boolean isAtomicValuePending() {
+        return atomicValuePending;
+    }
+    
+    @Override
+    public void setAtomicValuePending(boolean pending) {
+        this.atomicValuePending = pending;
+    }
+    
+    @Override
+    public boolean isInAttributeContent() {
+        return inAttributeContent;
+    }
+    
+    @Override
+    public void setInAttributeContent(boolean inAttributeContent) {
+        this.inAttributeContent = inAttributeContent;
+    }
+    
+    @Override
+    public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
+            throws SAXException {
+        if (value != null) {
+            // In element content, add space between adjacent atomic values (XSLT 2.0+)
+            // But NOT in attribute content
+            if (atomicValuePending && !inAttributeContent) {
+                characters(" ");
+            }
+            characters(value.asString());
+            atomicValuePending = true;
         }
     }
 }

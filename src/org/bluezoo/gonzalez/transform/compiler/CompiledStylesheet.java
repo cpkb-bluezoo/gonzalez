@@ -25,6 +25,7 @@ import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 import org.bluezoo.gonzalez.schema.xsd.XSDType;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
+import org.bluezoo.gonzalez.transform.ValidationMode;
 
 import java.util.*;
 
@@ -92,15 +93,25 @@ public final class CompiledStylesheet {
     }
     private final StreamingCapability streamingCapability;
     private final Map<String, DecimalFormatInfo> decimalFormats;
+    private final Map<String, CharacterMap> characterMaps;
     private final Map<String, AccumulatorDefinition> accumulators;
     private final Map<String, ModeDeclaration> modeDeclarations;
     private final Map<String, String> namespaceBindings;  // prefix -> URI from stylesheet
     private final Set<String> excludedNamespaceURIs;  // namespace URIs to exclude from output
     private final Map<String, UserFunction> userFunctions;  // keyed by namespace#localName#arity
     private final Map<String, XSDSchema> importedSchemas;  // namespace URI -> schema
-    private final StylesheetCompiler.ValidationMode defaultValidation;  // from default-validation attr
+    private final ValidationMode defaultValidation;  // from default-validation attr
     private final String baseURI;  // static base URI of the stylesheet
     private final double version;  // XSLT version (1.0, 2.0, 3.0)
+    private final String defaultCollation;  // default collation URI (XSLT 2.0+)
+    
+    // XSLT 3.0 global context item declaration
+    private String globalContextItemType;  // as attribute
+    private String globalContextItemUse;   // use attribute ("required", "optional", "absent")
+    
+    // XSLT 3.0 package information
+    private final String packageName;  // package name URI
+    private final String packageVersion;  // package version string
 
     /**
      * Stores decimal format configuration for format-number().
@@ -136,6 +147,92 @@ public final class CompiledStylesheet {
         
         private static char firstChar(String s, char defaultChar) {
             return (s != null && s.length() > 0) ? s.charAt(0) : defaultChar;
+        }
+    }
+
+    /**
+     * Stores character map configuration for xsl:character-map (XSLT 2.0+).
+     *
+     * <p>A character map defines a set of character-to-string mappings that are
+     * applied during serialization. Each mapping replaces a single character with
+     * a string (which may include markup).
+     */
+    public static class CharacterMap {
+        private final String name;
+        private final Map<Integer, String> mappings;  // Unicode code points to strings
+        private final List<String> useCharacterMaps;  // names of referenced character maps
+        
+        /**
+         * Creates a new character map.
+         *
+         * @param name the name of the character map
+         */
+        public CharacterMap(String name) {
+            this.name = name;
+            this.mappings = new HashMap<>();
+            this.useCharacterMaps = new ArrayList<>();
+        }
+        
+        /**
+         * Creates a character map with the given mappings.
+         *
+         * @param name the name of the character map
+         * @param mappings the code point-to-string mappings
+         * @param useCharacterMaps names of other character maps to include
+         */
+        public CharacterMap(String name, Map<Integer, String> mappings, List<String> useCharacterMaps) {
+            this.name = name;
+            this.mappings = new HashMap<>(mappings);
+            this.useCharacterMaps = new ArrayList<>(useCharacterMaps);
+        }
+        
+        /**
+         * Adds a character mapping.
+         *
+         * @param codePoint the Unicode code point to replace
+         * @param replacement the replacement string
+         */
+        public void addMapping(int codePoint, String replacement) {
+            mappings.put(codePoint, replacement);
+        }
+        
+        /**
+         * Adds a reference to another character map.
+         *
+         * @param mapName the name of the referenced character map
+         */
+        public void addUseCharacterMap(String mapName) {
+            useCharacterMaps.add(mapName);
+        }
+        
+        public String getName() { return name; }
+        public Map<Integer, String> getMappings() { return Collections.unmodifiableMap(mappings); }
+        public List<String> getUseCharacterMaps() { return Collections.unmodifiableList(useCharacterMaps); }
+        
+        /**
+         * Applies this character map to a string.
+         * Note: This does NOT recursively apply referenced character maps.
+         *
+         * @param input the input string
+         * @return the string with character mappings applied
+         */
+        public String apply(String input) {
+            if (mappings.isEmpty()) {
+                return input;
+            }
+            StringBuilder result = new StringBuilder(input.length());
+            int i = 0;
+            while (i < input.length()) {
+                int codePoint = input.codePointAt(i);
+                String replacement = mappings.get(codePoint);
+                if (replacement != null) {
+                    result.append(replacement);
+                } else {
+                    result.appendCodePoint(codePoint);
+                }
+                i += Character.charCount(codePoint);
+            }
+            return result.toString();
         }
     }
 
@@ -191,17 +288,24 @@ public final class CompiledStylesheet {
         private final List<SpaceDeclaration> preserveSpaceDeclarations = new ArrayList<>();
         private int currentImportPrecedence = 0;  // Tracks current import precedence level
         private final Map<String, DecimalFormatInfo> decimalFormats = new HashMap<>();
+        private final Map<String, CharacterMap> characterMaps = new HashMap<>();
         private final Map<String, AccumulatorDefinition> accumulators = new HashMap<>();
         private final Map<String, ModeDeclaration> modeDeclarations = new HashMap<>();
         private final Map<String, String> namespaceBindings = new HashMap<>();
+        private final Set<String> attributeSetReferences = new HashSet<>();  // All use-attribute-sets references
         private final Set<String> excludedNamespaceURIs = new HashSet<>();
         private final Map<String, UserFunction> userFunctions = new HashMap<>();
         private final Map<String, XSDSchema> importedSchemas = new HashMap<>();
         // Tracks precedences from included stylesheets that need to be updated to final precedence
         private final Set<Integer> pendingIncludePrecedences = new HashSet<>();
-        private StylesheetCompiler.ValidationMode defaultValidation = StylesheetCompiler.ValidationMode.STRIP;
+        private ValidationMode defaultValidation = ValidationMode.STRIP;
         private String baseURI;
         private double version = 1.0;
+        private String defaultCollation;  // XSLT 2.0+ default-collation
+        private String globalContextItemType;  // XSLT 3.0
+        private String globalContextItemUse;   // XSLT 3.0
+        private String packageName;  // XSLT 3.0 package name
+        private String packageVersion;  // XSLT 3.0 package version
 
         /**
          * Sets the base URI of the stylesheet.
@@ -226,6 +330,79 @@ public final class CompiledStylesheet {
         }
 
         /**
+         * Sets the default collation URI (XSLT 2.0+).
+         *
+         * @param collation the collation URI
+         * @return this builder
+         */
+        public Builder setDefaultCollation(String collation) {
+            this.defaultCollation = collation;
+            return this;
+        }
+
+        /**
+         * Sets the global context item type (XSLT 3.0).
+         *
+         * @param type the expected type
+         * @return this builder
+         */
+        public Builder setGlobalContextItemType(String type) {
+            this.globalContextItemType = type;
+            return this;
+        }
+
+        /**
+         * Sets the global context item use (XSLT 3.0).
+         *
+         * @param use "required", "optional", or "absent"
+         * @return this builder
+         */
+        public Builder setGlobalContextItemUse(String use) {
+            this.globalContextItemUse = use;
+            return this;
+        }
+
+        /**
+         * Sets the package name (XSLT 3.0).
+         *
+         * @param name the package name (a URI)
+         * @return this builder
+         */
+        public Builder setPackageName(String name) {
+            this.packageName = name;
+            return this;
+        }
+
+        /**
+         * Sets the package version (XSLT 3.0).
+         *
+         * @param version the package version string
+         * @return this builder
+         */
+        public Builder setPackageVersion(String version) {
+            this.packageVersion = version;
+            return this;
+        }
+
+        /**
+         * Gets the package name.
+         *
+         * @return the package name, or null
+         */
+        public String getPackageName() {
+            return packageName;
+        }
+
+        /**
+         * Gets the package version.
+         *
+         * @return the package version, or null
+         */
+        public String getPackageVersion() {
+            return packageVersion;
+        }
+
+        /**
          * Adds a template rule to the stylesheet.
          *
          * @param rule the template rule
@@ -247,16 +424,24 @@ public final class CompiledStylesheet {
          * @param variable the global variable
          * @return this builder
          */
-        public Builder addGlobalVariable(GlobalVariable variable) {
-            // Check for existing variable with same name - newer definition wins
-            // (higher import precedence stylesheets add their variables later)
+        public Builder addGlobalVariable(GlobalVariable variable) throws javax.xml.transform.TransformerConfigurationException {
+            // Check for existing variable with same name
             for (int i = 0; i < globalVariables.size(); i++) {
                 GlobalVariable existing = globalVariables.get(i);
                 boolean sameNs = (existing.getNamespaceURI() == null && variable.getNamespaceURI() == null) ||
                                 (existing.getNamespaceURI() != null && existing.getNamespaceURI().equals(variable.getNamespaceURI()));
                 if (sameNs && existing.getLocalName().equals(variable.getLocalName())) {
-                    // Replace existing with new definition (higher precedence)
-                    globalVariables.set(i, variable);
+                    // XTSE0630: Duplicate variable at same import precedence is an error
+                    if (existing.getImportPrecedence() == variable.getImportPrecedence()) {
+                        throw new javax.xml.transform.TransformerConfigurationException(
+                            "XTSE0630: Duplicate global " + 
+                            (variable.isParam() ? "parameter" : "variable") + 
+                            " '" + variable.getName() + "' with same import precedence");
+                    }
+                    // Higher precedence wins - only replace if new variable has higher precedence
+                    if (variable.getImportPrecedence() > existing.getImportPrecedence()) {
+                        globalVariables.set(i, variable);
+                    }
                     return this;
                 }
             }
@@ -425,6 +610,46 @@ public final class CompiledStylesheet {
         }
 
         /**
+         * Adds a character map definition.
+         *
+         * @param characterMap the character map
+         * @return this builder
+         */
+        public Builder addCharacterMap(CharacterMap characterMap) {
+            String key = characterMap.getName() != null ? characterMap.getName() : "";
+            characterMaps.put(key, characterMap);
+            return this;
+        }
+
+        /**
+         * Checks if a character map with the given name exists.
+         *
+         * @param name the character map name
+         * @return true if a character map with this name exists
+         */
+        public boolean hasCharacterMap(String name) {
+            String key = name != null ? name : "";
+            return characterMaps.containsKey(key);
+        }
+
+        /**
+         * Registers attribute set references from instructions (xsl:copy, xsl:element, etc).
+         * These references will be validated during build().
+         *
+         * @param names whitespace-separated list of attribute set names
+         */
+        public void registerAttributeSetReferences(String names) {
+            if (names == null || names.isEmpty()) {
+                return;
+            }
+            for (String name : names.trim().split("\\s+")) {
+                if (!name.isEmpty()) {
+                    attributeSetReferences.add(name);
+                }
+            }
+        }
+
+        /**
          * Adds an accumulator definition.
          *
          * @param accumulator the accumulator
@@ -521,7 +746,8 @@ public final class CompiledStylesheet {
                         includingPrecedence,  // Use including stylesheet's precedence
                         rule.getDeclarationIndex(),
                         rule.getParameters(),
-                        rule.getBody()
+                        rule.getBody(),
+                        rule.getAsType()      // Preserve as attribute for type validation
                     );
                 }
                 templateRules.add(adjusted);
@@ -688,6 +914,13 @@ public final class CompiledStylesheet {
                     decimalFormats.put(entry.getKey(), entry.getValue());
                 }
             }
+            
+            // Add character maps - first definition wins
+            for (Map.Entry<String, CharacterMap> entry : imported.characterMaps.entrySet()) {
+                if (!characterMaps.containsKey(entry.getKey())) {
+                    characterMaps.put(entry.getKey(), entry.getValue());
+                }
+            }
         }
 
         /**
@@ -696,7 +929,7 @@ public final class CompiledStylesheet {
          * @param mode the validation mode
          * @return this builder
          */
-        public Builder setDefaultValidation(StylesheetCompiler.ValidationMode mode) {
+        public Builder setDefaultValidation(ValidationMode mode) {
             this.defaultValidation = mode;
             return this;
         }
@@ -730,7 +963,8 @@ public final class CompiledStylesheet {
                         finalPrecedence,
                         rule.getDeclarationIndex(),
                         rule.getParameters(),
-                        rule.getBody()
+                        rule.getBody(),
+                        rule.getAsType()      // Preserve as attribute for type validation
                     );
                     templateRules.set(i, adjusted);
                     if (adjusted.getName() != null) {
@@ -751,18 +985,105 @@ public final class CompiledStylesheet {
          */
         public CompiledStylesheet build() throws javax.xml.transform.TransformerConfigurationException {
             // Validate attribute-set references (XTSE0710)
+            // Check references from attribute-set declarations
             for (AttributeSet attrSet : attributeSets.values()) {
                 if (attrSet.getUseAttributeSets() != null) {
                     for (String refName : attrSet.getUseAttributeSets()) {
                         if (!attributeSets.containsKey(refName)) {
                             throw new javax.xml.transform.TransformerConfigurationException(
-                                "Attribute-set '" + attrSet.getName() + 
+                                "XTSE0710: Attribute-set '" + attrSet.getName() + 
                                 "' references undefined attribute-set '" + refName + "'");
                         }
                     }
                 }
             }
+            // Check references from instructions (xsl:copy, xsl:element, literal result elements)
+            for (String refName : attributeSetReferences) {
+                if (!attributeSets.containsKey(refName)) {
+                    throw new javax.xml.transform.TransformerConfigurationException(
+                        "XTSE0710: use-attribute-sets references undefined attribute-set '" + refName + "'");
+                }
+            }
+            
+            // Validate character-map references (XTSE1590)
+            // Also check in xsl:output use-character-maps
+            for (String mapName : outputProperties.getUseCharacterMaps()) {
+                if (!characterMaps.containsKey(mapName)) {
+                    throw new javax.xml.transform.TransformerConfigurationException(
+                        "XTSE1590: use-character-maps in xsl:output references undefined character-map '" + mapName + "'");
+                }
+            }
+            for (CharacterMap charMap : characterMaps.values()) {
+                for (String refName : charMap.getUseCharacterMaps()) {
+                    if (!characterMaps.containsKey(refName)) {
+                        throw new javax.xml.transform.TransformerConfigurationException(
+                            "XTSE1590: character-map '" + charMap.getName() + 
+                            "' references undefined character-map '" + refName + "'");
+                    }
+                }
+            }
+            
+            // Validate character-map circular references (XTSE1600)
+            for (CharacterMap charMap : characterMaps.values()) {
+                Set<String> visited = new HashSet<>();
+                if (hasCircularReference(charMap.getName(), visited)) {
+                    throw new javax.xml.transform.TransformerConfigurationException(
+                        "XTSE1600: Circular reference in character-map '" + charMap.getName() + "'");
+                }
+            }
+            
+            // Validate duplicate named templates with same import precedence (XTSE0660)
+            Map<String, List<TemplateRule>> namedTemplatesByName = new HashMap<>();
+            for (TemplateRule rule : templateRules) {
+                if (rule.getName() != null) {
+                    namedTemplatesByName.computeIfAbsent(rule.getName(), k -> new ArrayList<>()).add(rule);
+                }
+            }
+            for (Map.Entry<String, List<TemplateRule>> entry : namedTemplatesByName.entrySet()) {
+                List<TemplateRule> templates = entry.getValue();
+                if (templates.size() > 1) {
+                    // Check for duplicates at the same precedence level
+                    int maxPrecedence = 0;
+                    for (TemplateRule t : templates) {
+                        if (t.getImportPrecedence() > maxPrecedence) {
+                            maxPrecedence = t.getImportPrecedence();
+                        }
+                    }
+                    int countAtMaxPrecedence = 0;
+                    for (TemplateRule t : templates) {
+                        if (t.getImportPrecedence() == maxPrecedence) {
+                            countAtMaxPrecedence++;
+                        }
+                    }
+                    if (countAtMaxPrecedence > 1) {
+                        throw new javax.xml.transform.TransformerConfigurationException(
+                            "XTSE0660: Duplicate named template '" + entry.getKey() + 
+                            "' with same import precedence");
+                    }
+                }
+            }
+            
             return new CompiledStylesheet(this);
+        }
+        
+        /**
+         * Checks for circular references in character maps.
+         */
+        private boolean hasCircularReference(String mapName, Set<String> visited) {
+            if (visited.contains(mapName)) {
+                return true;  // Circular reference detected
+            }
+            CharacterMap charMap = characterMaps.get(mapName);
+            if (charMap == null) {
+                return false;  // Reference not found (handled by XTSE1590 check)
+            }
+            visited.add(mapName);
+            for (String refName : charMap.getUseCharacterMaps()) {
+                if (hasCircularReference(refName, new HashSet<>(visited))) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -792,6 +1113,7 @@ public final class CompiledStylesheet {
         }
         this.preserveSpaceElements = Collections.unmodifiableList(preservePatterns);
         this.decimalFormats = Collections.unmodifiableMap(new HashMap<>(builder.decimalFormats));
+        this.characterMaps = Collections.unmodifiableMap(new HashMap<>(builder.characterMaps));
         this.accumulators = Collections.unmodifiableMap(new HashMap<>(builder.accumulators));
         this.modeDeclarations = Collections.unmodifiableMap(new HashMap<>(builder.modeDeclarations));
         this.namespaceBindings = Collections.unmodifiableMap(new HashMap<>(builder.namespaceBindings));
@@ -801,6 +1123,11 @@ public final class CompiledStylesheet {
         this.defaultValidation = builder.defaultValidation;
         this.baseURI = builder.baseURI;
         this.version = builder.version;
+        this.defaultCollation = builder.defaultCollation;
+        this.globalContextItemType = builder.globalContextItemType;
+        this.globalContextItemUse = builder.globalContextItemUse;
+        this.packageName = builder.packageName;
+        this.packageVersion = builder.packageVersion;
         this.streamingCapability = computeStreamingCapability();
     }
 
@@ -844,6 +1171,23 @@ public final class CompiledStylesheet {
     }
 
     /**
+     * Returns all required parameters (XSLT 2.0+).
+     * These are global parameters with required="yes" that must have values
+     * supplied during transformation.
+     *
+     * @return list of required parameter names (immutable)
+     */
+    public List<GlobalVariable> getRequiredParameters() {
+        List<GlobalVariable> required = new ArrayList<>();
+        for (GlobalVariable var : globalVariables) {
+            if (var.isParam() && var.isRequired()) {
+                required.add(var);
+            }
+        }
+        return Collections.unmodifiableList(required);
+    }
+
+    /**
      * Returns an attribute set.
      *
      * @param name the attribute set name
@@ -851,6 +1195,15 @@ public final class CompiledStylesheet {
      */
     public AttributeSet getAttributeSet(String name) {
         return attributeSets.get(name);
+    }
+
+    /**
+     * Returns all attribute sets.
+     *
+     * @return immutable map of attribute set name to attribute set
+     */
+    public Map<String, AttributeSet> getAttributeSets() {
+        return Collections.unmodifiableMap(attributeSets);
     }
 
     /**
@@ -894,6 +1247,37 @@ public final class CompiledStylesheet {
     }
 
     /**
+     * Returns the package name (XSLT 3.0).
+     *
+     * @return the package name URI, or null if not a package
+     */
+    public String getPackageName() {
+        return packageName;
+    }
+
+    /**
+     * Returns the package version (XSLT 3.0).
+     *
+     * @return the package version string, or null if not a package
+     */
+    public String getPackageVersion() {
+        return packageVersion;
+    }
+
+    /**
+     * Returns the default collation URI (XSLT 2.0+).
+     *
+     * <p>The default collation is used when no explicit collation is specified
+     * for operations like xsl:sort, string comparison functions, and value/general
+     * comparisons.
+     *
+     * @return the default collation URI, or null for Unicode codepoint collation
+     */
+    public String getDefaultCollation() {
+        return defaultCollation;
+    }
+
+    /**
      * Returns a decimal format.
      *
      * @param name the format name, or null for the default format
@@ -901,6 +1285,88 @@ public final class CompiledStylesheet {
      */
     public DecimalFormatInfo getDecimalFormat(String name) {
         return decimalFormats.get(name != null ? name : "");
+    }
+
+    /**
+     * Returns a character map by name.
+     *
+     * @param name the name (or empty string for unnamed)
+     * @return the character map, or null if not found
+     */
+    public CharacterMap getCharacterMap(String name) {
+        return characterMaps.get(name != null ? name : "");
+    }
+
+    /**
+     * Returns all character maps.
+     *
+     * @return map of name to CharacterMap (immutable)
+     */
+    public Map<String, CharacterMap> getCharacterMaps() {
+        return characterMaps;
+    }
+
+    /**
+     * Applies all the specified character maps to a string.
+     * Resolves use-character-maps references recursively.
+     *
+     * @param input the input string
+     * @param mapNames the names of character maps to apply
+     * @return the string with all character mappings applied
+     */
+    public String applyCharacterMaps(String input, List<String> mapNames) {
+        if (mapNames == null || mapNames.isEmpty()) {
+            return input;
+        }
+        
+        // Build combined mapping from all character maps
+        Map<Integer, String> combinedMappings = new HashMap<>();
+        Set<String> visited = new HashSet<>();
+        for (String mapName : mapNames) {
+            collectMappings(mapName, combinedMappings, visited);
+        }
+        
+        if (combinedMappings.isEmpty()) {
+            return input;
+        }
+        
+        // Apply mappings (code point aware for supplementary characters)
+        StringBuilder result = new StringBuilder(input.length());
+        int i = 0;
+        while (i < input.length()) {
+            int codePoint = input.codePointAt(i);
+            String replacement = combinedMappings.get(codePoint);
+            if (replacement != null) {
+                result.append(replacement);
+            } else {
+                result.appendCodePoint(codePoint);
+            }
+            i += Character.charCount(codePoint);
+        }
+        return result.toString();
+    }
+    
+    /**
+     * Recursively collects mappings from a character map and its referenced maps.
+     */
+    private void collectMappings(String mapName, Map<Integer, String> mappings, Set<String> visited) {
+        if (visited.contains(mapName)) {
+            return;  // Avoid circular references
+        }
+        visited.add(mapName);
+        
+        CharacterMap map = characterMaps.get(mapName);
+        if (map == null) {
+            return;
+        }
+        
+        // First, process referenced character maps (lower precedence)
+        for (String refName : map.getUseCharacterMaps()) {
+            collectMappings(refName, mappings, visited);
+        }
+        
+        // Then add this map's mappings (higher precedence - overwrites)
+        mappings.putAll(map.getMappings());
     }
 
     /**
@@ -1038,16 +1504,18 @@ public final class CompiledStylesheet {
             return true;
         }
         if (pattern.startsWith("{")) {
-            // Clark notation: {uri}localname or {uri}*
+            // Clark notation: {uri}localname, {uri}*, or {*}localname
             int closeBrace = pattern.indexOf('}');
             if (closeBrace > 0) {
                 String patternUri = pattern.substring(1, closeBrace);
                 String patternLocal = pattern.substring(closeBrace + 1);
                 
-                // Check namespace match
-                String elemUri = namespaceURI != null ? namespaceURI : "";
-                if (!patternUri.equals(elemUri)) {
-                    return false;
+                // Check namespace match (unless * meaning any namespace)
+                if (!"*".equals(patternUri)) {
+                    String elemUri = namespaceURI != null ? namespaceURI : "";
+                    if (!patternUri.equals(elemUri)) {
+                        return false;
+                    }
                 }
                 
                 // Check local name match
@@ -1232,8 +1700,48 @@ public final class CompiledStylesheet {
      *
      * @return the default validation mode (defaults to STRIP)
      */
-    public StylesheetCompiler.ValidationMode getDefaultValidation() {
+    public ValidationMode getDefaultValidation() {
         return defaultValidation;
+    }
+
+    // ========================================================================
+    // XSLT 3.0 Global Context Item
+    // ========================================================================
+
+    /**
+     * Sets the global context item type (from xsl:global-context-item as attribute).
+     *
+     * @param type the expected type (e.g., "element()")
+     */
+    public void setGlobalContextItemType(String type) {
+        this.globalContextItemType = type;
+    }
+
+    /**
+     * Returns the global context item type.
+     *
+     * @return the type, or null if not declared
+     */
+    public String getGlobalContextItemType() {
+        return globalContextItemType;
+    }
+
+    /**
+     * Sets the global context item use (from xsl:global-context-item use attribute).
+     *
+     * @param use "required", "optional", or "absent"
+     */
+    public void setGlobalContextItemUse(String use) {
+        this.globalContextItemUse = use;
+    }
+
+    /**
+     * Returns the global context item use.
+     *
+     * @return "required", "optional", "absent", or null (defaults to "optional")
+     */
+    public String getGlobalContextItemUse() {
+        return globalContextItemUse;
     }
 
     /**

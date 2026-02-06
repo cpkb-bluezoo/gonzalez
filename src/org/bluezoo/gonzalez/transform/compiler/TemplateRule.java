@@ -53,6 +53,8 @@ public final class TemplateRule {
     private final int declarationIndex;
     private final List<TemplateParameter> parameters;
     private final SequenceNode body;
+    private final String asType;  // XSLT 2.0+ return type declaration
+    private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
 
     /**
      * Creates a template rule.
@@ -68,7 +70,7 @@ public final class TemplateRule {
     public TemplateRule(Pattern matchPattern, String name, String mode,
                         double priority, int importPrecedence,
                         List<TemplateParameter> parameters, SequenceNode body) {
-        this(matchPattern, name, mode, priority, importPrecedence, 0, parameters, body);
+        this(matchPattern, name, mode, priority, importPrecedence, 0, parameters, body, null);
     }
 
     /**
@@ -86,6 +88,47 @@ public final class TemplateRule {
     public TemplateRule(Pattern matchPattern, String name, String mode,
                         double priority, int importPrecedence, int declarationIndex,
                         List<TemplateParameter> parameters, SequenceNode body) {
+        this(matchPattern, name, mode, priority, importPrecedence, declarationIndex, parameters, body, null);
+    }
+
+    /**
+     * Creates a template rule with declaration index and return type.
+     *
+     * @param matchPattern the match pattern (null for named-only templates)
+     * @param name the template name (null for match-only templates)
+     * @param mode the mode (null for default mode)
+     * @param priority the priority
+     * @param importPrecedence the import precedence
+     * @param declarationIndex the declaration order index (later = higher)
+     * @param parameters the template parameters
+     * @param body the template body
+     * @param asType the return type declaration (XSLT 2.0+), or null
+     */
+    public TemplateRule(Pattern matchPattern, String name, String mode,
+                        double priority, int importPrecedence, int declarationIndex,
+                        List<TemplateParameter> parameters, SequenceNode body, String asType) {
+        this(matchPattern, name, mode, priority, importPrecedence, declarationIndex,
+             parameters, body, asType, ComponentVisibility.PUBLIC);
+    }
+
+    /**
+     * Creates a template rule with all options including visibility.
+     *
+     * @param matchPattern the match pattern (null for named-only templates)
+     * @param name the template name (null for match-only templates)
+     * @param mode the mode (null for default mode)
+     * @param priority the priority
+     * @param importPrecedence the import precedence
+     * @param declarationIndex the declaration order index (later = higher)
+     * @param parameters the template parameters
+     * @param body the template body
+     * @param asType the return type declaration (XSLT 2.0+), or null
+     * @param visibility the package visibility (XSLT 3.0)
+     */
+    public TemplateRule(Pattern matchPattern, String name, String mode,
+                        double priority, int importPrecedence, int declarationIndex,
+                        List<TemplateParameter> parameters, SequenceNode body, String asType,
+                        ComponentVisibility visibility) {
         this.matchPattern = matchPattern;
         this.name = name;
         this.mode = mode;
@@ -96,6 +139,8 @@ public final class TemplateRule {
             Collections.unmodifiableList(new ArrayList<>(parameters)) : 
             Collections.emptyList();
         this.body = body != null ? body : SequenceNode.EMPTY;
+        this.asType = asType;
+        this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
     }
 
     /**
@@ -169,6 +214,35 @@ public final class TemplateRule {
      */
     public SequenceNode getBody() {
         return body;
+    }
+
+    /**
+     * Returns the declared return type (XSLT 2.0+).
+     *
+     * @return the return type string (e.g., "xs:boolean"), or null if not declared
+     */
+    public String getAsType() {
+        return asType;
+    }
+
+    /**
+     * Returns the package visibility (XSLT 3.0).
+     *
+     * @return the visibility, never null (defaults to PUBLIC)
+     */
+    public ComponentVisibility getVisibility() {
+        return visibility;
+    }
+
+    /**
+     * Creates a copy of this template rule with a different visibility.
+     *
+     * @param newVisibility the new visibility
+     * @return a new TemplateRule with the specified visibility
+     */
+    public TemplateRule withVisibility(ComponentVisibility newVisibility) {
+        return new TemplateRule(matchPattern, name, mode, priority, importPrecedence,
+                               declarationIndex, parameters, body, asType, newVisibility);
     }
 
     /**

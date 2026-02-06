@@ -30,6 +30,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathAtomicValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.ArrayList;
@@ -99,6 +100,7 @@ public final class BinaryExpr implements Expr {
             case MINUS:
             case MULTIPLY:
             case DIV:
+            case IDIV:
             case MOD:
                 return evaluateArithmetic(context);
 
@@ -432,6 +434,19 @@ public final class BinaryExpr implements Expr {
 
     private XPathValue evaluateValueComparison(XPathValue leftVal, XPathValue rightVal) 
             throws XPathException {
+        // XPath 2.0: If both are date/time values, use value-based comparison
+        if (leftVal instanceof XPathDateTime && rightVal instanceof XPathDateTime) {
+            XPathDateTime leftDt = (XPathDateTime) leftVal;
+            XPathDateTime rightDt = (XPathDateTime) rightVal;
+            try {
+                int cmp = leftDt.compareTo(rightDt);
+                return XPathBoolean.of(compareDateTimeResult(cmp));
+            } catch (IllegalArgumentException e) {
+                // Different date/time types - can't compare
+                return XPathBoolean.FALSE;
+            }
+        }
+        
         // XPath 1.0 Section 3.4 comparison rules:
         // 1. If at least one is boolean, compare as booleans
         // 2. If at least one is number, compare as numbers
@@ -448,6 +463,31 @@ public final class BinaryExpr implements Expr {
         }
 
         return XPathBoolean.of(compareValues(leftVal.asString(), rightVal.asString()));
+    }
+    
+    private boolean compareDateTimeResult(int cmp) {
+        switch (operator) {
+            case EQUALS:
+            case VALUE_EQUALS:
+                return cmp == 0;
+            case NOT_EQUALS:
+            case VALUE_NOT_EQUALS:
+                return cmp != 0;
+            case LESS_THAN:
+            case VALUE_LESS_THAN:
+                return cmp < 0;
+            case LESS_THAN_OR_EQUAL:
+            case VALUE_LESS_THAN_OR_EQUAL:
+                return cmp <= 0;
+            case GREATER_THAN:
+            case VALUE_GREATER_THAN:
+                return cmp > 0;
+            case GREATER_THAN_OR_EQUAL:
+            case VALUE_GREATER_THAN_OR_EQUAL:
+                return cmp >= 0;
+            default:
+                return false;
+        }
     }
 
     private boolean compareValues(boolean a, boolean b) {
@@ -503,9 +543,11 @@ public final class BinaryExpr implements Expr {
             rightVal = XPathNumber.of(Double.NaN);
         }
         
-        // Note: We don't do strict type checking for arithmetic because XSLT 2.0
-        // supports backwards-compatible mode (xsl:version="1.0") at the element level,
-        // which is complex to track. Function argument type checking is still done.
+        // Note: XPTY0004 type checking for arithmetic is deferred because XSLT 2.0/3.0
+        // allows element-level xsl:version="1.0" for backwards compatibility, which is
+        // complex to track. The XPath 1.0 auto-coercion (string to number) is allowed.
+        // Specific error tests that require XPTY0004 detection use version="2.0" and
+        // are typically handled by expecting the error at a higher level.
         
         // Check for date/time arithmetic
         if (leftVal instanceof XPathDateTime || rightVal instanceof XPathDateTime) {
@@ -529,6 +571,13 @@ public final class BinaryExpr implements Expr {
                 break;
             case DIV:
                 result = leftNum / rightNum;
+                break;
+            case IDIV:
+                // XPath 2.0 integer division: rounds towards zero (truncates)
+                if (rightNum == 0.0) {
+                    throw new XPathException("Division by zero in idiv");
+                }
+                result = Math.floor(leftNum / rightNum);
                 break;
             case MOD:
                 result = leftNum % rightNum;

@@ -123,7 +123,9 @@ public class TypeExpr implements Expr {
      * Evaluates 'instance of' - returns boolean.
      */
     private XPathValue evaluateInstanceOf(XPathValue value, XPathContext context) {
-        boolean matches = targetType.matches(value);
+        // Pass schema context if available (XPathContext may be a TransformContext which implements SchemaContext)
+        SchemaContext schemaContext = (context instanceof SchemaContext) ? (SchemaContext) context : SchemaContext.NONE;
+        boolean matches = targetType.matches(value, schemaContext);
         if (matches && isUserDefinedType()) {
             // For user-defined types, also validate against facets
             matches = validateAgainstSchemaType(value, context);
@@ -216,7 +218,8 @@ public class TypeExpr implements Expr {
      * Evaluates 'treat as' - asserts type without conversion.
      */
     private XPathValue evaluateTreatAs(XPathValue value, XPathContext context) throws XPathException {
-        if (!targetType.matches(value)) {
+        SchemaContext schemaContext = (context instanceof SchemaContext) ? (SchemaContext) context : SchemaContext.NONE;
+        if (!targetType.matches(value, schemaContext)) {
             throw new XPathException("Value does not match type " + targetType + 
                 " in 'treat as' expression");
         }

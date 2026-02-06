@@ -23,7 +23,7 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
-import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.ValidationMode;
+import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.ResultDocumentHandler;
@@ -147,8 +147,16 @@ public final class ResultDocumentNode implements XSLTNode {
                 outputStream = new FileOutputStream(uri.getPath());
                 secondaryOutput = new ResultDocumentHandler(outputStream, props);
             } else {
-                // No href - use principal output (don't start new document)
-                secondaryOutput = output;
+                // No href - write to principal output
+                // This is important for nested result-document: the inner one
+                // with no href should write to the original principal output,
+                // not to the current secondary output handler
+                OutputHandler principalOutput = context.getPrincipalOutput();
+                if (principalOutput != null) {
+                    secondaryOutput = principalOutput;
+                } else {
+                    secondaryOutput = output;
+                }
                 usingPrincipalOutput = true;
             }
 

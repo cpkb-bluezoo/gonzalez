@@ -121,7 +121,7 @@ public final class XPathLexer {
      */
     public XPathToken advance() {
         previousToken = currentToken;
-        skipWhitespace();
+        skipWhitespaceAndComments();
         tokenStart = position;
 
         if (position >= length) {
@@ -425,6 +425,73 @@ public final class XPathLexer {
     // Private scanning methods
     // ========================================================================
 
+    /**
+     * Skips whitespace and XPath comments.
+     * XPath 2.0+ comments are delimited by (: and :) and can be nested.
+     */
+    private void skipWhitespaceAndComments() {
+        while (position < length) {
+            char c = expression.charAt(position);
+            
+            // Skip whitespace
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                position++;
+                continue;
+            }
+            
+            // Check for XPath comment start (:
+            if (c == '(' && position + 1 < length && expression.charAt(position + 1) == ':') {
+                skipComment();
+                continue;
+            }
+            
+            // No more whitespace or comments
+            break;
+        }
+    }
+    
+    /**
+     * Skips an XPath comment starting at current position.
+     * Assumes position is at '(' and next char is ':'.
+     * XPath comments can be nested, so we track the nesting depth.
+     */
+    private void skipComment() {
+        int depth = 0;
+        
+        while (position < length - 1) {
+            char c = expression.charAt(position);
+            char next = expression.charAt(position + 1);
+            
+            // Check for nested comment start (:
+            if (c == '(' && next == ':') {
+                depth++;
+                position += 2;
+                continue;
+            }
+            
+            // Check for comment end :)
+            if (c == ':' && next == ')') {
+                depth--;
+                position += 2;
+                if (depth == 0) {
+                    // Exited all nested comments
+                    return;
+                }
+                continue;
+            }
+            
+            // Regular character inside comment
+            position++;
+        }
+        
+        // If we get here, we have an unclosed comment
+        // For now, just consume the rest of the expression
+        position = length;
+    }
+    
+    /**
+     * Skips whitespace only (legacy method for potential internal use).
+     */
     private void skipWhitespace() {
         while (position < length) {
             char c = expression.charAt(position);
@@ -569,12 +636,16 @@ public final class XPathLexer {
     /**
      * Determines if the current context expects an expression keyword.
      * Keywords like 'if', 'for', 'let', 'some', 'every' start new expressions.
-     * Keywords like 'then', 'else' follow conditions/expressions.
+     * Keywords like 'then', 'else', 'return' follow conditions/expressions.
+     * 
+     * Note: Keywords are NOT recognized after '/' or '//' because in path expressions
+     * like '/in/foo', the 'in' should be treated as an element name, not the keyword.
      */
     private boolean isKeywordContext() {
         // Keywords are expected where a new expression can begin,
         // or after a condition (RPAREN for 'then'/'else' after 'if')
         // or after type keywords (INSTANCE, CAST, CASTABLE, TREAT for 'of'/'as')
+        // or after complete expressions (NUMBER, STRING_LITERAL for 'return' in 'for $i in 1 to 5 return')
         if (previousToken == null) {
             return true;
         }
@@ -583,8 +654,7 @@ public final class XPathLexer {
             case LBRACKET:
             case RPAREN:    // For 'then' after 'if (condition)'
             case RBRACKET:  // For 'else' after predicate like 'then foo[1]'
-            case DOT:       // For 'else' after 'then .'
-            case DOUBLE_DOT:// For 'else' after 'then ..'
+            // NOT DOT or DOUBLE_DOT - after '.' or '..', next is typically step, not keyword
             case COMMA:
             case PLUS:
             case MINUS:
@@ -598,8 +668,8 @@ public final class XPathLexer {
             case AND:
             case OR:
             case PIPE:
-            case SLASH:
-            case DOUBLE_SLASH:
+            // NOT SLASH or DOUBLE_SLASH - after '/' or '//', we expect a path step (name or node test)
+            // Keywords like 'in', 'if', 'for' are NOT valid path steps, they're NCNames here
             case RETURN:
             case THEN:
             case ELSE:
@@ -618,6 +688,10 @@ public final class XPathLexer {
             case AS:        // For sequence type after 'cast as', etc.
             case NCNAME:    // For 'in' after variable name in for/some/every $var in ...
             case DOLLAR:    // For keywords that can appear after $
+            // Keywords can follow complete expressions (for 'return' after sequence in 'for $i in expr return')
+            case NUMBER_LITERAL:// For 'return' after 'for $i in 1 to 5 return'
+            case STRING_LITERAL:// For 'return' after 'for $i in ("a","b") return'
+            case TO:            // For 'return' after range (when no end value specified yet)
                 return true;
             default:
                 return false;
@@ -667,6 +741,7 @@ public final class XPathLexer {
             case "or": return XPathToken.OR;
             case "mod": return XPathToken.MOD;
             case "div": return XPathToken.DIV;
+            case "idiv": return XPathToken.IDIV;  // XPath 2.0 integer division
             case "to": return XPathToken.TO;
             case "eq": return XPathToken.EQ;
             case "ne": return XPathToken.NE;

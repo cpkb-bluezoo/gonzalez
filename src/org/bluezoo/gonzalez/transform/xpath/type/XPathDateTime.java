@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.type;
 
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathDateTimeException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -721,10 +722,26 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         int minutes = (totalSeconds % 3600) / 60;
         int seconds = totalSeconds % 60;
         
-        String lexical = (neg ? "-" : "") + "PT" + hours + "H" + minutes + "M" + seconds + "S";
+        // Build normalized lexical form (omit zero components)
+        StringBuilder lexical = new StringBuilder();
+        if (neg) {
+            lexical.append("-");
+        }
+        lexical.append("PT");
+        if (hours != 0) {
+            lexical.append(hours).append("H");
+        }
+        if (minutes != 0) {
+            lexical.append(minutes).append("M");
+        }
+        if (seconds != 0 || (hours == 0 && minutes == 0)) {
+            // Always include seconds if no other components, or if non-zero
+            lexical.append(seconds).append("S");
+        }
+        
         return new XPathDateTime(DateTimeType.DAY_TIME_DURATION, null, null, null,
                                  null, null, null, null,
-                                 neg, null, null, 0, hours, minutes, BigDecimal.valueOf(seconds), lexical);
+                                 neg, null, null, 0, hours, minutes, BigDecimal.valueOf(seconds), lexical.toString());
     }
     
     // ========== XPathValue implementation ==========
@@ -742,11 +759,111 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     /**
      * Returns the lexical representation of this date/time value.
      *
-     * @return the original string representation used to create this value
+     * <p>For durations, returns the canonical (normalized) form where
+     * seconds are converted to minutes/hours/days as appropriate.
+     *
+     * @return the canonical string representation of this value
      */
     @Override
     public String asString() {
+        // For durations, compute canonical form
+        if (type == DateTimeType.DAY_TIME_DURATION) {
+            return getCanonicalDayTimeDuration();
+        }
+        if (type == DateTimeType.YEAR_MONTH_DURATION) {
+            return formatYearMonthDuration(negative, 
+                durationYears != null ? durationYears : 0,
+                durationMonths != null ? durationMonths : 0);
+        }
+        if (type == DateTimeType.DURATION) {
+            // Full duration - normalize both year-month and day-time parts
+            return getCanonicalDuration();
+        }
         return lexicalValue;
+    }
+    
+    /**
+     * Returns the canonical form of a dayTimeDuration.
+     */
+    private String getCanonicalDayTimeDuration() {
+        BigDecimal totalSecs = getTotalSeconds();
+        boolean neg = totalSecs.compareTo(BigDecimal.ZERO) < 0;
+        totalSecs = totalSecs.abs();
+        
+        long secs = totalSecs.longValue();
+        BigDecimal frac = totalSecs.remainder(BigDecimal.ONE);
+        
+        int days = (int) (secs / 86400);
+        secs %= 86400;
+        int hours = (int) (secs / 3600);
+        secs %= 3600;
+        int minutes = (int) (secs / 60);
+        BigDecimal seconds = BigDecimal.valueOf(secs % 60).add(frac);
+        
+        return formatDayTimeDuration(neg, days, hours, minutes, seconds);
+    }
+    
+    /**
+     * Returns the canonical form of a full duration.
+     */
+    private String getCanonicalDuration() {
+        StringBuilder sb = new StringBuilder();
+        if (negative) {
+            sb.append("-");
+        }
+        sb.append("P");
+        
+        // Year-month part
+        int years = durationYears != null ? durationYears : 0;
+        int months = durationMonths != null ? durationMonths : 0;
+        if (years > 0) {
+            sb.append(years).append("Y");
+        }
+        if (months > 0) {
+            sb.append(months).append("M");
+        }
+        
+        // Day-time part - normalize
+        BigDecimal totalSecs = getTotalSeconds();
+        totalSecs = totalSecs.abs();  // Negation already handled
+        
+        long secs = totalSecs.longValue();
+        BigDecimal frac = totalSecs.remainder(BigDecimal.ONE);
+        
+        int days = (int) (secs / 86400);
+        secs %= 86400;
+        int hours = (int) (secs / 3600);
+        secs %= 3600;
+        int minutes = (int) (secs / 60);
+        BigDecimal seconds = BigDecimal.valueOf(secs % 60).add(frac);
+        
+        if (days > 0) {
+            sb.append(days).append("D");
+        }
+        if (hours > 0 || minutes > 0 || seconds.compareTo(BigDecimal.ZERO) > 0) {
+            sb.append("T");
+            if (hours > 0) {
+                sb.append(hours).append("H");
+            }
+            if (minutes > 0) {
+                sb.append(minutes).append("M");
+            }
+            if (seconds.compareTo(BigDecimal.ZERO) > 0) {
+                if (seconds.scale() == 0 || seconds.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
+                    sb.append(seconds.intValue());
+                } else {
+                    sb.append(seconds.stripTrailingZeros().toPlainString());
+                }
+                sb.append("S");
+            }
+        }
+        
+        // Handle empty duration
+        if (sb.length() <= 2) {
+            sb.append("T0S");
+        }
+        
+        return sb.toString();
     }
     
     /**
@@ -781,6 +898,199 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     @Override
     public XPathNodeSet asNodeSet() {
         return null;
+    }
+    
+    // ========== Timezone adjustment ==========
+    
+    /**
+     * Adjusts this date/time value to a new timezone.
+     * 
+     * <p>Implements the XPath adjust-dateTime-to-timezone semantics:
+     * <ul>
+     *   <li>If this has no timezone and newTz is null, return unchanged</li>
+     *   <li>If this has no timezone and newTz is provided, add the timezone without adjustment</li>
+     *   <li>If this has a timezone and newTz is null, remove the timezone (keep local time)</li>
+     *   <li>If this has a timezone and newTz is provided, convert to the new timezone</li>
+     * </ul>
+     *
+     * @param newTz the new timezone offset (minutes from UTC), or null to remove timezone
+     * @return a new XPathDateTime with the adjusted timezone
+     * @throws XPathException if the operation is not supported for this type
+     */
+    public XPathDateTime adjustToTimezone(Integer newTzMinutes) throws XPathException {
+        if (type != DateTimeType.DATE_TIME && type != DateTimeType.DATE && type != DateTimeType.TIME) {
+            throw new XPathException("adjust-*-to-timezone not supported for " + type);
+        }
+        
+        // Case 1: No timezone and no new timezone - return unchanged
+        if (timezone == null && newTzMinutes == null) {
+            return this;
+        }
+        
+        // Case 2: No timezone and new timezone provided - add timezone without adjustment
+        if (timezone == null && newTzMinutes != null) {
+            ZoneOffset newZone = ZoneOffset.ofTotalSeconds(newTzMinutes * 60);
+            return createWithNewTimezone(newZone);
+        }
+        
+        // Case 3: Has timezone and new timezone is null - remove timezone (keep local time)
+        if (timezone != null && newTzMinutes == null) {
+            return createWithNewTimezone(null);
+        }
+        
+        // Case 4: Has timezone and new timezone provided - convert to new timezone
+        // Calculate the difference and adjust the time components
+        int oldTzMinutes = timezone.getTotalSeconds() / 60;
+        int diffMinutes = newTzMinutes - oldTzMinutes;
+        
+        if (type == DateTimeType.DATE_TIME || type == DateTimeType.TIME) {
+            return adjustTimeByMinutes(diffMinutes, ZoneOffset.ofTotalSeconds(newTzMinutes * 60));
+        } else {
+            // For DATE, if there's a timezone change, we need to adjust the date if the time crosses midnight
+            // Since dates don't have time components, we assume midnight and check for date change
+            return adjustDateByMinutes(diffMinutes, ZoneOffset.ofTotalSeconds(newTzMinutes * 60));
+        }
+    }
+    
+    /**
+     * Creates a new XPathDateTime with the same components but a different timezone.
+     */
+    private XPathDateTime createWithNewTimezone(ZoneOffset newZone) {
+        String newLexical = formatLexical(year, month, day, hour, minute, second, newZone, type);
+        return new XPathDateTime(type, year, month, day, hour, minute, second, newZone,
+                                 negative, durationYears, durationMonths, durationDays,
+                                 durationHours, durationMinutes, durationSeconds, newLexical);
+    }
+    
+    /**
+     * Adjusts time by a number of minutes and returns a new XPathDateTime.
+     */
+    private XPathDateTime adjustTimeByMinutes(int diffMinutes, ZoneOffset newZone) throws XPathException {
+        int h = hour != null ? hour : 0;
+        int m = minute != null ? minute : 0;
+        BigDecimal s = second != null ? second : BigDecimal.ZERO;
+        int y = year != null ? year : 1970;
+        int mo = month != null ? month : 1;
+        int d = day != null ? day : 1;
+        
+        // Add the difference in minutes
+        int totalMinutes = h * 60 + m + diffMinutes;
+        int dayChange = 0;
+        
+        // Handle overflow/underflow
+        while (totalMinutes < 0) {
+            totalMinutes += 24 * 60;
+            dayChange--;
+        }
+        while (totalMinutes >= 24 * 60) {
+            totalMinutes -= 24 * 60;
+            dayChange++;
+        }
+        
+        int newHour = totalMinutes / 60;
+        int newMinute = totalMinutes % 60;
+        
+        // Adjust date if needed
+        int newYear = y;
+        int newMonth = mo;
+        int newDay = d;
+        
+        if (type == DateTimeType.DATE_TIME && dayChange != 0) {
+            java.time.LocalDate date = java.time.LocalDate.of(y, mo, d).plusDays(dayChange);
+            newYear = date.getYear();
+            newMonth = date.getMonthValue();
+            newDay = date.getDayOfMonth();
+        }
+        
+        Integer finalYear = type == DateTimeType.TIME ? null : newYear;
+        Integer finalMonth = type == DateTimeType.TIME ? null : newMonth;
+        Integer finalDay = type == DateTimeType.TIME ? null : newDay;
+        
+        String newLexical = formatLexical(finalYear, finalMonth, finalDay, newHour, newMinute, s, newZone, type);
+        return new XPathDateTime(type, finalYear, finalMonth, finalDay, newHour, newMinute, s, newZone,
+                                 negative, durationYears, durationMonths, durationDays,
+                                 durationHours, durationMinutes, durationSeconds, newLexical);
+    }
+    
+    /**
+     * Adjusts a date by timezone difference (checking for midnight crossing).
+     */
+    private XPathDateTime adjustDateByMinutes(int diffMinutes, ZoneOffset newZone) throws XPathException {
+        // For date-only values, the adjustment only changes the date if the implied midnight
+        // would cross a day boundary
+        int dayChange = 0;
+        if (diffMinutes < 0 && Math.abs(diffMinutes) >= 24 * 60) {
+            dayChange = diffMinutes / (24 * 60);
+        } else if (diffMinutes > 0 && diffMinutes >= 24 * 60) {
+            dayChange = diffMinutes / (24 * 60);
+        } else if (diffMinutes < 0) {
+            // Moving west: if difference is negative and exceeds a day, date goes back
+            dayChange = -1;  // Actually, for dates, we generally don't adjust unless going back a full day
+            // Per XPath spec, date adjustment just adds/removes timezone without date change
+            dayChange = 0;
+        }
+        
+        // For dates, we typically don't change the date components, just the timezone
+        // The XPath spec says the date stays the same, only the timezone changes
+        java.time.LocalDate newDate = java.time.LocalDate.of(year, month, day);
+        if (dayChange != 0) {
+            newDate = newDate.plusDays(dayChange);
+        }
+        
+        String newLexical = formatLexical(newDate.getYear(), newDate.getMonthValue(), newDate.getDayOfMonth(),
+                                          null, null, null, newZone, type);
+        return new XPathDateTime(type, newDate.getYear(), newDate.getMonthValue(), newDate.getDayOfMonth(),
+                                 null, null, null, newZone,
+                                 negative, durationYears, durationMonths, durationDays,
+                                 durationHours, durationMinutes, durationSeconds, newLexical);
+    }
+    
+    /**
+     * Formats lexical representation based on type.
+     */
+    private static String formatLexical(Integer y, Integer mo, Integer d, 
+                                        Integer h, Integer m, BigDecimal s, 
+                                        ZoneOffset tz, DateTimeType type) {
+        StringBuilder sb = new StringBuilder();
+        switch (type) {
+            case DATE_TIME:
+                sb.append(String.format("%04d-%02d-%02dT%02d:%02d:", y, mo, d, h, m));
+                if (s.scale() == 0 || s.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
+                    sb.append(String.format("%02d", s.intValue()));
+                } else {
+                    sb.append(s.toPlainString().replace(".", "."));
+                    // Pad seconds to 2 digits before decimal
+                    if (s.compareTo(BigDecimal.TEN) < 0) {
+                        sb.insert(sb.length() - s.toPlainString().length(), "0");
+                    }
+                }
+                break;
+            case DATE:
+                sb.append(String.format("%04d-%02d-%02d", y, mo, d));
+                break;
+            case TIME:
+                sb.append(String.format("%02d:%02d:", h, m));
+                if (s.scale() == 0 || s.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
+                    sb.append(String.format("%02d", s.intValue()));
+                } else {
+                    String secStr = s.toPlainString();
+                    if (s.compareTo(BigDecimal.TEN) < 0) {
+                        secStr = "0" + secStr;
+                    }
+                    sb.append(secStr);
+                }
+                break;
+            default:
+                return null;
+        }
+        if (tz != null) {
+            if (tz.equals(ZoneOffset.UTC)) {
+                sb.append("Z");
+            } else {
+                sb.append(tz.getId());
+            }
+        }
+        return sb.toString();
     }
     
     // ========== Comparison ==========
@@ -818,51 +1128,153 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     }
     
     private int compareDateTime(XPathDateTime other) {
-        int c = Integer.compare(year, other.year);
+        // For comparison, treat absent timezone as UTC (implementation choice)
+        // This matches the W3C test suite's assumption
+        ZoneOffset thisZone = this.timezone != null ? this.timezone : ZoneOffset.UTC;
+        ZoneOffset otherZone = other.timezone != null ? other.timezone : ZoneOffset.UTC;
+        
+        // Convert both to UTC epoch seconds for accurate comparison
+        long thisEpoch = toEpochSecondsWithZone(thisZone);
+        long otherEpoch = other.toEpochSecondsWithZone(otherZone);
+        int c = Long.compare(thisEpoch, otherEpoch);
         if (c != 0) {
             return c;
         }
-        c = Integer.compare(month, other.month);
+        // Compare fractional seconds if epoch seconds are equal
+        BigDecimal thisFrac = second != null ? second.remainder(BigDecimal.ONE) : BigDecimal.ZERO;
+        BigDecimal otherFrac = other.second != null ? other.second.remainder(BigDecimal.ONE) : BigDecimal.ZERO;
+        c = thisFrac.compareTo(otherFrac);
         if (c != 0) {
             return c;
         }
-        c = Integer.compare(day, other.day);
-        if (c != 0) {
-            return c;
+        
+        // If values are equal in UTC but one has timezone and one doesn't,
+        // they're still not equal (different representations of potentially different instants)
+        if ((this.timezone != null) != (other.timezone != null)) {
+            return this.timezone != null ? 1 : -1;
         }
-        c = Integer.compare(hour, other.hour);
-        if (c != 0) {
-            return c;
-        }
-        c = Integer.compare(minute, other.minute);
-        if (c != 0) {
-            return c;
-        }
-        return second.compareTo(other.second);
+        return 0;
+    }
+    
+    /**
+     * Converts this dateTime to epoch seconds using the specified timezone.
+     */
+    private long toEpochSecondsWithZone(ZoneOffset zone) {
+        java.time.LocalDateTime ldt = java.time.LocalDateTime.of(
+            year != null ? year : 1970,
+            month != null ? month : 1,
+            day != null ? day : 1,
+            hour != null ? hour : 0,
+            minute != null ? minute : 0,
+            second != null ? second.intValue() : 0
+        );
+        java.time.ZonedDateTime zdt = ldt.atZone(java.time.ZoneId.of(zone.getId()));
+        return zdt.toEpochSecond();
+    }
+    
+    /**
+     * Converts this dateTime to epoch seconds (seconds since 1970-01-01T00:00:00Z).
+     * Used for timezone-aware comparison.
+     */
+    private long toEpochSeconds() {
+        // Build a LocalDateTime and apply timezone offset
+        java.time.LocalDateTime ldt = java.time.LocalDateTime.of(
+            year != null ? year : 1970,
+            month != null ? month : 1,
+            day != null ? day : 1,
+            hour != null ? hour : 0,
+            minute != null ? minute : 0,
+            second != null ? second.intValue() : 0
+        );
+        java.time.ZonedDateTime zdt = ldt.atZone(java.time.ZoneId.of(timezone.getId()));
+        return zdt.toEpochSecond();
     }
     
     private int compareDate(XPathDateTime other) {
-        int c = Integer.compare(year, other.year);
+        // For comparison, treat absent timezone as UTC (implementation choice)
+        ZoneOffset thisZone = this.timezone != null ? this.timezone : ZoneOffset.UTC;
+        ZoneOffset otherZone = other.timezone != null ? other.timezone : ZoneOffset.UTC;
+        
+        // Dates are compared by their starting instant (midnight in their timezone)
+        long thisEpoch = toDateEpochSecondsWithZone(thisZone);
+        long otherEpoch = other.toDateEpochSecondsWithZone(otherZone);
+        int c = Long.compare(thisEpoch, otherEpoch);
         if (c != 0) {
             return c;
         }
-        c = Integer.compare(month, other.month);
-        if (c != 0) {
-            return c;
+        
+        // If values are equal in UTC but one has timezone and one doesn't,
+        // they're still not equal for equality tests
+        if ((this.timezone != null) != (other.timezone != null)) {
+            return this.timezone != null ? 1 : -1;
         }
-        return Integer.compare(day, other.day);
+        return 0;
+    }
+    
+    /**
+     * Converts this date to epoch seconds (midnight in the given timezone).
+     */
+    private long toDateEpochSecondsWithZone(ZoneOffset zone) {
+        java.time.LocalDate ld = java.time.LocalDate.of(
+            year != null ? year : 1970,
+            month != null ? month : 1,
+            day != null ? day : 1
+        );
+        java.time.ZonedDateTime zdt = ld.atStartOfDay(java.time.ZoneId.of(zone.getId()));
+        return zdt.toEpochSecond();
+    }
+    
+    /**
+     * Converts this date to epoch seconds (midnight in the given timezone).
+     * Used for timezone-aware date comparison.
+     */
+    private long toDateEpochSeconds() {
+        java.time.LocalDate ld = java.time.LocalDate.of(
+            year != null ? year : 1970,
+            month != null ? month : 1,
+            day != null ? day : 1
+        );
+        java.time.ZonedDateTime zdt = ld.atStartOfDay(java.time.ZoneId.of(timezone.getId()));
+        return zdt.toEpochSecond();
     }
     
     private int compareTime(XPathDateTime other) {
-        int c = Integer.compare(hour, other.hour);
+        // For comparison, treat absent timezone as UTC (implementation choice)
+        int thisOffset = this.timezone != null ? this.timezone.getTotalSeconds() : 0;
+        int otherOffset = other.timezone != null ? other.timezone.getTotalSeconds() : 0;
+        
+        // Convert to total seconds from midnight UTC
+        int thisSeconds = toTimeSeconds() - thisOffset;
+        int otherSeconds = other.toTimeSeconds() - otherOffset;
+        int c = Integer.compare(thisSeconds, otherSeconds);
         if (c != 0) {
             return c;
         }
-        c = Integer.compare(minute, other.minute);
+        
+        // Compare fractional seconds
+        BigDecimal thisFrac = second != null ? second.remainder(BigDecimal.ONE) : BigDecimal.ZERO;
+        BigDecimal otherFrac = other.second != null ? other.second.remainder(BigDecimal.ONE) : BigDecimal.ZERO;
+        c = thisFrac.compareTo(otherFrac);
         if (c != 0) {
             return c;
         }
-        return second.compareTo(other.second);
+        
+        // If values are equal in UTC but one has timezone and one doesn't,
+        // they're still not equal for equality tests
+        if ((this.timezone != null) != (other.timezone != null)) {
+            return this.timezone != null ? 1 : -1;
+        }
+        return 0;
+    }
+    
+    /**
+     * Converts this time to total seconds from midnight.
+     */
+    private int toTimeSeconds() {
+        int h = hour != null ? hour : 0;
+        int m = minute != null ? minute : 0;
+        int s = second != null ? second.intValue() : 0;
+        return h * 3600 + m * 60 + s;
     }
     
     private int compareDuration(XPathDateTime other) {
@@ -923,27 +1335,38 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     
     private static void validateDate(int year, int month, int day) throws XPathException {
         if (month < 1 || month > 12) {
-            throw new XPathException("Invalid month: " + month);
+            throw new XPathDateTimeException("FODT0001", 
+                "Overflow/underflow in date/time operation: Invalid month " + month + 
+                " (must be 1-12)");
         }
         int maxDay = YearMonth.of(year, month).lengthOfMonth();
         if (day < 1 || day > maxDay) {
-            throw new XPathException("Invalid day: " + day + " for month " + month);
+            throw new XPathDateTimeException("FODT0001",
+                "Overflow/underflow in date/time operation: Invalid day " + day + 
+                " for year " + year + " month " + month + " (must be 1-" + maxDay + ")");
         }
     }
     
     private static void validateTime(int hour, int minute, BigDecimal second) throws XPathException {
         if (hour < 0 || hour > 24) {
-            throw new XPathException("Invalid hour: " + hour);
+            throw new XPathDateTimeException("FODT0001",
+                "Overflow/underflow in date/time operation: Invalid hour " + hour + 
+                " (must be 0-24)");
         }
         if (minute < 0 || minute > 59) {
-            throw new XPathException("Invalid minute: " + minute);
+            throw new XPathDateTimeException("FODT0001",
+                "Overflow/underflow in date/time operation: Invalid minute " + minute + 
+                " (must be 0-59)");
         }
         if (second.compareTo(BigDecimal.ZERO) < 0 || second.compareTo(BigDecimal.valueOf(60)) >= 0) {
-            throw new XPathException("Invalid second: " + second);
+            throw new XPathDateTimeException("FODT0001",
+                "Overflow/underflow in date/time operation: Invalid second " + second + 
+                " (must be 0-59.999...)");
         }
         // hour 24 only valid with 00:00:00
         if (hour == 24 && (minute != 0 || second.compareTo(BigDecimal.ZERO) != 0)) {
-            throw new XPathException("Invalid time: 24:00:00 must be exactly midnight");
+            throw new XPathDateTimeException("FODT0001",
+                "Overflow/underflow in date/time operation: Hour 24 is only valid with 00:00:00");
         }
     }
     
@@ -1409,6 +1832,15 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
                                  seconds.compareTo(BigDecimal.ZERO) > 0 ? seconds : null, lexical);
     }
     
+    /**
+     * Checks if this value is a duration type.
+     *
+     * @return true if this is a duration, yearMonthDuration, or dayTimeDuration
+     */
+    public boolean isDuration() {
+        return isDuration(type);
+    }
+    
     private static boolean isDuration(DateTimeType type) {
         return type == DateTimeType.DURATION || 
                type == DateTimeType.YEAR_MONTH_DURATION || 
@@ -1527,16 +1959,43 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
             return false;
         }
         XPathDateTime other = (XPathDateTime) obj;
-        return type == other.type && lexicalValue.equals(other.lexicalValue);
+        if (type != other.type) {
+            return false;
+        }
+        // Use value-based comparison (compareTo) for equality
+        // This handles timezone normalization properly (e.g., Z == +00:00)
+        try {
+            return compareTo(other) == 0;
+        } catch (IllegalArgumentException e) {
+            // Different types - not equal
+            return false;
+        }
     }
     
     /**
      * Returns a hash code for this date/time value.
+     * Note: Uses normalized epoch-based hash for date/time values with timezones
+     * to be consistent with equals().
      *
      * @return the hash code
      */
     @Override
     public int hashCode() {
+        // Use epoch-based hash for date/time types to be consistent with equals()
+        // Treat absent timezone as UTC (same as in compareTo/equals)
+        if (type == DateTimeType.DATE_TIME || type == DateTimeType.DATE || type == DateTimeType.TIME) {
+            ZoneOffset zone = timezone != null ? timezone : ZoneOffset.UTC;
+            switch (type) {
+                case DATE_TIME:
+                    return Long.hashCode(toEpochSecondsWithZone(zone));
+                case DATE:
+                    return Long.hashCode(toDateEpochSecondsWithZone(zone));
+                case TIME:
+                    return Integer.hashCode(toTimeSeconds() - zone.getTotalSeconds());
+                default:
+                    break;
+            }
+        }
         return lexicalValue.hashCode();
     }
     

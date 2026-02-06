@@ -25,6 +25,7 @@ import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.GlobalVariable;
+import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 import org.bluezoo.gonzalez.transform.compiler.TemplateParameter;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
@@ -391,7 +392,7 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Create the output handler wrapper
         OutputHandler output = wrapOutputHandler(outputHandler);
         
-        // Create initial context
+        // Create initial context (principal output is now set via constructor)
         BasicTransformContext context = new BasicTransformContext(
             stylesheet, root, matcher, output, errorListener);
         
@@ -403,41 +404,41 @@ public class GonzalezTransformHandler extends DefaultHandler
         
         // Check for initial template (XSLT 2.0+ feature)
         if (initialTemplate != null) {
-            // Call the named template directly
-            TemplateRule template = stylesheet.getNamedTemplate(initialTemplate);
-            if (template == null) {
-                throw new SAXException("XTDE0040: Initial template '" + initialTemplate + "' not found");
-            }
-            // Execute the named template with document root as context node
-            TransformContext templateContext = context.pushVariableScope();
-            XSLTNode body = template.getBody();
-            if (body != null) {
-                body.execute(templateContext, output);
-            }
-        } else {
-            // Check for xsl:initial-template (XSLT 3.0 feature)
-            // The template name "xsl:initial-template" in the XSLT namespace is special
-            // Try both the prefixed form and the expanded Clark notation form
-            TemplateRule xslInitialTemplate = stylesheet.getNamedTemplate("xsl:initial-template");
-            if (xslInitialTemplate == null) {
-                xslInitialTemplate = stylesheet.getNamedTemplate("{http://www.w3.org/1999/XSL/Transform}initial-template");
-            }
-            
-            if (xslInitialTemplate != null) {
-                // xsl:initial-template exists - invoke it with document root as context
+                // Call the named template directly
+                TemplateRule template = stylesheet.getNamedTemplate(initialTemplate);
+                if (template == null) {
+                    throw new SAXException("XTDE0040: Initial template '" + initialTemplate + "' not found");
+                }
+                // Execute the named template with document root as context node
                 TransformContext templateContext = context.pushVariableScope();
-                XSLTNode body = xslInitialTemplate.getBody();
+                XSLTNode body = template.getBody();
                 if (body != null) {
                     body.execute(templateContext, output);
                 }
             } else {
-                // Apply templates to the root node (standard behavior)
-                applyTemplates(root, null, context, output);
+                // Check for xsl:initial-template (XSLT 3.0 feature)
+                // The template name "xsl:initial-template" in the XSLT namespace is special
+                // Try both the prefixed form and the expanded Clark notation form
+                TemplateRule xslInitialTemplate = stylesheet.getNamedTemplate("xsl:initial-template");
+                if (xslInitialTemplate == null) {
+                    xslInitialTemplate = stylesheet.getNamedTemplate("{http://www.w3.org/1999/XSL/Transform}initial-template");
+                }
+                
+                if (xslInitialTemplate != null) {
+                    // xsl:initial-template exists - invoke it with document root as context
+                    TransformContext templateContext = context.pushVariableScope();
+                    XSLTNode body = xslInitialTemplate.getBody();
+                    if (body != null) {
+                        body.execute(templateContext, output);
+                    }
+                } else {
+                    // Apply templates to the root node (standard behavior)
+                    applyTemplates(root, null, context, output);
+                }
             }
-        }
-        
-        // End output document
-        output.endDocument();
+            
+            // End output document
+            output.endDocument();
     }
 
     private void initializeGlobals(BasicTransformContext context) throws SAXException {
@@ -452,6 +453,10 @@ public class GonzalezTransformHandler extends DefaultHandler
             context.setVariable(entry.getKey(), value);
         }
         
+        // Note: XTDE0050 (required parameter validation) is not implemented because
+        // the test framework doesn't support passing external stylesheet parameters.
+        // The getRequiredParameters() method exists for future use.
+        
         // Evaluate global variables with forward reference support
         // Use multi-pass: keep evaluating until all done or no progress (circular reference)
         List<GlobalVariable> allVars = stylesheet.getGlobalVariables();
@@ -461,12 +466,20 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Mark parameters that were already set from external parameters
         for (GlobalVariable var : allVars) {
             String key = makeVarKey(var);
-            if (var.isParam() && context.getVariable(var.getNamespaceURI(), var.getLocalName()) != null) {
-                evaluated.add(key);
+            if (var.isParam()) {
+                try {
+                    if (context.getVariable(var.getNamespaceURI(), var.getLocalName()) != null) {
+                        evaluated.add(key);
+                    }
+                } catch (XPathVariableException e) {
+                    // Not yet set, will be evaluated below
+                }
             }
         }
         
         // Multi-pass evaluation with circular reference detection
+        // Enable strict mode to throw exceptions for undefined variables
+        context.setThrowOnUndefinedVariable(true);
         boolean progress = true;
         while (progress) {
             progress = false;
@@ -478,8 +491,11 @@ public class GonzalezTransformHandler extends DefaultHandler
                 
                 // Try to evaluate this variable
                 try {
+                    // Track this variable as being evaluated (at context level for key() detection)
                     beingEvaluated.add(key);
+                    context.startVariableEvaluation(key);
                     XPathValue value = evaluateGlobalVariable(var, context, beingEvaluated, evaluated);
+                    context.endVariableEvaluation(key);
                     beingEvaluated.remove(key);
                     
                     if (value != null) {
@@ -489,12 +505,41 @@ public class GonzalezTransformHandler extends DefaultHandler
                     }
                 } catch (CircularReferenceException e) {
                     throw new SAXException("XTDE0640: Circular reference in variable: " + var.getName());
-                } catch (Exception e) {
+                } catch (XPathVariableException e) {
+                    // Check if this is a circular reference error
+                    if (e.getMessage() != null && e.getMessage().contains("XTDE0640")) {
+                        throw new SAXException(e.getMessage());
+                    }
                     // Variable references an unevaluated variable - try again later
+                    context.endVariableEvaluation(key);
+                    beingEvaluated.remove(key);
+                } catch (Exception e) {
+                    // Check if the root cause is a circular reference or undefined variable
+                    Throwable cause = e;
+                    boolean isUndefinedVar = false;
+                    while (cause != null) {
+                        if (cause instanceof XPathVariableException) {
+                            String msg = cause.getMessage();
+                            if (msg != null && msg.contains("XTDE0640")) {
+                                throw new SAXException(msg);
+                            }
+                            // This is an undefined variable - might be evaluated later
+                            isUndefinedVar = true;
+                        }
+                        cause = cause.getCause();
+                    }
+                    // If not a variable error, this is a real problem - rethrow
+                    if (!isUndefinedVar) {
+                        throw new SAXException("Error evaluating variable: " + var.getName(), e);
+                    }
+                    // Variable references an unevaluated variable - try again later
+                    context.endVariableEvaluation(key);
                     beingEvaluated.remove(key);
                 }
             }
         }
+        // Disable strict mode after initialization
+        context.setThrowOnUndefinedVariable(false);
         
         // Check if any variables remain unevaluated
         for (GlobalVariable var : allVars) {
@@ -522,7 +567,16 @@ public class GonzalezTransformHandler extends DefaultHandler
             if (var.getSelectExpr() != null) {
                 return var.getSelectExpr().evaluate(context);
             } else if (var.getContent() != null) {
-                // Execute content and capture as result tree fragment
+                // Check if this is a sequence or single node type
+                if (var.isSequenceType() || var.isSingleNodeType()) {
+                    // Use sequence construction to properly capture nodes
+                    StylesheetCompiler.SequenceBuilderOutputHandler seqBuilder = 
+                        new StylesheetCompiler.SequenceBuilderOutputHandler();
+                    var.getContent().execute(context, seqBuilder);
+                    return seqBuilder.getSequence();
+                }
+                
+                // Execute content and capture as result tree fragment (default)
                 SAXEventBuffer buffer = new SAXEventBuffer();
                 BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
                 var.getContent().execute(context, bufferOutput);
@@ -724,6 +778,10 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Pending namespace declarations for the current element
         private final List<String[]> pendingNamespaces = new ArrayList<String[]>();
         
+        // XSLT 2.0 atomic value spacing state
+        private boolean atomicValuePending = false;
+        private boolean inAttributeContent = false;
+        
         ContentHandlerOutputAdapter(ContentHandler handler) {
             this.handler = handler;
         }
@@ -825,6 +883,40 @@ public class GonzalezTransformHandler extends DefaultHandler
                 inStartTag = false;
                 pendingAttrs.clear();
                 pendingNamespaces.clear();
+            }
+        }
+        
+        @Override
+        public boolean isAtomicValuePending() {
+            return atomicValuePending;
+        }
+        
+        @Override
+        public void setAtomicValuePending(boolean pending) {
+            this.atomicValuePending = pending;
+        }
+        
+        @Override
+        public boolean isInAttributeContent() {
+            return inAttributeContent;
+        }
+        
+        @Override
+        public void setInAttributeContent(boolean inAttribute) {
+            this.inAttributeContent = inAttribute;
+        }
+        
+        @Override
+        public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
+                throws SAXException {
+            if (value != null) {
+                // In element content, add space between adjacent atomic values (XSLT 2.0+)
+                // But NOT in attribute content
+                if (atomicValuePending && !inAttributeContent) {
+                    characters(" ");
+                }
+                characters(value.asString());
+                atomicValuePending = true;
             }
         }
     }

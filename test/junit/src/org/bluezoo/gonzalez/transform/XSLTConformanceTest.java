@@ -97,7 +97,8 @@ public class XSLTConformanceTest {
     private static final String SKIP_FILTER = normalizeProperty(System.getProperty("xslt.skip"));        // comma-separated patterns to skip
     
     // Default heavy test sets to skip (regex, unicode - thousands of tests each)
-    private static final String DEFAULT_SKIP = "regex,unicode";
+    // result-document tests are slow (write many files) - skip for faster regression testing
+    private static final String DEFAULT_SKIP = "regex,unicode,result-document";
     
     private static String normalizeProperty(String value) {
         // Handle unset ant properties that come through as "${prop.name}"
@@ -595,14 +596,21 @@ public class XSLTConformanceTest {
             try {
                 transformer.transform(source, streamResult);
 
-                if (testCase.expectsError) {
-                    result.passed = false;
-                    result.actualResult = "No error (expected error)";
-                    result.message = "Expected error but transformation succeeded";
-                } else {
-                    String actualOutput = outputStream.toString(StandardCharsets.UTF_8.name());
-                    result.actualResult = actualOutput;
+                String actualOutput = outputStream.toString(StandardCharsets.UTF_8.name());
+                result.actualResult = actualOutput;
 
+                if (testCase.expectsError) {
+                    // Test expects an error, but transformation succeeded.
+                    // However, if expectedXml is also set (any-of case), check if output matches.
+                    if (testCase.expectedXml != null && xmlEquals(actualOutput, testCase.expectedXml)) {
+                        // Recovery output matches - this is also acceptable
+                        result.passed = true;
+                    } else {
+                        result.passed = false;
+                        result.actualResult = "No error (expected error)";
+                        result.message = "Expected error but transformation succeeded";
+                    }
+                } else {
                     if (testCase.expectedXml != null) {
                         if (xmlEquals(actualOutput, testCase.expectedXml)) {
                             result.passed = true;

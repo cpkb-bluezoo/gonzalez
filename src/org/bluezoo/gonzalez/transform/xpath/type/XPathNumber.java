@@ -218,6 +218,54 @@ public final class XPathNumber implements XPathValue {
     }
 
     /**
+     * Checks if this number can be considered an instance of the given XSD numeric type.
+     * 
+     * <p>This implements XPath 2.0+ type promotion rules:
+     * <ul>
+     *   <li>xs:integer can be promoted to xs:decimal, xs:float, xs:double</li>
+     *   <li>xs:decimal can be promoted to xs:float, xs:double</li>
+     *   <li>xs:float can be promoted to xs:double</li>
+     * </ul>
+     *
+     * @param xsTypeName the local name of the XSD type (e.g., "double", "integer", "decimal")
+     * @return true if this number matches or can be promoted to that type
+     */
+    public boolean isInstanceOfNumericType(String xsTypeName) {
+        if (xsTypeName == null) {
+            return false;
+        }
+        
+        // All numbers are xs:double (XPath 1.0 default)
+        // In XPath 2.0+, we allow numbers to match any numeric type via promotion
+        switch (xsTypeName) {
+            case "double":
+            case "float":
+            case "decimal":
+                // All XPathNumber values can be considered xs:double, xs:float, or xs:decimal
+                return true;
+                
+            case "integer":
+            case "int":
+            case "long":
+            case "short":
+            case "byte":
+            case "nonNegativeInteger":
+            case "nonPositiveInteger":
+            case "positiveInteger":
+            case "negativeInteger":
+            case "unsignedInt":
+            case "unsignedLong":
+            case "unsignedShort":
+            case "unsignedByte":
+                // Integer types require no fractional part
+                return isInteger();
+                
+            default:
+                return false;
+        }
+    }
+
+    /**
      * Compares this number with another object for equality.
      *
      * <p>Two numbers are equal if they have the same value. NaN values are

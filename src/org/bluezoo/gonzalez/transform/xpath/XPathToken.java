@@ -96,6 +96,7 @@ public enum XPathToken {
     OR,
     /** The 'mod' operator. */
     MOD,
+    IDIV,  // XPath 2.0 integer division
     /** The 'div' operator. */
     DIV,
     /** The 'to' range operator (XPath 2.0). */

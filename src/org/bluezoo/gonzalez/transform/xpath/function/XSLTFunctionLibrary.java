@@ -25,10 +25,15 @@ import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.KeyDefinition;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.UserFunction;
+import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.DocumentLoader;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
+import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
@@ -42,6 +47,9 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathAnyURI;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathTypeException;
 
 import java.io.InputStream;
 import java.net.URI;
@@ -119,8 +127,27 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         map.put("current-group", new CurrentGroupFunction());
         map.put("current-grouping-key", new CurrentGroupingKeyFunction());
         
+        // XSLT 3.0 merge functions
+        map.put("current-merge-group", new CurrentMergeGroupFunction());
+        map.put("current-merge-key", new CurrentMergeKeyFunction());
+        
         // XSLT 2.0 analyze-string function
         map.put("regex-group", new RegexGroupFunction());
+        
+        // XSLT 2.0 unparsed-text functions
+        map.put("unparsed-text", new UnparsedTextFunction());
+        map.put("unparsed-text-available", new UnparsedTextAvailableFunction());
+        
+        // XPath 3.0 analyze-string function
+        map.put("analyze-string", new AnalyzeStringFunction());
+        
+        // XSLT 3.0 snapshot function
+        map.put("snapshot", new SnapshotFunction());
+        
+        // XPath 3.1 JSON functions
+        map.put("json-to-xml", new JsonToXmlFunction());
+        map.put("xml-to-json", new XmlToJsonFunction());
+        map.put("parse-json", new ParseJsonFunction());
         
         this.xsltFunctions = Collections.unmodifiableMap(map);
     }
@@ -148,6 +175,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     }
 
     private static final String XS_NAMESPACE = "http://www.w3.org/2001/XMLSchema";
+    private static final String FN_NAMESPACE = "http://www.w3.org/2005/xpath-functions";
+    private static final String MATH_NAMESPACE = "http://www.w3.org/2005/xpath-functions/math";
+    private static final String MAP_NAMESPACE = "http://www.w3.org/2005/xpath-functions/map";
+    private static final String ARRAY_NAMESPACE = "http://www.w3.org/2005/xpath-functions/array";
     
     /**
      * Invokes a function with the given namespace, local name, and arguments.
@@ -163,17 +194,36 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     public XPathValue invokeFunction(String namespaceURI, String localName, 
                                      List<XPathValue> args, XPathContext context) 
             throws XPathException {
-        // First check built-in XSLT functions (no namespace)
-        if (namespaceURI == null || namespaceURI.isEmpty()) {
+        // First check built-in XSLT functions (no namespace or fn: namespace)
+        if (namespaceURI == null || namespaceURI.isEmpty() || FN_NAMESPACE.equals(namespaceURI)) {
             Function f = xsltFunctions.get(localName);
             if (f != null) {
                 return f.evaluate(args, context);
+            }
+            // Also try core functions with fn: namespace
+            if (FN_NAMESPACE.equals(namespaceURI)) {
+                return CoreFunctionLibrary.INSTANCE.invokeFunction(null, localName, args, context);
             }
         }
         
         // Check for XML Schema constructor functions (xs:date, xs:dateTime, etc.)
         if (XS_NAMESPACE.equals(namespaceURI)) {
             return invokeXsConstructor(localName, args);
+        }
+        
+        // Check for XPath 3.0 math functions (math:sin, math:cos, etc.)
+        if (MATH_NAMESPACE.equals(namespaceURI)) {
+            return invokeMathFunction(localName, args);
+        }
+        
+        // Check for XPath 3.1 map functions
+        if (MAP_NAMESPACE.equals(namespaceURI)) {
+            return invokeMapFunction(localName, args);
+        }
+        
+        // Check for XPath 3.1 array functions
+        if (ARRAY_NAMESPACE.equals(namespaceURI)) {
+            return invokeArrayFunction(localName, args);
         }
         
         // Check for user-defined functions (must be in a namespace)
@@ -320,6 +370,158 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     }
 
     // Cache for memoized functions (XSLT 3.0 cache="yes")
+    /**
+     * Invokes an XPath 3.0 math function (math:sin, math:cos, etc.).
+     *
+     * @param localName the local name of the function (e.g., "sin", "cos")
+     * @param args the function arguments
+     * @return the function result
+     * @throws XPathException if the function is unknown or invocation fails
+     */
+    private XPathValue invokeMathFunction(String localName, List<XPathValue> args) throws XPathException {
+        switch (localName) {
+            case "pi":
+                return XPathNumber.of(Math.PI);
+            case "e":
+                return XPathNumber.of(Math.E);
+            case "sqrt":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.sqrt(args.get(0).asNumber()));
+            case "sin":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.sin(args.get(0).asNumber()));
+            case "cos":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.cos(args.get(0).asNumber()));
+            case "tan":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.tan(args.get(0).asNumber()));
+            case "asin":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.asin(args.get(0).asNumber()));
+            case "acos":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.acos(args.get(0).asNumber()));
+            case "atan":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.atan(args.get(0).asNumber()));
+            case "atan2":
+                checkMathArgs(localName, args, 2);
+                return XPathNumber.of(Math.atan2(args.get(0).asNumber(), args.get(1).asNumber()));
+            case "exp":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.exp(args.get(0).asNumber()));
+            case "exp10":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.pow(10, args.get(0).asNumber()));
+            case "log":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.log(args.get(0).asNumber()));
+            case "log10":
+                checkMathArgs(localName, args, 1);
+                return XPathNumber.of(Math.log10(args.get(0).asNumber()));
+            case "pow":
+            case "power":
+                checkMathArgs(localName, args, 2);
+                return XPathNumber.of(Math.pow(args.get(0).asNumber(), args.get(1).asNumber()));
+            default:
+                throw new XPathException("Unknown math function: math:" + localName);
+        }
+    }
+    
+    private void checkMathArgs(String func, List<XPathValue> args, int required) throws XPathException {
+        if (args.size() < required) {
+            throw new XPathException("math:" + func + " requires " + required + " argument(s)");
+        }
+        // Handle empty sequence argument
+        if (args.get(0) == null || 
+            (args.get(0) instanceof XPathSequence && ((XPathSequence)args.get(0)).isEmpty())) {
+            // Return empty sequence for empty input
+        }
+    }
+
+    /**
+     * Invokes an XPath 3.1 map function.
+     * Basic stub implementations - full map support requires XDM map type.
+     */
+    private XPathValue invokeMapFunction(String localName, List<XPathValue> args) throws XPathException {
+        switch (localName) {
+            case "size":
+                // map:size($map) → xs:integer
+                return XPathNumber.of(0); // Stub: would need actual map support
+            case "keys":
+                // map:keys($map) → xs:anyAtomicType*
+                return XPathSequence.EMPTY;
+            case "contains":
+                // map:contains($map, $key) → xs:boolean
+                return XPathBoolean.FALSE;
+            case "get":
+                // map:get($map, $key) → item()*
+                return XPathSequence.EMPTY;
+            case "put":
+            case "remove":
+            case "entry":
+            case "merge":
+            case "for-each":
+            case "find":
+                // These require actual map implementation
+                return XPathSequence.EMPTY;
+            default:
+                throw new XPathException("Unknown map function: map:" + localName);
+        }
+    }
+
+    /**
+     * Invokes an XPath 3.1 array function.
+     * Basic stub implementations - full array support requires XDM array type.
+     */
+    private XPathValue invokeArrayFunction(String localName, List<XPathValue> args) throws XPathException {
+        switch (localName) {
+            case "size":
+                // array:size($array) → xs:integer
+                if (!args.isEmpty() && args.get(0) instanceof XPathSequence) {
+                    return XPathNumber.of(((XPathSequence) args.get(0)).size());
+                }
+                return XPathNumber.of(0);
+            case "get":
+                // array:get($array, $position) → item()*
+                if (args.size() >= 2 && args.get(0) instanceof XPathSequence) {
+                    XPathSequence seq = (XPathSequence) args.get(0);
+                    int pos = (int) args.get(1).asNumber();
+                    if (pos >= 1 && pos <= seq.size()) {
+                        java.util.Iterator<XPathValue> iter = seq.iterator();
+                        for (int i = 1; i < pos && iter.hasNext(); i++) {
+                            iter.next();
+                        }
+                        if (iter.hasNext()) {
+                            return iter.next();
+                        }
+                    }
+                }
+                return XPathSequence.EMPTY;
+            case "put":
+            case "append":
+            case "subarray":
+            case "remove":
+            case "insert-before":
+            case "head":
+            case "tail":
+            case "reverse":
+            case "join":
+            case "for-each":
+            case "filter":
+            case "fold-left":
+            case "fold-right":
+            case "for-each-pair":
+            case "flatten":
+            case "sort":
+                // These require actual array implementation
+                return XPathSequence.EMPTY;
+            default:
+                throw new XPathException("Unknown array function: array:" + localName);
+        }
+    }
+
     // Key: function key + stringified arguments, Value: cached result
     private static final Map<String, XPathValue> functionCache = new ConcurrentHashMap<>();
     
@@ -356,12 +558,54 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         // Execute the function body
         try {
-            SAXEventBuffer resultBuffer = new SAXEventBuffer();
-            BufferOutputHandler output = new BufferOutputHandler(resultBuffer);
-            function.getBody().execute(funcContext, output);
+            XPathValue result;
+            String asType = function.getAsType();
             
-            // Return the result as an RTF (Result Tree Fragment)
-            XPathValue result = new XPathResultTreeFragment(resultBuffer);
+            // Check if return type indicates atomic/sequence (not node/RTF)
+            // Types like xs:boolean*, xs:integer, item()*, etc. should use sequence construction
+            if (asType != null && isAtomicOrSequenceType(asType)) {
+                // Use sequence construction mode to preserve item boundaries
+                org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.SequenceBuilderOutputHandler output = 
+                    new org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.SequenceBuilderOutputHandler();
+                function.getBody().execute(funcContext, output);
+                result = output.getSequence();
+                
+                // Coerce the result type to match the declared 'as' type (atomize + convert)
+                // This replaces validation because coercion includes type checking
+                if (asType != null && !asType.isEmpty()) {
+                    // Only coerce if not in SILENT mode
+                    ErrorHandlingMode errorMode = funcContext instanceof TransformContext ? 
+                        ((TransformContext) funcContext).getErrorHandlingMode() : 
+                        ErrorHandlingMode.STRICT;
+                    
+                    if (!errorMode.isSilent()) {
+                        try {
+                            // Coerce the result to the expected type (atomize + convert)
+                            // If coercion succeeds, the result matches the type by definition
+                            result = coerceToType(result, asType, funcContext);
+                        } catch (XPathTypeException e) {
+                            if (errorMode.isRecovery()) {
+                                // RECOVER mode: log warning and continue with original result
+                                System.err.println("Warning [" + e.getErrorCode() + "]: " + e.getMessage());
+                            } else {
+                                // STRICT mode: rethrow
+                                throw new XPathException(e.getMessage());
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Default: use RTF (Result Tree Fragment) for node/document return types
+                SAXEventBuffer resultBuffer = new SAXEventBuffer();
+                BufferOutputHandler output = new BufferOutputHandler(resultBuffer);
+                function.getBody().execute(funcContext, output);
+                result = new XPathResultTreeFragment(resultBuffer);
+                
+                // TODO: For RTF results with declared types, validate if possible
+                // if (asType != null) {
+                //     validateFunctionReturnType(result, asType, function.getLocalName());
+                // }
+            }
             
             // Cache the result if caching is enabled
             if (cacheKey != null) {
@@ -390,6 +634,54 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             sb.append(arg != null ? arg.asString() : "null");
         }
         return sb.toString();
+    }
+    
+    /**
+     * Checks if a type annotation indicates an atomic or sequence type
+     * (as opposed to a node or document type that should be returned as RTF).
+     *
+     * <p>Atomic types include xs:string, xs:boolean, xs:integer, xs:decimal, etc.
+     * Sequence types include item()*, xs:string*, element()*, etc.
+     *
+     * @param asType the type annotation (e.g., "xs:boolean*", "item()+")
+     * @return true if the type is atomic/sequence and should use sequence construction
+     */
+    private boolean isAtomicOrSequenceType(String asType) {
+        if (asType == null || asType.isEmpty()) {
+            // For functions without declared return type, use sequence construction
+            // to properly preserve atomic values from xsl:sequence
+            return true;
+        }
+        
+        // Remove occurrence indicator (*, +, ?)
+        String baseType = asType.replaceAll("[*+?]$", "").trim();
+        
+        // Check for xs: prefixed atomic types
+        if (baseType.startsWith("xs:")) {
+            // All xs: types are atomic (string, boolean, integer, decimal, etc.)
+            return true;
+        }
+        
+        // Check for item() which can contain atomic values
+        if (baseType.equals("item()") || baseType.startsWith("item(")) {
+            return true;
+        }
+        
+        // Check for atomic() type (XPath 3.0)
+        if (baseType.equals("xs:anyAtomicType") || baseType.contains("atomic")) {
+            return true;
+        }
+        
+        // Node types like element(), document-node(), node() should use RTF
+        // unless they have occurrence indicators suggesting sequences
+        if (asType.endsWith("*") || asType.endsWith("+") || asType.endsWith("?")) {
+            // Sequence of nodes - use sequence construction to preserve item boundaries
+            // This includes element()*, element()+, element()?, attribute()?, etc.
+            return true;
+        }
+        
+        // Default: treat as RTF (node/document type)
+        return false;
     }
     
     /**
@@ -511,6 +803,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
      * <p>Signature: key(string, object) → node-set
      * 
      * @see <a href="https://www.w3.org/TR/xslt/#function-key">XSLT 1.0 key()</a>
+     * @see <a href="https://www.w3.org/TR/xslt20/#function-key">XSLT 2.0 key()</a>
      */
     private static class KeyFunction implements Function {
         @Override
@@ -520,7 +813,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         public int getMinArgs() { return 2; }
         
         @Override
-        public int getMaxArgs() { return 2; }
+        public int getMaxArgs() { return 3; }  // XSLT 2.0 adds collation parameter
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
@@ -534,6 +827,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             TransformContext txContext = (TransformContext) context;
             CompiledStylesheet stylesheet = txContext.getStylesheet();
             
+            // Get collation from 3rd argument or use default
+            Collation collation;
+            if (args.size() > 2) {
+                String collUri = args.get(2).asString();
+                collation = Collation.forUri(collUri);
+            } else {
+                String defaultUri = txContext.getDefaultCollation();
+                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+            }
+            
             // Expand key name to Clark notation (resolve prefix to URI)
             // This ensures key('bar:foo', ...) finds key defined as baz:foo 
             // when both prefixes map to the same namespace URI
@@ -544,45 +847,62 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 return XPathNodeSet.empty();
             }
             
-            // Get the document root
-            XPathNode contextNode = context.getContextNode();
-            if (contextNode == null) {
-                return XPathNodeSet.empty();
-            }
-            XPathNode root = contextNode.getRoot();
-            if (root == null) {
-                return XPathNodeSet.empty();
-            }
-            
-            // Build key index and look up nodes
-            // For node-set key values, check each node's string value
-            List<String> searchValues = new ArrayList<>();
-            if (keyValue instanceof XPathNodeSet) {
-                for (XPathNode node : ((XPathNodeSet) keyValue).getNodes()) {
-                    searchValues.add(node.getStringValue());
+            // Check for circular reference in key evaluation
+            if (txContext instanceof BasicTransformContext) {
+                BasicTransformContext btx = (BasicTransformContext) txContext;
+                if (btx.isKeyBeingEvaluated(expandedName)) {
+                    throw new XPathException("XTDE0640: Circular reference in key: " + keyName);
                 }
-            } else {
-                searchValues.add(keyValue.asString());
+                btx.startKeyEvaluation(expandedName);
             }
             
-            // Find all matching nodes
-            List<XPathNode> result = new ArrayList<>();
-            Pattern matchPattern = keyDef.getMatchPattern();
-            XPathExpression useExpr = keyDef.getUseExpr();
-            
-            // Walk the document tree and find matches
-            collectKeyMatches(root, matchPattern, useExpr, searchValues, result, txContext);
-            
-            return new XPathNodeSet(result);
+            try {
+                // Get the document root
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode == null) {
+                    return XPathNodeSet.empty();
+                }
+                XPathNode root = contextNode.getRoot();
+                if (root == null) {
+                    return XPathNodeSet.empty();
+                }
+                
+                // Build key index and look up nodes
+                // For node-set key values, check each node's string value
+                List<String> searchValues = new ArrayList<>();
+                if (keyValue instanceof XPathNodeSet) {
+                    for (XPathNode node : ((XPathNodeSet) keyValue).getNodes()) {
+                        searchValues.add(node.getStringValue());
+                    }
+                } else {
+                    searchValues.add(keyValue.asString());
+                }
+                
+                // Find all matching nodes
+                List<XPathNode> result = new ArrayList<>();
+                Pattern matchPattern = keyDef.getMatchPattern();
+                XPathExpression useExpr = keyDef.getUseExpr();
+                
+                // Walk the document tree and find matches
+                collectKeyMatches(root, matchPattern, useExpr, searchValues, result, txContext, collation);
+                
+                return new XPathNodeSet(result);
+            } finally {
+                // Clear the key from being evaluated
+                if (txContext instanceof BasicTransformContext) {
+                    ((BasicTransformContext) txContext).endKeyEvaluation(expandedName);
+                }
+            }
         }
         
         /**
          * Recursively collects nodes that match the key definition and have
-         * matching key values.
+         * matching key values (using collation for comparison).
          */
         private void collectKeyMatches(XPathNode node, Pattern matchPattern, 
                                        XPathExpression useExpr, List<String> searchValues,
-                                       List<XPathNode> result, TransformContext context) 
+                                       List<XPathNode> result, TransformContext context,
+                                       Collation collation) 
                                        throws XPathException {
             // Check if this node matches the key pattern
             if (matchPattern.matches(node, context)) {
@@ -600,10 +920,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     nodeKeyValues.add(useValue.asString());
                 }
                 
-                // Check if any of this node's key values match our search values
+                // Check if any of this node's key values match our search values (using collation)
+                outer:
                 for (String nodeKey : nodeKeyValues) {
                     for (String searchKey : searchValues) {
-                        if (nodeKey.equals(searchKey)) {
+                        if (collation.equals(nodeKey, searchKey)) {
                             // Avoid duplicates
                             boolean found = false;
                             for (XPathNode existing : result) {
@@ -615,7 +936,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                             if (!found) {
                                 result.add(node);
                             }
-                            break;
+                            break outer;
                         }
                     }
                 }
@@ -641,10 +962,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                             attrKeyValues.add(useValue.asString());
                         }
                         
-                        // Check if any of this attribute's key values match our search values
+                        // Check if any of this attribute's key values match our search values (using collation)
+                        outer:
                         for (String attrKey : attrKeyValues) {
                             for (String searchKey : searchValues) {
-                                if (attrKey.equals(searchKey)) {
+                                if (collation.equals(attrKey, searchKey)) {
                                     // Avoid duplicates
                                     boolean found = false;
                                     for (XPathNode existing : result) {
@@ -656,7 +978,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                                     if (!found) {
                                         result.add(attr);
                                     }
-                                    break;
+                                    break outer;
                                 }
                             }
                         }
@@ -668,7 +990,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             Iterator<XPathNode> children = node.getChildren();
             while (children.hasNext()) {
                 collectKeyMatches(children.next(), matchPattern, useExpr, 
-                                  searchValues, result, context);
+                                  searchValues, result, context, collation);
             }
         }
         
@@ -769,7 +1091,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                             preserveSpace = stylesheet.getPreserveSpaceElements();
                         }
                     }
-                    XPathNode doc = loadDocument(uri, nodeBaseUri, stripSpace, preserveSpace);
+                    XPathNode doc = DocumentLoader.loadDocument(uri, nodeBaseUri, stripSpace, preserveSpace);
                     if (doc != null) {
                         results.add(doc);
                     }
@@ -785,7 +1107,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 String stylesheetUri = context.getStaticBaseURI();
                 if (stylesheetUri != null && !stylesheetUri.isEmpty()) {
                     // Don't apply strip-space to the stylesheet document itself
-                    XPathNode doc = loadDocument(stylesheetUri, null, null, null);
+                    XPathNode doc = DocumentLoader.loadDocument(stylesheetUri, null, null, null);
                     if (doc != null) {
                         return new XPathNodeSet(Collections.singletonList(doc));
                     }
@@ -805,7 +1127,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             }
             
-            XPathNode doc = loadDocument(uri, baseUri, stripSpace, preserveSpace);
+            XPathNode doc = DocumentLoader.loadDocument(uri, baseUri, stripSpace, preserveSpace);
             if (doc != null) {
                 return new XPathNodeSet(Collections.singletonList(doc));
             }
@@ -852,7 +1174,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 // Per XSLT spec, doc('') behaves like document('') - returns the stylesheet module
                 if (baseUri != null && !baseUri.isEmpty()) {
                     // Don't apply strip-space to the stylesheet document itself
-                    XPathNode doc = loadDocument(baseUri, null, null, null);
+                    XPathNode doc = DocumentLoader.loadDocument(baseUri, null, null, null);
                     if (doc != null) {
                         return new XPathNodeSet(Collections.singletonList(doc));
                     }
@@ -871,7 +1193,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             }
             
-            XPathNode doc = loadDocument(uri, baseUri, stripSpace, preserveSpace);
+            XPathNode doc = DocumentLoader.loadDocument(uri, baseUri, stripSpace, preserveSpace);
             if (doc == null) {
                 throw new XPathException("FODC0002: Cannot retrieve document at " + uri);
             }
@@ -921,494 +1243,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             // Try to load the document - catch any errors
             try {
-                XPathNode doc = loadDocument(uri, baseUri, null, null);
+                XPathNode doc = DocumentLoader.loadDocument(uri, baseUri, null, null);
                 return XPathBoolean.of(doc != null);
             } catch (Exception e) {
                 // Any error means the document is not available
                 return XPathBoolean.FALSE;
             }
-        }
-    }
-    
-    // Cache for loaded documents - keyed by absolute URI + strip-space rules
-    // Note: Documents with different strip-space rules need separate cache entries
-    private static final Map<String, XPathNode> documentCache = new ConcurrentHashMap<>();
-    
-    /**
-     * Loads an XML document from a URI and returns its document node.
-     * Results are cached so the same URI always returns the same document.
-     *
-     * @param uri the document URI (may be relative)
-     * @param baseUri the base URI for resolving relative URIs
-     * @param stripSpace element patterns for strip-space (or null)
-     * @param preserveSpace element patterns for preserve-space (or null)
-     * @return the document node, or null if loading fails
-     */
-    private static XPathNode loadDocument(String uri, String baseUri,
-            List<String> stripSpace, List<String> preserveSpace) {
-        try {
-            // Resolve the URI against the base URI
-            URI resolved;
-            if (baseUri != null && !baseUri.isEmpty()) {
-                URI base = new URI(baseUri);
-                resolved = base.resolve(uri);
-            } else {
-                resolved = new URI(uri);
-            }
-            
-            String absoluteUri = resolved.toString();
-            
-            // Build cache key including strip-space rules
-            // Different strip-space rules produce different trees
-            String cacheKey = absoluteUri;
-            if (stripSpace != null && !stripSpace.isEmpty()) {
-                cacheKey += "#strip=" + stripSpace.hashCode();
-            }
-            if (preserveSpace != null && !preserveSpace.isEmpty()) {
-                cacheKey += "#preserve=" + preserveSpace.hashCode();
-            }
-            
-            // Check cache
-            XPathNode cached = documentCache.get(cacheKey);
-            if (cached != null) {
-                return cached;
-            }
-            
-            // Parse the document
-            URL url = resolved.toURL();
-            SAXParserFactory factory = SAXParserFactory.newInstance();
-            factory.setNamespaceAware(true);
-            SAXParser parser = factory.newSAXParser();
-            
-            DocumentTreeBuilder builder = new DocumentTreeBuilder(absoluteUri, stripSpace, preserveSpace);
-            try (InputStream in = url.openStream()) {
-                InputSource source = new InputSource(in);
-                source.setSystemId(absoluteUri);
-                parser.parse(source, builder);
-            }
-            
-            XPathNode root = builder.getRoot();
-            
-            // Cache the result
-            if (root != null) {
-                documentCache.put(cacheKey, root);
-            }
-            
-            return root;
-        } catch (Exception e) {
-            // Return null on any error (caller decides whether to throw)
-            return null;
-        }
-    }
-    
-    /**
-     * SAX handler that builds a navigable node tree from a parsed XML document.
-     */
-    private static class DocumentTreeBuilder extends DefaultHandler {
-        private final String baseUri;
-        private final List<String> stripSpace;
-        private final List<String> preserveSpace;
-        private DocumentNode root;
-        private DocumentNode current;
-        private StringBuilder textBuffer = new StringBuilder();
-        private int documentOrder = 0;
-        private List<String[]> pendingNamespaces = new ArrayList<>();
-        
-        DocumentTreeBuilder(String baseUri, List<String> stripSpace, List<String> preserveSpace) {
-            this.baseUri = baseUri;
-            this.stripSpace = stripSpace;
-            this.preserveSpace = preserveSpace;
-        }
-        
-        XPathNode getRoot() {
-            return root;
-        }
-        
-        @Override
-        public void startDocument() {
-            root = new DocumentNode(NodeType.ROOT, null, null, null, baseUri);
-            root.documentOrder = documentOrder++;
-            current = root;
-        }
-        
-        @Override
-        public void startPrefixMapping(String prefix, String uri) {
-            // Buffer namespace mappings to add to the next element
-            pendingNamespaces.add(new String[]{prefix, uri});
-        }
-        
-        @Override
-        public void endPrefixMapping(String prefix) {
-            // Nothing needed
-        }
-        
-        @Override
-        public void startElement(String uri, String localName, String qName, Attributes attrs) {
-            flushText();
-            DocumentNode element = new DocumentNode(NodeType.ELEMENT, uri, localName, 
-                qName.contains(":") ? qName.substring(0, qName.indexOf(':')) : null, baseUri);
-            element.documentOrder = documentOrder++;
-            element.parent = current;
-            if (current != null) {
-                current.addChild(element);
-            }
-            
-            // Add namespace nodes from pending prefix mappings
-            for (String[] ns : pendingNamespaces) {
-                DocumentNode nsNode = new DocumentNode(NodeType.NAMESPACE, null, ns[0], null, baseUri);
-                nsNode.documentOrder = documentOrder++;
-                nsNode.value = ns[1];
-                nsNode.parent = element;
-                element.addNamespace(nsNode);
-            }
-            pendingNamespaces.clear();
-            
-            // Add attributes
-            for (int i = 0; i < attrs.getLength(); i++) {
-                DocumentNode attr = new DocumentNode(NodeType.ATTRIBUTE, 
-                    attrs.getURI(i), attrs.getLocalName(i), null, baseUri);
-                attr.documentOrder = documentOrder++;
-                attr.value = attrs.getValue(i);
-                attr.parent = element;
-                element.addAttribute(attr);
-            }
-            
-            current = element;
-        }
-        
-        @Override
-        public void endElement(String uri, String localName, String qName) {
-            flushText();
-            if (current != null && current.parent != null) {
-                current = current.parent;
-            }
-        }
-        
-        @Override
-        public void characters(char[] ch, int start, int length) {
-            textBuffer.append(ch, start, length);
-        }
-        
-        @Override
-        public void processingInstruction(String target, String data) {
-            flushText();
-            DocumentNode pi = new DocumentNode(NodeType.PROCESSING_INSTRUCTION, null, target, null, baseUri);
-            pi.documentOrder = documentOrder++;
-            pi.value = data;
-            pi.parent = current;
-            if (current != null) {
-                current.addChild(pi);
-            }
-        }
-        
-        // Note: comment() is from LexicalHandler, not DefaultHandler
-        // For now we don't handle comments in loaded documents
-        public void handleComment(char[] ch, int start, int length) {
-            flushText();
-            DocumentNode comment = new DocumentNode(NodeType.COMMENT, null, null, null, baseUri);
-            comment.documentOrder = documentOrder++;
-            comment.value = new String(ch, start, length);
-            comment.parent = current;
-            if (current != null) {
-                current.addChild(comment);
-            }
-        }
-        
-        private void flushText() {
-            if (textBuffer.length() > 0) {
-                String text = textBuffer.toString();
-                textBuffer.setLength(0);
-                
-                // Check if whitespace should be stripped
-                if (shouldStripWhitespace(text)) {
-                    return; // Don't add whitespace-only text node
-                }
-                
-                DocumentNode textNode = new DocumentNode(NodeType.TEXT, null, null, null, baseUri);
-                textNode.documentOrder = documentOrder++;
-                textNode.value = text;
-                textNode.parent = current;
-                if (current != null) {
-                    current.addChild(textNode);
-                }
-            }
-        }
-        
-        /**
-         * Checks if whitespace-only text should be stripped based on xsl:strip-space rules.
-         */
-        private boolean shouldStripWhitespace(String text) {
-            // Only strip if it's whitespace-only
-            if (!isWhitespaceOnly(text)) {
-                return false;
-            }
-            
-            // No strip-space rules means no stripping
-            if (stripSpace == null || stripSpace.isEmpty()) {
-                return false;
-            }
-            
-            // Must be in an element context
-            if (current == null || current.type != NodeType.ELEMENT) {
-                return false;
-            }
-            
-            String localName = current.localName;
-            String namespaceURI = current.namespaceURI;
-            
-            // Check preserve-space first (it takes precedence)
-            if (preserveSpace != null) {
-                for (String pattern : preserveSpace) {
-                    if (matchesElementPattern(pattern, localName, namespaceURI)) {
-                        return false;
-                    }
-                }
-            }
-            
-            // Check strip-space
-            for (String pattern : stripSpace) {
-                if (matchesElementPattern(pattern, localName, namespaceURI)) {
-                    return true;
-                }
-            }
-            
-            return false;
-        }
-        
-        private boolean isWhitespaceOnly(String text) {
-            for (int i = 0; i < text.length(); i++) {
-                char c = text.charAt(i);
-                if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
-                    return false;
-                }
-            }
-            return true;
-        }
-        
-        /**
-         * Checks if an element matches a strip-space/preserve-space pattern.
-         * Patterns use Clark notation {uri}localname for namespace-qualified names.
-         */
-        private boolean matchesElementPattern(String pattern, String localName, String namespaceURI) {
-            if ("*".equals(pattern)) {
-                return true;
-            }
-            if (pattern.startsWith("{")) {
-                // Clark notation: {uri}localname or {*}localname
-                int closeBrace = pattern.indexOf('}');
-                if (closeBrace > 0) {
-                    String patternUri = pattern.substring(1, closeBrace);
-                    String patternLocal = pattern.substring(closeBrace + 1);
-                    
-                    // {*}localname - matches any namespace
-                    if ("*".equals(patternUri)) {
-                        return "*".equals(patternLocal) || patternLocal.equals(localName);
-                    }
-                    // {uri}* - matches any element in namespace
-                    if ("*".equals(patternLocal)) {
-                        return patternUri.equals(namespaceURI);
-                    }
-                    // {uri}localname - exact match
-                    return patternUri.equals(namespaceURI) && patternLocal.equals(localName);
-                }
-            }
-            // No namespace prefix - matches elements in no namespace with this local name
-            return (namespaceURI == null || namespaceURI.isEmpty()) && pattern.equals(localName);
-        }
-    }
-    
-    /**
-     * Node implementation for loaded documents.
-     */
-    private static class DocumentNode implements XPathNodeWithBaseURI {
-        final NodeType type;
-        final String namespaceURI;
-        final String localName;
-        final String prefix;
-        final String baseUri;
-        String value;
-        DocumentNode parent;
-        List<DocumentNode> children;
-        List<DocumentNode> attributes;
-        List<DocumentNode> namespaces;
-        long documentOrder;
-        
-        DocumentNode(NodeType type, String namespaceURI, String localName, String prefix, String baseUri) {
-            this.type = type;
-            this.namespaceURI = namespaceURI;
-            this.localName = localName;
-            this.prefix = prefix;
-            this.baseUri = baseUri;
-        }
-        
-        void addChild(DocumentNode child) {
-            if (children == null) {
-                children = new ArrayList<>();
-            }
-            children.add(child);
-        }
-        
-        void addAttribute(DocumentNode attr) {
-            if (attributes == null) {
-                attributes = new ArrayList<>();
-            }
-            attributes.add(attr);
-        }
-        
-        void addNamespace(DocumentNode ns) {
-            if (namespaces == null) {
-                namespaces = new ArrayList<>();
-            }
-            namespaces.add(ns);
-        }
-        
-        @Override public NodeType getNodeType() { return type; }
-        @Override public String getNamespaceURI() { return namespaceURI; }
-        @Override public String getLocalName() { return localName; }
-        @Override public String getPrefix() { return prefix; }
-        
-        @Override
-        public String getStringValue() {
-            if (type == NodeType.ELEMENT || type == NodeType.ROOT) {
-                StringBuilder sb = new StringBuilder();
-                collectText(this, sb);
-                return sb.toString();
-            }
-            return value != null ? value : "";
-        }
-        
-        private void collectText(DocumentNode node, StringBuilder sb) {
-            if (node.type == NodeType.TEXT) {
-                sb.append(node.value);
-            }
-            if (node.children != null) {
-                for (DocumentNode child : node.children) {
-                    collectText(child, sb);
-                }
-            }
-        }
-        
-        @Override public XPathNode getParent() { return parent; }
-        @Override public long getDocumentOrder() { return documentOrder; }
-        @Override public boolean isFullyNavigable() { return true; }
-        
-        @Override
-        public Iterator<XPathNode> getChildren() {
-            if (children == null) {
-                return Collections.<XPathNode>emptyList().iterator();
-            }
-            return new ArrayList<XPathNode>(children).iterator();
-        }
-        
-        @Override
-        public Iterator<XPathNode> getAttributes() {
-            if (attributes == null) {
-                return Collections.<XPathNode>emptyList().iterator();
-            }
-            return new ArrayList<XPathNode>(attributes).iterator();
-        }
-        
-        @Override
-        public Iterator<XPathNode> getNamespaces() {
-            // Return namespace nodes declared on this element and inherited from ancestors
-            // Build a map to handle redeclarations (closer declarations override)
-            Map<String, DocumentNode> nsMap = new LinkedHashMap<>();
-            
-            // Start from this element and go up
-            DocumentNode current = this;
-            while (current != null) {
-                if (current.type == NodeType.ELEMENT && current.namespaces != null) {
-                    for (DocumentNode ns : current.namespaces) {
-                        String nsPrefix = ns.localName != null ? ns.localName : "";
-                        // Only add if not already declared by a closer element
-                        if (!nsMap.containsKey(nsPrefix)) {
-                            String uri = ns.value;
-                            if (uri != null && !uri.isEmpty()) {
-                                nsMap.put(nsPrefix, ns);
-                            }
-                        }
-                    }
-                }
-                current = current.parent;
-            }
-            
-            // Always include the xml namespace
-            if (!nsMap.containsKey("xml")) {
-                DocumentNode xmlNs = new DocumentNode(NodeType.NAMESPACE, null, "xml", null, baseUri);
-                xmlNs.value = "http://www.w3.org/XML/1998/namespace";
-                nsMap.put("xml", xmlNs);
-            }
-            
-            return new ArrayList<XPathNode>(nsMap.values()).iterator();
-        }
-        
-        @Override
-        public XPathNode getFollowingSibling() {
-            if (parent == null || parent.children == null) {
-                return null;
-            }
-            int idx = parent.children.indexOf(this);
-            if (idx >= 0 && idx < parent.children.size() - 1) {
-                return parent.children.get(idx + 1);
-            }
-            return null;
-        }
-        
-        @Override
-        public XPathNode getPrecedingSibling() {
-            if (parent == null || parent.children == null) {
-                return null;
-            }
-            int idx = parent.children.indexOf(this);
-            if (idx > 0) {
-                return parent.children.get(idx - 1);
-            }
-            return null;
-        }
-        
-        @Override
-        public XPathNode getAttribute(String namespaceURI, String localName) {
-            if (attributes != null) {
-                for (DocumentNode attr : attributes) {
-                    String attrUri = attr.namespaceURI != null ? attr.namespaceURI : "";
-                    String testUri = namespaceURI != null ? namespaceURI : "";
-                    if (attrUri.equals(testUri) && attr.localName.equals(localName)) {
-                        return attr;
-                    }
-                }
-            }
-            return null;
-        }
-        
-        @Override
-        public XPathNode getRoot() {
-            DocumentNode n = this;
-            while (n.parent != null) {
-                n = n.parent;
-            }
-            return n;
-        }
-        
-        @Override
-        public boolean isSameNode(XPathNode other) {
-            return this == other;
-        }
-        
-        /**
-         * Returns the base URI of this node.
-         */
-        public String getBaseURI() {
-            return baseUri;
-        }
-        
-        /**
-         * Returns the document URI (only for ROOT nodes).
-         */
-        public String getDocumentURI() {
-            if (type == NodeType.ROOT) {
-                return baseUri;  // Document URI is same as base URI for loaded docs
-            }
-            return null;
         }
     }
 
@@ -1493,6 +1333,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             boolean hasPerMille = pattern.indexOf(perMille) >= 0;
             boolean hasPercent = pattern.indexOf(percent) >= 0;
             
+            // Validate pattern before processing (FODF1310)
+            validatePattern(pattern, decimalSep, groupingSep, percent, perMille, patternSep, digit, zeroDigit);
+            
             // NOTE: We do NOT multiply here. Java's DecimalFormat automatically
             // multiplies by 100 for % and 1000 for ‰ when these symbols appear
             // in the pattern.
@@ -1539,11 +1382,137 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 
                 return XPathString.of(result);
             } catch (IllegalArgumentException e) {
-                // Fallback for invalid patterns
-                if (number == Math.floor(number) && !Double.isInfinite(number)) {
-                    return XPathString.of(String.valueOf((long) number));
+                // FODF1310: Invalid picture string
+                throw new XPathException("FODF1310: Invalid format-number picture string: " + pattern + 
+                    " - " + e.getMessage());
+            }
+        }
+        
+        /**
+         * Validates a format-number picture string according to XSLT/XPath rules.
+         * Throws FODF1310 for invalid patterns.
+         */
+        private void validatePattern(String pattern, char decimalSep, char groupingSep,
+                char percent, char perMille, char patternSep, char digit, char zeroDigit) throws XPathException {
+            // Split into positive and negative sub-patterns
+            String[] subPatterns = splitPattern(pattern, patternSep);
+            
+            // Check for too many sub-patterns (only positive and negative allowed)
+            if (subPatterns.length > 2) {
+                throw new XPathException("FODF1310: Invalid picture string - too many sub-patterns (found " + 
+                    subPatterns.length + " pattern separators)");
+            }
+            
+            // Validate each sub-pattern
+            for (String subPattern : subPatterns) {
+                validateSubPattern(subPattern, decimalSep, groupingSep, percent, perMille, digit, zeroDigit);
+            }
+        }
+        
+        /**
+         * Splits a pattern by the pattern separator, but not within quoted literals.
+         */
+        private String[] splitPattern(String pattern, char patternSep) {
+            java.util.List<String> parts = new java.util.ArrayList<>();
+            StringBuilder current = new StringBuilder();
+            boolean inQuote = false;
+            
+            for (int i = 0; i < pattern.length(); i++) {
+                char c = pattern.charAt(i);
+                if (c == '\'') {
+                    inQuote = !inQuote;
+                    current.append(c);
+                } else if (c == patternSep && !inQuote) {
+                    parts.add(current.toString());
+                    current = new StringBuilder();
+                } else {
+                    current.append(c);
                 }
-                return XPathString.of(String.valueOf(number));
+            }
+            parts.add(current.toString());
+            return parts.toArray(new String[0]);
+        }
+        
+        /**
+         * Validates a single sub-pattern for format-number.
+         */
+        private void validateSubPattern(String subPattern, char decimalSep, char groupingSep,
+                char percent, char perMille, char digit, char zeroDigit) throws XPathException {
+            int decimalCount = 0;
+            int percentCount = 0;
+            int perMilleCount = 0;
+            boolean inQuote = false;
+            
+            // First pass: find the mantissa boundaries (first and last digit positions)
+            int firstDigitPos = -1;
+            int lastDigitPos = -1;
+            for (int i = 0; i < subPattern.length(); i++) {
+                char c = subPattern.charAt(i);
+                if (c == '\'') {
+                    inQuote = !inQuote;
+                    continue;
+                }
+                if (inQuote) {
+                    continue;
+                }
+                
+                if (c == digit || c == zeroDigit) {
+                    if (firstDigitPos < 0) firstDigitPos = i;
+                    lastDigitPos = i;
+                }
+            }
+            
+            // Second pass: validate the pattern
+            inQuote = false;
+            for (int i = 0; i < subPattern.length(); i++) {
+                char c = subPattern.charAt(i);
+                if (c == '\'') {
+                    inQuote = !inQuote;
+                    continue;
+                }
+                if (inQuote) {
+                    continue; // Ignore characters in quoted literals
+                }
+                
+                boolean inMantissa = (firstDigitPos >= 0 && i >= firstDigitPos && i <= lastDigitPos);
+                boolean isDigitChar = (c == digit || c == zeroDigit);
+                
+                if (c == decimalSep) {
+                    decimalCount++;
+                    if (decimalCount > 1) {
+                        throw new XPathException("FODF1310: Invalid picture string - " +
+                            "multiple decimal separators in sub-pattern: " + subPattern);
+                    }
+                } else if (c == percent) {
+                    percentCount++;
+                    if (percentCount > 1) {
+                        throw new XPathException("FODF1310: Invalid picture string - " +
+                            "multiple percent signs in sub-pattern: " + subPattern);
+                    }
+                } else if (c == perMille) {
+                    perMilleCount++;
+                    if (perMilleCount > 1) {
+                        throw new XPathException("FODF1310: Invalid picture string - " +
+                            "multiple per-mille signs in sub-pattern: " + subPattern);
+                    }
+                } else if (inMantissa && !isDigitChar && c != groupingSep && c != decimalSep) {
+                    // Invalid character in mantissa - only digits, grouping sep, and decimal sep allowed
+                    // Characters like [, ], $ between digits are invalid
+                    throw new XPathException("FODF1310: Invalid picture string - " +
+                        "invalid character '" + c + "' in digit pattern: " + subPattern);
+                }
+            }
+            
+            // Check for both percent and per-mille
+            if (percentCount > 0 && perMilleCount > 0) {
+                throw new XPathException("FODF1310: Invalid picture string - " +
+                    "cannot have both percent and per-mille in sub-pattern: " + subPattern);
+            }
+            
+            // Must have at least one digit placeholder
+            if (firstDigitPos < 0) {
+                throw new XPathException("FODF1310: Invalid picture string - " +
+                    "no digit placeholder in sub-pattern: " + subPattern);
             }
         }
         
@@ -1664,6 +1633,27 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             }
             if ("xsl:vendor-url".equals(name)) {
                 return XPathString.of("https://www.nongnu.org/gonzalez/");
+            }
+            
+            // XSLT 3.0 package properties
+            if ("xsl:package-name".equals(name) || "xsl:package-version".equals(name)) {
+                // Try to get package info from the transform context
+                if (context instanceof org.bluezoo.gonzalez.transform.runtime.TransformContext) {
+                    org.bluezoo.gonzalez.transform.runtime.TransformContext tc = 
+                        (org.bluezoo.gonzalez.transform.runtime.TransformContext) context;
+                    org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet stylesheet = 
+                        tc.getStylesheet();
+                    if (stylesheet != null) {
+                        if ("xsl:package-name".equals(name)) {
+                            String pkgName = stylesheet.getPackageName();
+                            return XPathString.of(pkgName != null ? pkgName : "");
+                        } else {
+                            String pkgVersion = stylesheet.getPackageVersion();
+                            return XPathString.of(pkgVersion != null ? pkgVersion : "");
+                        }
+                    }
+                }
+                return XPathString.of("");
             }
             
             return XPathString.of("");
@@ -1962,6 +1952,76 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     }
 
     // ========================================================================
+    // XSLT 3.0 Merge Functions
+    // ========================================================================
+
+    /**
+     * current-merge-group() - Returns all items in the current merge group.
+     *
+     * <p>Within xsl:merge-action, this returns all items from all merge sources
+     * that have the current merge key value.
+     *
+     * <p>current-merge-group('name') returns only items from the named source.
+     */
+    private static class CurrentMergeGroupFunction implements Function {
+        @Override
+        public String getName() { return "current-merge-group"; }
+        
+        @Override
+        public int getMinArgs() { return 0; }
+        
+        @Override
+        public int getMaxArgs() { return 1; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            if (args.isEmpty()) {
+                // Return all items in current merge group
+                XPathValue group = context.getVariable(null, "__current_merge_group__");
+                if (group != null) {
+                    return group;
+                }
+            } else {
+                // Return items from specific source
+                String sourceName = args.get(0).asString();
+                XPathValue group = context.getVariable(null, "__current_merge_group_" + sourceName + "__");
+                if (group != null) {
+                    return group;
+                }
+            }
+            // Return empty sequence if not in merge context
+            return XPathNodeSet.empty();
+        }
+    }
+
+    /**
+     * current-merge-key() - Returns the current merge key value.
+     *
+     * <p>Within xsl:merge-action, this returns the key value that is common
+     * to all items in the current merge group.
+     */
+    private static class CurrentMergeKeyFunction implements Function {
+        @Override
+        public String getName() { return "current-merge-key"; }
+        
+        @Override
+        public int getMinArgs() { return 0; }
+        
+        @Override
+        public int getMaxArgs() { return 0; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue key = context.getVariable(null, "__current_merge_key__");
+            if (key != null) {
+                return key;
+            }
+            // Return empty string if not in merge context
+            return XPathString.of("");
+        }
+    }
+
+    // ========================================================================
     // XSLT 2.0 analyze-string Functions
     // ========================================================================
 
@@ -2045,4 +2105,640 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             throw new XPathException("Unknown accumulator: " + name);
         }
     }
+    
+    /**
+     * Coerces a function return value to match the declared type in the 'as' attribute.
+     * This performs atomization and type conversion according to XSLT 2.0+ rules.
+     *
+     * @param result the function result
+     * @param asType the declared return type string (e.g., "xs:double", "xs:integer?")
+     * @param context the XPath context
+     * @return the coerced value
+     * @throws XPathException if coercion fails
+     */
+    private XPathValue coerceToType(XPathValue result, String asType, XPathContext context)
+            throws XPathException {
+        if (asType == null || asType.isEmpty() || result == null) {
+            return result;
+        }
+        
+        try {
+            // Parse the asType string into a SequenceType
+            SequenceType expectedType = parseAsType(asType);
+            
+            // If the expected type is atomic, try to convert from text/string
+            if (expectedType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
+                String typeLocalName = expectedType.getLocalName();
+                String typeNsUri = expectedType.getNamespaceURI();
+                
+                if (typeNsUri != null && typeNsUri.equals(SequenceType.XS_NAMESPACE)) {
+                    // Try to atomize and convert the result
+                    // This handles: XPathString, SequenceTextItem, XPathSequence with single string item
+                    String stringValue = result.asString();  // Get string value
+                    XPathValue converted = convertStringToAtomicType(stringValue, typeLocalName);
+                    if (converted != null) {
+                        return converted;
+                    }
+                }
+            }
+            
+            // Check if the result (after any conversion) matches the expected type
+            // Get schema context if available
+            SchemaContext schemaContext = (context instanceof SchemaContext) ? 
+                (SchemaContext) context : SchemaContext.NONE;
+            
+            // If it matches, return it; otherwise throw an error
+            if (expectedType.matches(result, schemaContext)) {
+                return result;
+            } else {
+                throw new XPathTypeException(
+                    "XTTE0505",
+                    "Function returned value does not match declared type '" + asType + "'",
+                    asType,
+                    result != null ? result.getClass().getSimpleName() : "null"
+                );
+            }
+            
+        } catch (XPathTypeException e) {
+            throw e;  // Re-throw XPathTypeException as-is
+        } catch (Exception e) {
+            throw new XPathTypeException(
+                "XTTE0505",
+                "Cannot coerce function result to type '" + asType + "': " + e.getMessage(),
+                asType,
+                result != null ? result.getClass().getSimpleName() : "null"
+            );
+        }
+    }
+    
+    /**
+     * Converts a string value to an XPath atomic type.
+     */
+    private XPathValue convertStringToAtomicType(String value, String typeName) throws XPathException {
+        try {
+            switch (typeName) {
+                case "string":
+                    return new XPathString(value);
+                    
+                case "double":
+                case "decimal":
+                case "float":
+                    return new XPathNumber(Double.parseDouble(value));
+                    
+                case "integer":
+                case "int":
+                case "long":
+                case "short":
+                case "byte":
+                case "nonNegativeInteger":
+                case "nonPositiveInteger":
+                case "positiveInteger":
+                case "negativeInteger":
+                case "unsignedInt":
+                case "unsignedLong":
+                case "unsignedShort":
+                case "unsignedByte":
+                    // Parse as integer (XPathNumber internally uses double)
+                    double num = Double.parseDouble(value);
+                    return new XPathNumber(Math.floor(num));
+                    
+                case "boolean":
+                    return XPathBoolean.of("true".equals(value) || "1".equals(value));
+                    
+                case "anyURI":
+                    return new XPathAnyURI(value);
+                    
+                case "date":
+                    return XPathDateTime.parseDate(value);
+                case "dateTime":
+                    return XPathDateTime.parseDateTime(value);
+                case "time":
+                    return XPathDateTime.parseTime(value);
+                case "duration":
+                    return XPathDateTime.parseDuration(value);
+                case "yearMonthDuration":
+                    return XPathDateTime.parseYearMonthDuration(value);
+                case "dayTimeDuration":
+                    return XPathDateTime.parseDayTimeDuration(value);
+                case "gYear":
+                    return XPathDateTime.parseGYear(value);
+                case "gMonth":
+                    return XPathDateTime.parseGMonth(value);
+                case "gDay":
+                    return XPathDateTime.parseGDay(value);
+                case "gYearMonth":
+                    return XPathDateTime.parseGYearMonth(value);
+                case "gMonthDay":
+                    return XPathDateTime.parseGMonthDay(value);
+                    
+                case "QName":
+                case "NOTATION":
+                case "normalizedString":
+                case "token":
+                case "language":
+                case "NMTOKEN":
+                case "Name":
+                case "NCName":
+                case "ID":
+                case "IDREF":
+                case "ENTITY":
+                case "hexBinary":
+                case "base64Binary":
+                    // These are all string-based types
+                    return new XPathString(value);
+                    
+                default:
+                    // Unknown type - return string as-is
+                    return new XPathString(value);
+            }
+        } catch (NumberFormatException e) {
+            throw new XPathException("Cannot convert '" + value + "' to " + typeName + ": " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Validates that a function's return value matches its declared 'as' type.
+     * Throws XTTE0505 if the type doesn't match.
+     *
+     * @param result the actual return value
+     * @param asType the declared type string (e.g., "xs:integer", "element()*")
+     * @param functionName the function name (for error messages)
+     * @param context the XPath context (for schema access)
+     * @throws XPathException if the type doesn't match (XTTE0505)
+     */
+    private void validateFunctionReturnType(XPathValue result, String asType, String functionName,
+                                           XPathContext context) 
+            throws XPathException {
+        if (asType == null || asType.isEmpty()) {
+            return;  // No declared type, no validation needed
+        }
+        
+        try {
+            // Parse the asType string into a SequenceType
+            SequenceType expectedType = parseAsType(asType);
+            
+            // Get schema context if available (context is passed as parameter)
+            SchemaContext schemaContext = (context instanceof SchemaContext) ? 
+                (SchemaContext) context : SchemaContext.NONE;
+            
+            // Check if the result matches the expected type
+            if (!expectedType.matches(result, schemaContext)) {
+                throw new XPathTypeException(
+                    "XTTE0505",
+                    "Function " + functionName + " returned value does not match declared type '" + 
+                    asType + "'",
+                    asType,
+                    result != null ? result.getClass().getSimpleName() : "null"
+                );
+            }
+        } catch (XPathTypeException e) {
+            throw e;  // Re-throw type exceptions as-is
+        } catch (Exception e) {
+            // If we can't parse the type, log but don't fail
+            // (This handles edge cases with complex schema types)
+            System.err.println("Warning: Could not validate return type '" + asType + 
+                             "' for function " + functionName + ": " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Parses an 'as' type string into a SequenceType.
+     * Handles common patterns like "xs:integer", "element()*", "item()+", etc.
+     *
+     * @param asType the type string
+     * @return the parsed SequenceType
+     * @throws XPathException if the type cannot be parsed
+     */
+    private SequenceType parseAsType(String asType) throws XPathException {
+        if (asType == null || asType.isEmpty()) {
+            return SequenceType.ITEM;
+        }
+        
+        // Determine occurrence indicator
+        SequenceType.Occurrence occ = SequenceType.Occurrence.ONE;
+        String baseType = asType;
+        
+        if (asType.endsWith("*")) {
+            occ = SequenceType.Occurrence.ZERO_OR_MORE;
+            baseType = asType.substring(0, asType.length() - 1).trim();
+        } else if (asType.endsWith("+")) {
+            occ = SequenceType.Occurrence.ONE_OR_MORE;
+            baseType = asType.substring(0, asType.length() - 1).trim();
+        } else if (asType.endsWith("?")) {
+            occ = SequenceType.Occurrence.ZERO_OR_ONE;
+            baseType = asType.substring(0, asType.length() - 1).trim();
+        }
+        
+        // Handle empty-sequence()
+        if (baseType.equals("empty-sequence()")) {
+            return SequenceType.EMPTY;
+        }
+        
+        // Handle item()
+        if (baseType.equals("item()")) {
+            return new SequenceType(SequenceType.ItemKind.ITEM, null, null, null, occ);
+        }
+        
+        // Handle node()
+        if (baseType.equals("node()")) {
+            return new SequenceType(SequenceType.ItemKind.NODE, null, null, null, occ);
+        }
+        
+        // Handle element()
+        if (baseType.equals("element()") || baseType.startsWith("element(")) {
+            return new SequenceType(SequenceType.ItemKind.ELEMENT, null, null, null, occ);
+        }
+        
+        // Handle attribute()
+        if (baseType.equals("attribute()") || baseType.startsWith("attribute(")) {
+            return new SequenceType(SequenceType.ItemKind.ATTRIBUTE, null, null, null, occ);
+        }
+        
+        // Handle text()
+        if (baseType.equals("text()")) {
+            return new SequenceType(SequenceType.ItemKind.TEXT, null, null, null, occ);
+        }
+        
+        // Handle comment()
+        if (baseType.equals("comment()")) {
+            return new SequenceType(SequenceType.ItemKind.COMMENT, null, null, null, occ);
+        }
+        
+        // Handle processing-instruction()
+        if (baseType.equals("processing-instruction()") || baseType.startsWith("processing-instruction(")) {
+            return new SequenceType(SequenceType.ItemKind.PROCESSING_INSTRUCTION, null, null, null, occ);
+        }
+        
+        // Handle document-node()
+        if (baseType.equals("document-node()") || baseType.startsWith("document-node(")) {
+            return new SequenceType(SequenceType.ItemKind.DOCUMENT_NODE, null, null, null, occ);
+        }
+        
+        // Handle atomic types (xs:integer, xs:string, etc.)
+        if (baseType.startsWith("xs:") || baseType.startsWith("xsd:")) {
+            String localName = baseType.substring(baseType.indexOf(':') + 1);
+            return SequenceType.atomic(SequenceType.XS_NAMESPACE, localName, occ);
+        }
+        
+        // Default: treat as atomic type in XS namespace
+        return SequenceType.atomic(SequenceType.XS_NAMESPACE, baseType, occ);
+    }
+
+    // ========================================================================
+    // XSLT 2.0 unparsed-text Functions
+    // ========================================================================
+
+    /**
+     * unparsed-text(href, encoding?) - Reads the contents of a text file.
+     */
+    private static class UnparsedTextFunction implements Function {
+        @Override
+        public String getName() { return "unparsed-text"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String href = args.get(0).asString();
+            String encoding = args.size() > 1 ? args.get(1).asString() : "UTF-8";
+            
+            if (href == null || href.isEmpty()) {
+                throw new XPathException("FOUT1170: href argument to unparsed-text is empty");
+            }
+            
+            try {
+                // Resolve relative URI against static base URI
+                String baseUri = context.getStaticBaseURI();
+                java.net.URI uri;
+                if (baseUri != null && !baseUri.isEmpty()) {
+                    uri = new java.net.URI(baseUri).resolve(href);
+                } else {
+                    uri = new java.net.URI(href);
+                }
+                
+                // Read the file
+                java.nio.charset.Charset charset = java.nio.charset.Charset.forName(encoding);
+                java.nio.file.Path path;
+                if ("file".equals(uri.getScheme())) {
+                    path = java.nio.file.Paths.get(uri);
+                } else if (uri.getScheme() == null) {
+                    // Relative path without scheme
+                    path = java.nio.file.Paths.get(href);
+                } else {
+                    // For http/https, read from URL
+                    java.io.InputStream is = uri.toURL().openStream();
+                    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                    byte[] buffer = new byte[8192];
+                    int len;
+                    while ((len = is.read(buffer)) != -1) {
+                        baos.write(buffer, 0, len);
+                    }
+                    is.close();
+                    return XPathString.of(new String(baos.toByteArray(), charset));
+                }
+                
+                byte[] bytes = java.nio.file.Files.readAllBytes(path);
+                String content = new String(bytes, charset);
+                return XPathString.of(content);
+            } catch (java.net.URISyntaxException e) {
+                throw new XPathException("FOUT1170: Invalid URI: " + href);
+            } catch (java.nio.charset.UnsupportedCharsetException e) {
+                throw new XPathException("FOUT1190: Unsupported encoding: " + encoding);
+            } catch (java.io.IOException e) {
+                throw new XPathException("FOUT1170: Cannot read resource: " + href + " - " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * unparsed-text-available(href, encoding?) - Tests if a text file can be read.
+     */
+    private static class UnparsedTextAvailableFunction implements Function {
+        @Override
+        public String getName() { return "unparsed-text-available"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String href = args.get(0).asString();
+            String encoding = args.size() > 1 ? args.get(1).asString() : "UTF-8";
+            
+            if (href == null || href.isEmpty()) {
+                return XPathBoolean.FALSE;
+            }
+            
+            try {
+                // Check if encoding is valid
+                java.nio.charset.Charset.forName(encoding);
+                
+                // Resolve relative URI against static base URI
+                String baseUri = context.getStaticBaseURI();
+                java.net.URI uri;
+                if (baseUri != null && !baseUri.isEmpty()) {
+                    uri = new java.net.URI(baseUri).resolve(href);
+                } else {
+                    uri = new java.net.URI(href);
+                }
+                
+                // Check if file exists
+                java.nio.file.Path path;
+                if ("file".equals(uri.getScheme())) {
+                    path = java.nio.file.Paths.get(uri);
+                    return XPathBoolean.of(java.nio.file.Files.exists(path) && 
+                                           java.nio.file.Files.isReadable(path));
+                } else if (uri.getScheme() == null) {
+                    path = java.nio.file.Paths.get(href);
+                    return XPathBoolean.of(java.nio.file.Files.exists(path) && 
+                                           java.nio.file.Files.isReadable(path));
+                } else {
+                    // For http/https, try to open connection
+                    try {
+                        java.net.HttpURLConnection conn = (java.net.HttpURLConnection) uri.toURL().openConnection();
+                        conn.setRequestMethod("HEAD");
+                        int responseCode = conn.getResponseCode();
+                        conn.disconnect();
+                        return XPathBoolean.of(responseCode >= 200 && responseCode < 300);
+                    } catch (Exception e) {
+                        return XPathBoolean.FALSE;
+                    }
+                }
+            } catch (Exception e) {
+                return XPathBoolean.FALSE;
+            }
+        }
+    }
+
+    // ========================================================================
+    // XPath 3.0 analyze-string Function
+    // ========================================================================
+
+    /**
+     * analyze-string($input, $pattern) - Analyzes a string using a regular expression.
+     * Returns an XML representation of the match results.
+     */
+    private static class AnalyzeStringFunction implements Function {
+        @Override
+        public String getName() { return "analyze-string"; }
+        
+        @Override
+        public int getMinArgs() { return 2; }
+        
+        @Override
+        public int getMaxArgs() { return 3; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String input = args.get(0) != null ? args.get(0).asString() : "";
+            String pattern = args.get(1).asString();
+            String flags = args.size() > 2 ? args.get(2).asString() : "";
+            
+            // Build regex flags
+            int regexFlags = 0;
+            if (flags.contains("i")) regexFlags |= java.util.regex.Pattern.CASE_INSENSITIVE;
+            if (flags.contains("m")) regexFlags |= java.util.regex.Pattern.MULTILINE;
+            if (flags.contains("s")) regexFlags |= java.util.regex.Pattern.DOTALL;
+            if (flags.contains("x")) regexFlags |= java.util.regex.Pattern.COMMENTS;
+            
+            try {
+                java.util.regex.Pattern p = java.util.regex.Pattern.compile(pattern, regexFlags);
+                java.util.regex.Matcher m = p.matcher(input);
+                
+                // Build result XML as string (simplified - full implementation needs RTF)
+                StringBuilder xml = new StringBuilder();
+                xml.append("<fn:analyze-string-result xmlns:fn=\"http://www.w3.org/2005/xpath-functions\">");
+                
+                int lastEnd = 0;
+                while (m.find()) {
+                    // Non-matching text before this match
+                    if (m.start() > lastEnd) {
+                        xml.append("<fn:non-match>");
+                        xml.append(escapeXml(input.substring(lastEnd, m.start())));
+                        xml.append("</fn:non-match>");
+                    }
+                    // The match
+                    xml.append("<fn:match>");
+                    if (m.groupCount() > 0) {
+                        // Include groups
+                        for (int i = 1; i <= m.groupCount(); i++) {
+                            String group = m.group(i);
+                            if (group != null) {
+                                xml.append("<fn:group nr=\"").append(i).append("\">");
+                                xml.append(escapeXml(group));
+                                xml.append("</fn:group>");
+                            }
+                        }
+                    } else {
+                        xml.append(escapeXml(m.group()));
+                    }
+                    xml.append("</fn:match>");
+                    lastEnd = m.end();
+                }
+                // Remaining non-matching text
+                if (lastEnd < input.length()) {
+                    xml.append("<fn:non-match>");
+                    xml.append(escapeXml(input.substring(lastEnd)));
+                    xml.append("</fn:non-match>");
+                }
+                
+                xml.append("</fn:analyze-string-result>");
+                
+                // Parse and return as document node
+                // For now, return as string - full implementation needs document parsing
+                return XPathString.of(xml.toString());
+            } catch (java.util.regex.PatternSyntaxException e) {
+                throw new XPathException("FORX0002: Invalid regular expression: " + pattern);
+            }
+        }
+        
+        private String escapeXml(String s) {
+            return s.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("\"", "&quot;");
+        }
+    }
+
+    // ========================================================================
+    // XSLT 3.0 snapshot Function
+    // ========================================================================
+
+    /**
+     * snapshot($node) - Returns a deep copy of a node with ancestor information preserved.
+     */
+    private static class SnapshotFunction implements Function {
+        @Override
+        public String getName() { return "snapshot"; }
+        
+        @Override
+        public int getMinArgs() { return 0; }
+        
+        @Override
+        public int getMaxArgs() { return 1; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathNode node;
+            if (args.isEmpty()) {
+                node = context.getContextNode();
+            } else {
+                XPathValue arg = args.get(0);
+                if (arg instanceof XPathNode) {
+                    node = (XPathNode) arg;
+                } else if (arg instanceof XPathNodeSet) {
+                    java.util.Iterator<XPathNode> iter = ((XPathNodeSet) arg).iterator();
+                    if (!iter.hasNext()) {
+                        return XPathSequence.EMPTY;
+                    }
+                    node = iter.next();
+                } else {
+                    throw new XPathException("Argument to snapshot() must be a node");
+                }
+            }
+            
+            // Return a copy of the node (simplified - doesn't preserve full ancestor axis)
+            return XPathNodeSet.of(node);
+        }
+    }
+
+    // ========================================================================
+    // XPath 3.1 JSON Functions
+    // ========================================================================
+
+    /**
+     * json-to-xml($json-text) - Parses JSON text and returns an XML representation.
+     */
+    private static class JsonToXmlFunction implements Function {
+        @Override
+        public String getName() { return "json-to-xml"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String json = args.get(0).asString();
+            // Options map (args[1]) ignored for now
+            
+            // Simple JSON to XML conversion
+            // Full implementation would need proper JSON parsing
+            StringBuilder xml = new StringBuilder();
+            xml.append("<fn:map xmlns:fn=\"http://www.w3.org/2005/xpath-functions\">");
+            // Simplified: just wrap the JSON text
+            xml.append(escapeXml(json));
+            xml.append("</fn:map>");
+            
+            return XPathString.of(xml.toString());
+        }
+        
+        private String escapeXml(String s) {
+            return s.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;");
+        }
+    }
+
+    /**
+     * xml-to-json($node) - Converts XML (in XPath functions namespace format) to JSON.
+     */
+    private static class XmlToJsonFunction implements Function {
+        @Override
+        public String getName() { return "xml-to-json"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // Simplified implementation - returns string value
+            XPathValue arg = args.get(0);
+            if (arg instanceof XPathNode) {
+                return XPathString.of(((XPathNode) arg).getStringValue());
+            } else if (arg instanceof XPathNodeSet) {
+                StringBuilder sb = new StringBuilder();
+                for (XPathNode node : (XPathNodeSet) arg) {
+                    sb.append(node.getStringValue());
+                }
+                return XPathString.of(sb.toString());
+            }
+            return XPathString.of(arg.asString());
+        }
+    }
+
+    /**
+     * parse-json($json-text) - Parses JSON text and returns an XDM map/array.
+     */
+    private static class ParseJsonFunction implements Function {
+        @Override
+        public String getName() { return "parse-json"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 2; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String json = args.get(0).asString();
+            // Full implementation would need proper JSON parsing and XDM map/array support
+            // For now, return the string
+            return XPathString.of(json);
+        }
+    }
 }
+

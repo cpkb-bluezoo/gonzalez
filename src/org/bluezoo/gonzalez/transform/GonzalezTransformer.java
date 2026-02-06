@@ -351,7 +351,20 @@ public class GonzalezTransformer extends Transformer {
                     // XML/XHTML output: use XMLWriter for optimal serialization
                     OutputProperties props = stylesheet != null ? 
                         stylesheet.getOutputProperties() : new OutputProperties();
-                    return new XMLWriterOutputHandler(channel, props);
+                    XMLWriterOutputHandler xmlHandler = new XMLWriterOutputHandler(channel, props);
+                    
+                    // Set up character mappings if specified
+                    if (stylesheet != null && !props.getUseCharacterMaps().isEmpty()) {
+                        java.util.Map<Integer, String> mappings = new java.util.HashMap<>();
+                        java.util.Set<String> visited = new java.util.HashSet<>();
+                        for (String mapName : props.getUseCharacterMaps()) {
+                            collectCharacterMappings(mapName, mappings, visited);
+                        }
+                        if (!mappings.isEmpty()) {
+                            xmlHandler.setCharacterMappings(mappings);
+                        }
+                    }
+                    return xmlHandler;
             }
         }
         
@@ -386,6 +399,34 @@ public class GonzalezTransformer extends Transformer {
     @Override
     public void clearParameters() {
         parameters.clear();
+    }
+    
+    /**
+     * Recursively collects character mappings from a character map and its referenced maps.
+     *
+     * @param mapName the name of the character map
+     * @param mappings the map to populate with character-to-string mappings
+     * @param visited the set of already visited map names (to avoid circular references)
+     */
+    private void collectCharacterMappings(String mapName, java.util.Map<Integer, String> mappings, 
+            java.util.Set<String> visited) {
+        if (mapName == null || visited.contains(mapName)) {
+            return;  // Avoid null and circular references
+        }
+        visited.add(mapName);
+        
+        CompiledStylesheet.CharacterMap charMap = stylesheet.getCharacterMap(mapName);
+        if (charMap == null) {
+            return;  // Unknown character map - ignore
+        }
+        
+        // First, process referenced character maps (lower precedence)
+        for (String refName : charMap.getUseCharacterMaps()) {
+            collectCharacterMappings(refName, mappings, visited);
+        }
+        
+        // Then add this map's mappings (higher precedence - overwrites)
+        mappings.putAll(charMap.getMappings());
     }
 
     /**
@@ -495,6 +536,96 @@ public class GonzalezTransformer extends Transformer {
      */
     public String getInitialTemplate() {
         return initialTemplate;
+    }
+
+    /**
+     * Command-line entry point for running XSLT transformations.
+     * Usage: java org.bluezoo.gonzalez.transform.GonzalezTransformer <stylesheet.xsl> <input.xml> [<output>] [-it <template>]
+     *
+     * @param args command-line arguments: stylesheet, input, optional output file, optional initial template
+     */
+    public static void main(String[] args) {
+        if (args.length < 2) {
+            System.err.println("Usage: java org.bluezoo.gonzalez.transform.GonzalezTransformer <stylesheet.xsl> <input.xml> [<output>] [-it <template>]");
+            System.err.println("  stylesheet.xsl - Path to XSLT stylesheet");
+            System.err.println("  input.xml      - Path to input XML file (or '-' for stdin)");
+            System.err.println("  output         - Optional output file (defaults to stdout)");
+            System.err.println("  -it <template> - Optional initial template name (XSLT 2.0+)");
+            System.exit(1);
+        }
+
+        String stylesheetPath = args[0];
+        String inputPath = args[1];
+        String outputPath = null;
+        String initialTemplate = null;
+        
+        // Parse remaining args
+        for (int i = 2; i < args.length; i++) {
+            if ("-it".equals(args[i]) && i + 1 < args.length) {
+                initialTemplate = args[++i];
+            } else if (outputPath == null) {
+                outputPath = args[i];
+            }
+        }
+
+        try {
+            // Create transformer factory and compile stylesheet
+            GonzalezTransformerFactory factory = new GonzalezTransformerFactory();
+            
+            // Load stylesheet
+            File stylesheetFile = new File(stylesheetPath);
+            if (!stylesheetFile.exists()) {
+                System.err.println("Error: Stylesheet file not found: " + stylesheetPath);
+                System.exit(1);
+            }
+            
+            StreamSource stylesheetSource = new StreamSource(stylesheetFile);
+            Templates templates = factory.newTemplates(stylesheetSource);
+            Transformer transformer = templates.newTransformer();
+            
+            // Set initial template if specified
+            if (initialTemplate != null && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setInitialTemplate(initialTemplate);
+            }
+            
+            // Load input source
+            Source inputSource;
+            if ("-".equals(inputPath)) {
+                inputSource = new StreamSource(System.in);
+            } else {
+                File inputFile = new File(inputPath);
+                if (!inputFile.exists()) {
+                    System.err.println("Error: Input file not found: " + inputPath);
+                    System.exit(1);
+                }
+                inputSource = new StreamSource(inputFile);
+            }
+            
+            // Prepare output
+            Result outputResult;
+            if (outputPath != null) {
+                outputResult = new StreamResult(new File(outputPath));
+            } else {
+                outputResult = new StreamResult(System.out);
+            }
+            
+            // Perform transformation
+            transformer.transform(inputSource, outputResult);
+            
+        } catch (TransformerException e) {
+            System.err.println("Transformation error: " + e.getMessage());
+            if (e.getCause() != null) {
+                System.err.println("Caused by: " + e.getCause().getMessage());
+                e.getCause().printStackTrace(System.err);
+            } else {
+                e.printStackTrace(System.err);
+            }
+            System.exit(1);
+        } catch (Exception e) {
+            System.err.println("Error: " + e.getMessage());
+            e.printStackTrace(System.err);
+            System.exit(1);
+        }
     }
 
 }

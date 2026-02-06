@@ -29,9 +29,12 @@ import org.xml.sax.SAXException;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CoderResult;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
@@ -79,10 +82,12 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     private final String encoding;
     private final boolean indent;
     private ByteBuffer buffer;
+    private final CharsetEncoder encoder;
+    private final CharBuffer charBuffer;
 
     // Pending element state for deferred attribute output
     private String pendingQName;
-    private final List<String[]> pendingAttributes = new ArrayList<>();  // [qName, value]
+    private final Map<String, String[]> pendingAttributes = new LinkedHashMap<>(8);  // lowercase key -> [qName, value]
     private boolean inStartTag = false;
     private int depth = 0;
     
@@ -93,6 +98,10 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     // Track meta charset insertion per XSLT 1.0 spec section 16.2
     private boolean inHead = false;
     private boolean metaCharsetEmitted = false;
+    
+    // XSLT 2.0 atomic value spacing state
+    private boolean atomicValuePending = false;
+    private boolean inAttributeContent = false;
 
     /**
      * HTML void elements - these have no end tag.
@@ -137,6 +146,8 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
         this.charset = Charset.forName(this.encoding);
         this.indent = indent;
         this.buffer = ByteBuffer.allocate(BUFFER_SIZE);
+        this.encoder = charset.newEncoder();
+        this.charBuffer = CharBuffer.allocate(1024);
     }
 
     /**
@@ -156,6 +167,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
 
     /**
      * Writes text to the buffer, flushing to channel if needed.
+     * Uses CharsetEncoder for efficient character-to-byte conversion.
      */
     private void write(String text) throws SAXException {
         if (text == null || text.isEmpty()) {
@@ -163,18 +175,32 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
         }
         
         try {
-            byte[] bytes = text.getBytes(charset);
-            int offset = 0;
-            while (offset < bytes.length) {
-                int remaining = buffer.remaining();
-                int toCopy = Math.min(remaining, bytes.length - offset);
+            // Use CharsetEncoder for efficient encoding
+            charBuffer.clear();
+            int textPos = 0;
+            
+            while (textPos < text.length()) {
+                // Fill char buffer
+                int charsToProcess = Math.min(charBuffer.remaining(), text.length() - textPos);
+                charBuffer.put(text, textPos, textPos + charsToProcess);
+                textPos += charsToProcess;
+                charBuffer.flip();
                 
-                buffer.put(bytes, offset, toCopy);
-                offset += toCopy;
+                // Encode to byte buffer
+                boolean endOfInput = (textPos >= text.length());
+                CoderResult result = encoder.encode(charBuffer, buffer, endOfInput);
                 
-                if (!buffer.hasRemaining()) {
+                // Handle overflow - flush byte buffer and continue
+                while (result == CoderResult.OVERFLOW) {
                     flushBuffer();
+                    result = encoder.encode(charBuffer, buffer, endOfInput);
                 }
+                
+                if (result.isError()) {
+                    result.throwException();
+                }
+                
+                charBuffer.clear();
             }
         } catch (IOException e) {
             throw new SAXException("Error writing output", e);
@@ -198,7 +224,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
         if (inStartTag) {
             // Check if this is a <meta> with charset - if so, mark as emitted
             if (pendingQName != null && pendingQName.toLowerCase().equals("meta")) {
-                for (String[] attr : pendingAttributes) {
+                for (String[] attr : pendingAttributes.values()) {
                     String attrLower = attr[0].toLowerCase();
                     // Check for <meta charset="..."> or <meta http-equiv="Content-Type" ...>
                     if ("charset".equals(attrLower) || 
@@ -211,7 +237,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             }
             
             // Output pending attributes
-            for (String[] attr : pendingAttributes) {
+            for (String[] attr : pendingAttributes.values()) {
                 String attrName = attr[0];
                 String attrValue = attr[1];
                 String attrLower = attrName.toLowerCase();
@@ -221,7 +247,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
                     (attrValue.isEmpty() || attrLower.equals(attrValue.toLowerCase()))) {
                     write(" " + attrName);
                 } else {
-                    write(" " + attrName + "=\"" + escapeAttr(attrValue) + "\"");
+                    write(" " + attrName + "=\"" + OutputHandlerUtils.escapeXmlAttribute(attrValue) + "\"");
                 }
             }
             pendingAttributes.clear();
@@ -241,34 +267,6 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             
             inStartTag = false;
         }
-    }
-
-    private String escapeAttr(String s) {
-        StringBuilder sb = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '&': sb.append("&amp;"); break;
-                case '<': sb.append("&lt;"); break;
-                case '"': sb.append("&quot;"); break;
-                default: sb.append(c);
-            }
-        }
-        return sb.toString();
-    }
-
-    private String escapeText(String s) {
-        StringBuilder sb = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '&': sb.append("&amp;"); break;
-                case '<': sb.append("&lt;"); break;
-                case '>': sb.append("&gt;"); break;
-                default: sb.append(c);
-            }
-        }
-        return sb.toString();
     }
 
     @Override
@@ -333,7 +331,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
         if (inStartTag) {
             // Check if this is a <meta> with charset
             if ("meta".equals(elemLower)) {
-                for (String[] attr : pendingAttributes) {
+                for (String[] attr : pendingAttributes.values()) {
                     String attrLower = attr[0].toLowerCase();
                     if ("charset".equals(attrLower) || 
                         ("http-equiv".equals(attrLower) && 
@@ -347,7 +345,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             // If closing an empty <head>, emit meta charset first
             if ("head".equals(elemLower) && !metaCharsetEmitted) {
                 // Output pending attributes first
-                for (String[] attr : pendingAttributes) {
+                for (String[] attr : pendingAttributes.values()) {
                     String attrName = attr[0];
                     String attrValue = attr[1];
                     String attrLower = attrName.toLowerCase();
@@ -356,7 +354,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
                         (attrValue.isEmpty() || attrLower.equals(attrValue.toLowerCase()))) {
                         write(" " + attrName);
                     } else {
-                        write(" " + attrName + "=\"" + escapeAttr(attrValue) + "\"");
+                        write(" " + attrName + "=\"" + OutputHandlerUtils.escapeXmlAttribute(attrValue) + "\"");
                     }
                 }
                 pendingAttributes.clear();
@@ -380,7 +378,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             }
             
             // Flush attributes
-            for (String[] attr : pendingAttributes) {
+            for (String[] attr : pendingAttributes.values()) {
                 String attrName = attr[0];
                 String attrValue = attr[1];
                 String attrLower = attrName.toLowerCase();
@@ -389,7 +387,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
                     (attrValue.isEmpty() || attrLower.equals(attrValue.toLowerCase()))) {
                     write(" " + attrName);
                 } else {
-                    write(" " + attrName + "=\"" + escapeAttr(attrValue) + "\"");
+                    write(" " + attrName + "=\"" + OutputHandlerUtils.escapeXmlAttribute(attrValue) + "\"");
                 }
             }
             pendingAttributes.clear();
@@ -426,17 +424,9 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             throw new SAXException("attribute() called outside element start");
         }
         
-        // Check for duplicate attribute
+        // Use lowercase key for HTML case-insensitive attribute matching
         String attrLower = qName.toLowerCase();
-        for (int i = 0; i < pendingAttributes.size(); i++) {
-            if (pendingAttributes.get(i)[0].toLowerCase().equals(attrLower)) {
-                // Update existing
-                pendingAttributes.set(i, new String[]{qName, value});
-                return;
-            }
-        }
-        
-        pendingAttributes.add(new String[]{qName, value});
+        pendingAttributes.put(attrLower, new String[]{qName, value});
     }
 
     @Override
@@ -447,10 +437,16 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             return;
         }
         
+        // Skip the xml prefix - it's implicitly bound and should never be declared
+        if (OutputHandlerUtils.isXmlPrefix(prefix)) {
+            return;
+        }
+        
         if (prefix == null || prefix.isEmpty()) {
-            pendingAttributes.add(new String[]{"xmlns", uri});
+            pendingAttributes.put("xmlns", new String[]{"xmlns", uri});
         } else {
-            pendingAttributes.add(new String[]{"xmlns:" + prefix, uri});
+            String key = "xmlns:" + prefix;
+            pendingAttributes.put(key.toLowerCase(), new String[]{key, uri});
         }
     }
 
@@ -462,7 +458,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             // Script/style content: no escaping
             write(text);
         } else {
-            write(escapeText(text));
+            write(OutputHandlerUtils.escapeXmlText(text));
         }
     }
 
@@ -542,6 +538,40 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     @Override
     public void skippedEntity(String name) throws SAXException {
         // Not used
+    }
+    
+    @Override
+    public boolean isAtomicValuePending() {
+        return atomicValuePending;
+    }
+    
+    @Override
+    public void setAtomicValuePending(boolean pending) {
+        this.atomicValuePending = pending;
+    }
+    
+    @Override
+    public boolean isInAttributeContent() {
+        return inAttributeContent;
+    }
+    
+    @Override
+    public void setInAttributeContent(boolean inAttributeContent) {
+        this.inAttributeContent = inAttributeContent;
+    }
+    
+    @Override
+    public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
+            throws SAXException {
+        if (value != null) {
+            // In element content, add space between adjacent atomic values (XSLT 2.0+)
+            // But NOT in attribute content
+            if (atomicValuePending && !inAttributeContent) {
+                characters(" ");
+            }
+            characters(value.asString());
+            atomicValuePending = true;
+        }
     }
 
 }

@@ -76,6 +76,10 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
     private final Charset charset;
     private final CharsetEncoder encoder;
     private ByteBuffer buffer;
+    
+    // XSLT 2.0 atomic value spacing state
+    private boolean atomicValuePending = false;
+    private boolean inAttributeContent = false;
 
     /**
      * Creates a text output handler writing to a byte channel.
@@ -254,6 +258,40 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
     @Override
     public void skippedEntity(String name) throws SAXException {
         // Not used
+    }
+    
+    @Override
+    public boolean isAtomicValuePending() {
+        return atomicValuePending;
+    }
+    
+    @Override
+    public void setAtomicValuePending(boolean pending) {
+        this.atomicValuePending = pending;
+    }
+    
+    @Override
+    public boolean isInAttributeContent() {
+        return inAttributeContent;
+    }
+    
+    @Override
+    public void setInAttributeContent(boolean inAttributeContent) {
+        this.inAttributeContent = inAttributeContent;
+    }
+    
+    @Override
+    public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
+            throws SAXException {
+        if (value != null) {
+            // In text output, add space between adjacent atomic values (XSLT 2.0+)
+            // But NOT in attribute content
+            if (atomicValuePending && !inAttributeContent) {
+                characters(" ");
+            }
+            characters(value.asString());
+            atomicValuePending = true;
+        }
     }
 
 }

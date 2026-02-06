@@ -25,9 +25,12 @@ import org.bluezoo.gonzalez.transform.compiler.AttributeSet;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
+import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.xml.sax.SAXException;
 
 import java.util.ArrayList;
@@ -74,6 +77,10 @@ public final class LiteralResultElement implements XSLTNode {
     // Type annotation (from xsl:type attribute)
     private final String typeNamespaceURI;
     private final String typeLocalName;
+    
+    // XSLT 3.0 on-empty/on-non-empty support
+    private final XSLTNode onEmptyNode;
+    private final XSLTNode onNonEmptyNode;
 
     /**
      * Creates a literal result element.
@@ -181,6 +188,39 @@ public final class LiteralResultElement implements XSLTNode {
                                 String typeNamespaceURI,
                                 String typeLocalName,
                                 SequenceNode content) {
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations,
+             namespaceContext, useAttributeSets, typeNamespaceURI, typeLocalName, content, null, null);
+    }
+    
+    /**
+     * Creates a literal result element with all options including on-empty/on-non-empty (XSLT 3.0).
+     */
+    public LiteralResultElement(String namespaceURI, String localName, String prefix,
+                                Map<String, AttributeValueTemplate> attributes,
+                                Map<String, String> namespaceDeclarations,
+                                List<String> useAttributeSets,
+                                String typeNamespaceURI,
+                                String typeLocalName,
+                                SequenceNode content,
+                                XSLTNode onEmptyNode,
+                                XSLTNode onNonEmptyNode) {
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations,
+             null, useAttributeSets, typeNamespaceURI, typeLocalName, content, onEmptyNode, onNonEmptyNode);
+    }
+    
+    /**
+     * Creates a literal result element with full options including on-empty/on-non-empty (XSLT 3.0).
+     */
+    public LiteralResultElement(String namespaceURI, String localName, String prefix,
+                                Map<String, AttributeValueTemplate> attributes,
+                                Map<String, String> namespaceDeclarations,
+                                Map<String, String> namespaceContext,
+                                List<String> useAttributeSets,
+                                String typeNamespaceURI,
+                                String typeLocalName,
+                                SequenceNode content,
+                                XSLTNode onEmptyNode,
+                                XSLTNode onNonEmptyNode) {
         this.namespaceURI = namespaceURI != null ? namespaceURI : "";
         this.localName = localName;
         this.prefix = prefix;
@@ -200,6 +240,8 @@ public final class LiteralResultElement implements XSLTNode {
         this.typeNamespaceURI = typeNamespaceURI;
         this.typeLocalName = typeLocalName;
         this.content = content != null ? content : SequenceNode.EMPTY;
+        this.onEmptyNode = onEmptyNode;
+        this.onNonEmptyNode = onNonEmptyNode;
         this.streamingCapability = computeStreamingCapability();
     }
 
@@ -264,13 +306,17 @@ public final class LiteralResultElement implements XSLTNode {
             if (nsAlias != null) {
                 // Don't output the stylesheet namespace declaration
                 // Instead, we'll output the result namespace if needed
-                if (!declaredResultUris.contains(nsAlias.resultUri)) {
+                // Skip xml prefix - it's implicitly bound and should never be declared
+                if (!declaredResultUris.contains(nsAlias.resultUri) && 
+                    !"xml".equals(nsAlias.resultPrefix)) {
                     output.namespace(nsAlias.resultPrefix, nsAlias.resultUri);
                     declaredResultUris.add(nsAlias.resultUri);
                 }
             } else {
-                // No alias - output as-is
-                output.namespace(nsPrefix, nsUri);
+                // No alias - output as-is (skip xml prefix)
+                if (!"xml".equals(nsPrefix)) {
+                    output.namespace(nsPrefix, nsUri);
+                }
             }
         }
         
@@ -281,7 +327,9 @@ public final class LiteralResultElement implements XSLTNode {
         }
         
         // Ensure the element's result namespace is declared if aliased
-        if (elementAlias != null && !declaredResultUris.contains(elementAlias.resultUri)) {
+        // Skip xml prefix - it's implicitly bound and should never be declared
+        if (elementAlias != null && !declaredResultUris.contains(elementAlias.resultUri) &&
+            !"xml".equals(elementAlias.resultPrefix)) {
             output.namespace(elementAlias.resultPrefix, elementAlias.resultUri);
         }
 
@@ -324,6 +372,12 @@ public final class LiteralResultElement implements XSLTNode {
                     attrUri = attrAlias.resultUri;
                     if (attrAlias.resultPrefix != null && !attrAlias.resultPrefix.isEmpty()) {
                         attrQName = attrAlias.resultPrefix + ":" + attrLocalName;
+                        // Ensure the aliased namespace is declared (unless it's xml)
+                        if (!"xml".equals(attrAlias.resultPrefix) && 
+                            !declaredResultUris.contains(attrAlias.resultUri)) {
+                            output.namespace(attrAlias.resultPrefix, attrAlias.resultUri);
+                            declaredResultUris.add(attrAlias.resultUri);
+                        }
                     } else {
                         attrQName = attrLocalName;
                     }
@@ -334,8 +388,12 @@ public final class LiteralResultElement implements XSLTNode {
         }
 
         // Execute content (reset atomic separator since we're starting fresh content)
-        StylesheetCompiler.resetAtomicSeparator();
-        content.execute(context, output);
+        output.setAtomicValuePending(false);
+        output.setInAttributeContent(false);
+        
+        // Execute content with on-empty/on-non-empty support (XSLT 3.0)
+        // SequenceNode handles the two-phase conditional execution if needed
+        content.executeWithOnEmptySupport(context, output, content.hasOnEmptyOrOnNonEmpty());
 
         // End element
         output.endElement(outputUri, localName, qName);
@@ -434,6 +492,128 @@ public final class LiteralResultElement implements XSLTNode {
     public String toString() {
         String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
         return "LiteralResultElement[" + qName + "]";
+    }
+
+    /**
+     * Output handler that detects whether content was produced for xsl:on-empty support.
+     * Attributes and namespaces are forwarded to the parent handler (they apply to the
+     * containing element), while other content is buffered.
+     */
+    private static class OnEmptyDetectingHandler implements OutputHandler {
+        private final OutputHandler parent;
+        private final SAXEventBuffer buffer;
+        private final BufferOutputHandler bufferHandler;
+        private boolean hasContent = false;
+
+        OnEmptyDetectingHandler(OutputHandler parent, SAXEventBuffer buffer) {
+            this.parent = parent;
+            this.buffer = buffer;
+            this.bufferHandler = new BufferOutputHandler(buffer);
+        }
+
+        boolean hasContent() {
+            return hasContent || !buffer.isEmpty();
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            bufferHandler.startDocument();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            bufferHandler.endDocument();
+        }
+
+        @Override
+        public void startElement(String namespaceURI, String localName, String qName) throws SAXException {
+            hasContent = true;
+            bufferHandler.startElement(namespaceURI, localName, qName);
+        }
+
+        @Override
+        public void endElement(String namespaceURI, String localName, String qName) throws SAXException {
+            bufferHandler.endElement(namespaceURI, localName, qName);
+        }
+
+        @Override
+        public void attribute(String namespaceURI, String localName, String qName, String value) throws SAXException {
+            // Attributes go to the parent element (they're part of the containing element's output)
+            // and count as content for on-empty purposes
+            hasContent = true;
+            parent.attribute(namespaceURI, localName, qName, value);
+        }
+
+        @Override
+        public void namespace(String prefix, String uri) throws SAXException {
+            // Namespace declarations go to the parent element and count as content
+            hasContent = true;
+            parent.namespace(prefix, uri);
+        }
+
+        @Override
+        public void characters(String text) throws SAXException {
+            if (text != null && !text.isEmpty()) {
+                hasContent = true;
+                bufferHandler.characters(text);
+            }
+        }
+
+        @Override
+        public void charactersRaw(String text) throws SAXException {
+            if (text != null && !text.isEmpty()) {
+                hasContent = true;
+                bufferHandler.charactersRaw(text);
+            }
+        }
+
+        @Override
+        public void comment(String text) throws SAXException {
+            hasContent = true;
+            bufferHandler.comment(text);
+        }
+
+        @Override
+        public void processingInstruction(String target, String data) throws SAXException {
+            hasContent = true;
+            bufferHandler.processingInstruction(target, data);
+        }
+
+        @Override
+        public void flush() throws SAXException {
+            bufferHandler.flush();
+        }
+
+        @Override
+        public void setElementType(String namespaceURI, String localName) throws SAXException {
+            // Type annotations for attributes go to parent
+            parent.setElementType(namespaceURI, localName);
+        }
+
+        @Override
+        public void setAttributeType(String namespaceURI, String localName) throws SAXException {
+            parent.setAttributeType(namespaceURI, localName);
+        }
+
+        @Override
+        public void setAtomicValuePending(boolean pending) throws SAXException {
+            bufferHandler.setAtomicValuePending(pending);
+        }
+
+        @Override
+        public boolean isAtomicValuePending() {
+            return bufferHandler.isAtomicValuePending();
+        }
+
+        @Override
+        public void setInAttributeContent(boolean inAttributeContent) throws SAXException {
+            bufferHandler.setInAttributeContent(inAttributeContent);
+        }
+
+        @Override
+        public boolean isInAttributeContent() {
+            return bufferHandler.isInAttributeContent();
+        }
     }
 
 }

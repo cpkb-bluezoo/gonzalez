@@ -42,6 +42,7 @@ public final class AttributeSet {
     private final String name;
     private final List<String> useAttributeSets;
     private final SequenceNode attributes;
+    private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
 
     /**
      * Creates an attribute set.
@@ -51,11 +52,25 @@ public final class AttributeSet {
      * @param attributes the attribute instructions
      */
     public AttributeSet(String name, List<String> useAttributeSets, SequenceNode attributes) {
+        this(name, useAttributeSets, attributes, ComponentVisibility.PUBLIC);
+    }
+
+    /**
+     * Creates an attribute set with visibility.
+     *
+     * @param name the attribute set name
+     * @param useAttributeSets names of other attribute sets to include
+     * @param attributes the attribute instructions
+     * @param visibility the package visibility (XSLT 3.0)
+     */
+    public AttributeSet(String name, List<String> useAttributeSets, SequenceNode attributes,
+                       ComponentVisibility visibility) {
         this.name = name;
         this.useAttributeSets = useAttributeSets != null ? 
             Collections.unmodifiableList(new ArrayList<>(useAttributeSets)) : 
             Collections.emptyList();
         this.attributes = attributes != null ? attributes : SequenceNode.EMPTY;
+        this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
     }
 
     /**
@@ -86,6 +101,25 @@ public final class AttributeSet {
     }
 
     /**
+     * Returns the package visibility (XSLT 3.0).
+     *
+     * @return the visibility, never null (defaults to PUBLIC)
+     */
+    public ComponentVisibility getVisibility() {
+        return visibility;
+    }
+
+    /**
+     * Creates a copy of this attribute set with a different visibility.
+     *
+     * @param newVisibility the new visibility
+     * @return a new AttributeSet with the specified visibility
+     */
+    public AttributeSet withVisibility(ComponentVisibility newVisibility) {
+        return new AttributeSet(name, useAttributeSets, attributes, newVisibility);
+    }
+
+    /**
      * Merges this attribute set with another.
      * The other set's attributes take precedence for conflicts.
      * Used when multiple xsl:attribute-set declarations have the same name.
@@ -112,7 +146,10 @@ public final class AttributeSet {
         }
         SequenceNode mergedAttrs = new SequenceNode(mergedNodes);
         
-        return new AttributeSet(name, mergedUseSets, mergedAttrs);
+        // Later visibility takes precedence
+        ComponentVisibility mergedVisibility = other.visibility != null ? 
+            other.visibility : this.visibility;
+        return new AttributeSet(name, mergedUseSets, mergedAttrs, mergedVisibility);
     }
 
     /**

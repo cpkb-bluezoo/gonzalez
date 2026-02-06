@@ -77,6 +77,12 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     // Text content accumulator
     private StringBuilder textContent;
     
+    // Attribute tracking (reused for performance)
+    private final Set<String> presentAttrs = new HashSet<>();
+    
+    // Element resolution cache for performance
+    private final Map<String, XSDElement> elementCache = new HashMap<>();
+    
     // ID tracking for uniqueness
     private final Set<String> declaredIds = new HashSet<>();
     private final List<String> pendingIdrefs = new ArrayList<>();
@@ -178,7 +184,11 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
                 parent.hasCharData = true;
             }
         }
-        textContent = new StringBuilder();
+        if (textContent == null) {
+            textContent = new StringBuilder();
+        } else {
+            textContent.setLength(0);
+        }
         
         // Look up element declaration
         currentElementDecl = resolveElementDeclaration(uri, localName);
@@ -311,12 +321,27 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     // ========================================================================
     
     private XSDElement resolveElementDeclaration(String namespaceURI, String localName) {
-        return schema.resolveElement(namespaceURI, localName);
+        String key = makeElementKey(namespaceURI, localName);
+        XSDElement cached = elementCache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        XSDElement elem = schema.resolveElement(namespaceURI, localName);
+        if (elem != null) {
+            elementCache.put(key, elem);
+        }
+        return elem;
+    }
+    
+    private static String makeElementKey(String namespaceURI, String localName) {
+        if (namespaceURI == null || namespaceURI.isEmpty()) {
+            return localName;
+        }
+        return "{" + namespaceURI + "}" + localName;
     }
     
     private XSDType resolveXsiType(String typeName) {
-        int colon = typeName.indexOf(':');
-        String localName = colon >= 0 ? typeName.substring(colon + 1) : typeName;
+        String localName = XSDUtils.extractLocalName(typeName);
         return schema.getType(localName);
     }
     
@@ -328,7 +353,7 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
         }
         
         // Track which required attributes are present
-        Set<String> presentAttrs = new HashSet<>();
+        presentAttrs.clear();
         
         for (int i = 0; i < atts.getLength(); i++) {
             String attrUri = atts.getURI(i);

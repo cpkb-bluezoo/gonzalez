@@ -56,6 +56,7 @@ public final class OutputProperties {
     private Set<String> cdataSectionElements = new HashSet<>();
     private boolean indent = false;
     private String mediaType;
+    private List<String> useCharacterMaps = new ArrayList<>();
 
     /**
      * Creates a new OutputProperties with default values.
@@ -258,6 +259,38 @@ public final class OutputProperties {
     }
 
     /**
+     * Returns the list of character map names to use during serialization.
+     *
+     * @return immutable list of character map names
+     */
+    public List<String> getUseCharacterMaps() {
+        return Collections.unmodifiableList(useCharacterMaps);
+    }
+
+    /**
+     * Adds a character map name to use during serialization.
+     *
+     * @param mapName the name of the character map
+     */
+    public void addUseCharacterMap(String mapName) {
+        if (mapName != null && !mapName.isEmpty()) {
+            useCharacterMaps.add(mapName);
+        }
+    }
+
+    /**
+     * Sets the character map names to use during serialization.
+     *
+     * @param mapNames the list of character map names
+     */
+    public void setUseCharacterMaps(List<String> mapNames) {
+        useCharacterMaps.clear();
+        if (mapNames != null) {
+            useCharacterMaps.addAll(mapNames);
+        }
+    }
+
+    /**
      * Merges another OutputProperties into this one.
      * Properties from other override those in this.
      *
@@ -285,6 +318,9 @@ public final class OutputProperties {
         this.indent = other.indent;
         if (other.mediaType != null) {
             this.mediaType = other.mediaType;
+        }
+        if (!other.useCharacterMaps.isEmpty()) {
+            this.useCharacterMaps.addAll(other.useCharacterMaps);
         }
     }
 

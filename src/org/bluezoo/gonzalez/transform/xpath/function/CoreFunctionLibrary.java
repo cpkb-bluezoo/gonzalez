@@ -159,9 +159,10 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
             Function.ArgType expected = expectedTypes[typeIndex];
             
             if (!isTypeCompatible(arg, expected)) {
+                String argType = (arg != null) ? arg.getType().name().toLowerCase() : "null";
                 throw new XPathException("XPTY0004: " + function.getName() + 
                     "() argument " + (i + 1) + " requires " + expected.name().toLowerCase() +
-                    " type, got " + arg.getType().name().toLowerCase());
+                    " type, got " + argType);
             }
         }
     }
@@ -172,6 +173,11 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
     private boolean isTypeCompatible(XPathValue value, Function.ArgType expected) {
         if (expected == Function.ArgType.ANY) {
             return true;
+        }
+        
+        // Handle null value
+        if (value == null) {
+            return false;
         }
         
         XPathValue.Type actual = value.getType();

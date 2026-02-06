@@ -39,6 +39,14 @@ import java.util.Map;
  */
 public class BasicXPathContext implements XPathContext {
 
+    // Thread-local StringBuilder for efficient variable key construction
+    private static final ThreadLocal<StringBuilder> KEY_BUILDER = new ThreadLocal<StringBuilder>() {
+        @Override
+        protected StringBuilder initialValue() {
+            return new StringBuilder(64);
+        }
+    };
+
     private final XPathNode contextNode;
     private final int contextPosition;
     private final int contextSize;
@@ -203,7 +211,13 @@ public class BasicXPathContext implements XPathContext {
         if (namespaceURI == null || namespaceURI.isEmpty()) {
             return localName;
         }
-        return "{" + namespaceURI + "}" + localName;
+        StringBuilder sb = KEY_BUILDER.get();
+        sb.setLength(0);
+        sb.append('{');
+        sb.append(namespaceURI);
+        sb.append('}');
+        sb.append(localName);
+        return sb.toString();
     }
 
 }

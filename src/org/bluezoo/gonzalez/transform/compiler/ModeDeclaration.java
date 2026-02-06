@@ -83,6 +83,33 @@ public final class ModeDeclaration {
     }
 
     /**
+     * Behavior when multiple templates match a node with the same priority.
+     */
+    public enum OnMultipleMatch {
+        /** Use the last matching template (XSLT 1.0 recovery behavior). */
+        USE_LAST,
+        /** Raise an error XTDE0540. */
+        FAIL;
+
+        /**
+         * Parses an on-multiple-match attribute value.
+         *
+         * @param value the attribute value
+         * @return the enum value, or null if invalid
+         */
+        public static OnMultipleMatch parse(String value) {
+            if (value == null) {
+                return null;
+            }
+            switch (value.toLowerCase()) {
+                case "use-last": return USE_LAST;
+                case "fail": return FAIL;
+                default: return null;
+            }
+        }
+    }
+
+    /**
      * Visibility of the mode (for packages).
      */
     public enum Visibility {
@@ -115,6 +142,7 @@ public final class ModeDeclaration {
     private final String name;
     private final boolean streamable;
     private final OnNoMatch onNoMatch;
+    private final OnMultipleMatch onMultipleMatch;
     private final Visibility visibility;
     private final String useAccumulators;
     private final boolean typed;
@@ -126,17 +154,19 @@ public final class ModeDeclaration {
      * @param name the mode name (null for default mode)
      * @param streamable whether the mode is streamable
      * @param onNoMatch behavior when no template matches
+     * @param onMultipleMatch behavior when multiple templates match with same priority
      * @param visibility visibility for packages
      * @param useAccumulators accumulator names (whitespace-separated)
      * @param typed whether typed validation is enabled
      * @param warning whether to warn on no match (when fail)
      */
     public ModeDeclaration(String name, boolean streamable, OnNoMatch onNoMatch,
-                           Visibility visibility, String useAccumulators,
-                           boolean typed, boolean warning) {
+                           OnMultipleMatch onMultipleMatch, Visibility visibility, 
+                           String useAccumulators, boolean typed, boolean warning) {
         this.name = name;
         this.streamable = streamable;
         this.onNoMatch = onNoMatch != null ? onNoMatch : OnNoMatch.TEXT_ONLY_COPY;
+        this.onMultipleMatch = onMultipleMatch != null ? onMultipleMatch : OnMultipleMatch.USE_LAST;
         this.visibility = visibility != null ? visibility : Visibility.PUBLIC;
         this.useAccumulators = useAccumulators;
         this.typed = typed;
@@ -180,12 +210,64 @@ public final class ModeDeclaration {
     }
 
     /**
+     * Returns the on-multiple-match behavior.
+     *
+     * @return the behavior when multiple templates match with same priority
+     */
+    public OnMultipleMatch getOnMultipleMatch() {
+        return onMultipleMatch;
+    }
+
+    /**
      * Returns the mode visibility.
      *
      * @return the visibility
      */
     public Visibility getVisibility() {
         return visibility;
+    }
+
+    /**
+     * Returns the mode visibility as a ComponentVisibility.
+     * This is for compatibility with the XSLT 3.0 package system.
+     *
+     * @return the component visibility
+     */
+    public ComponentVisibility getComponentVisibility() {
+        switch (visibility) {
+            case PUBLIC:
+                return ComponentVisibility.PUBLIC;
+            case PRIVATE:
+                return ComponentVisibility.PRIVATE;
+            case FINAL:
+                return ComponentVisibility.FINAL;
+            default:
+                return ComponentVisibility.PUBLIC;
+        }
+    }
+
+    /**
+     * Creates a copy of this mode declaration with a different component visibility.
+     *
+     * @param newVisibility the new visibility
+     * @return a new ModeDeclaration with the specified visibility
+     */
+    public ModeDeclaration withComponentVisibility(ComponentVisibility newVisibility) {
+        Visibility vis;
+        switch (newVisibility) {
+            case PRIVATE:
+            case HIDDEN:
+                vis = Visibility.PRIVATE;
+                break;
+            case FINAL:
+                vis = Visibility.FINAL;
+                break;
+            default:
+                vis = Visibility.PUBLIC;
+                break;
+        }
+        return new ModeDeclaration(name, streamable, onNoMatch, onMultipleMatch,
+                                   vis, useAccumulators, typed, warning);
     }
 
     /**
@@ -234,6 +316,7 @@ public final class ModeDeclaration {
         private String name;
         private boolean streamable = false;
         private OnNoMatch onNoMatch = OnNoMatch.TEXT_ONLY_COPY;
+        private OnMultipleMatch onMultipleMatch = OnMultipleMatch.USE_LAST;
         private Visibility visibility = Visibility.PUBLIC;
         private String useAccumulators;
         private boolean typed = false;
@@ -280,6 +363,31 @@ public final class ModeDeclaration {
          */
         public Builder onNoMatch(String value) {
             this.onNoMatch = OnNoMatch.parse(value);
+            return this;
+        }
+
+        /**
+         * Sets the on-multiple-match behavior.
+         *
+         * @param onMultipleMatch the behavior enum
+         * @return this builder
+         */
+        public Builder onMultipleMatch(OnMultipleMatch onMultipleMatch) {
+            this.onMultipleMatch = onMultipleMatch;
+            return this;
+        }
+
+        /**
+         * Sets the on-multiple-match behavior from a string value.
+         *
+         * @param value the attribute value
+         * @return this builder
+         */
+        public Builder onMultipleMatch(String value) {
+            OnMultipleMatch parsed = OnMultipleMatch.parse(value);
+            if (parsed != null) {
+                this.onMultipleMatch = parsed;
+            }
             return this;
         }
 
@@ -344,8 +452,8 @@ public final class ModeDeclaration {
          * @return the mode declaration
          */
         public ModeDeclaration build() {
-            return new ModeDeclaration(name, streamable, onNoMatch, visibility,
-                                        useAccumulators, typed, warning);
+            return new ModeDeclaration(name, streamable, onNoMatch, onMultipleMatch,
+                                        visibility, useAccumulators, typed, warning);
         }
     }
 

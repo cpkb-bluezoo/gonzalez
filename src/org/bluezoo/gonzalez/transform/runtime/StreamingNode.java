@@ -53,6 +53,8 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     private final String attributeType;  // DTD attribute type (ID, IDREF, CDATA, etc.)
     private final TypedValue typedValue; // Schema typed value (from XSD validation)
     private final String documentBaseURI; // Base URI for the document (on root nodes only)
+    private final String typeNamespaceURI;  // Schema type annotation namespace URI
+    private final String typeLocalName;     // Schema type annotation local name
 
     // For element nodes - track children as they're added
     private final List<StreamingNode> children;
@@ -135,7 +137,7 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
                     NodeType.ATTRIBUTE,
                     atts.getURI(i),
                     atts.getLocalName(i),
-                    extractPrefix(atts.getQName(i)),
+                    OutputHandlerUtils.extractPrefix(atts.getQName(i)),
                     atts.getValue(i),
                     element,
                     Collections.emptyMap(),
@@ -228,6 +230,16 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         this.attributeType = attributeType;
         this.typedValue = typedValue;
         this.documentBaseURI = documentBaseURI;
+        
+        // Extract type annotation from TypedValue if available
+        if (typedValue != null) {
+            this.typeNamespaceURI = typedValue.getDatatypeURI();
+            this.typeLocalName = typedValue.getDatatypeLocalName();
+        } else {
+            this.typeNamespaceURI = null;
+            this.typeLocalName = null;
+        }
+        
         this.attributes = new ArrayList<>();
         this.children = new ArrayList<>();
         
@@ -240,11 +252,6 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
             }
             parent.children.add(this);
         }
-    }
-
-    private static String extractPrefix(String qName) {
-        int colon = qName.indexOf(':');
-        return colon > 0 ? qName.substring(0, colon) : null;
     }
 
     @Override
@@ -322,6 +329,34 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         }
         return "";
     }
+    
+    /**
+     * Returns the type annotation namespace URI for this node.
+     *
+     * <p>For schema-aware processing, elements and attributes have
+     * type annotations from validation. This provides the namespace URI
+     * of the type (e.g., "http://www.w3.org/2001/XMLSchema" for XSD types).
+     *
+     * @return the type namespace URI, or null if not annotated
+     */
+    @Override
+    public String getTypeNamespaceURI() {
+        return typeNamespaceURI;
+    }
+    
+    /**
+     * Returns the type annotation local name for this node.
+     *
+     * <p>For schema-aware processing, elements and attributes have
+     * type annotations from validation. This provides the local name
+     * of the type (e.g., "integer", "string", "date" for XSD types).
+     *
+     * @return the type local name, or null if not annotated
+     */
+    @Override
+    public String getTypeLocalName() {
+        return typeLocalName;
+    }
 
     private void appendDescendantText(StringBuilder sb) {
         for (StreamingNode child : children) {
@@ -352,7 +387,12 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     public Iterator<XPathNode> getNamespaces() {
         List<XPathNode> nsNodes = new ArrayList<>();
         for (Map.Entry<String, String> entry : namespaceBindings.entrySet()) {
-            nsNodes.add(new NamespaceNode(entry.getKey(), entry.getValue(), this));
+            // Per XPath data model, namespace undeclarations (empty URI) are not namespace nodes
+            // They simply "undeclare" a previously declared prefix
+            String uri = entry.getValue();
+            if (uri != null && !uri.isEmpty()) {
+                nsNodes.add(new NamespaceNode(entry.getKey(), uri, this));
+            }
         }
         // Always include the implicit xml namespace (per XPath data model)
         if (!namespaceBindings.containsKey("xml")) {
@@ -562,7 +602,13 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         @Override public Iterator<XPathNode> getNamespaces() { return Collections.emptyIterator(); }
         @Override public XPathNode getFollowingSibling() { return null; }
         @Override public XPathNode getPrecedingSibling() { return null; }
-        @Override public long getDocumentOrder() { return parent.getDocumentOrder(); }
+        @Override public long getDocumentOrder() { 
+            // Generate unique order by combining parent order with prefix hash
+            // Shift parent order left and add prefix hash to create unique IDs
+            // for namespace nodes while maintaining document order relationship
+            long prefixHash = (prefix != null ? prefix.hashCode() : 0) & 0xFFFFL;
+            return (parent.getDocumentOrder() << 16) | prefixHash;
+        }
         @Override public boolean isSameNode(XPathNode other) { 
             return other instanceof NamespaceNode && 
                    prefix.equals(((NamespaceNode)other).prefix) &&

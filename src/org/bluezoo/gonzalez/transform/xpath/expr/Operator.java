@@ -62,6 +62,7 @@ public enum Operator {
     // Multiplicative operators
     MULTIPLY("*", 6),
     DIV("div", 6),
+    IDIV("idiv", 6),  // XPath 2.0 integer division
     MOD("mod", 6),
 
     // Union operator (highest binary precedence)
@@ -142,11 +143,11 @@ public enum Operator {
     /**
      * Returns true if this is an arithmetic operator.
      *
-     * @return true for +, -, *, div, mod
+     * @return true for +, -, *, div, idiv, mod
      */
     public boolean isArithmetic() {
         return this == PLUS || this == MINUS ||
-               this == MULTIPLY || this == DIV || this == MOD;
+               this == MULTIPLY || this == DIV || this == IDIV || this == MOD;
     }
 
     /**
@@ -179,6 +180,7 @@ public enum Operator {
             case STAR: return MULTIPLY;
             case STAR_MULTIPLY: return MULTIPLY;
             case DIV: return DIV;
+            case IDIV: return IDIV;
             case MOD: return MOD;
             case PIPE: return UNION;
             case UNION: return UNION;  // 'union' keyword (synonym for |)

@@ -50,6 +50,9 @@ public class XSDElement {
     private boolean nillable = false;
     private boolean isAbstract = false;
     
+    // Substitution group head element (if this element can substitute another)
+    private String substitutionGroup;
+    
     // Form (qualified/unqualified) - if null, use schema's elementFormDefault
     private String form;
     
@@ -287,6 +290,34 @@ public class XSDElement {
      */
     public boolean hasComplexType() {
         return type != null && type.isComplexType();
+    }
+    
+    /**
+     * Returns the substitution group head element name.
+     *
+     * <p>If this element has a substitution group, it can appear anywhere
+     * the head element is allowed. This enables polymorphic element content.
+     *
+     * <p>Example:
+     * <pre>
+     * &lt;xs:element name="vehicle" type="vehicleType"/&gt;
+     * &lt;xs:element name="car" substitutionGroup="vehicle" type="carType"/&gt;
+     * &lt;xs:element name="bicycle" substitutionGroup="vehicle" type="bicycleType"/&gt;
+     * </pre>
+     *
+     * @return the qualified name of the substitution group head, or null
+     */
+    public String getSubstitutionGroup() {
+        return substitutionGroup;
+    }
+    
+    /**
+     * Sets the substitution group head element name.
+     *
+     * @param substitutionGroup the qualified name of the head element
+     */
+    public void setSubstitutionGroup(String substitutionGroup) {
+        this.substitutionGroup = substitutionGroup;
     }
     
     /**

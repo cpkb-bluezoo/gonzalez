@@ -21,8 +21,10 @@
 
 package org.bluezoo.gonzalez.transform.xpath.function;
 
+import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
@@ -75,39 +77,70 @@ public final class NumberFunctions {
     };
 
     /**
-     * XPath 1.0 sum() function.
+     * XPath 1.0/2.0 sum() function.
      * 
-     * <p>Returns the sum of the numeric values of all nodes in the node-set.
+     * <p>Returns the sum of numeric values.
      * 
-     * <p>Signature: sum(node-set) → number
+     * <p>XPath 1.0 signature: sum(node-set) → number
+     * <p>XPath 2.0 signature: sum($arg as xs:anyAtomicType*) → xs:anyAtomicType
+     * <p>XPath 2.0 signature: sum($arg as xs:anyAtomicType*, $zero as xs:anyAtomicType?) → xs:anyAtomicType?
      * 
      * @see <a href="https://www.w3.org/TR/xpath/#function-sum">XPath 1.0 sum()</a>
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-sum">XPath 2.0 sum()</a>
      */
     public static final Function SUM = new Function() {
         @Override public String getName() { return "sum"; }
         @Override public int getMinArgs() { return 1; }
-        @Override public int getMaxArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue arg = args.get(0);
-            if (!arg.isNodeSet()) {
-                throw new XPathException("XPTY0004: sum() requires a node-set argument");
+            
+            // XPath 2.0: second argument is the zero value (default 0)
+            double zeroValue = 0;
+            if (args.size() > 1) {
+                zeroValue = args.get(1).asNumber();
             }
             
-            XPathNodeSet nodeSet = arg.asNodeSet();
-            double sum = 0;
-            
-            for (XPathNode node : nodeSet) {
-                String str = node.getStringValue().trim();
-                try {
-                    sum += Double.parseDouble(str);
-                } catch (NumberFormatException e) {
-                    return XPathNumber.NaN;
+            // Handle node-set (XPath 1.0 style)
+            if (arg.isNodeSet()) {
+                XPathNodeSet nodeSet = arg.asNodeSet();
+                if (nodeSet.isEmpty()) {
+                    return XPathNumber.of(zeroValue);
                 }
+                double sum = 0;
+                for (XPathNode node : nodeSet) {
+                    String str = node.getStringValue().trim();
+                    try {
+                        sum += Double.parseDouble(str);
+                    } catch (NumberFormatException e) {
+                        return XPathNumber.NaN;
+                    }
+                }
+                return XPathNumber.of(sum);
             }
             
-            return XPathNumber.of(sum);
+            // Handle sequence (XPath 2.0 style)
+            if (arg.isSequence()) {
+                java.util.Iterator<XPathValue> iter = arg.sequenceIterator();
+                if (!iter.hasNext()) {
+                    return XPathNumber.of(zeroValue);
+                }
+                double sum = 0;
+                while (iter.hasNext()) {
+                    XPathValue item = iter.next();
+                    double num = item.asNumber();
+                    if (Double.isNaN(num)) {
+                        return XPathNumber.NaN;
+                    }
+                    sum += num;
+                }
+                return XPathNumber.of(sum);
+            }
+            
+            // Single value
+            return XPathNumber.of(arg.asNumber());
         }
     };
 
@@ -262,6 +295,7 @@ public final class NumberFunctions {
      * XPath 2.0 min() function.
      * 
      * <p>Returns the minimum value from a sequence of comparable items.
+     * Supports both numeric comparison and string comparison with collation.
      * 
      * <p>Signature: min(item()*, collation?) → atomic?
      * 
@@ -274,21 +308,66 @@ public final class NumberFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            List<Double> values = getNumericValues(args.get(0));
-            if (values.isEmpty()) {
+            List<XPathValue> items = getValues(args.get(0));
+            if (items.isEmpty()) {
                 return XPathSequence.EMPTY;
             }
             
-            double min = Double.POSITIVE_INFINITY;
-            for (Double v : values) {
-                if (Double.isNaN(v)) {
-                    return XPathNumber.NaN;
+            // Check if all values are strings (for collation-based comparison)
+            boolean allStrings = true;
+            boolean allDateTimes = true;
+            for (XPathValue v : items) {
+                if (!(v instanceof XPathString)) {
+                    allStrings = false;
                 }
-                if (v < min) {
-                    min = v;
+                if (!(v instanceof XPathDateTime)) {
+                    allDateTimes = false;
                 }
             }
-            return XPathNumber.of(min);
+            
+            if (allStrings) {
+                // Use collation for string comparison
+                Collation collation;
+                if (args.size() > 1) {
+                    String collUri = args.get(1).asString();
+                    collation = Collation.forUri(collUri);
+                } else {
+                    String defaultUri = context.getDefaultCollation();
+                    collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+                }
+                
+                XPathValue minValue = items.get(0);
+                for (int i = 1; i < items.size(); i++) {
+                    XPathValue current = items.get(i);
+                    if (collation.compare(current.asString(), minValue.asString()) < 0) {
+                        minValue = current;
+                    }
+                }
+                return minValue;
+            } else if (allDateTimes) {
+                // Date/time/duration comparison using compareTo
+                XPathDateTime minValue = (XPathDateTime) items.get(0);
+                for (int i = 1; i < items.size(); i++) {
+                    XPathDateTime current = (XPathDateTime) items.get(i);
+                    if (current.compareTo(minValue) < 0) {
+                        minValue = current;
+                    }
+                }
+                return minValue;
+            } else {
+                // Numeric comparison
+                double min = Double.POSITIVE_INFINITY;
+                for (XPathValue item : items) {
+                    double v = item.asNumber();
+                    if (Double.isNaN(v)) {
+                        return XPathNumber.NaN;
+                    }
+                    if (v < min) {
+                        min = v;
+                    }
+                }
+                return XPathNumber.of(min);
+            }
         }
     };
     
@@ -296,6 +375,7 @@ public final class NumberFunctions {
      * XPath 2.0 max() function.
      * 
      * <p>Returns the maximum value from a sequence of comparable items.
+     * Supports both numeric comparison and string comparison with collation.
      * 
      * <p>Signature: max(item()*, collation?) → atomic?
      * 
@@ -308,21 +388,66 @@ public final class NumberFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            List<Double> values = getNumericValues(args.get(0));
-            if (values.isEmpty()) {
+            List<XPathValue> items = getValues(args.get(0));
+            if (items.isEmpty()) {
                 return XPathSequence.EMPTY;
             }
             
-            double max = Double.NEGATIVE_INFINITY;
-            for (Double v : values) {
-                if (Double.isNaN(v)) {
-                    return XPathNumber.NaN;
+            // Check if all values are strings (for collation-based comparison)
+            boolean allStrings = true;
+            boolean allDateTimes = true;
+            for (XPathValue v : items) {
+                if (!(v instanceof XPathString)) {
+                    allStrings = false;
                 }
-                if (v > max) {
-                    max = v;
+                if (!(v instanceof XPathDateTime)) {
+                    allDateTimes = false;
                 }
             }
-            return XPathNumber.of(max);
+            
+            if (allStrings) {
+                // Use collation for string comparison
+                Collation collation;
+                if (args.size() > 1) {
+                    String collUri = args.get(1).asString();
+                    collation = Collation.forUri(collUri);
+                } else {
+                    String defaultUri = context.getDefaultCollation();
+                    collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+                }
+                
+                XPathValue maxValue = items.get(0);
+                for (int i = 1; i < items.size(); i++) {
+                    XPathValue current = items.get(i);
+                    if (collation.compare(current.asString(), maxValue.asString()) > 0) {
+                        maxValue = current;
+                    }
+                }
+                return maxValue;
+            } else if (allDateTimes) {
+                // Date/time/duration comparison using compareTo
+                XPathDateTime maxValue = (XPathDateTime) items.get(0);
+                for (int i = 1; i < items.size(); i++) {
+                    XPathDateTime current = (XPathDateTime) items.get(i);
+                    if (current.compareTo(maxValue) > 0) {
+                        maxValue = current;
+                    }
+                }
+                return maxValue;
+            } else {
+                // Numeric comparison
+                double max = Double.NEGATIVE_INFINITY;
+                for (XPathValue item : items) {
+                    double v = item.asNumber();
+                    if (Double.isNaN(v)) {
+                        return XPathNumber.NaN;
+                    }
+                    if (v > max) {
+                        max = v;
+                    }
+                }
+                return XPathNumber.of(max);
+            }
         }
     };
     
@@ -426,6 +551,9 @@ public final class NumberFunctions {
                 // Numeric with minimum width
                 int minWidth = format.length();
                 result = String.format("%0" + minWidth + "d", absValue);
+            } else if (format.contains(",") || format.contains("#")) {
+                // Decimal format with grouping separator
+                result = formatDecimalWithGrouping(absValue, format);
             } else {
                 // Default: decimal
                 result = Long.toString(absValue);
@@ -469,6 +597,60 @@ public final class NumberFunctions {
                            ones[(int)(value % 10)];
             
             return upperCase ? result : result.toLowerCase();
+        }
+        
+        /**
+         * Formats a decimal number with grouping separator.
+         * Picture format: [#]*[,][0]+
+         * # = optional digit
+         * , = grouping separator (default every 3 digits)
+         * 0 = mandatory digit
+         */
+        private String formatDecimalWithGrouping(long value, String format) {
+            // Parse the format to extract grouping separator and minimum digits
+            char groupingSeparator = ',';
+            int groupingSize = 3;
+            int minDigits = 0;
+            
+            // Find the grouping separator position and minimum digit count
+            int sepIndex = format.indexOf(',');
+            if (sepIndex >= 0) {
+                // Count digits after the separator to determine grouping size
+                String afterSep = format.substring(sepIndex + 1);
+                int digitsAfterSep = afterSep.replace("#", "").length();
+                if (digitsAfterSep > 0) {
+                    groupingSize = digitsAfterSep;
+                }
+            }
+            
+            // Count minimum required digits (0s in the format)
+            for (char c : format.toCharArray()) {
+                if (c == '0') {
+                    minDigits++;
+                }
+            }
+            
+            // Format the number with minimum digits
+            String numStr = Long.toString(value);
+            while (numStr.length() < minDigits) {
+                numStr = "0" + numStr;
+            }
+            
+            // Add grouping separators
+            if (sepIndex >= 0 && numStr.length() > groupingSize) {
+                StringBuilder sb = new StringBuilder();
+                int count = 0;
+                for (int i = numStr.length() - 1; i >= 0; i--) {
+                    if (count > 0 && count % groupingSize == 0) {
+                        sb.insert(0, groupingSeparator);
+                    }
+                    sb.insert(0, numStr.charAt(i));
+                    count++;
+                }
+                return sb.toString();
+            }
+            
+            return numStr;
         }
         
         private String toWords(long value, String format) {
@@ -561,6 +743,36 @@ public final class NumberFunctions {
             }
         } else {
             result.add(value.asNumber());
+        }
+        
+        return result;
+    }
+
+    /**
+     * Helper to extract values from a sequence or node-set.
+     *
+     * @param value the XPath value to extract from
+     * @return list of XPath values
+     */
+    private static List<XPathValue> getValues(XPathValue value) {
+        List<XPathValue> result = new ArrayList<>();
+        
+        if (value == null) {
+            return result;
+        }
+        
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                result.add(item);
+            }
+        } else if (value instanceof XPathNodeSet) {
+            XPathNodeSet nodeSet = (XPathNodeSet) value;
+            for (XPathNode node : nodeSet) {
+                result.add(XPathString.of(node.getStringValue()));
+            }
+        } else {
+            result.add(value);
         }
         
         return result;

@@ -23,7 +23,9 @@ package org.bluezoo.gonzalez.schema.xsd;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Represents a particle in an XSD content model.
@@ -93,6 +95,7 @@ public class XSDParticle {
     // For ANY wildcard
     private String namespaceConstraint = "##any";
     private String processContents = "strict";
+    private Set<String> parsedNamespaceConstraints;
     
     /**
      * Creates an element particle.
@@ -167,6 +170,7 @@ public class XSDParticle {
         XSDParticle p = new XSDParticle(Kind.ANY);
         p.namespaceConstraint = namespace != null ? namespace : "##any";
         p.processContents = processContents != null ? processContents : "strict";
+        p.parseNamespaceConstraint();
         return p;
     }
     
@@ -344,6 +348,45 @@ public class XSDParticle {
         return elemNs.equals(namespaceURI);
     }
     
+    /**
+     * Parses the namespace constraint into a pre-computed Set for efficient matching.
+     * Called when the constraint is set during particle creation.
+     */
+    private void parseNamespaceConstraint() {
+        if (namespaceConstraint == null || 
+            namespaceConstraint.startsWith("##")) {
+            // Built-in constraints don't need parsing
+            parsedNamespaceConstraints = null;
+            return;
+        }
+        
+        // Parse space-separated list of namespace URIs
+        parsedNamespaceConstraints = new HashSet<>();
+        int start = 0;
+        int len = namespaceConstraint.length();
+        
+        while (start < len) {
+            // Skip whitespace
+            while (start < len && Character.isWhitespace(namespaceConstraint.charAt(start))) {
+                start++;
+            }
+            if (start >= len) {
+                break;
+            }
+            
+            // Find end of token
+            int end = start;
+            while (end < len && !Character.isWhitespace(namespaceConstraint.charAt(end))) {
+                end++;
+            }
+            
+            if (end > start) {
+                parsedNamespaceConstraints.add(namespaceConstraint.substring(start, end));
+            }
+            start = end;
+        }
+    }
+    
     private boolean matchesWildcard(String namespaceURI) {
         switch (namespaceConstraint) {
             case "##any":
@@ -358,12 +401,10 @@ public class XSDParticle {
                 // Would need schema reference
                 return true;
             default:
-                // Space-separated list of namespace URIs
-                if (namespaceURI == null) {
-                    namespaceURI = "";
-                }
-                for (String ns : namespaceConstraint.split("\\s+")) {
-                    if (ns.equals(namespaceURI)) return true;
+                // Use pre-parsed namespace list for efficient lookup
+                if (parsedNamespaceConstraints != null) {
+                    String checkUri = (namespaceURI != null) ? namespaceURI : "";
+                    return parsedNamespaceConstraints.contains(checkUri);
                 }
                 return false;
         }

@@ -198,8 +198,11 @@ public final class XSDTypeConverter {
 
     /**
      * Whitespace normalization: replace (all whitespace → space).
+     *
+     * @param value the string to normalize
+     * @return the normalized string
      */
-    private static String normalizeReplace(String value) {
+    public static String normalizeReplace(String value) {
         StringBuilder sb = new StringBuilder(value.length());
         for (int i = 0; i < value.length(); i++) {
             char c = value.charAt(i);
@@ -214,8 +217,11 @@ public final class XSDTypeConverter {
 
     /**
      * Whitespace normalization: collapse (replace + merge spaces + trim).
+     *
+     * @param value the string to normalize
+     * @return the normalized string
      */
-    private static String normalizeCollapse(String value) {
+    public static String normalizeCollapse(String value) {
         StringBuilder sb = new StringBuilder(value.length());
         boolean inWhitespace = true; // Start true to trim leading
         for (int i = 0; i < value.length(); i++) {
@@ -491,10 +497,9 @@ public final class XSDTypeConverter {
      */
     private static QName parseQName(String value) {
         value = normalizeCollapse(value);
-        int colon = value.indexOf(':');
-        if (colon > 0) {
-            String prefix = value.substring(0, colon);
-            String localPart = value.substring(colon + 1);
+        String prefix = XSDUtils.extractPrefix(value);
+        String localPart = XSDUtils.extractLocalName(value);
+        if (prefix != null) {
             // Namespace URI would need to be resolved from context
             // For now, return with empty namespace
             return new QName("", localPart, prefix);

@@ -56,6 +56,9 @@ public class XSDSchema {
     private final Map<String, XSDAttribute> globalAttributes = new HashMap<>();
     private final Map<String, XSDType> types = new HashMap<>();
     
+    // Substitution group tracking: maps head element name -> list of members
+    private final Map<String, java.util.List<XSDElement>> substitutionGroups = new HashMap<>();
+    
     // Schema-level settings
     private String elementFormDefault = "unqualified";
     private String attributeFormDefault = "unqualified";
@@ -80,7 +83,7 @@ public class XSDSchema {
      */
     private void registerBuiltInTypes() {
         // Register all XSD Part 2 built-in types
-        for (String typeName : XSDSimpleType.BUILT_IN_TYPES) {
+        for (String typeName : XSDSimpleType.getBuiltInTypeNames()) {
             types.put(typeName, XSDSimpleType.getBuiltInType(typeName));
         }
     }
@@ -142,10 +145,19 @@ public class XSDSchema {
      * <p>Global elements can be referenced from anywhere in the schema and
      * can serve as root elements in instance documents.
      *
+     * <p>If the element has a substitution group, it is registered as a
+     * member of that substitution group.
+     *
      * @param element the global element declaration
      */
     public void addElement(XSDElement element) {
         globalElements.put(element.getName(), element);
+        
+        // Track substitution group membership
+        String subGroup = element.getSubstitutionGroup();
+        if (subGroup != null) {
+            substitutionGroups.computeIfAbsent(subGroup, k -> new java.util.ArrayList<>()).add(element);
+        }
     }
     
     /**
@@ -250,6 +262,61 @@ public class XSDSchema {
             return globalElements.get(localName);
         }
         return null;
+    }
+    
+    /**
+     * Gets all members of a substitution group, including the head element.
+     *
+     * <p>This method returns all elements that can substitute for the given
+     * head element, including the head itself and all transitive members.
+     *
+     * <p>Example: If "car" and "bicycle" are in the substitution group for "vehicle",
+     * and "sedan" is in the substitution group for "car", then calling this method
+     * with "vehicle" returns: [vehicle, car, bicycle, sedan].
+     *
+     * @param headElementName the name of the substitution group head element
+     * @return a list of all elements in the substitution group (including head),
+     *         or an empty list if the element has no substitution group
+     */
+    public java.util.List<XSDElement> getSubstitutionGroupMembers(String headElementName) {
+        java.util.List<XSDElement> result = new java.util.ArrayList<>();
+        java.util.Set<String> visited = new java.util.HashSet<>();
+        
+        // Add the head element itself
+        XSDElement headElement = globalElements.get(headElementName);
+        if (headElement != null) {
+            result.add(headElement);
+            visited.add(headElementName);
+        }
+        
+        // Recursively add all members
+        collectSubstitutionGroupMembers(headElementName, result, visited);
+        
+        return result;
+    }
+    
+    /**
+     * Recursively collects all substitution group members.
+     *
+     * @param headName the current head element name
+     * @param result the accumulating list of members
+     * @param visited set of already-visited element names (prevents cycles)
+     */
+    private void collectSubstitutionGroupMembers(String headName, 
+                                                  java.util.List<XSDElement> result,
+                                                  java.util.Set<String> visited) {
+        java.util.List<XSDElement> directMembers = substitutionGroups.get(headName);
+        if (directMembers != null) {
+            for (XSDElement member : directMembers) {
+                String memberName = member.getName();
+                if (!visited.contains(memberName)) {
+                    result.add(member);
+                    visited.add(memberName);
+                    // Recursively add members of this member's substitution group
+                    collectSubstitutionGroupMembers(memberName, result, visited);
+                }
+            }
+        }
     }
     
     @Override

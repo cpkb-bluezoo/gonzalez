@@ -48,6 +48,19 @@ public class XPathVariableException extends XPathException {
     }
 
     /**
+     * Creates a new variable exception with a custom message.
+     *
+     * @param namespaceURI the variable namespace URI
+     * @param localName the variable local name
+     * @param message the error message
+     */
+    public XPathVariableException(String namespaceURI, String localName, String message) {
+        super(message);
+        this.namespaceURI = namespaceURI;
+        this.localName = localName;
+    }
+
+    /**
      * Returns the namespace URI of the undefined variable.
      *
      * @return the namespace URI, or null
@@ -79,9 +92,9 @@ public class XPathVariableException extends XPathException {
 
     private static String formatMessage(String namespaceURI, String localName) {
         if (namespaceURI == null || namespaceURI.isEmpty()) {
-            return "Undefined variable: $" + localName;
+            return "XPST0008: Undefined variable: $" + localName;
         }
-        return "Undefined variable: $" + "{" + namespaceURI + "}" + localName;
+        return "XPST0008: Undefined variable: $" + "{" + namespaceURI + "}" + localName;
     }
 
 }

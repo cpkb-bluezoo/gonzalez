@@ -117,6 +117,31 @@ public interface XPathContext {
      * @return the function library
      */
     XPathFunctionLibrary getFunctionLibrary();
+    
+    /**
+     * Returns true if strict XPath 2.0+ type checking should be enforced.
+     *
+     * <p>When true, type errors like using strings in arithmetic operations
+     * (XPTY0004) will be reported. When false, XPath 1.0 auto-coercion rules
+     * are used for backwards compatibility.
+     *
+     * @return true for strict type checking, false for backwards-compatible mode
+     */
+    default boolean isStrictTypeChecking() {
+        return false;  // Default to XPath 1.0 compatibility (safe default)
+    }
+    
+    /**
+     * Returns the default collation URI for string comparison operations.
+     *
+     * <p>The default collation is used by functions like compare(), contains(),
+     * starts-with(), ends-with(), etc. when no explicit collation is specified.
+     *
+     * @return the default collation URI, or null for Unicode codepoint collation
+     */
+    default String getDefaultCollation() {
+        return null;  // Default to Unicode codepoint collation
+    }
 
     /**
      * Creates a new context with a different context node.
@@ -200,6 +225,23 @@ public interface XPathContext {
     default XSDSimpleType getSchemaType(String namespaceURI, String localName) {
         return null;
     }
+    
+    /**
+     * Checks if a type (by namespace and local name) derives from xs:ID.
+     * This is used by the id() function to find ID-typed attributes.
+     *
+     * @param typeNamespaceURI the type namespace URI
+     * @param typeLocalName the type local name
+     * @return true if the type is or derives from xs:ID
+     */
+    default boolean isIdDerivedType(String typeNamespaceURI, String typeLocalName) {
+        // Default: check built-in types only
+        XSDSimpleType type = XSDSimpleType.getBuiltInType(typeLocalName);
+        if (type != null) {
+            return type.isDerivedFrom("http://www.w3.org/2001/XMLSchema", "ID");
+        }
+        return false;
+    }
 
     /**
      * Returns the static base URI from the expression context.
@@ -223,6 +265,19 @@ public interface XPathContext {
      */
     default double getXsltVersion() {
         return 1.0;
+    }
+
+    /**
+     * Returns the current dateTime for this transformation.
+     *
+     * <p>Per XPath/XSLT spec, current-dateTime() must return the same value
+     * throughout a single transformation. Implementations should cache this
+     * value at the start of the transformation.
+     *
+     * @return the current dateTime, cached per transformation
+     */
+    default org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime getCurrentDateTime() {
+        return org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime.now();
     }
 
 }

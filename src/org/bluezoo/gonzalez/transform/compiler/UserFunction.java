@@ -53,6 +53,7 @@ public final class UserFunction {
     private final String asType; // Optional return type (as="...")
     private final int importPrecedence;
     private final boolean cached; // XSLT 3.0 cache="yes" attribute
+    private final ComponentVisibility visibility; // XSLT 3.0 package visibility
 
     /**
      * Creates a new user-defined function.
@@ -84,6 +85,26 @@ public final class UserFunction {
     public UserFunction(String namespaceURI, String localName,
                         List<FunctionParameter> parameters, XSLTNode body,
                         String asType, int importPrecedence, boolean cached) {
+        this(namespaceURI, localName, parameters, body, asType, importPrecedence, 
+             cached, ComponentVisibility.PUBLIC);
+    }
+
+    /**
+     * Creates a new user-defined function with all options including visibility.
+     *
+     * @param namespaceURI the function namespace URI (required)
+     * @param localName the function local name (required)
+     * @param parameters the function parameters
+     * @param body the function body
+     * @param asType optional return type declaration
+     * @param importPrecedence the import precedence for conflict resolution
+     * @param cached whether to cache function results (XSLT 3.0)
+     * @param visibility the package visibility (XSLT 3.0)
+     */
+    public UserFunction(String namespaceURI, String localName,
+                        List<FunctionParameter> parameters, XSLTNode body,
+                        String asType, int importPrecedence, boolean cached,
+                        ComponentVisibility visibility) {
         if (namespaceURI == null || namespaceURI.isEmpty()) {
             throw new IllegalArgumentException(
                 "User-defined functions must be in a non-null namespace");
@@ -100,6 +121,7 @@ public final class UserFunction {
         this.asType = asType;
         this.importPrecedence = importPrecedence;
         this.cached = cached;
+        this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
     }
 
     /**
@@ -163,6 +185,26 @@ public final class UserFunction {
      */
     public boolean isCached() {
         return cached;
+    }
+
+    /**
+     * Returns the package visibility (XSLT 3.0).
+     *
+     * @return the visibility, never null (defaults to PUBLIC)
+     */
+    public ComponentVisibility getVisibility() {
+        return visibility;
+    }
+
+    /**
+     * Creates a copy of this function with a different visibility.
+     *
+     * @param newVisibility the new visibility
+     * @return a new UserFunction with the specified visibility
+     */
+    public UserFunction withVisibility(ComponentVisibility newVisibility) {
+        return new UserFunction(namespaceURI, localName, parameters, body,
+                               asType, importPrecedence, cached, newVisibility);
     }
 
     /**

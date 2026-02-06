@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
  * An XSLT match pattern.
@@ -37,6 +38,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
  *   <li>ID patterns (id("foo"))</li>
  *   <li>Key patterns (key("name", "value"))</li>
  *   <li>Union patterns (pattern | pattern)</li>
+ *   <li>Atomic value patterns (XSLT 3.0: .[predicate])</li>
  * </ul>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
@@ -51,6 +53,28 @@ public interface Pattern {
      * @return true if the node matches
      */
     boolean matches(XPathNode node, TransformContext context);
+    
+    /**
+     * Tests if the given atomic value matches this pattern (XSLT 3.0).
+     * Patterns like ".[. instance of xs:integer]" can match atomic values.
+     *
+     * @param value the atomic value to test
+     * @param context the transformation context
+     * @return true if the value matches
+     */
+    default boolean matchesAtomicValue(XPathValue value, TransformContext context) {
+        return false;  // Default: patterns don't match atomic values
+    }
+    
+    /**
+     * Returns true if this pattern can match atomic values (XSLT 3.0).
+     * Patterns starting with "." followed by a predicate can match atomic values.
+     *
+     * @return true if this pattern can match atomic values
+     */
+    default boolean canMatchAtomicValues() {
+        return false;  // Default: patterns only match nodes
+    }
 
     /**
      * Returns the default priority for this pattern.

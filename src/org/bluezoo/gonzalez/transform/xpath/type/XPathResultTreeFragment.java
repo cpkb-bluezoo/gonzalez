@@ -408,9 +408,10 @@ public final class XPathResultTreeFragment implements XPathValue {
     /**
      * SAX handler that builds a navigable node tree from events.
      * Implements TypeAwareHandler to receive type annotations.
+     * Implements LexicalHandler to capture comments.
      */
     private static class RTFTreeBuilder extends DefaultHandler 
-            implements SAXEventBuffer.TypeAwareHandler {
+            implements SAXEventBuffer.TypeAwareHandler, org.xml.sax.ext.LexicalHandler {
         private final String baseUri;
         private RTFNode root;
         private RTFNode current;
@@ -445,8 +446,42 @@ public final class XPathResultTreeFragment implements XPathValue {
         public void startElement(String uri, String localName, String qName, 
                                  org.xml.sax.Attributes attrs) {
             flushText();
-            RTFNode element = new RTFNode(NodeType.ELEMENT, uri, localName, 
-                qName.contains(":") ? qName.substring(0, qName.indexOf(':')) : null);
+            
+            // Extract original element prefix
+            String originalPrefix = qName.contains(":") ? qName.substring(0, qName.indexOf(':')) : null;
+            String elementPrefix = originalPrefix;
+            String elementUri = uri;
+            
+            // Build prefix-to-URI map from pending namespaces
+            // Keep track of order to detect which declaration came from xsl:namespace
+            java.util.Map<String, String> prefixToUri = new java.util.HashMap<>();
+            java.util.Map<String, String> firstPrefixBinding = new java.util.HashMap<>();
+            for (String[] ns : pendingNamespaces) {
+                String nsPrefix = ns[0] != null ? ns[0] : "";
+                String nsUri = ns[1] != null ? ns[1] : "";
+                if (!firstPrefixBinding.containsKey(nsPrefix)) {
+                    firstPrefixBinding.put(nsPrefix, nsUri);
+                }
+                // Last declaration wins (this will be from xsl:namespace if there's a conflict)
+                prefixToUri.put(nsPrefix, nsUri);
+            }
+            
+            // Check for element prefix conflict: element uses prefix P for URI-A, 
+            // but xsl:namespace bound prefix P to URI-B
+            if (elementPrefix != null && !elementPrefix.isEmpty() && elementUri != null && !elementUri.isEmpty()) {
+                String boundUri = prefixToUri.get(elementPrefix);
+                if (boundUri != null && !boundUri.equals(elementUri)) {
+                    // Conflict! The prefix is bound to a different URI by xsl:namespace
+                    // Generate a new prefix for the element
+                    elementPrefix = generateUniquePrefix(elementPrefix, prefixToUri);
+                    // Add namespace declaration for the element's namespace with new prefix
+                    pendingNamespaces.add(new String[] { elementPrefix, elementUri });
+                    prefixToUri.put(elementPrefix, elementUri);
+                }
+            }
+            
+            // Create element with (possibly new) prefix
+            RTFNode element = new RTFNode(NodeType.ELEMENT, uri, localName, elementPrefix);
             element.parent = current;
             if (current != null) {
                 current.addChild(element);
@@ -456,16 +491,11 @@ public final class XPathResultTreeFragment implements XPathValue {
             }
             
             // Add namespace nodes from pending prefix mappings
-            // Track prefix-to-namespace mappings for conflict detection
-            java.util.Map<String, String> prefixToUri = new java.util.HashMap<>();
             for (String[] ns : pendingNamespaces) {
                 RTFNode nsNode = new RTFNode(NodeType.NAMESPACE, null, ns[0], null);
                 nsNode.value = ns[1];
                 nsNode.parent = element;
                 element.addNamespace(nsNode);
-                if (ns[0] != null && !ns[0].isEmpty()) {
-                    prefixToUri.put(ns[0], ns[1]);
-                }
             }
             pendingNamespaces.clear();
             
@@ -488,8 +518,8 @@ public final class XPathResultTreeFragment implements XPathValue {
                         nsNode.value = attrUri;
                         nsNode.parent = element;
                         element.addNamespace(nsNode);
+                        prefixToUri.put(attrPrefix, attrUri);
                     }
-                    prefixToUri.put(attrPrefix, attrUri);
                 }
                 
                 RTFNode attr = new RTFNode(NodeType.ATTRIBUTE, 
@@ -555,9 +585,73 @@ public final class XPathResultTreeFragment implements XPathValue {
             }
         }
         
+        // LexicalHandler methods
+        @Override
+        public void comment(char[] ch, int start, int length) {
+            flushText();
+            if (current != null) {
+                RTFNode comment = new RTFNode(NodeType.COMMENT, null, null, null);
+                comment.value = new String(ch, start, length);
+                comment.parent = current;
+                current.addChild(comment);
+            }
+        }
+        
+        @Override
+        public void startDTD(String name, String publicId, String systemId) {
+            // Ignore DTD
+        }
+        
+        @Override
+        public void endDTD() {
+            // Ignore
+        }
+        
+        @Override
+        public void startEntity(String name) {
+            // Ignore
+        }
+        
+        @Override
+        public void endEntity(String name) {
+            // Ignore
+        }
+        
+        @Override
+        public void startCDATA() {
+            // Ignore - CDATA content comes through characters()
+        }
+        
+        @Override
+        public void endCDATA() {
+            // Ignore
+        }
+        
+        @Override
+        public void processingInstruction(String target, String data) {
+            flushText();
+            if (current != null) {
+                RTFNode pi = new RTFNode(NodeType.PROCESSING_INSTRUCTION, null, target, null);
+                pi.value = data;
+                pi.parent = current;
+                current.addChild(pi);
+            }
+        }
+        
         RTFNode getRoot() {
             // Flush any remaining text before returning
             flushText();
+            
+            // Handle orphan namespace nodes (namespace declarations without a parent element)
+            // These become direct children of the root node
+            for (String[] ns : pendingNamespaces) {
+                RTFNode nsNode = new RTFNode(NodeType.NAMESPACE, null, ns[0], null);
+                nsNode.value = ns[1];
+                nsNode.parent = root;
+                root.addChild(nsNode);  // Add as child, not as namespace
+            }
+            pendingNamespaces.clear();
+            
             return root;
         }
     }
@@ -606,7 +700,8 @@ public final class XPathResultTreeFragment implements XPathValue {
         
         @Override
         public String getStringValue() {
-            if (type == NodeType.TEXT) {
+            if (type == NodeType.TEXT || type == NodeType.COMMENT || type == NodeType.PROCESSING_INSTRUCTION) {
+                // For text, comment, and PI nodes, return the stored value directly
                 return value != null ? value : "";
             }
             if (type == NodeType.ATTRIBUTE || type == NodeType.NAMESPACE) {

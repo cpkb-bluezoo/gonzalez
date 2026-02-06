@@ -116,6 +116,7 @@ public final class TemplateMatcher {
      * @param mode the current mode (null for default)
      * @param context the transformation context
      * @return the matching rule, or null if no match
+     * @throws RuntimeException if on-multiple-match="fail" and multiple templates match
      */
     public TemplateRule findMatch(XPathNode node, String mode, TransformContext context) {
         String modeKey = mode != null ? mode : "";
@@ -126,15 +127,101 @@ public final class TemplateMatcher {
             return getBuiltInRule(node, mode);
         }
         
+        // Check on-multiple-match setting for this mode
+        ModeDeclaration modeDecl = stylesheet.getModeDeclaration(mode);
+        boolean failOnMultiple = modeDecl != null && 
+            modeDecl.getOnMultipleMatch() == ModeDeclaration.OnMultipleMatch.FAIL;
+        
+        
         // Rules are already sorted by precedence/priority
+        TemplateRule firstMatch = null;
+        int matchCount = 0;
+        
         for (TemplateRule rule : candidates) {
             if (rule.getMatchPattern().matches(node, context)) {
-                return rule;
+                if (firstMatch == null) {
+                    firstMatch = rule;
+                    matchCount = 1;
+                    if (!failOnMultiple) {
+                        // Standard behavior - return first match
+                        return firstMatch;
+                    }
+                } else if (failOnMultiple) {
+                    // Check if this match has the same precedence and priority
+                    if (rule.getImportPrecedence() == firstMatch.getImportPrecedence() &&
+                        rule.getPriority() == firstMatch.getPriority()) {
+                        matchCount++;
+                        System.err.println("DEBUG: Multiple match! count=" + matchCount);
+                    } else {
+                        // Lower precedence/priority - we're done checking
+                        System.err.println("DEBUG: Different priority, stopping. matchCount=" + matchCount);
+                        break;
+                    }
+                }
             }
+        }
+        
+        if (firstMatch != null) {
+            if (failOnMultiple && matchCount > 1) {
+                // XTDE0540: Multiple templates match with same priority
+                throw new RuntimeException("XTDE0540: Multiple templates match node " + 
+                    describeNode(node) + " with the same import precedence and priority");
+            }
+            return firstMatch;
         }
         
         // No match - use built-in
         return getBuiltInRule(node, mode);
+    }
+    
+    /**
+     * Finds the best matching template for an atomic value (XSLT 3.0).
+     * Atomic value patterns use the syntax ".[ predicate ]".
+     *
+     * @param value the atomic value to match
+     * @param mode the current mode (null for default)
+     * @param context the transformation context
+     * @return the matching rule, or null if no match
+     */
+    public TemplateRule findMatchForAtomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value, 
+                                                 String mode, TransformContext context) {
+        String modeKey = mode != null ? mode : "";
+        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        
+        if (candidates == null || candidates.isEmpty()) {
+            // No atomic value built-in rules
+            return null;
+        }
+        
+        // Rules are already sorted by precedence/priority
+        for (TemplateRule rule : candidates) {
+            if (rule.getMatchPattern().canMatchAtomicValues() &&
+                rule.getMatchPattern().matchesAtomicValue(value, context)) {
+                return rule;
+            }
+        }
+        
+        // No match
+        return null;
+    }
+    
+    /**
+     * Returns a brief description of a node for error messages.
+     */
+    private static String describeNode(XPathNode node) {
+        if (node == null) {
+            return "null";
+        }
+        NodeType type = node.getNodeType();
+        if (type == NodeType.ELEMENT) {
+            String ns = node.getNamespaceURI();
+            String local = node.getLocalName();
+            if (ns != null && !ns.isEmpty()) {
+                return "{" + ns + "}" + local;
+            }
+            return local;
+        }
+        return type.toString().toLowerCase();
     }
 
     /**

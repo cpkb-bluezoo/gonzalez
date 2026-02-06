@@ -83,6 +83,16 @@ public final class XPathParser {
          * @return the namespace URI, or null if not found
          */
         String resolve(String prefix);
+        
+        /**
+         * Returns the default namespace for unprefixed element names in XPath expressions.
+         * This is set by the xpath-default-namespace attribute in XSLT 2.0+.
+         *
+         * @return the default element namespace URI, or null for no namespace
+         */
+        default String getDefaultElementNamespace() {
+            return null;
+        }
     }
 
     // ========================================================================
@@ -1124,7 +1134,9 @@ public final class XPathParser {
      */
     private boolean isNCNameOrKeyword() {
         XPathToken t = lexer.current();
-        if (t == XPathToken.NCNAME) return true;
+        if (t == XPathToken.NCNAME) {
+            return true;
+        }
         // Keywords that can also be used as NCNames
         switch (t) {
             case AND: case OR: case DIV: case MOD:
@@ -1425,6 +1437,12 @@ public final class XPathParser {
             if (nodeTestType == Step.NodeTestType.PROCESSING_INSTRUCTION &&
                 lexer.current() == XPathToken.STRING_LITERAL) {
                 piTarget = lexer.value();
+                // XTSE0340: PI names cannot contain colons (Namespaces REC section 6)
+                if (piTarget != null && piTarget.contains(":")) {
+                    throw new XPathSyntaxException(
+                        "XTSE0340: Processing instruction name cannot contain a colon: " + piTarget,
+                        lexer.getExpression(), lexer.tokenStart());
+                }
                 lexer.advance();
             }
 
@@ -1467,7 +1485,8 @@ public final class XPathParser {
             
             // Check for optional name argument: element(name) or element(name, type)
             String elemName = null;
-            String typeName = null;
+            String typeNamespaceURI = null;
+            String typeLocalName = null;
             if (lexer.current() == XPathToken.NCNAME || lexer.current() == XPathToken.STAR) {
                 if (lexer.current() == XPathToken.STAR) {
                     elemName = "*";
@@ -1485,19 +1504,26 @@ public final class XPathParser {
                     }
                 }
                 
-                // Check for type argument
+                // Check for type argument: element(name, type) or attribute(name, type)
                 if (lexer.current() == XPathToken.COMMA) {
                     lexer.advance();
                     if (lexer.current() == XPathToken.NCNAME) {
-                        typeName = lexer.value();
+                        String typePrefix = lexer.value();
                         lexer.advance();
-                        // Check for prefix
+                        // Check for prefix:localname
                         if (lexer.current() == XPathToken.COLON) {
                             lexer.advance();
                             if (lexer.current() == XPathToken.NCNAME) {
-                                typeName = typeName + ":" + lexer.value();
+                                String typeLocal = lexer.value();
                                 lexer.advance();
+                                // Resolve the prefix to namespace
+                                typeNamespaceURI = resolvePrefix(typePrefix);
+                                typeLocalName = typeLocal;
                             }
+                        } else {
+                            // Unprefixed type - assume xs namespace
+                            typeNamespaceURI = "http://www.w3.org/2001/XMLSchema";
+                            typeLocalName = typePrefix;
                         }
                     }
                 }
@@ -1505,9 +1531,9 @@ public final class XPathParser {
             
             lexer.expect(XPathToken.RPAREN);
             
-            // Return appropriate step
-            if (elemName != null) {
-                return new Step(axis, nodeTestType, elemName, typeName);
+            // Return appropriate step with resolved type namespace
+            if (elemName != null || typeLocalName != null) {
+                return new Step(axis, nodeTestType, elemName, typeNamespaceURI, typeLocalName);
             }
             return new Step(axis, nodeTestType);
         }
@@ -1538,7 +1564,18 @@ public final class XPathParser {
                     lexer.getExpression(), lexer.tokenStart());
             }
 
-            // Simple name
+            // Simple name (unprefixed)
+            // Check if we have a default element namespace (from xpath-default-namespace)
+            // Note: xpath-default-namespace only applies to element names, not attribute names
+            // (attributes without a prefix are always in no namespace per XML spec)
+            if (axis != Step.Axis.ATTRIBUTE) {
+                String defaultNs = namespaceResolver != null ? 
+                    namespaceResolver.getDefaultElementNamespace() : null;
+                if (defaultNs != null && !defaultNs.isEmpty()) {
+                    // Use the default element namespace for this unprefixed name
+                    return new Step(axis, defaultNs, name);
+                }
+            }
             return new Step(axis, name);
         }
 
@@ -1741,7 +1778,10 @@ public final class XPathParser {
                     if (lexer.current() == XPathToken.STAR) {
                         lexer.advance();
                     } else {
-                        localName = parseQNameForType();
+                        // Parse element name with namespace resolution
+                        String[] elemQName = parseAtomicTypeName();
+                        namespaceURI = elemQName[0];
+                        localName = elemQName[1];
                     }
                     // Optional type argument after comma
                     if (lexer.current() == XPathToken.COMMA) {
@@ -1772,7 +1812,10 @@ public final class XPathParser {
                     if (lexer.current() == XPathToken.STAR) {
                         lexer.advance();
                     } else {
-                        localName = parseQNameForType();
+                        // Parse attribute name with namespace resolution
+                        String[] attrQName = parseAtomicTypeName();
+                        namespaceURI = attrQName[0];
+                        localName = attrQName[1];
                     }
                     // Optional type argument after comma
                     if (lexer.current() == XPathToken.COMMA) {
@@ -1805,7 +1848,11 @@ public final class XPathParser {
                 itemKind = SequenceType.ItemKind.SCHEMA_ELEMENT;
                 lexer.advance();
                 expectToken(XPathToken.LPAREN, "(");
-                localName = parseQNameForType();
+                {
+                    String[] schemaElemQName = parseAtomicTypeName();
+                    namespaceURI = schemaElemQName[0];
+                    localName = schemaElemQName[1];
+                }
                 expectToken(XPathToken.RPAREN, ")");
                 break;
                 
@@ -1813,7 +1860,11 @@ public final class XPathParser {
                 itemKind = SequenceType.ItemKind.SCHEMA_ATTRIBUTE;
                 lexer.advance();
                 expectToken(XPathToken.LPAREN, "(");
-                localName = parseQNameForType();
+                {
+                    String[] schemaAttrQName = parseAtomicTypeName();
+                    namespaceURI = schemaAttrQName[0];
+                    localName = schemaAttrQName[1];
+                }
                 expectToken(XPathToken.RPAREN, ")");
                 break;
                 

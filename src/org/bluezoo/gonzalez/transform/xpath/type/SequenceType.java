@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
+
 /**
  * Represents an XPath 2.0 sequence type.
  *
@@ -168,6 +170,75 @@ public class SequenceType {
     }
     
     /**
+     * Creates a schema-element type sequence type.
+     *
+     * <p>The schema-element() test matches elements by schema declaration name,
+     * including all elements in the substitution group of the named element.
+     *
+     * <p>Example: {@code schema-element(book)} matches {@code <book>} and any
+     * element that has {@code substitutionGroup="book"}.
+     *
+     * @param namespaceURI the namespace URI of the schema element
+     * @param localName the local name of the schema element declaration
+     * @param occurrence the occurrence indicator
+     * @return a sequence type for the schema-element type
+     */
+    public static SequenceType schemaElement(String namespaceURI, String localName, Occurrence occurrence) {
+        return new SequenceType(ItemKind.SCHEMA_ELEMENT, namespaceURI, localName, null, occurrence);
+    }
+    
+    /**
+     * Creates a schema-attribute type sequence type.
+     *
+     * <p>The schema-attribute() test matches attributes by schema declaration name,
+     * including type information from the schema.
+     *
+     * @param namespaceURI the namespace URI of the schema attribute
+     * @param localName the local name of the schema attribute declaration
+     * @param occurrence the occurrence indicator
+     * @return a sequence type for the schema-attribute type
+     */
+    public static SequenceType schemaAttribute(String namespaceURI, String localName, Occurrence occurrence) {
+        return new SequenceType(ItemKind.SCHEMA_ATTRIBUTE, namespaceURI, localName, null, occurrence);
+    }
+    
+    /**
+     * Strips XPath comments (: ... :) from a string.
+     * XPath comments can appear in 'as' attribute values and should be ignored.
+     * 
+     * @param str the string to process
+     * @return the string with XPath comments removed
+     */
+    private static String stripXPathComments(String str) {
+        if (str == null || !str.contains("(:")) {
+            return str;
+        }
+        
+        StringBuilder result = new StringBuilder();
+        int i = 0;
+        while (i < str.length()) {
+            // Check for comment start
+            if (i < str.length() - 1 && str.charAt(i) == '(' && str.charAt(i + 1) == ':') {
+                // Find comment end
+                int commentEnd = str.indexOf(":)", i + 2);
+                if (commentEnd >= 0) {
+                    // Skip the entire comment including (:  and  :)
+                    i = commentEnd + 2;
+                    continue;
+                } else {
+                    // Unclosed comment - just copy the rest
+                    result.append(str.substring(i));
+                    break;
+                }
+            }
+            result.append(str.charAt(i));
+            i++;
+        }
+        
+        return result.toString().trim();
+    }
+    
+    /**
      * Returns a copy of this sequence type with a different occurrence indicator.
      *
      * @param occ the new occurrence indicator
@@ -291,7 +362,24 @@ public class SequenceType {
                 return true;  // Any item matches
                 
             case NODE:
-                return value instanceof XPathNodeSet;
+                // Check for node-set, result tree fragments, and sequences containing nodes
+                if (value instanceof XPathNodeSet) {
+                    return true;
+                }
+                if (value instanceof XPathResultTreeFragment) {
+                    return true;  // Result tree fragments are nodes
+                }
+                if (value instanceof XPathSequence) {
+                    // Check if sequence contains only nodes
+                    XPathSequence seq = (XPathSequence) value;
+                    for (XPathValue item : seq) {
+                        if (!(item instanceof XPathNode) && !(item instanceof XPathNodeSet) && !(item instanceof XPathResultTreeFragment)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                return false;
                 
             case ATOMIC:
                 return matchesAtomicType(value);
@@ -301,6 +389,12 @@ public class SequenceType {
                 
             case ATTRIBUTE:
                 return matchesAttributeType(value);
+                
+            case SCHEMA_ELEMENT:
+                return matchesSchemaElementType(value, SchemaContext.NONE);
+                
+            case SCHEMA_ATTRIBUTE:
+                return matchesSchemaAttributeType(value);
                 
             case TEXT:
             case COMMENT:
@@ -314,9 +408,154 @@ public class SequenceType {
     }
     
     /**
+     * Checks if a value matches this sequence type with schema context for substitution groups.
+     *
+     * <p>This overload enables full substitution group checking for schema-element()
+     * when a schema context is available.
+     *
+     * @param value the value to check
+     * @param schemaContext schema context for substitution group checking, or null
+     * @return true if the value matches this sequence type
+     */
+    public boolean matches(XPathValue value, SchemaContext schemaContext) {
+        // Delegate to matchesWithSchema for schema-aware checking
+        return matchesWithSchema(value, schemaContext);
+    }
+    
+    /**
+     * Internal method that performs matching with optional schema context.
+     */
+    private boolean matchesWithSchema(XPathValue value, SchemaContext schemaContext) {
+        if (value == null) {
+            return allowsEmpty();
+        }
+        
+        // Get item count
+        int count = getItemCount(value);
+        
+        // Check occurrence
+        if (count == 0) {
+            return allowsEmpty();
+        }
+        if (count > 1 && !allowsMany()) {
+            return false;
+        }
+        
+        // Empty sequence type only matches empty
+        if (itemKind == ItemKind.EMPTY) {
+            return count == 0;
+        }
+        
+        // Check item types
+        switch (itemKind) {
+            case ITEM:
+                return true;
+                
+            case NODE:
+                // Check for node-set, result tree fragments, and sequences containing nodes
+                if (value instanceof XPathNodeSet) {
+                    return true;
+                }
+                if (value instanceof XPathResultTreeFragment) {
+                    return true;  // Result tree fragments are nodes
+                }
+                if (value instanceof XPathSequence) {
+                    // Check if sequence contains only nodes
+                    XPathSequence seq = (XPathSequence) value;
+                    for (XPathValue item : seq) {
+                        if (!(item instanceof XPathNode) && !(item instanceof XPathNodeSet) && !(item instanceof XPathResultTreeFragment)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                return false;
+                
+            case ATOMIC:
+                return matchesAtomicType(value);
+                
+            case ELEMENT:
+                return matchesElementType(value);
+                
+            case ATTRIBUTE:
+                return matchesAttributeType(value);
+                
+            case SCHEMA_ELEMENT:
+                return matchesSchemaElementType(value, schemaContext);
+                
+            case SCHEMA_ATTRIBUTE:
+                return matchesSchemaAttributeType(value);
+                
+            case TEXT:
+            case COMMENT:
+            case PROCESSING_INSTRUCTION:
+            case DOCUMENT_NODE:
+                return value instanceof XPathNodeSet;
+                
+            default:
+                return true;
+        }
+    }
+    
+    /**
      * Checks if a value matches element(name?, type?).
      */
     private boolean matchesElementType(XPathValue value) {
+        // Handle sequences - check if all items are elements
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (item instanceof XPathNodeSet) {
+                    XPathNodeSet nodeSet = (XPathNodeSet) item;
+                    for (XPathNode node : nodeSet) {
+                        if (!matchesSingleElement(node)) {
+                            return false;
+                        }
+                    }
+                } else if (item instanceof XPathNode) {
+                    // Direct node item (e.g., SequenceTextItem, SequenceAttributeItem)
+                    if (!matchesSingleElement((XPathNode) item)) {
+                        return false;
+                    }
+                } else if (item instanceof XPathResultTreeFragment) {
+                    // Result tree fragment - convert to node-set and check
+                    XPathResultTreeFragment rtf = (XPathResultTreeFragment) item;
+                    XPathNodeSet nodeSet = rtf.asNodeSet();
+                    if (nodeSet == null || nodeSet.isEmpty()) {
+                        return false;
+                    }
+                    for (XPathNode node : nodeSet) {
+                        if (!matchesSingleElement(node)) {
+                            return false;
+                        }
+                    }
+                } else {
+                    return false;  // Non-node item in sequence
+                }
+            }
+            return true;
+        }
+        
+        // Handle result tree fragment
+        if (value instanceof XPathResultTreeFragment) {
+            XPathResultTreeFragment rtf = (XPathResultTreeFragment) value;
+            XPathNodeSet nodeSet = rtf.asNodeSet();
+            if (nodeSet == null || nodeSet.isEmpty()) {
+                return false;
+            }
+            for (XPathNode node : nodeSet) {
+                if (!matchesSingleElement(node)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        // Handle direct XPathNode item (e.g., single element from variable)
+        if (value instanceof XPathNode) {
+            return matchesSingleElement((XPathNode) value);
+        }
+        
         if (!(value instanceof XPathNodeSet)) {
             return false;
         }
@@ -368,6 +607,34 @@ public class SequenceType {
      * Checks if a value matches attribute(name?, type?).
      */
     private boolean matchesAttributeType(XPathValue value) {
+        // Handle sequences - check if all items are attributes
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (item instanceof XPathNodeSet) {
+                    XPathNodeSet nodeSet = (XPathNodeSet) item;
+                    for (XPathNode node : nodeSet) {
+                        if (!matchesSingleAttribute(node)) {
+                            return false;
+                        }
+                    }
+                } else if (item instanceof XPathNode) {
+                    // Direct node item (e.g., SequenceAttributeItem)
+                    if (!matchesSingleAttribute((XPathNode) item)) {
+                        return false;
+                    }
+                } else {
+                    return false;  // Non-node item in sequence
+                }
+            }
+            return true;
+        }
+        
+        // Handle direct XPathNode item (e.g., SequenceAttributeItem from variable with single attribute)
+        if (value instanceof XPathNode) {
+            return matchesSingleAttribute((XPathNode) value);
+        }
+        
         if (!(value instanceof XPathNodeSet)) {
             return false;
         }
@@ -416,6 +683,183 @@ public class SequenceType {
     }
     
     /**
+     * Checks if a value matches schema-element(name).
+     *
+     * <p>The schema-element() test matches:
+     * <ul>
+     *   <li>Elements with the given name</li>
+     *   <li>Elements in the substitution group of the named element</li>
+     * </ul>
+     *
+     * @param schemaContext schema context for substitution group lookup, or null
+     */
+    private boolean matchesSchemaElementType(XPathValue value, SchemaContext schemaContext) {
+        // Handle sequences - check if all items are matching elements
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (item instanceof XPathNodeSet) {
+                    XPathNodeSet nodeSet = (XPathNodeSet) item;
+                    for (XPathNode node : nodeSet) {
+                        if (!matchesSingleSchemaElement(node, schemaContext)) {
+                            return false;
+                        }
+                    }
+                } else if (item instanceof XPathNode) {
+                    if (!matchesSingleSchemaElement((XPathNode) item, schemaContext)) {
+                        return false;
+                    }
+                } else {
+                    return false;  // Non-node item
+                }
+            }
+            return true;
+        }
+        
+        if (!(value instanceof XPathNodeSet)) {
+            return false;
+        }
+        
+        XPathNodeSet nodeSet = (XPathNodeSet) value;
+        for (XPathNode node : nodeSet) {
+            if (!matchesSingleSchemaElement(node, schemaContext)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    /**
+     * Checks if a single node matches schema-element(name).
+     * @param schemaContext schema context for substitution group lookup, or null
+     */
+    private boolean matchesSingleSchemaElement(XPathNode node, SchemaContext schemaContext) {
+        if (node.getNodeType() != NodeType.ELEMENT) {
+            return false;
+        }
+        
+        // Check element name if specified
+        if (localName != null && !"*".equals(localName)) {
+            String nodeLocalName = node.getLocalName();
+            String nodeNs = node.getNamespaceURI();
+            if (nodeNs == null) {
+                nodeNs = "";
+            }
+            String expectedNs = namespaceURI != null ? namespaceURI : "";
+            
+            // First check exact name match
+            if (localName.equals(nodeLocalName) && expectedNs.equals(nodeNs)) {
+                return true;  // Direct match
+            }
+            
+            // Check substitution group if schema context is available
+            if (schemaContext != null) {
+                XSDSchema schema = schemaContext.getSchema(expectedNs);
+                if (schema != null) {
+                    // Get all members of the substitution group (including head element)
+                    java.util.List<org.bluezoo.gonzalez.schema.xsd.XSDElement> members = 
+                        schema.getSubstitutionGroupMembers(localName);
+                    
+                    // Check if the node's name matches any substitution group member
+                    for (org.bluezoo.gonzalez.schema.xsd.XSDElement member : members) {
+                        if (nodeLocalName.equals(member.getName())) {
+                            // Also verify namespace matches
+                            String memberNs = member.getNamespaceURI();
+                            if (memberNs == null) {
+                                memberNs = "";
+                            }
+                            if (nodeNs.equals(memberNs)) {
+                                return true;  // Substitution group member match
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // No match found
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Checks if a value matches schema-attribute(name).
+     *
+     * <p>The schema-attribute() test matches attributes by their schema declaration,
+     * including type information from the schema.
+     */
+    private boolean matchesSchemaAttributeType(XPathValue value) {
+        // For now, schema-attribute(name) matches like attribute(name)
+        // Full implementation would look up the attribute declaration and check types
+        
+        // Handle sequences
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (item instanceof XPathNodeSet) {
+                    XPathNodeSet nodeSet = (XPathNodeSet) item;
+                    for (XPathNode node : nodeSet) {
+                        if (!matchesSingleSchemaAttribute(node)) {
+                            return false;
+                        }
+                    }
+                } else if (item instanceof XPathNode) {
+                    if (!matchesSingleSchemaAttribute((XPathNode) item)) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        if (!(value instanceof XPathNodeSet)) {
+            return false;
+        }
+        
+        XPathNodeSet nodeSet = (XPathNodeSet) value;
+        for (XPathNode node : nodeSet) {
+            if (!matchesSingleSchemaAttribute(node)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    /**
+     * Checks if a single node matches schema-attribute(name).
+     */
+    private boolean matchesSingleSchemaAttribute(XPathNode node) {
+        if (node.getNodeType() != NodeType.ATTRIBUTE) {
+            return false;
+        }
+        
+        // Check attribute name if specified
+        if (localName != null && !"*".equals(localName)) {
+            if (!localName.equals(node.getLocalName())) {
+                return false;
+            }
+            
+            // Check namespace
+            String nodeNs = node.getNamespaceURI();
+            if (nodeNs == null) {
+                nodeNs = "";
+            }
+            String expectedNs = namespaceURI != null ? namespaceURI : "";
+            if (!expectedNs.equals(nodeNs)) {
+                return false;
+            }
+        }
+        
+        // TODO: Check schema type annotation
+        // Would need: schema.getAttribute(localName).getType()
+        
+        return true;
+    }
+    
+    /**
      * Checks if a node's type annotation matches the expected type.
      * The type name can be prefixed (e.g., "xs:string") or in Clark notation.
      * Supports XSD type hierarchy: xs:ID matches xs:NCName, xs:Name, xs:token, xs:string.
@@ -423,11 +867,6 @@ public class SequenceType {
     private boolean matchesTypeAnnotation(XPathNode node, String expectedType) {
         String nodeTypeNs = node.getTypeNamespaceURI();
         String nodeTypeLocal = node.getTypeLocalName();
-        
-        // If node has no type annotation, it doesn't match a type test
-        if (nodeTypeLocal == null) {
-            return false;
-        }
         
         // Parse the expected type (may be prefixed or Clark notation)
         String expectedNs = null;
@@ -454,6 +893,16 @@ public class SequenceType {
             expectedNs = XS_NAMESPACE;
         }
         
+        // If the expected type is xs:untyped or xs:untyped? then nodes WITHOUT
+        // type annotations match (this is the default for non-schema-validated XML)
+        boolean expectsUntyped = XS_NAMESPACE.equals(expectedNs) && 
+            ("untyped".equals(expectedLocal) || "untypedAtomic".equals(expectedLocal));
+        
+        if (nodeTypeLocal == null) {
+            // Node has no type annotation - matches xs:untyped
+            return expectsUntyped;
+        }
+        
         // Normalize namespaces
         if (nodeTypeNs == null) {
             nodeTypeNs = "";
@@ -478,12 +927,30 @@ public class SequenceType {
     /**
      * XSD built-in type hierarchy.
      * Returns true if actualType is the same as or a subtype of expectedType.
+     * 
+     * <p>This method now delegates to XSDSimpleType for comprehensive type hierarchy checking,
+     * with a fallback to hardcoded checks for backwards compatibility.
      */
     private static boolean isTypeSubtypeOf(String actualType, String expectedType) {
         if (actualType.equals(expectedType)) {
             return true;
         }
         
+        // Try using XSDSimpleType for comprehensive hierarchy checking
+        try {
+            org.bluezoo.gonzalez.schema.xsd.XSDSimpleType actual = 
+                org.bluezoo.gonzalez.schema.xsd.XSDSimpleType.getBuiltInType(actualType);
+            org.bluezoo.gonzalez.schema.xsd.XSDSimpleType expected = 
+                org.bluezoo.gonzalez.schema.xsd.XSDSimpleType.getBuiltInType(expectedType);
+            
+            if (actual != null && expected != null) {
+                return actual.isSubtypeOf(expected);
+            }
+        } catch (Exception e) {
+            // Fall through to hardcoded checks if XSDSimpleType lookup fails
+        }
+        
+        // Fallback: hardcoded type hierarchy checks
         // anyAtomicType is the root of all atomic types
         if ("anyAtomicType".equals(expectedType) || "anySimpleType".equals(expectedType)) {
             return true;
@@ -659,8 +1126,12 @@ public class SequenceType {
             case "decimal":
             case "float":
             case "double":
-                return value instanceof XPathNumber ||
-                       (value instanceof XPathAtomicValue && ((XPathAtomicValue) value).isNumericValue());
+                // For numeric types, check if the value is numeric and matches the type
+                if (value instanceof XPathNumber) {
+                    // Use XPathNumber's type checking method
+                    return ((XPathNumber) value).isInstanceOfNumericType(localName);
+                }
+                return value instanceof XPathAtomicValue && ((XPathAtomicValue) value).isNumericValue();
                 
             case "boolean":
                 return value instanceof XPathBoolean;
@@ -731,6 +1202,353 @@ public class SequenceType {
                 // This prevents incorrect matches like numbers matching xs:date
                 return value instanceof XPathAtomicValue;
         }
+    }
+    
+    /**
+     * Parses a sequence type from an XSLT 'as' attribute value.
+     *
+     * <p>Supported formats include:
+     * <ul>
+     *   <li>Atomic types: xs:integer, xs:string, xs:boolean, etc.</li>
+     *   <li>Node types: node(), element(), attribute(), text(), comment(), processing-instruction(), document-node()</li>
+     *   <li>Named element/attribute: element(name), attribute(name)</li>
+     *   <li>Schema types: schema-element(name), schema-attribute(name)</li>
+     *   <li>Empty sequence: empty-sequence()</li>
+     *   <li>Any item: item()</li>
+     *   <li>Occurrence indicators: ?, *, + (with optional space before)</li>
+     * </ul>
+     *
+     * @param asType the 'as' attribute value to parse
+     * @param namespaceResolver a function to resolve namespace prefixes (may be null for built-in types)
+     * @return the parsed SequenceType, or null if the format is not recognized
+     */
+    public static SequenceType parse(String asType, java.util.function.Function<String, String> namespaceResolver) {
+        if (asType == null || asType.isEmpty()) {
+            return null;
+        }
+        
+        String type = asType.trim();
+        
+        // Strip XPath comments (: ... :) from the type string
+        // This is valid in XPath expressions but should be ignored in SequenceType parsing
+        type = stripXPathComments(type);
+        
+        // Parse occurrence indicator (at end, with optional space)
+        Occurrence occ = Occurrence.ONE;
+        if (type.endsWith("?")) {
+            occ = Occurrence.ZERO_OR_ONE;
+            type = type.substring(0, type.length() - 1).trim();
+        } else if (type.endsWith("*")) {
+            occ = Occurrence.ZERO_OR_MORE;
+            type = type.substring(0, type.length() - 1).trim();
+        } else if (type.endsWith("+")) {
+            occ = Occurrence.ONE_OR_MORE;
+            type = type.substring(0, type.length() - 1).trim();
+        }
+        
+        // Parse empty-sequence()
+        if (type.equals("empty-sequence()")) {
+            return EMPTY;
+        }
+        
+        // Parse item()
+        if (type.equals("item()")) {
+            return new SequenceType(ItemKind.ITEM, null, null, null, occ);
+        }
+        
+        // Parse node types: node(), element(), attribute(), text(), comment(), processing-instruction(), document-node()
+        if (type.equals("node()")) {
+            return new SequenceType(ItemKind.NODE, null, null, null, occ);
+        }
+        if (type.equals("text()")) {
+            return new SequenceType(ItemKind.TEXT, null, null, null, occ);
+        }
+        if (type.equals("comment()")) {
+            return new SequenceType(ItemKind.COMMENT, null, null, null, occ);
+        }
+        if (type.equals("processing-instruction()") || type.startsWith("processing-instruction(")) {
+            String piName = null;
+            if (type.startsWith("processing-instruction(") && type.endsWith(")")) {
+                String inner = type.substring("processing-instruction(".length(), type.length() - 1).trim();
+                if (!inner.isEmpty()) {
+                    piName = inner;
+                }
+            }
+            return new SequenceType(ItemKind.PROCESSING_INSTRUCTION, null, piName, null, occ);
+        }
+        if (type.equals("document-node()") || type.startsWith("document-node(")) {
+            // Parse document-node() or document-node(element(...))
+            if (type.startsWith("document-node(") && type.endsWith(")") && !type.equals("document-node()")) {
+                String inner = type.substring("document-node(".length(), type.length() - 1).trim();
+                // Check if it contains element(...) test
+                if (inner.startsWith("element(")) {
+                    // Parse the nested element test
+                    // For now, we accept it but don't fully parse the nested type
+                    // This allows document-node(element(name, type)) to compile
+                    // Full matching would require recursive parsing
+                }
+            }
+            return new SequenceType(ItemKind.DOCUMENT_NODE, null, null, null, occ);
+        }
+        
+        // Parse element() or element(name) or element(name, type) or element(*, type)
+        if (type.equals("element()") || type.startsWith("element(")) {
+            String localName = null;
+            String nsUri = null;
+            String typeName = null;
+            if (type.startsWith("element(") && type.endsWith(")")) {
+                String inner = type.substring("element(".length(), type.length() - 1).trim();
+                if (!inner.isEmpty() && !inner.equals("*")) {
+                    // Parse element(name) or element(name, type) or element(*, type)
+                    int commaIdx = inner.indexOf(',');
+                    if (commaIdx >= 0) {
+                        String namePart = inner.substring(0, commaIdx).trim();
+                        typeName = inner.substring(commaIdx + 1).trim();
+                        if (!namePart.equals("*")) {
+                            // Handle prefixed name: prefix:localName
+                            int colonIdx = namePart.indexOf(':');
+                            if (colonIdx >= 0) {
+                                String prefix = namePart.substring(0, colonIdx);
+                                localName = namePart.substring(colonIdx + 1);
+                                if (namespaceResolver != null) {
+                                    nsUri = namespaceResolver.apply(prefix);
+                                }
+                            } else {
+                                localName = namePart;
+                            }
+                        }
+                    } else {
+                        // Handle prefixed name: prefix:localName
+                        int colonIdx = inner.indexOf(':');
+                        if (colonIdx >= 0) {
+                            String prefix = inner.substring(0, colonIdx);
+                            localName = inner.substring(colonIdx + 1);
+                            if (namespaceResolver != null) {
+                                nsUri = namespaceResolver.apply(prefix);
+                            }
+                        } else {
+                            localName = inner;
+                        }
+                    }
+                }
+            }
+            return new SequenceType(ItemKind.ELEMENT, nsUri, localName, typeName, occ);
+        }
+        
+        // Parse attribute() or attribute(name) or attribute(name, type) or attribute(*, type)
+        if (type.equals("attribute()") || type.startsWith("attribute(")) {
+            String localName = null;
+            String nsUri = null;
+            String typeName = null;
+            if (type.startsWith("attribute(") && type.endsWith(")")) {
+                String inner = type.substring("attribute(".length(), type.length() - 1).trim();
+                if (!inner.isEmpty() && !inner.equals("*")) {
+                    int commaIdx = inner.indexOf(',');
+                    if (commaIdx >= 0) {
+                        String namePart = inner.substring(0, commaIdx).trim();
+                        typeName = inner.substring(commaIdx + 1).trim();
+                        if (!namePart.equals("*")) {
+                            // Handle prefixed name: prefix:localName
+                            int colonIdx = namePart.indexOf(':');
+                            if (colonIdx >= 0) {
+                                String prefix = namePart.substring(0, colonIdx);
+                                localName = namePart.substring(colonIdx + 1);
+                                if (namespaceResolver != null) {
+                                    nsUri = namespaceResolver.apply(prefix);
+                                }
+                            } else {
+                                localName = namePart;
+                            }
+                        }
+                    } else {
+                        // Handle prefixed name: prefix:localName
+                        int colonIdx = inner.indexOf(':');
+                        if (colonIdx >= 0) {
+                            String prefix = inner.substring(0, colonIdx);
+                            localName = inner.substring(colonIdx + 1);
+                            if (namespaceResolver != null) {
+                                nsUri = namespaceResolver.apply(prefix);
+                            }
+                        } else {
+                            localName = inner;
+                        }
+                    }
+                }
+            }
+            return new SequenceType(ItemKind.ATTRIBUTE, nsUri, localName, typeName, occ);
+        }
+        
+        // Parse schema-element(name)
+        if (type.startsWith("schema-element(") && type.endsWith(")")) {
+            String name = type.substring("schema-element(".length(), type.length() - 1).trim();
+            return new SequenceType(ItemKind.SCHEMA_ELEMENT, null, name, null, occ);
+        }
+        
+        // Parse schema-attribute(name)
+        if (type.startsWith("schema-attribute(") && type.endsWith(")")) {
+            String name = type.substring("schema-attribute(".length(), type.length() - 1).trim();
+            return new SequenceType(ItemKind.SCHEMA_ATTRIBUTE, null, name, null, occ);
+        }
+        
+        // Parse atomic type (e.g., xs:integer, xs:string)
+        String nsUri = null;
+        String localName = type;
+        
+        int colonIdx = type.indexOf(':');
+        if (colonIdx > 0) {
+            String prefix = type.substring(0, colonIdx);
+            localName = type.substring(colonIdx + 1);
+            
+            // Resolve namespace prefix
+            if ("xs".equals(prefix) || "xsd".equals(prefix)) {
+                nsUri = XS_NAMESPACE;
+            } else if (namespaceResolver != null) {
+                nsUri = namespaceResolver.apply(prefix);
+            }
+        } else {
+            // No prefix - assume xs: namespace for common types
+            if (isBuiltInAtomicType(type)) {
+                nsUri = XS_NAMESPACE;
+            }
+        }
+        
+        return new SequenceType(ItemKind.ATOMIC, nsUri, localName, null, occ);
+    }
+    
+    /**
+     * Checks if a type name is a built-in XSD atomic type.
+     */
+    private static boolean isBuiltInAtomicType(String name) {
+        switch (name) {
+            case "string":
+            case "boolean":
+            case "decimal":
+            case "float":
+            case "double":
+            case "duration":
+            case "dateTime":
+            case "time":
+            case "date":
+            case "gYearMonth":
+            case "gYear":
+            case "gMonthDay":
+            case "gDay":
+            case "gMonth":
+            case "hexBinary":
+            case "base64Binary":
+            case "anyURI":
+            case "QName":
+            case "NOTATION":
+            case "normalizedString":
+            case "token":
+            case "language":
+            case "NMTOKEN":
+            case "NMTOKENS":
+            case "Name":
+            case "NCName":
+            case "ID":
+            case "IDREF":
+            case "IDREFS":
+            case "ENTITY":
+            case "ENTITIES":
+            case "integer":
+            case "nonPositiveInteger":
+            case "negativeInteger":
+            case "long":
+            case "int":
+            case "short":
+            case "byte":
+            case "nonNegativeInteger":
+            case "unsignedLong":
+            case "unsignedInt":
+            case "unsignedShort":
+            case "unsignedByte":
+            case "positiveInteger":
+            case "yearMonthDuration":
+            case "dayTimeDuration":
+            case "dateTimeStamp":
+            case "untypedAtomic":
+            case "anyAtomicType":
+            case "anySimpleType":
+                return true;
+            default:
+                return false;
+        }
+    }
+    
+    /**
+     * Generates a human-readable error message for type mismatch.
+     *
+     * @param value the actual value
+     * @param variableName the variable name (may be null)
+     * @return an error message describing the type mismatch
+     */
+    public String getTypeMismatchMessage(XPathValue value, String variableName) {
+        StringBuilder sb = new StringBuilder();
+        
+        if (variableName != null) {
+            sb.append("Variable $").append(variableName).append(": ");
+        }
+        
+        sb.append("Required type is ").append(toString());
+        sb.append("; supplied value ");
+        
+        if (value == null) {
+            sb.append("is empty sequence");
+        } else {
+            int count = getItemCount(value);
+            if (count == 0) {
+                sb.append("is empty sequence");
+            } else if (count == 1) {
+                sb.append("has type ").append(getValueTypeName(value));
+            } else {
+                sb.append("is a sequence of ").append(count).append(" items");
+            }
+        }
+        
+        return sb.toString();
+    }
+    
+    /**
+     * Gets a human-readable type name for a value.
+     */
+    private String getValueTypeName(XPathValue value) {
+        if (value instanceof XPathString) {
+            return "xs:string";
+        } else if (value instanceof XPathNumber) {
+            return "xs:double";
+        } else if (value instanceof XPathBoolean) {
+            return "xs:boolean";
+        } else if (value instanceof XPathDateTime) {
+            XPathDateTime dt = (XPathDateTime) value;
+            switch (dt.getDateTimeType()) {
+                case DATE: return "xs:date";
+                case TIME: return "xs:time";
+                case DATE_TIME: return "xs:dateTime";
+                case DURATION: return "xs:duration";
+                case YEAR_MONTH_DURATION: return "xs:yearMonthDuration";
+                case DAY_TIME_DURATION: return "xs:dayTimeDuration";
+                default: return "xs:dateTime";
+            }
+        } else if (value instanceof XPathNodeSet) {
+            XPathNodeSet ns = (XPathNodeSet) value;
+            if (ns.size() == 1) {
+                XPathNode node = ns.iterator().next();
+                switch (node.getNodeType()) {
+                    case ELEMENT: return "element()";
+                    case ATTRIBUTE: return "attribute()";
+                    case TEXT: return "text()";
+                    case COMMENT: return "comment()";
+                    case PROCESSING_INSTRUCTION: return "processing-instruction()";
+                    case ROOT: return "document-node()";
+                    default: return "node()";
+                }
+            }
+            return "node()+";
+        } else if (value instanceof XPathSequence) {
+            return "item()+";
+        }
+        return "item()";
     }
     
     /**

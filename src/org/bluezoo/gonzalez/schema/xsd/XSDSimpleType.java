@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * Represents an XSD simple type definition.
@@ -46,29 +47,81 @@ import java.util.Set;
  */
 public class XSDSimpleType extends XSDType {
     
-    /** All XSD Part 2 built-in type names */
-    public static final String[] BUILT_IN_TYPES = {
-        // Primitive types
-        "string", "boolean", "decimal", "float", "double",
-        "duration", "dateTime", "time", "date",
-        "gYearMonth", "gYear", "gMonthDay", "gDay", "gMonth",
-        "hexBinary", "base64Binary", "anyURI", "QName", "NOTATION",
-        // Derived types
-        "normalizedString", "token", "language", "NMTOKEN", "NMTOKENS",
-        "Name", "NCName", "ID", "IDREF", "IDREFS", "ENTITY", "ENTITIES",
-        "integer", "nonPositiveInteger", "negativeInteger",
-        "long", "int", "short", "byte",
-        "nonNegativeInteger", "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte",
-        "positiveInteger",
-        // Special
-        "anyType", "anySimpleType"
-    };
+    /** Resource path for type hierarchy configuration */
+    private static final String TYPE_HIERARCHY_RESOURCE = "/META-INF/xsd-type-hierarchy.properties";
     
     private static final Map<String, XSDSimpleType> BUILT_IN_TYPE_MAP = new HashMap<>();
     
     static {
-        for (String typeName : BUILT_IN_TYPES) {
-            BUILT_IN_TYPE_MAP.put(typeName, new XSDSimpleType(typeName, XSDSchema.XSD_NAMESPACE, null));
+        // Create the root type first (anyType has no base)
+        BUILT_IN_TYPE_MAP.put("anyType", new XSDSimpleType("anyType", XSDSchema.XSD_NAMESPACE, null));
+        
+        // Load type hierarchy from resource file
+        loadTypeHierarchy();
+    }
+    
+    /**
+     * Loads the built-in type hierarchy from a properties resource file.
+     * 
+     * <p>The properties file format is: type=baseType
+     * <p>This allows the type hierarchy to be maintained separately from code.
+     */
+    private static void loadTypeHierarchy() {
+        java.util.Properties props = new java.util.Properties();
+        try (java.io.InputStream is = XSDSimpleType.class.getResourceAsStream(TYPE_HIERARCHY_RESOURCE)) {
+            if (is != null) {
+                props.load(is);
+                
+                // First pass: create all types
+                for (String typeName : props.stringPropertyNames()) {
+                    if (!BUILT_IN_TYPE_MAP.containsKey(typeName)) {
+                        BUILT_IN_TYPE_MAP.put(typeName, 
+                            new XSDSimpleType(typeName, XSDSchema.XSD_NAMESPACE, null));
+                    }
+                    // Also ensure base type exists
+                    String baseName = props.getProperty(typeName);
+                    if (baseName != null && !BUILT_IN_TYPE_MAP.containsKey(baseName)) {
+                        BUILT_IN_TYPE_MAP.put(baseName, 
+                            new XSDSimpleType(baseName, XSDSchema.XSD_NAMESPACE, null));
+                    }
+                }
+                
+                // Second pass: set up base type relationships
+                for (String typeName : props.stringPropertyNames()) {
+                    String baseName = props.getProperty(typeName);
+                    if (baseName != null) {
+                        XSDSimpleType derived = BUILT_IN_TYPE_MAP.get(typeName);
+                        XSDSimpleType base = BUILT_IN_TYPE_MAP.get(baseName);
+                        if (derived != null && base != null) {
+                            derived.baseType = base;
+                        }
+                    }
+                }
+            } else {
+                // Fallback: create minimal set of types if resource not found
+                System.err.println("Warning: XSD type hierarchy resource not found: " + TYPE_HIERARCHY_RESOURCE);
+                createFallbackTypes();
+            }
+        } catch (java.io.IOException e) {
+            System.err.println("Warning: Failed to load XSD type hierarchy: " + e.getMessage());
+            createFallbackTypes();
+        }
+    }
+    
+    /**
+     * Creates a minimal fallback set of built-in types if the resource file cannot be loaded.
+     */
+    private static void createFallbackTypes() {
+        // Minimal set of commonly used types
+        String[] basics = {"anySimpleType", "anyAtomicType", "string", "boolean", 
+            "decimal", "integer", "int", "long", "float", "double", 
+            "date", "dateTime", "time", "duration",
+            "normalizedString", "token", "NCName", "ID", "IDREF",
+            "untypedAtomic"};
+        for (String name : basics) {
+            if (!BUILT_IN_TYPE_MAP.containsKey(name)) {
+                BUILT_IN_TYPE_MAP.put(name, new XSDSimpleType(name, XSDSchema.XSD_NAMESPACE, null));
+            }
         }
     }
     
@@ -99,6 +152,9 @@ public class XSDSimpleType extends XSDType {
     private Integer totalDigits;
     private Integer fractionDigits;
     private WhitespaceHandling whitespace = WhitespaceHandling.PRESERVE;
+    
+    // Compiled pattern cache for performance
+    private Pattern compiledPattern;
     
     /**
      * Whitespace handling modes for simple types.
@@ -205,6 +261,15 @@ public class XSDSimpleType extends XSDType {
     }
     
     /**
+     * Returns all built-in type names.
+     *
+     * @return set of built-in type names
+     */
+    public static java.util.Set<String> getBuiltInTypeNames() {
+        return BUILT_IN_TYPE_MAP.keySet();
+    }
+    
+    /**
      * Returns true if this is the built-in xs:ID type.
      *
      * @return true if this is xs:ID, false otherwise
@@ -230,6 +295,61 @@ public class XSDSimpleType extends XSDType {
     }
     
     /**
+     * Checks if this type is the same as or derived from the specified type.
+     *
+     * <p>This follows the XSD type derivation hierarchy. A type is considered
+     * derived from another if it is the same type, or if its base type chain
+     * includes the target type.
+     *
+     * @param other the type to check derivation from
+     * @return true if this type is the same as or derives from the other type
+     */
+    public boolean isDerivedFrom(XSDSimpleType other) {
+        if (other == null) {
+            return false;
+        }
+        // Same type
+        if (this == other) {
+            return true;
+        }
+        // Same name and namespace
+        if (getName() != null && getName().equals(other.getName()) &&
+            getNamespaceURI() != null && getNamespaceURI().equals(other.getNamespaceURI())) {
+            return true;
+        }
+        // Check base type chain
+        if (baseType != null) {
+            return baseType.isDerivedFrom(other);
+        }
+        return false;
+    }
+    
+    /**
+     * Checks if this type is the same as or derived from a type with the given name.
+     *
+     * @param namespaceURI the target type namespace (null for XSD namespace)
+     * @param localName the target type local name
+     * @return true if this type is the same as or derives from the named type
+     */
+    public boolean isDerivedFrom(String namespaceURI, String localName) {
+        if (localName == null) {
+            return false;
+        }
+        // Normalize namespace - null means XSD namespace for built-in types
+        String targetNs = namespaceURI != null ? namespaceURI : XSDSchema.XSD_NAMESPACE;
+        
+        // Check this type
+        if (localName.equals(getName()) && targetNs.equals(getNamespaceURI())) {
+            return true;
+        }
+        // Check base type chain
+        if (baseType != null) {
+            return baseType.isDerivedFrom(namespaceURI, localName);
+        }
+        return false;
+    }
+    
+    /**
      * Returns true, indicating this is a simple type.
      *
      * @return true
@@ -246,6 +366,43 @@ public class XSDSimpleType extends XSDType {
      */
     public Variety getVariety() {
         return variety;
+    }
+    
+    /**
+     * Returns the effective variety of this type.
+     *
+     * <p>For derived types (restrictions), this follows the base type chain
+     * to find the actual variety. A restriction of a LIST type is still
+     * effectively a LIST type.
+     *
+     * @return the effective variety
+     */
+    public Variety getEffectiveVariety() {
+        if (variety != Variety.ATOMIC) {
+            return variety;
+        }
+        if (baseType != null) {
+            return baseType.getEffectiveVariety();
+        }
+        return variety;
+    }
+    
+    /**
+     * Returns the effective item type for list types.
+     *
+     * <p>For derived types (restrictions of a list), this follows the base
+     * type chain to find the actual item type.
+     *
+     * @return the effective item type, or null if not a list type
+     */
+    public XSDSimpleType getEffectiveItemType() {
+        if (itemType != null) {
+            return itemType;
+        }
+        if (baseType != null) {
+            return baseType.getEffectiveItemType();
+        }
+        return null;
     }
     
     /**
@@ -295,6 +452,133 @@ public class XSDSimpleType extends XSDType {
      */
     public List<XSDSimpleType> getMemberTypes() {
         return memberTypes;
+    }
+    
+    /**
+     * Checks if this type is a subtype of (derived from) another type.
+     *
+     * <p>This walks up the type hierarchy to check if this type is derived
+     * from the specified type. For example:
+     * <ul>
+     *   <li>xs:ID is a subtype of xs:NCName, xs:Name, xs:token, xs:string</li>
+     *   <li>xs:int is a subtype of xs:long, xs:integer, xs:decimal</li>
+     * </ul>
+     *
+     * <p>A type is considered a subtype of itself.
+     *
+     * @param otherType the potential base type
+     * @return true if this type is derived from otherType (or is equal to it)
+     */
+    public boolean isSubtypeOf(XSDSimpleType otherType) {
+        if (otherType == null) {
+            return false;
+        }
+        
+        // Check equality (a type is a subtype of itself)
+        if (this == otherType) {
+            return true;
+        }
+        
+        // Check by namespace and name
+        if (this.getNamespaceURI() != null && this.getNamespaceURI().equals(otherType.getNamespaceURI()) &&
+            this.getName() != null && this.getName().equals(otherType.getName())) {
+            return true;
+        }
+        
+        // Walk up the base type chain
+        XSDSimpleType current = this.baseType;
+        while (current != null) {
+            if (current == otherType) {
+                return true;
+            }
+            if (current.getNamespaceURI() != null && current.getNamespaceURI().equals(otherType.getNamespaceURI()) &&
+                current.getName() != null && current.getName().equals(otherType.getName())) {
+                return true;
+            }
+            current = current.baseType;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Returns the primitive type at the root of this type's hierarchy.
+     *
+     * <p>For built-in XSD types, this walks up the base type chain until
+     * reaching a primitive type (one of the 19 XSD primitive types like
+     * xs:string, xs:integer, xs:boolean, etc.) or anyAtomicType.
+     *
+     * <p>Examples:
+     * <ul>
+     *   <li>xs:ID → xs:string</li>
+     *   <li>xs:int → xs:decimal</li>
+     *   <li>xs:positiveInteger → xs:decimal</li>
+     * </ul>
+     *
+     * @return the primitive type, or this type if it is already primitive
+     */
+    public XSDSimpleType getPrimitiveType() {
+        // Primitive types according to XML Schema Part 2
+        if (isPrimitive()) {
+            return this;
+        }
+        
+        // Walk up the base type chain
+        XSDSimpleType current = this.baseType;
+        while (current != null) {
+            if (current.isPrimitive()) {
+                return current;
+            }
+            current = current.baseType;
+        }
+        
+        // If no primitive found, return anyAtomicType as a fallback
+        return BUILT_IN_TYPE_MAP.getOrDefault("anyAtomicType", this);
+    }
+    
+    /**
+     * Checks if this type is one of the 19 XSD primitive types or anyAtomicType.
+     *
+     * @return true if this is a primitive type
+     */
+    private boolean isPrimitive() {
+        if (!isBuiltIn()) {
+            return false;
+        }
+        
+        String typeName = getName();
+        if (typeName == null) {
+            return false;
+        }
+        
+        // XSD primitive types + XPath/XDM abstract types
+        switch (typeName) {
+            case "anyAtomicType":
+            case "anySimpleType":
+            case "string":
+            case "boolean":
+            case "decimal":
+            case "float":
+            case "double":
+            case "duration":
+            case "dateTime":
+            case "time":
+            case "date":
+            case "gYearMonth":
+            case "gYear":
+            case "gMonthDay":
+            case "gDay":
+            case "gMonth":
+            case "hexBinary":
+            case "base64Binary":
+            case "anyURI":
+            case "QName":
+            case "NOTATION":
+            case "untypedAtomic":
+                return true;
+            default:
+                return false;
+        }
     }
     
     // Facet getters and setters
@@ -353,7 +637,10 @@ public class XSDSimpleType extends XSDType {
      *
      * @param value the regular expression pattern
      */
-    public void setPattern(String value) { this.pattern = value; }
+    public void setPattern(String value) {
+        this.pattern = value;
+        this.compiledPattern = null;
+    }
     
     /**
      * Returns the enumeration facet values.
@@ -507,7 +794,20 @@ public class XSDSimpleType extends XSDType {
         // Apply whitespace normalization
         String normalized = normalizeWhitespace(value);
         
-        // Check length facets
+        // Get effective variety (follows base type chain for derived types)
+        Variety effectiveVariety = getEffectiveVariety();
+        
+        // Handle LIST variety specially - length facets apply to item count
+        if (effectiveVariety == Variety.LIST) {
+            return validateList(normalized);
+        }
+        
+        // Handle UNION variety - try each member type
+        if (effectiveVariety == Variety.UNION) {
+            return validateUnion(normalized);
+        }
+        
+        // ATOMIC variety - check length facets on string length
         if (length != null && normalized.length() != length) {
             return "Value length " + normalized.length() + " does not match required length " + length;
         }
@@ -519,7 +819,8 @@ public class XSDSimpleType extends XSDType {
         }
         
         // Check pattern
-        if (pattern != null && !normalized.matches(pattern)) {
+        Pattern compiledPat = getCompiledPattern();
+        if (compiledPat != null && !compiledPat.matcher(normalized).matches()) {
             return "Value does not match pattern: " + pattern;
         }
         
@@ -541,6 +842,96 @@ public class XSDSimpleType extends XSDType {
         }
         
         return null;
+    }
+    
+    /**
+     * Validates a value against a LIST variety type.
+     *
+     * <p>For list types:
+     * <ul>
+     *   <li>The value is split by whitespace into items</li>
+     *   <li>Each item is validated against the itemType</li>
+     *   <li>Length facets apply to the item count, not string length</li>
+     * </ul>
+     *
+     * @param value the normalized value
+     * @return null if valid, error message if invalid
+     */
+    private String validateList(String value) {
+        // Split by whitespace - empty string means empty list
+        String[] items;
+        if (value.isEmpty()) {
+            items = new String[0];
+        } else {
+            items = value.split("\\s+");
+        }
+        int itemCount = items.length;
+        
+        // Check length facets on item count
+        if (length != null && itemCount != length) {
+            return "List has " + itemCount + " items but requires exactly " + length;
+        }
+        if (minLength != null && itemCount < minLength) {
+            return "List has " + itemCount + " items but requires at least " + minLength;
+        }
+        if (maxLength != null && itemCount > maxLength) {
+            return "List has " + itemCount + " items but allows at most " + maxLength;
+        }
+        
+        // Validate each item against the effective item type
+        XSDSimpleType effectiveItemType = getEffectiveItemType();
+        if (effectiveItemType != null) {
+            for (int i = 0; i < items.length; i++) {
+                String itemError = effectiveItemType.validate(items[i]);
+                if (itemError != null) {
+                    return "List item " + (i + 1) + " invalid: " + itemError;
+                }
+            }
+        }
+        
+        // Check pattern on the whole value
+        Pattern compiledPat = getCompiledPattern();
+        if (compiledPat != null && !compiledPat.matcher(value).matches()) {
+            return "List value does not match pattern: " + pattern;
+        }
+        
+        // Check enumeration on the whole value
+        if (enumeration != null && !enumeration.contains(value)) {
+            return "List value is not in enumeration";
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Validates a value against a UNION variety type.
+     *
+     * <p>The value is valid if it's valid against any member type.
+     *
+     * @param value the normalized value
+     * @return null if valid, error message if invalid
+     */
+    private String validateUnion(String value) {
+        if (memberTypes == null || memberTypes.isEmpty()) {
+            return "Union type has no member types";
+        }
+        
+        // Try each member type
+        StringBuilder errors = new StringBuilder();
+        for (XSDSimpleType memberType : memberTypes) {
+            String error = memberType.validate(value);
+            if (error == null) {
+                return null;  // Valid against this member
+            }
+            if (errors.length() > 0) {
+                errors.append("; ");
+            }
+            errors.append(memberType.getName());
+            errors.append(": ");
+            errors.append(error);
+        }
+        
+        return "Value does not match any union member type: " + errors;
     }
     
     /**
@@ -702,12 +1093,28 @@ public class XSDSimpleType extends XSDType {
         return false;
     }
     
+    /**
+     * Gets the compiled pattern for this type, compiling it if necessary.
+     * This avoids repeatedly compiling the same pattern during validation.
+     *
+     * @return the compiled pattern, or null if no pattern facet is set
+     */
+    private Pattern getCompiledPattern() {
+        if (pattern == null) {
+            return null;
+        }
+        if (compiledPattern == null) {
+            compiledPattern = Pattern.compile(pattern);
+        }
+        return compiledPattern;
+    }
+    
     private String normalizeWhitespace(String value) {
         switch (whitespace) {
             case REPLACE:
-                return value.replaceAll("[\t\n\r]", " ");
+                return XSDTypeConverter.normalizeReplace(value);
             case COLLAPSE:
-                return value.replaceAll("[\t\n\r]", " ").replaceAll(" +", " ").trim();
+                return XSDTypeConverter.normalizeCollapse(value);
             default:
                 return value;
         }

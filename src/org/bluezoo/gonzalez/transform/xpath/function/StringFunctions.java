@@ -24,12 +24,19 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
+import java.io.ByteArrayOutputStream;
+
+import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
@@ -40,6 +47,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathTypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
+import org.bluezoo.gonzalez.transform.xpath.Collation;
 
 /**
  * XPath 1.0 string functions.
@@ -99,46 +107,80 @@ public final class StringFunctions {
     };
 
     /**
-     * XPath 1.0 starts-with() function.
+     * XPath 2.0 starts-with() function.
      * 
      * <p>Returns true if the first string starts with the second string.
+     * XPath 2.0 adds optional collation parameter.
      * 
-     * <p>Signature: starts-with(string, string) → boolean
+     * <p>Signature: starts-with(string?, string?, string?) → boolean
      * 
-     * @see <a href="https://www.w3.org/TR/xpath/#function-starts-with">XPath 1.0 starts-with()</a>
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-starts-with">XPath 2.0 starts-with()</a>
      */
     public static final Function STARTS_WITH = new Function() {
         @Override public String getName() { return "starts-with"; }
         @Override public int getMinArgs() { return 2; }
-        @Override public int getMaxArgs() { return 2; }
+        @Override public int getMaxArgs() { return 3; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String str = args.get(0).asString();
             String prefix = args.get(1).asString();
-            return XPathBoolean.of(str.startsWith(prefix));
+            
+            // Empty prefix always returns true
+            if (prefix.isEmpty()) {
+                return XPathBoolean.TRUE;
+            }
+            
+            // Get collation from 3rd argument or use default
+            Collation collation;
+            if (args.size() > 2) {
+                String collUri = args.get(2).asString();
+                collation = Collation.forUri(collUri);
+            } else {
+                String defaultUri = context.getDefaultCollation();
+                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+            }
+            
+            return XPathBoolean.of(collation.startsWith(str, prefix));
         }
     };
 
     /**
-     * XPath 1.0 contains() function.
+     * XPath 2.0 contains() function.
      * 
      * <p>Returns true if the first string contains the second string as a substring.
+     * XPath 2.0 adds optional collation parameter.
      * 
-     * <p>Signature: contains(string, string) → boolean
+     * <p>Signature: contains(string?, string?, string?) → boolean
      * 
-     * @see <a href="https://www.w3.org/TR/xpath/#function-contains">XPath 1.0 contains()</a>
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-contains">XPath 2.0 contains()</a>
      */
     public static final Function CONTAINS = new Function() {
         @Override public String getName() { return "contains"; }
         @Override public int getMinArgs() { return 2; }
-        @Override public int getMaxArgs() { return 2; }
+        @Override public int getMaxArgs() { return 3; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String str = args.get(0).asString();
             String substr = args.get(1).asString();
-            return XPathBoolean.of(str.contains(substr));
+            
+            // Empty substring always returns true
+            if (substr.isEmpty()) {
+                return XPathBoolean.TRUE;
+            }
+            
+            // Get collation from 3rd argument or use default
+            Collation collation;
+            if (args.size() > 2) {
+                String collUri = args.get(2).asString();
+                collation = Collation.forUri(collUri);
+            } else {
+                String defaultUri = context.getDefaultCollation();
+                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+            }
+            
+            return XPathBoolean.of(collation.contains(str, substr));
         }
     };
 
@@ -553,7 +595,7 @@ public final class StringFunctions {
      * 
      * <p>Signature: ends-with(string?, string?, string?) → boolean
      * 
-     * @see <a href="https://www.w3.org/TR/xpath20/#function-ends-with">XPath 2.0 ends-with()</a>
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-ends-with">XPath 2.0 ends-with()</a>
      */
     public static final Function ENDS_WITH = new Function() {
         @Override public String getName() { return "ends-with"; }
@@ -564,7 +606,23 @@ public final class StringFunctions {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String str = args.get(0).asString();
             String suffix = args.get(1).asString();
-            return XPathBoolean.of(str.endsWith(suffix));
+            
+            // Empty suffix always returns true
+            if (suffix.isEmpty()) {
+                return XPathBoolean.TRUE;
+            }
+            
+            // Get collation from 3rd argument or use default
+            Collation collation;
+            if (args.size() > 2) {
+                String collUri = args.get(2).asString();
+                collation = Collation.forUri(collUri);
+            } else {
+                String defaultUri = context.getDefaultCollation();
+                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+            }
+            
+            return XPathBoolean.of(collation.endsWith(str, suffix));
         }
     };
 
@@ -710,7 +768,17 @@ public final class StringFunctions {
             String str1 = arg1.asString();
             String str2 = arg2.asString();
             
-            int cmp = str1.compareTo(str2);
+            // Get collation from 3rd argument or use default
+            Collation collation;
+            if (args.size() > 2) {
+                String collUri = args.get(2).asString();
+                collation = Collation.forUri(collUri);
+            } else {
+                String defaultUri = context.getDefaultCollation();
+                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+            }
+            
+            int cmp = collation.compare(str1, str2);
             if (cmp < 0) {
                 return XPathNumber.of(-1);
             }
@@ -959,6 +1027,175 @@ public final class StringFunctions {
     }
 
     /**
+     * XPath 3.1 serialize() function.
+     * 
+     * <p>Serializes an XDM value to a string (XML representation).
+     * 
+     * <p>Signature: serialize($arg as item()?) → xs:string
+     * <p>Signature: serialize($arg as item()?, $params as item()?) → xs:string
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-serialize">XPath 3.1 serialize()</a>
+     */
+    public static final Function SERIALIZE = new Function() {
+        @Override public String getName() { return "serialize"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            // Second argument (serialization params) is optional and not fully implemented
+            
+            if (arg == null) {
+                return XPathString.of("");
+            }
+            
+            try {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                OutputProperties props = new OutputProperties();
+                props.setOmitXmlDeclaration(true);
+                OutputHandler output = new XMLWriterOutputHandler(baos, props);
+                
+                serializeValue(arg, output);
+                
+                output.endDocument();
+                return XPathString.of(baos.toString("UTF-8"));
+            } catch (Exception e) {
+                throw new XPathException("Error serializing value: " + e.getMessage());
+            }
+        }
+        
+        private void serializeValue(XPathValue value, OutputHandler output) throws Exception {
+            if (value instanceof XPathNodeSet) {
+                XPathNodeSet nodeSet = (XPathNodeSet) value;
+                for (XPathNode node : nodeSet) {
+                    serializeNode(node, output);
+                }
+            } else if (value instanceof XPathNode) {
+                serializeNode((XPathNode) value, output);
+            } else if (value instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) value;
+                boolean first = true;
+                for (XPathValue item : seq) {
+                    if (!first) {
+                        output.characters(" ");
+                    }
+                    first = false;
+                    serializeValue(item, output);
+                }
+            } else {
+                // Atomic value - output as text
+                output.characters(value.asString());
+            }
+        }
+        
+        private void serializeNode(XPathNode node, OutputHandler output) throws Exception {
+            NodeType nodeType = node.getNodeType();
+            
+            if (nodeType == NodeType.ELEMENT) {
+                String uri = node.getNamespaceURI();
+                String local = node.getLocalName();
+                String prefix = node.getPrefix();
+                String qName = (prefix != null && !prefix.isEmpty()) ? prefix + ":" + local : local;
+                
+                output.startElement(uri != null ? uri : "", local, qName);
+                
+                // Serialize namespace declarations first
+                Iterator<XPathNode> nsIter = node.getNamespaces();
+                if (nsIter != null) {
+                    while (nsIter.hasNext()) {
+                        XPathNode ns = nsIter.next();
+                        String nsPrefix = ns.getLocalName();
+                        String nsUri = ns.getStringValue();
+                        output.namespace(nsPrefix != null ? nsPrefix : "", nsUri);
+                    }
+                }
+                
+                // Serialize attributes
+                Iterator<XPathNode> attrIter = node.getAttributes();
+                if (attrIter != null) {
+                    while (attrIter.hasNext()) {
+                        XPathNode attr = attrIter.next();
+                        String attrPrefix = attr.getPrefix();
+                        String attrLocal = attr.getLocalName();
+                        String attrQName = (attrPrefix != null && !attrPrefix.isEmpty()) ? 
+                            attrPrefix + ":" + attrLocal : attrLocal;
+                        output.attribute(
+                            attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "",
+                            attrLocal, attrQName, attr.getStringValue());
+                    }
+                }
+                
+                // Serialize children
+                Iterator<XPathNode> children = node.getChildren();
+                if (children != null) {
+                    while (children.hasNext()) {
+                        serializeNode(children.next(), output);
+                    }
+                }
+                
+                output.endElement(uri != null ? uri : "", local, qName);
+            } else if (nodeType == NodeType.TEXT) {
+                String text = node.getStringValue();
+                if (text != null) {
+                    output.characters(text);
+                }
+            } else if (nodeType == NodeType.COMMENT) {
+                output.comment(node.getStringValue());
+            } else if (nodeType == NodeType.PROCESSING_INSTRUCTION) {
+                output.processingInstruction(node.getLocalName(), node.getStringValue());
+            } else if (nodeType == NodeType.ROOT) {
+                // Serialize document children
+                Iterator<XPathNode> docChildren = node.getChildren();
+                if (docChildren != null) {
+                    while (docChildren.hasNext()) {
+                        serializeNode(docChildren.next(), output);
+                    }
+                }
+            } else if (nodeType == NodeType.ATTRIBUTE) {
+                // Standalone attribute - output as text
+                output.characters(node.getStringValue());
+            }
+        }
+    };
+
+    /**
+     * XPath 2.0 codepoint-equal() function.
+     * 
+     * <p>Compares two strings using Unicode codepoint collation.
+     * Returns empty sequence if either argument is empty.
+     * 
+     * <p>Signature: codepoint-equal($comparand1 as xs:string?, $comparand2 as xs:string?) → xs:boolean?
+     * 
+     * @see <a href="https://www.w3.org/TR/xpath-functions/#func-codepoint-equal">XPath codepoint-equal()</a>
+     */
+    public static final Function CODEPOINT_EQUAL = new Function() {
+        @Override public String getName() { return "codepoint-equal"; }
+        @Override public int getMinArgs() { return 2; }
+        @Override public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg1 = args.get(0);
+            XPathValue arg2 = args.get(1);
+            
+            // If either argument is empty sequence, return empty sequence
+            if (arg1 == null || (arg1 instanceof XPathSequence && ((XPathSequence)arg1).isEmpty())) {
+                return XPathSequence.EMPTY;
+            }
+            if (arg2 == null || (arg2 instanceof XPathSequence && ((XPathSequence)arg2).isEmpty())) {
+                return XPathSequence.EMPTY;
+            }
+            
+            String s1 = arg1.asString();
+            String s2 = arg2.asString();
+            
+            // Compare using codepoint (natural String.equals)
+            return XPathBoolean.of(s1.equals(s2));
+        }
+    };
+
+    /**
      * Returns all string functions (XPath 1.0 and 2.0/3.0).
      *
      * @return array of all string function implementations
@@ -969,7 +1206,7 @@ public final class StringFunctions {
             SUBSTRING_AFTER, SUBSTRING, STRING_LENGTH, NORMALIZE_SPACE, TRANSLATE,
             DATA, STRING_JOIN, UPPER_CASE, LOWER_CASE, ENDS_WITH, MATCHES, REPLACE,
             TOKENIZE, COMPARE, CODEPOINTS_TO_STRING, STRING_TO_CODEPOINTS,
-            ENCODE_FOR_URI, IRI_TO_URI, ESCAPE_HTML_URI
+            ENCODE_FOR_URI, IRI_TO_URI, ESCAPE_HTML_URI, SERIALIZE, CODEPOINT_EQUAL
         };
     }
 

@@ -45,6 +45,7 @@ public final class ResultDocumentHandler implements OutputHandler {
     private final OutputProperties outputProperties;
     private boolean documentStarted;
     private int depth;
+    private java.util.Map<Integer, String> characterMappings;  // Unicode code points
 
     /**
      * Creates a new result document handler.
@@ -188,9 +189,48 @@ public final class ResultDocumentHandler implements OutputHandler {
         flushPendingElement();
         
         try {
-            writeEscaped(text, false);
+            if (characterMappings == null || characterMappings.isEmpty()) {
+                writeEscaped(text, false);
+            } else {
+                writeCharactersWithMapping(text);
+            }
         } catch (IOException e) {
             throw new SAXException("Error writing characters", e);
+        }
+    }
+    
+    /**
+     * Writes characters with character mapping applied.
+     * Characters with mappings are written raw (unescaped), others are escaped.
+     */
+    private void writeCharactersWithMapping(String text) throws IOException {
+        StringBuilder normalChars = null;
+        
+        int i = 0;
+        while (i < text.length()) {
+            int codePoint = text.codePointAt(i);
+            String replacement = characterMappings.get(codePoint);
+            
+            if (replacement != null) {
+                // Flush any accumulated normal characters
+                if (normalChars != null && normalChars.length() > 0) {
+                    writeEscaped(normalChars.toString(), false);
+                    normalChars.setLength(0);
+                }
+                // Write replacement raw (unescaped) - per XSLT spec
+                writer.write(replacement);
+            } else {
+                if (normalChars == null) {
+                    normalChars = new StringBuilder();
+                }
+                normalChars.appendCodePoint(codePoint);
+            }
+            i += Character.charCount(codePoint);
+        }
+        
+        // Flush any remaining normal characters
+        if (normalChars != null && normalChars.length() > 0) {
+            writeEscaped(normalChars.toString(), false);
         }
     }
 
@@ -354,6 +394,15 @@ public final class ResultDocumentHandler implements OutputHandler {
      */
     public OutputProperties getOutputProperties() {
         return outputProperties;
+    }
+
+    /**
+     * Sets the character mappings for XSLT 2.0+ character mapping during serialization.
+     *
+     * @param mappings the character-to-string mappings, or null to disable
+     */
+    public void setCharacterMappings(java.util.Map<Integer, String> mappings) {
+        this.characterMappings = mappings;
     }
 
 }

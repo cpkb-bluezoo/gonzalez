@@ -29,7 +29,7 @@ import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 import org.bluezoo.gonzalez.schema.xsd.XSDType;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
-import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.ValidationMode;
+import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 
 import java.util.ArrayDeque;
@@ -245,13 +245,22 @@ public class RuntimeSchemaValidator {
             return ValidationResult.validUntyped();
         }
         
-        // Find schema for this namespace
-        XSDSchema schema = getSchema(namespaceURI);
-        
-        // Find element declaration
+        // Find element declaration - first try global, then local from parent context
         XSDElement decl = null;
+        
+        // Try global element declaration first
+        XSDSchema schema = getSchema(namespaceURI);
         if (schema != null) {
             decl = schema.resolveElement(namespaceURI, localName);
+        }
+        
+        // If not found globally, try local element from parent's content model
+        if (decl == null && !elementStack.isEmpty()) {
+            ElementState parent = elementStack.peek();
+            if (parent.declaration != null && parent.declaration.getType() instanceof XSDComplexType) {
+                XSDComplexType parentType = (XSDComplexType) parent.declaration.getType();
+                decl = parentType.getChildElement(namespaceURI, localName);
+            }
         }
         
         // Handle based on mode
@@ -272,7 +281,13 @@ public class RuntimeSchemaValidator {
         // Push state for content validation
         elementStack.push(new ElementState(namespaceURI, localName, mode, decl));
         
-        // Return initial success (full validation at endElement)
+        // Return type annotation from element declaration immediately
+        // (Full content validation will happen at endElement if needed)
+        if (decl != null && decl.getType() != null) {
+            XSDType type = decl.getType();
+            return ValidationResult.valid(type.getNamespaceURI(), type.getName());
+        }
+        
         return ValidationResult.validUntyped();
     }
     

@@ -23,7 +23,9 @@ package org.bluezoo.gonzalez.transform.runtime;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Matcher;
 
 import javax.xml.transform.ErrorListener;
@@ -33,6 +35,7 @@ import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
+import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.function.XSLTFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -56,6 +59,9 @@ public class BasicTransformContext implements TransformContext {
     private final int size;
     private final String currentMode;
     private final VariableScope variableScope;
+    private boolean throwOnUndefinedVariable = false;  // For circular reference detection during global init
+    private final Set<String> keysBeingEvaluated;  // For key circular reference detection
+    private final Set<String> variablesBeingEvaluated;  // For variable circular reference detection
     private final XPathFunctionLibrary functionLibrary;
     private final TemplateMatcher templateMatcher;
     private final OutputHandler outputHandler;
@@ -66,6 +72,9 @@ public class BasicTransformContext implements TransformContext {
     private final RuntimeSchemaValidator runtimeValidator;  // For output validation
     private final Matcher regexMatcher;  // For regex-group() in xsl:analyze-string
     private final Map<String, XPathValue> tunnelParameters;  // XSLT 2.0 tunnel params
+    private org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime cachedCurrentDateTime;  // Cached for current-dateTime()
+    private final OutputHandler principalOutput;  // Principal output for xsl:result-document
+    private final org.bluezoo.gonzalez.transform.ErrorHandlingMode errorHandlingMode;  // Error handling mode
 
     /**
      * Creates a new transform context.
@@ -79,7 +88,7 @@ public class BasicTransformContext implements TransformContext {
             TemplateMatcher matcher, OutputHandler outputHandler) {
         this(stylesheet, contextNode, contextNode, null, 1, 1, null, new VariableScope(), 
              XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, null, null, null,
-             stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null);
+             stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null, outputHandler);
     }
 
     /**
@@ -96,7 +105,7 @@ public class BasicTransformContext implements TransformContext {
             ErrorListener errorListener) {
         this(stylesheet, contextNode, contextNode, null, 1, 1, null, new VariableScope(), 
              XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, errorListener, null, null,
-             stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null);
+             stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null, outputHandler);
     }
 
     private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
@@ -105,10 +114,10 @@ public class BasicTransformContext implements TransformContext {
             TemplateMatcher matcher, OutputHandler outputHandler, 
             AccumulatorManager accumulatorManager, ErrorListener errorListener,
             TemplateRule currentTemplateRule, String staticBaseURI,
-            RuntimeSchemaValidator runtimeValidator) {
+            RuntimeSchemaValidator runtimeValidator, OutputHandler principalOutput) {
         this(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size, currentMode,
              variableScope, functionLibrary, matcher, outputHandler, accumulatorManager,
-             errorListener, currentTemplateRule, staticBaseURI, runtimeValidator, null, null);
+             errorListener, currentTemplateRule, staticBaseURI, runtimeValidator, null, null, principalOutput);
     }
 
     private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
@@ -117,10 +126,10 @@ public class BasicTransformContext implements TransformContext {
             TemplateMatcher matcher, OutputHandler outputHandler, 
             AccumulatorManager accumulatorManager, ErrorListener errorListener,
             TemplateRule currentTemplateRule, String staticBaseURI,
-            RuntimeSchemaValidator runtimeValidator, Matcher regexMatcher) {
+            RuntimeSchemaValidator runtimeValidator, Matcher regexMatcher, OutputHandler principalOutput) {
         this(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size, currentMode,
              variableScope, functionLibrary, matcher, outputHandler, accumulatorManager,
-             errorListener, currentTemplateRule, staticBaseURI, runtimeValidator, regexMatcher, null);
+             errorListener, currentTemplateRule, staticBaseURI, runtimeValidator, regexMatcher, null, principalOutput);
     }
 
     private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
@@ -130,7 +139,36 @@ public class BasicTransformContext implements TransformContext {
             AccumulatorManager accumulatorManager, ErrorListener errorListener,
             TemplateRule currentTemplateRule, String staticBaseURI,
             RuntimeSchemaValidator runtimeValidator, Matcher regexMatcher,
-            Map<String, XPathValue> tunnelParameters) {
+            Map<String, XPathValue> tunnelParameters, OutputHandler principalOutput) {
+        this(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size, currentMode,
+             variableScope, functionLibrary, matcher, outputHandler, accumulatorManager,
+             errorListener, currentTemplateRule, staticBaseURI, runtimeValidator, regexMatcher,
+             tunnelParameters, new HashSet<>(), principalOutput);
+    }
+
+    private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
+            XPathNode xsltCurrentNode, XPathValue contextItem, int position, int size, String currentMode, 
+            VariableScope variableScope, XPathFunctionLibrary functionLibrary, 
+            TemplateMatcher matcher, OutputHandler outputHandler, 
+            AccumulatorManager accumulatorManager, ErrorListener errorListener,
+            TemplateRule currentTemplateRule, String staticBaseURI,
+            RuntimeSchemaValidator runtimeValidator, Matcher regexMatcher,
+            Map<String, XPathValue> tunnelParameters, Set<String> keysBeingEvaluated, OutputHandler principalOutput) {
+        this(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size, currentMode,
+             variableScope, functionLibrary, matcher, outputHandler, accumulatorManager,
+             errorListener, currentTemplateRule, staticBaseURI, runtimeValidator, regexMatcher,
+             tunnelParameters, keysBeingEvaluated, new HashSet<>(), principalOutput);
+    }
+
+    private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
+            XPathNode xsltCurrentNode, XPathValue contextItem, int position, int size, String currentMode, 
+            VariableScope variableScope, XPathFunctionLibrary functionLibrary, 
+            TemplateMatcher matcher, OutputHandler outputHandler, 
+            AccumulatorManager accumulatorManager, ErrorListener errorListener,
+            TemplateRule currentTemplateRule, String staticBaseURI,
+            RuntimeSchemaValidator runtimeValidator, Matcher regexMatcher,
+            Map<String, XPathValue> tunnelParameters, Set<String> keysBeingEvaluated,
+            Set<String> variablesBeingEvaluated, OutputHandler principalOutput) {
         this.stylesheet = stylesheet;
         this.contextNode = contextNode;
         this.xsltCurrentNode = xsltCurrentNode;
@@ -149,11 +187,38 @@ public class BasicTransformContext implements TransformContext {
         this.runtimeValidator = runtimeValidator;
         this.regexMatcher = regexMatcher;
         this.tunnelParameters = tunnelParameters != null ? tunnelParameters : Collections.emptyMap();
+        this.keysBeingEvaluated = keysBeingEvaluated;
+        this.variablesBeingEvaluated = variablesBeingEvaluated;
+        this.principalOutput = principalOutput;
+        // Default to STRICT mode for spec compliance
+        // TODO: Make this configurable via API or system property
+        this.errorHandlingMode = org.bluezoo.gonzalez.transform.ErrorHandlingMode.STRICT;
     }
 
     @Override
     public CompiledStylesheet getStylesheet() {
         return stylesheet;
+    }
+
+    @Override
+    public boolean isIdDerivedType(String typeNamespaceURI, String typeLocalName) {
+        // First check built-in types
+        org.bluezoo.gonzalez.schema.xsd.XSDSimpleType builtIn = 
+            org.bluezoo.gonzalez.schema.xsd.XSDSimpleType.getBuiltInType(typeLocalName);
+        if (builtIn != null) {
+            return builtIn.isDerivedFrom("http://www.w3.org/2001/XMLSchema", "ID");
+        }
+        
+        // Check imported schemas for user-defined types
+        if (stylesheet != null) {
+            org.bluezoo.gonzalez.schema.xsd.XSDSimpleType imported = 
+                stylesheet.getImportedSimpleType(typeNamespaceURI, typeLocalName);
+            if (imported != null) {
+                return imported.isDerivedFrom("http://www.w3.org/2001/XMLSchema", "ID");
+            }
+        }
+        
+        return false;
     }
 
     /**
@@ -191,7 +256,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope.push(), functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     /**
@@ -205,7 +270,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope.globalOnly(), functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     /**
@@ -219,7 +284,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             mode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     /**
@@ -235,7 +300,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, node, xsltCurrentNode, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
     
     /**
@@ -249,7 +314,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, node, node, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
     
     /**
@@ -266,7 +331,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrent, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
     
     /**
@@ -282,7 +347,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, node, xsltCurrentNode, item, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
     
     /**
@@ -307,7 +372,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     /**
@@ -325,7 +390,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, newScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     @Override
@@ -344,7 +409,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, rule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     /**
@@ -358,7 +423,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, baseURI,
-            runtimeValidator, regexMatcher, tunnelParameters);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     @Override
@@ -381,7 +446,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, matcher, tunnelParameters);
+            runtimeValidator, matcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     @Override
@@ -405,7 +470,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, merged);
+            runtimeValidator, regexMatcher, merged, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     @Override
@@ -416,7 +481,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, Collections.emptyMap());
+            runtimeValidator, regexMatcher, Collections.emptyMap(), keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
     }
 
     /**
@@ -454,8 +519,86 @@ public class BasicTransformContext implements TransformContext {
     }
 
     @Override
-    public XPathValue getVariable(String namespaceURI, String localName) {
-        return variableScope.lookup(namespaceURI, localName);
+    public XPathValue getVariable(String namespaceURI, String localName) throws XPathVariableException {
+        // Check for circular reference - if this variable is being evaluated, it's a cycle
+        String varKey = (namespaceURI != null && !namespaceURI.isEmpty()) 
+            ? "{" + namespaceURI + "}" + localName : localName;
+        if (variablesBeingEvaluated.contains(varKey)) {
+            throw new XPathVariableException(namespaceURI, localName, 
+                "XTDE0640: Circular reference in variable: $" + localName);
+        }
+        
+        XPathValue value = variableScope.lookup(namespaceURI, localName);
+        if (value == null && throwOnUndefinedVariable) {
+            throw new XPathVariableException(namespaceURI, localName);
+        }
+        return value;
+    }
+    
+    /**
+     * Enables strict mode where undefined variables throw exceptions.
+     * Used during global variable initialization to detect circular references.
+     *
+     * @param enabled true to throw exceptions for undefined variables
+     */
+    public void setThrowOnUndefinedVariable(boolean enabled) {
+        this.throwOnUndefinedVariable = enabled;
+    }
+    
+    /**
+     * Checks if a key is currently being evaluated (for circular reference detection).
+     *
+     * @param keyName the expanded key name
+     * @return true if this key is already being evaluated
+     */
+    public boolean isKeyBeingEvaluated(String keyName) {
+        return keysBeingEvaluated.contains(keyName);
+    }
+    
+    /**
+     * Marks a key as currently being evaluated.
+     *
+     * @param keyName the expanded key name
+     */
+    public void startKeyEvaluation(String keyName) {
+        keysBeingEvaluated.add(keyName);
+    }
+    
+    /**
+     * Marks a key as finished evaluating.
+     *
+     * @param keyName the expanded key name
+     */
+    public void endKeyEvaluation(String keyName) {
+        keysBeingEvaluated.remove(keyName);
+    }
+    
+    /**
+     * Checks if a variable is currently being evaluated (for circular reference detection).
+     *
+     * @param varName the variable name (expanded form {uri}local or just local)
+     * @return true if this variable is already being evaluated
+     */
+    public boolean isVariableBeingEvaluated(String varName) {
+        return variablesBeingEvaluated.contains(varName);
+    }
+    
+    /**
+     * Marks a variable as currently being evaluated.
+     *
+     * @param varName the variable name
+     */
+    public void startVariableEvaluation(String varName) {
+        variablesBeingEvaluated.add(varName);
+    }
+    
+    /**
+     * Marks a variable as finished evaluating.
+     *
+     * @param varName the variable name
+     */
+    public void endVariableEvaluation(String varName) {
+        variablesBeingEvaluated.remove(varName);
     }
 
     @Override
@@ -592,6 +735,23 @@ public class BasicTransformContext implements TransformContext {
     }
 
     /**
+     * Gets a schema by namespace URI (from SchemaContext interface).
+     *
+     * <p>This enables type checking operations to access schemas imported
+     * via xsl:import-schema for substitution group checking.
+     *
+     * @param namespaceURI the schema target namespace URI, or null/empty for no-namespace
+     * @return the schema for this namespace, or null if not found
+     */
+    @Override
+    public org.bluezoo.gonzalez.schema.xsd.XSDSchema getSchema(String namespaceURI) {
+        if (stylesheet != null) {
+            return stylesheet.getImportedSchema(namespaceURI);
+        }
+        return null;
+    }
+
+    /**
      * Returns the XSLT version of the stylesheet.
      *
      * @return the XSLT version (e.g., 1.0, 2.0, 3.0)
@@ -602,6 +762,58 @@ public class BasicTransformContext implements TransformContext {
             return stylesheet.getVersion();
         }
         return 1.0;
+    }
+
+    @Override
+    public org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime getCurrentDateTime() {
+        // Per XPath/XSLT spec, current-dateTime() must return the same value
+        // throughout a single transformation
+        if (cachedCurrentDateTime == null) {
+            cachedCurrentDateTime = org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime.now();
+        }
+        return cachedCurrentDateTime;
+    }
+
+    @Override
+    public OutputHandler getPrincipalOutput() {
+        return principalOutput;
+    }
+
+    @Override
+    public void setPrincipalOutput(OutputHandler output) {
+        // Note: This method is deprecated since principalOutput is now immutable
+        // after construction. It remains for TransformContext interface compatibility
+        // but should not be called during normal operation.
+        throw new UnsupportedOperationException(
+            "setPrincipalOutput() is deprecated - principal output is now set during context construction");
+    }
+
+    @Override
+    public org.bluezoo.gonzalez.transform.ErrorHandlingMode getErrorHandlingMode() {
+        return errorHandlingMode;
+    }
+    
+    @Override
+    public boolean isStrictTypeChecking() {
+        // Strict type checking when not in SILENT mode AND stylesheet is XPath 2.0+
+        // XSLT 1.0 stylesheets should use XPath 1.0 auto-coercion rules
+        if (errorHandlingMode == null || errorHandlingMode.isSilent()) {
+            return false;
+        }
+        // Check stylesheet version - XPath 1.0 semantics for version 1.0 stylesheets
+        if (stylesheet != null && stylesheet.getVersion() < 2.0) {
+            return false;  // XPath 1.0 backwards-compatible mode
+        }
+        return true;
+    }
+
+    @Override
+    public String getDefaultCollation() {
+        // Return the stylesheet's default collation if set, otherwise null (use codepoint)
+        if (stylesheet != null) {
+            return stylesheet.getDefaultCollation();
+        }
+        return null;
     }
 
 }

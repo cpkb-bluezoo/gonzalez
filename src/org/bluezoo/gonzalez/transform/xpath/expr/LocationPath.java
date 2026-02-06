@@ -61,9 +61,6 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  */
 public final class LocationPath implements Expr {
 
-    /** Thread-local to pass atomic results from EXPR steps to evaluate() */
-    private static final ThreadLocal<List<XPathValue>> ATOMIC_STEP_RESULTS = new ThreadLocal<>();
-
     private final boolean absolute;
     private final List<Step> steps;
 
@@ -144,17 +141,16 @@ public final class LocationPath implements Expr {
             currentNodes.add(context.getContextNode());
         }
 
+        // Reusable list for atomic results from EXPR steps
+        List<XPathValue> atomicResults = new ArrayList<>();
+        
         // Apply each step
         for (Step step : steps) {
-            // Clear any previous atomic results
-            ATOMIC_STEP_RESULTS.remove();
-            
-            currentNodes = evaluateStep(step, currentNodes, context);
+            atomicResults.clear();
+            currentNodes = evaluateStep(step, currentNodes, context, atomicResults);
             
             // Check if the step produced atomic (non-node) results
-            List<XPathValue> atomicResults = ATOMIC_STEP_RESULTS.get();
-            if (atomicResults != null) {
-                ATOMIC_STEP_RESULTS.remove();
+            if (!atomicResults.isEmpty()) {
                 // Return the atomic results as a sequence
                 if (atomicResults.size() == 1) {
                     return atomicResults.get(0);
@@ -170,8 +166,22 @@ public final class LocationPath implements Expr {
         return new XPathNodeSet(currentNodes);
     }
 
+    /**
+     * Evaluates a step against a set of nodes.
+     * 
+     * @param step the step to evaluate
+     * @param inputNodes the input node set
+     * @param context the XPath context
+     * @param atomicResultsOut output parameter - if the step produces atomic results
+     *                         (e.g., EXPR steps like star-slash-local-name()), this list will be
+     *                         cleared and populated with the atomic results. The method
+     *                         returns empty list in this case.
+     * @return the resulting nodes, or empty list if atomic results were produced
+     * @throws XPathException if an error occurs during evaluation
+     */
     private List<XPathNode> evaluateStep(Step step, List<XPathNode> inputNodes, 
-                                          XPathContext context) throws XPathException {
+                                          XPathContext context,
+                                          List<XPathValue> atomicResultsOut) throws XPathException {
         List<XPathNode> result = new ArrayList<>();
 
         // XPath 2.0/3.0 EXPR step (simple mapping operator)
@@ -211,19 +221,15 @@ public final class LocationPath implements Expr {
                 }
             }
             
-            // If we have atomic results, we need to return them
-            // Store them in a special marker for the evaluate() method to handle
+            // If we have atomic results, populate output parameter
             if (hasAtomicResults) {
-                // Mark that this step produced atomic values
-                // We'll convert nodes to values and return a sequence
-                List<XPathValue> allResults = new ArrayList<>();
+                // Populate the output parameter with all results
+                // Convert nodes to node-sets and add atomic values
+                atomicResultsOut.clear();
                 for (XPathNode node : result) {
-                    allResults.add(new XPathNodeSet(Collections.singletonList(node)));
+                    atomicResultsOut.add(new XPathNodeSet(Collections.singletonList(node)));
                 }
-                allResults.addAll(atomicResults);
-                
-                // Store in thread-local for evaluate() to retrieve
-                ATOMIC_STEP_RESULTS.set(allResults);
+                atomicResultsOut.addAll(atomicResults);
                 // Return empty nodes to signal that atomic results are available
                 return Collections.emptyList();
             }
@@ -419,21 +425,59 @@ public final class LocationPath implements Expr {
      * Checks if a node matches the optional name in a kind test.
      * For element(name) or attribute(name), checks if node name matches.
      * For element(*) or attribute(*) or element() (no args), matches any node.
+     * For element(name, type) or attribute(*, type), also checks type annotation.
      */
     private boolean matchesKindTestName(Step step, XPathNode node) {
         String elementName = step.getLocalName();
-        if (elementName == null || "*".equals(elementName)) {
-            return true; // element() or element(*) - matches any
+        
+        // Check name match first (unless wildcard or absent)
+        if (elementName != null && !"*".equals(elementName)) {
+            String localPart = elementName;
+            int colonIdx = elementName.indexOf(':');
+            if (colonIdx > 0) {
+                localPart = elementName.substring(colonIdx + 1);
+            }
+            if (!localPart.equals(node.getLocalName())) {
+                return false;  // Name doesn't match
+            }
         }
-        // Check name match (localName contains the name to match)
-        // Note: namespace checking via step.getNamespaceURI() (which holds the type name)
-        // is not fully implemented here - we just match local names
-        String localPart = elementName;
-        int colonIdx = elementName.indexOf(':');
-        if (colonIdx > 0) {
-            localPart = elementName.substring(colonIdx + 1);
+        
+        // Check type annotation if specified
+        if (step.hasTypeConstraint()) {
+            String typeNs = step.getTypeNamespaceURI();
+            String typeLocal = step.getTypeLocalName();
+            
+            // Node must have a type annotation
+            if (!node.hasTypeAnnotation()) {
+                return false;
+            }
+            
+            // Get the node's type annotation
+            String nodeTypeNs = node.getTypeNamespaceURI();
+            String nodeTypeLocal = node.getTypeLocalName();
+            
+            // Look up the node's type to check derivation
+            org.bluezoo.gonzalez.schema.xsd.XSDSimpleType nodeType = 
+                org.bluezoo.gonzalez.schema.xsd.XSDSimpleType.getBuiltInType(nodeTypeLocal);
+            
+            if (nodeType != null) {
+                // Check if node's type is same as or derived from the target type
+                if (!nodeType.isDerivedFrom(typeNs, typeLocal)) {
+                    return false;
+                }
+            } else {
+                // Non-built-in type: check for exact match
+                // (or would need schema context for user-defined type derivation)
+                if (!typeLocal.equals(nodeTypeLocal)) {
+                    return false;
+                }
+                if (typeNs != null && !typeNs.equals(nodeTypeNs)) {
+                    return false;
+                }
+            }
         }
-        return localPart.equals(node.getLocalName());
+        
+        return true;
     }
     
     /**

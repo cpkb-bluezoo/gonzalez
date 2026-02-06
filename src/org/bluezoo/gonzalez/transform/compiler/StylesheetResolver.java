@@ -49,8 +49,10 @@ import org.xml.sax.helpers.XMLReaderFactory;
  * supporting both absolute and relative URIs. It integrates with the JAXP
  * {@link URIResolver} mechanism for custom resolution strategies.
  *
- * <p>The resolver tracks which stylesheets have been loaded to detect and
- * prevent circular imports/includes.
+ * <p>The resolver tracks which stylesheets are currently being loaded (on the
+ * call stack) to detect circular imports/includes. Note that importing the same
+ * stylesheet multiple times (e.g., from different locations) is valid in XSLT
+ * and is allowed - each import gets a different import precedence.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -137,23 +139,37 @@ public class StylesheetResolver {
     }
 
     /**
-     * Marks a stylesheet URI as loaded.
+     * Marks a stylesheet URI as currently being loaded.
+     * Used for circular reference detection.
      *
      * @param uri the resolved URI
      */
-    void markLoaded(String uri) {
+    void markLoading(String uri) {
         if (uri != null) {
             loadedStylesheets.add(normalizeUri(uri));
         }
     }
 
     /**
-     * Checks if a stylesheet has already been loaded.
+     * Unmarks a stylesheet URI as no longer being loaded.
+     * Called after stylesheet parsing is complete.
+     *
+     * @param uri the resolved URI
+     */
+    void unmarkLoading(String uri) {
+        if (uri != null) {
+            loadedStylesheets.remove(normalizeUri(uri));
+        }
+    }
+
+    /**
+     * Checks if a stylesheet is currently being loaded (on the call stack).
+     * This is used to detect circular imports/includes.
      *
      * @param uri the URI to check
-     * @return true if already loaded
+     * @return true if currently being loaded
      */
-    boolean isLoaded(String uri) {
+    boolean isLoading(String uri) {
         if (uri == null) {
             return false;
         }
@@ -176,33 +192,40 @@ public class StylesheetResolver {
         
         String resolvedUri = resolveUri(href, baseUri);
         
-        // Check for circular reference
-        if (isLoaded(resolvedUri)) {
+        // Check for circular reference - only throw if currently being loaded (on the call stack)
+        // It's valid to import the same stylesheet multiple times from different places
+        if (isLoading(resolvedUri)) {
             throw new SAXException("Circular stylesheet reference detected: " + resolvedUri);
         }
         
-        // Mark as loaded before parsing to prevent infinite loops
-        markLoaded(resolvedUri);
-        
-        // Get the input source
-        InputSource inputSource = getInputSource(href, baseUri, resolvedUri);
-        if (inputSource == null) {
-            throw new SAXException("Unable to resolve stylesheet: " + href);
-        }
-        
-        // Create compiler for the external stylesheet
-        StylesheetResolver childResolver = createChild();
-        StylesheetCompiler compiler = new StylesheetCompiler(childResolver, resolvedUri, importPrecedence);
-        
-        // Parse the stylesheet
-        XMLReader reader = createXMLReader();
-        reader.setContentHandler(compiler);
-        reader.parse(inputSource);
+        // Mark as loading before parsing to prevent infinite loops
+        markLoading(resolvedUri);
         
         try {
-            return compiler.getCompiledStylesheet();
-        } catch (javax.xml.transform.TransformerConfigurationException e) {
-            throw new SAXException(e.getMessage(), e);
+            // Get the input source
+            InputSource inputSource = getInputSource(href, baseUri, resolvedUri);
+            if (inputSource == null) {
+                throw new SAXException("Unable to resolve stylesheet: " + href);
+            }
+            
+            // Create compiler for the external stylesheet
+            StylesheetResolver childResolver = createChild();
+            StylesheetCompiler compiler = new StylesheetCompiler(childResolver, resolvedUri, importPrecedence);
+            
+            // Parse the stylesheet
+            XMLReader reader = createXMLReader();
+            reader.setContentHandler(compiler);
+            reader.parse(inputSource);
+            
+            try {
+                return compiler.getCompiledStylesheet();
+            } catch (javax.xml.transform.TransformerConfigurationException e) {
+                throw new SAXException(e.getMessage(), e);
+            }
+        } finally {
+            // Unmark as loading - the stylesheet is fully parsed now
+            // This allows it to be imported again from a different place
+            unmarkLoading(resolvedUri);
         }
     }
 
