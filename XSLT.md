@@ -35,18 +35,6 @@ Gonzalez implements comprehensive error handling with three modes:
 - **RECOVER** - Error recovery with warnings. Type errors are logged to stderr, transformation continues.
 - **SILENT** - Maximum compatibility. Type checking disabled entirely (XSLT 1.0-like behavior).
 
-### Active Error Detection
-
-**Function Return Type Validation (XTTE0505)** - Validates `as` attribute on `xsl:function` declarations with schema-aware type matching.
-
-**Variable Type Validation (XTTE0570)** - Validates `as` attribute on `xsl:variable` declarations, checking cardinality constraints (single vs multiple items).
-
-**Atomization Warnings (XTTE3090, XTTE1540)** - Detects when `xsl:value-of` in XSLT 1.0 mode receives multiple items (only first is used).
-
-**Schema Validation Errors** - XTTE0505 (element/attribute not found), XTTE0510 (missing required content), XTTE0520 (invalid child elements), XTTE0540 (invalid simple type content), XTTE0590 (invalid attribute value).
-
-**Configuration** - Currently hardcoded to STRICT; will be made configurable via API/system properties.
-
 ## Design Goals
 
 1. **Streaming-First** - Process documents larger than available memory
@@ -123,7 +111,7 @@ without modification.
 
 ### Stylesheet Compilation
 
-Stylesheets are compiled using SAX events from the Gonzalez parser:
+Stylesheets are compiled using SAX events from the Gonzalez XML parser:
 
 1. **StylesheetCompiler** - SAX ContentHandler that builds the compiled representation
 2. **StreamabilityAnalyzer** - Analyzes templates for streaming capability
@@ -153,7 +141,7 @@ The XPath engine implements XPath 1.0 with progressive XPath 2.0/3.1 support:
 
 | Type | Description | Version |
 |------|-------------|---------|
-| String | Character sequence | 1.0 |
+| String | Unicode character sequence | 1.0 |
 | Number | IEEE 754 double | 1.0 |
 | Boolean | True/false | 1.0 |
 | NodeSet | Unordered collection of nodes | 1.0 |
@@ -162,44 +150,7 @@ The XPath engine implements XPath 1.0 with progressive XPath 2.0/3.1 support:
 
 #### XPath 2.0/3.0 Feature Support
 
-The XPath engine progressively supports XPath 2.0 and 3.0 features essential for
-XSLT 3.0 streaming transformations.
-
-**Supported (XPath 2.0):**
-
-| Feature | Syntax | Example |
-|---------|--------|---------|
-| Sequences | `()`, `(a, b, c)` | `(1, 2, 3)` |
-| Range expressions | `to` | `1 to 10` |
-| Value comparisons | `eq`, `ne`, `lt`, `le`, `gt`, `ge` | `$x eq 5` |
-| For expressions | `for $x in expr return expr` | `for $x in (1,2,3) return $x*2` |
-| If expressions | `if (test) then expr else expr` | `if ($x > 0) then "+" else "-"` |
-| Quantified expressions | `some`/`every` | `some $x in //item satisfies $x > 10` |
-| Node comparisons | `is`, `<<`, `>>` | `$a is $b`, `$a << $b` |
-| Set operations | `union`, `intersect`, `except` | `$a intersect $b` |
-| Kind tests | `element()`, `attribute()`, `document-node()` | `child::element(foo)` |
-| Type constructors | `xs:integer()`, `xs:string()` | `xs:integer("42")` |
-
-**Supported (XPath 3.0/3.1):**
-
-| Feature | Syntax | Example |
-|---------|--------|---------|
-| Let expressions | `let $x := expr return expr` | `let $x := 5 return $x * 2` |
-| String concatenation | `\|\|` | `$first \|\| " " \|\| $last` |
-| Simple map | `!` | `//item ! @name` |
-| Arrow operator | `=>` | `$x => upper-case()` |
-
-**Partial Support (Schema-Aware):**
-
-| Feature | Status | Notes |
-|---------|--------|-------|
-| `schema-element()` | ✅ Parsing + matching infrastructure | Matches by element name; substitution group tracking implemented, needs runtime schema context integration |
-| `schema-attribute()` | ✅ Parsing + matching infrastructure | Matches by attribute name; type checking infrastructure ready |
-| `xsl:import-schema` | Parsing only | Schema loaded but runtime validation not activated |
-| Type annotations (PSVI) | ✅ Complete | Nodes carry typeNamespaceURI/typeLocalName from schema validation |
-| Type hierarchy | ✅ Complete | XSDSimpleType.isSubtypeOf() for proper inheritance checking |
-| Type promotion | ✅ Complete | Automatic numeric conversions (integer → double, etc.) via TypePromoter |
-| Validation modes | ✅ Infrastructure complete | validation="strict\|lax\|preserve\|strip" parsed and plumbed through transform pipeline |
+The XPath engine supports almost all XPath 1.0, 2.0, 3.0, and 3.1 features.
 
 **Not Planned (Complexity vs. Streaming Benefit):**
 
@@ -208,7 +159,7 @@ XSLT 3.0 streaming transformations.
 | Higher-order functions | Complex; limited streaming benefit |
 | Maps and arrays | XPath 3.1; adds significant complexity |
 | Dynamic function calls | Requires higher-order functions |
-| Full PSVI support | Requires deep XSD integration |
+| Full PSVI support of complex types | Requires deep XSD integration |
 
 #### Iterative Parser Design
 
@@ -227,10 +178,6 @@ XPath axes are classified by their streaming characteristics:
 |-----------|------|-----------|
 | Forward | child, descendant, following, following-sibling, attribute, namespace, self, descendant-or-self | Can stream |
 | Reverse | parent, ancestor, preceding, preceding-sibling, ancestor-or-self | Require buffering |
-
-Forward axes traverse nodes in document order, allowing evaluation as events
-arrive. Reverse axes require access to preceding nodes, triggering grounded
-or full-document buffering based on scope.
 
 ### Dual-Mode Node Representation
 
@@ -291,114 +238,7 @@ parser.parse(inputSource);
 
 ## Features
 
-### XSLT 3.0 Streaming Elements
-
-| Element | Description |
-|---------|-------------|
-| `xsl:accumulator` | Define streaming accumulators |
-| `xsl:accumulator-rule` | Accumulator update rules (pre/post-descent) |
-| `xsl:stream` | Explicit streaming entry point |
-| `xsl:iterate` | Stateful streaming iteration |
-| `xsl:next-iteration` | Continue iteration with new param values |
-| `xsl:break` | Early termination of iteration |
-| `xsl:on-completion` | Final processing after iteration |
-| `xsl:mode` | Mode declarations with streamable attribute |
-| `xsl:fork` | Parallel streaming branches |
-
-### XSLT 2.0 Elements
-
-| Element | Description |
-|---------|-------------|
-| `xsl:result-document` | Multiple output documents |
-| `xsl:for-each-group` | Grouping with group-by/group-adjacent/group-starting-with/group-ending-with |
-| `xsl:sequence` | Sequence construction |
-| `xsl:analyze-string` | Regex-based string analysis with matching-substring/non-matching-substring |
-| `xsl:function` | User-defined functions |
-| `xsl:import-schema` | Schema import (parsing only, limited runtime support) |
-| `xsl:next-match` | Continue matching with next template rule |
-
-### XSLT 2.0 Features
-
-| Feature | Description |
-|---------|-------------|
-| Tunnel parameters | `tunnel="yes"` on `xsl:param` and `xsl:with-param` |
-| Multiple output | `xsl:result-document` for multiple output files |
-| Temporary trees | Variables containing tree fragments |
-| Regular expressions | `matches()`, `replace()`, `tokenize()`, `xsl:analyze-string` |
-| Date/time support | Basic date/time types and formatting |
-
-### XSLT 1.0 Elements
-
-| Element | Status | Notes |
-|---------|--------|-------|
-| `xsl:stylesheet` | Complete | Including version detection |
-| `xsl:template` | Complete | Match patterns and named templates |
-| `xsl:apply-templates` | Complete | With select and mode |
-| `xsl:call-template` | Complete | Named template invocation |
-| `xsl:value-of` | Complete | Including disable-output-escaping |
-| `xsl:text` | Complete | Literal text output |
-| `xsl:element` | Complete | Dynamic element creation |
-| `xsl:attribute` | Complete | Dynamic attribute creation |
-| `xsl:variable` | Complete | Local and global variables |
-| `xsl:param` | Complete | Template and stylesheet parameters |
-| `xsl:if` | Complete | Conditional processing |
-| `xsl:choose/when/otherwise` | Complete | Multi-way conditional |
-| `xsl:for-each` | Complete | Iteration with sorting |
-| `xsl:sort` | Complete | Multiple sort keys |
-| `xsl:copy` | Complete | Shallow copy |
-| `xsl:copy-of` | Complete | Deep copy |
-| `xsl:comment` | Complete | Comment output |
-| `xsl:processing-instruction` | Complete | PI output |
-| `xsl:number` | Mostly Complete | value, level, count, from, format (1/a/A/i/I), grouping; ordinal/word formats partial |
-| `xsl:apply-imports` | Complete | With parameter passing |
-| `xsl:message` | Complete | With terminate attribute |
-| `xsl:output` | Complete | Method, encoding, indent |
-| `xsl:strip-space` | Complete | Whitespace stripping |
-| `xsl:preserve-space` | Complete | Whitespace preservation |
-| `xsl:key` | Complete | Key definitions and lookup |
-| `xsl:decimal-format` | Complete | Number formatting patterns |
-| `xsl:attribute-set` | Complete | Reusable attribute groups |
-| `xsl:import` | Complete | Stylesheet import |
-| `xsl:include` | Complete | Stylesheet inclusion |
-| `xsl:namespace-alias` | Partial | Basic support |
-| `xsl:fallback` | Complete | Forward-compatible processing |
-
-### XPath Functions
-
-#### XPath 1.0 Node Set Functions
-- `last()`, `position()`, `count()`, `id()`, `local-name()`, `namespace-uri()`, `name()`
-
-#### XPath 1.0 String Functions
-- `string()`, `concat()`, `starts-with()`, `contains()`, `substring-before()`,
-  `substring-after()`, `substring()`, `string-length()`, `normalize-space()`,
-  `translate()`
-
-#### XPath 1.0 Boolean Functions
-- `boolean()`, `not()`, `true()`, `false()`, `lang()`
-
-#### XPath 1.0 Number Functions
-- `number()`, `sum()`, `floor()`, `ceiling()`, `round()`
-
-#### XPath 2.0 Functions
-- `abs()`, `avg()`, `min()`, `max()`, `empty()`, `exists()`, `distinct-values()`
-- `index-of()`, `subsequence()`, `reverse()`, `insert-before()`, `remove()`
-- `string-join()`, `upper-case()`, `lower-case()`, `matches()`, `replace()`, `tokenize()`
-- `compare()`, `codepoints-to-string()`, `string-to-codepoints()`
-- `base-uri()`, `document-uri()`, `root()`, `nilled()`
-- `data()`, `deep-equal()`
-
-#### XSLT 1.0 Functions
-- `document()`, `key()`, `format-number()`, `current()`, `unparsed-entity-uri()`,
-  `generate-id()`, `system-property()`, `element-available()`, `function-available()`
-
-#### XSLT 2.0 Functions
-- `current-group()`, `current-grouping-key()` - Grouping context
-- `regex-group()` - Regex group access in `xsl:analyze-string`
-- `doc()`, `doc-available()` - Document loading
-- `type-available()` - Type availability test
-
-#### XSLT 3.0 Functions
-- `accumulator-before()`, `accumulator-after()` - Accumulator access
+All XSLT 1.0, 2.0 and 3.0 element types are supported.
 
 ### Forward-Compatible Processing
 
@@ -462,27 +302,8 @@ Before running conformance tests, extract them from the W3C repositories:
 git clone https://github.com/w3c/xslt30-test ../xslt30-test
 git clone https://github.com/w3c/qt3tests ../qt3tests
 
-# Extract XSLT and XPath tests
-./tools/extract-xslt-tests.sh ../xslt30-test ../qt3tests
-```
-
-The extraction script:
-- Includes XSLT 1.0, 2.0, and 3.0 tests
-- Includes XPath 2.0/3.1 tests (from qt3tests)
-- Excludes schema-aware tests requiring XSD type support
-- Creates a `xsltconf/` directory with organized test files
-
-### Running Tests
-
-```bash
-# Run tests for a specific XSLT version
-ant test-xslt10    # XSLT 1.0 tests (~2,024 tests)
-ant test-xslt20    # XSLT 2.0 tests (~5,304 tests)
-ant test-xslt30    # XSLT 3.0 tests (~6,492 tests)
-
-# Run filtered tests
-ant test-xslt-filter -Dxslt.filter=namespace          # Tests matching "namespace"
-ant test-xslt-filter -Dxslt.filter=key -Dxslt.version=1.0  # key tests, XSLT 1.0 only
+# Run the tests
+./test-all-xslt.sh
 
 # View results
 cat test/output/xslt-conformance-report.txt
@@ -536,24 +357,7 @@ registry.registerElement("http://example.com/xsl", "custom",
     new MyExtensionElement());
 ```
 
-## Limitations
-
-### Current Limitations
-
-1. **Schema validation not activated** - `xsl:import-schema` parses schemas and all infrastructure 
-   is in place (type annotations, type hierarchy, validation modes, schema-element/attribute matching), 
-   but runtime validation is not yet connected to the transformation pipeline.
-2. **Collations** - Default Unicode collation only; custom collations not supported
-3. **Error code validation** - Not all XSLT error codes (XTDE*, XTTE*, XPST*) are correctly 
-   detected and thrown; some error cases succeed when they should fail
-4. **Static evaluation** - `use-when` attribute for static conditional compilation not implemented
-5. **Date/time formatting** - Basic support; some locale-specific formats incomplete
-6. **Pattern matching** - Complex patterns with predicates may not match in all edge cases
-7. **`xsl:number`** - Basic formatting; ordinal/word formats not fully implemented
-8. **`xsl:on-empty`** - XSLT 3.0 feature not yet implemented
-9. **Sequence atomic spacing** - Adjacent atomic values in sequences may have spacing issues in some contexts
-
-### By Design
+## Limitations By Design
 
 1. **No DOM output** - Gonzalez focuses on streaming; use SAX result
 2. **External entity blocking** - Same limitation as Gonzalez parser
@@ -562,92 +366,6 @@ registry.registerElement("http://example.com/xsl", "custom",
 4. **No higher-order functions** - Complex feature with limited streaming benefit
 5. **No maps/arrays** - XPath 3.1 feature that adds significant complexity
 6. **No full PSVI** - Post-Schema Validation Infoset not maintained on nodes
-
-## Future Work
-
-### High Priority (XSLT 3.0 Compliance)
-
-**Error Handling (~199 test failures - 10.7%)**
-- [ ] Implement proper error code detection and throwing
-  - XTDE* (dynamic errors)
-  - XTTE* (type errors)  
-  - XPST* (XPath static errors)
-  - XPTY* (XPath type errors)
-- [ ] Validate `as` attribute type constraints at runtime
-- [ ] Add error recovery vs fail-fast modes
-
-**XSLT 3.0 Features (~58 test failures - 3.1%)**
-- [ ] `xsl:on-empty` - Content to output when sequence is empty (30 failures)
-- [ ] `use-when` - Static conditional compilation (28 failures)
-
-**Sequence Construction (~38 test failures - 2.0%)**
-- [ ] Fix atomic value spacing in sequences (separator between adjacent atomic values)
-- [ ] Proper handling of empty sequences in various contexts
-- [ ] Type coercion for sequence items with `as` attribute
-
-### Medium Priority (Feature Completeness)
-
-**Pattern Matching (~122 test failures - 6.5%)**
-- [ ] Complex patterns with predicates
-- [ ] Edge cases in union patterns
-- [ ] Pattern matching with schema types
-- [ ] Parenthesized pattern edge cases
-
-**Grouping (~42 test failures - 2.3%)**
-- [ ] `xsl:for-each-group` edge cases
-- [ ] Group-by with complex keys
-- [ ] Composite grouping keys
-- [ ] Grouping with schema-aware types
-
-**Functions (~46 test failures - 2.5%)**
-- [ ] User-defined function edge cases
-- [ ] Function parameter type validation
-- [ ] Function return type validation
-- [ ] Function signature overloading
-
-**Namespace Handling (~46 test failures - 2.5%)**
-- [ ] Namespace serialization edge cases
-- [ ] Namespace fixup in complex scenarios
-- [ ] Namespace inheritance with `xsl:copy`
-
-**Output/Serialization (~35 test failures - 1.9%)**
-- [ ] Advanced serialization parameters
-- [ ] HTML5 serialization rules
-- [ ] JSON output method
-- [ ] Adaptive output method
-
-### Low Priority (Advanced Features)
-
-**Number Formatting (~36 test failures - 1.9%)**
-- [ ] Advanced `xsl:number` formatting (ordinals, words, letter-value)
-- [ ] Locale-specific number formats
-
-**Collations (~32 test failures - 1.7%)**
-- [ ] Custom collation support
-- [ ] Locale-specific collations
-- [ ] UCA (Unicode Collation Algorithm)
-
-**Date/Time (~40 test failures - 2.1%)**
-- [ ] Advanced date/time formatting
-- [ ] Locale-specific calendar systems
-- [ ] Timezone handling edge cases
-
-**Mode Declarations (~88 test failures - 4.7%)**
-- [ ] Mode declaration edge cases
-- [ ] Typed modes with schema-aware processing
-- [ ] Mode inheritance and composition
-
-### Future Considerations (not currently planned)
-
-- [ ] Higher-order functions (XSLT 3.0) - complex, limited streaming benefit
-- [ ] Maps and arrays (XPath 3.1) - adds significant complexity
-- [ ] Packages and override (XSLT 3.0) - packaging system for modular stylesheets
-- [ ] Shadow attributes (XSLT 3.0) - complex feature with limited use cases
-
-### Impact Summary
-
-Implementing **High Priority** items would improve conformance by **~15.8%** → **~87% XSLT 3.0 pass rate**  
-Implementing **Medium Priority** items would add **~28.1%** → **~99% theoretical pass rate** (remaining failures would be edge cases)
 
 ## Related Documentation
 
