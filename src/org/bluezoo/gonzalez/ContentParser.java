@@ -2757,6 +2757,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         return true;
     }
     
+    
     /**
      * Normalizes an attribute value according to XML specification section 3.3.3.
      * 

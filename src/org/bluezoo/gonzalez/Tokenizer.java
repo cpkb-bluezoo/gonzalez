@@ -945,10 +945,10 @@ class Tokenizer implements Locator2 {
                     if (hasDirectArray && miniState == MiniState.ACCUMULATING_CDATA && state == TokenizerState.CONTENT) {
                         while (++pos < limit) {
                             char ch = chars[pos];
-                            if (ch == '<' || ch == '&' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
+                            if (ch == '<' || ch == '&') {
                                 break;
                             }
-                            if (ch < 0x20) {
+                            if (ch < 0x20 && ch != '\t' && ch != '\n' && ch != '\r') {
                                 break;
                             }
                         }
@@ -976,7 +976,38 @@ class Tokenizer implements Locator2 {
                     if (tokenLength > 0) {
                         Token tokenType = miniState.getTokenType();
                         if (tokenType != null) {
-                            emitTokenWindow(charBuffer, tokenType, tokenStartPos, tokenLength);                            }
+                            // In CONTENT state, CDATA may have absorbed trailing whitespace.
+                            // Split it off as a separate S token so the parser can distinguish
+                            // ignorable whitespace from character data.
+                            if (tokenType == Token.CDATA && state == TokenizerState.CONTENT) {
+                                int trailingWsStart = pos;
+                                if (hasDirectArray) {
+                                    while (trailingWsStart > tokenStartPos) {
+                                        char tc = chars[trailingWsStart - 1];
+                                        if (tc != ' ' && tc != '\t' && tc != '\n' && tc != '\r') {
+                                            break;
+                                        }
+                                        trailingWsStart--;
+                                    }
+                                } else {
+                                    while (trailingWsStart > tokenStartPos) {
+                                        char tc = charBuffer.get(trailingWsStart - 1);
+                                        if (tc != ' ' && tc != '\t' && tc != '\n' && tc != '\r') {
+                                            break;
+                                        }
+                                        trailingWsStart--;
+                                    }
+                                }
+                                if (trailingWsStart > tokenStartPos && trailingWsStart < pos) {
+                                    emitTokenWindow(charBuffer, Token.CDATA, tokenStartPos, trailingWsStart - tokenStartPos);
+                                    emitTokenWindow(charBuffer, Token.S, trailingWsStart, pos - trailingWsStart);
+                                } else {
+                                    emitTokenWindow(charBuffer, tokenType, tokenStartPos, tokenLength);
+                                }
+                            } else {
+                                emitTokenWindow(charBuffer, tokenType, tokenStartPos, tokenLength);
+                            }
+                        }
                     }
                         
                     // Update tokenStartPos to start of delimiter, and reset miniState to READY
@@ -1259,7 +1290,7 @@ class Tokenizer implements Locator2 {
             // Context-dependent stop characters
             switch (state) {
                 case CONTENT:
-                    return cc == CharClass.LT || cc == CharClass.AMP || cc == CharClass.WHITESPACE;
+                    return cc == CharClass.LT || cc == CharClass.AMP;
                 case ATTR_VALUE_APOS:
                 case ATTR_VALUE_QUOT:
                     // XML Spec Section 3.1: AttValue ::= '"' ([^<&"] | Reference)* '"' | "'" ([^<&'] | Reference)* "'"
