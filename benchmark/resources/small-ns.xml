@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"
+      xmlns:dc="http://purl.org/dc/elements/1.1/"
+      xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/"
+      xmlns:media="http://search.yahoo.com/mrss/"
+      xmlns:georss="http://www.georss.org/georss">
+  <title>Project Updates</title>
+  <link href="https://example.org/feed" rel="self" type="application/atom+xml"/>
+  <link href="https://example.org/" rel="alternate" type="text/html"/>
+  <id>urn:uuid:60a76c80-d399-11d9-b93C-0003939e0af6</id>
+  <updated>2026-02-19T12:00:00Z</updated>
+  <dc:creator>Release Bot</dc:creator>
+  <opensearch:totalResults>3</opensearch:totalResults>
+  <opensearch:startIndex>1</opensearch:startIndex>
+  <opensearch:itemsPerPage>25</opensearch:itemsPerPage>
+  <entry>
+    <title>Version 2.0 Released</title>
+    <link href="https://example.org/releases/2.0" rel="alternate" type="text/html"/>
+    <id>urn:uuid:1225c695-cfb8-4ebb-aaaa-80da344efa6a</id>
+    <updated>2026-02-19T10:30:00Z</updated>
+    <published>2026-02-19T10:30:00Z</published>
+    <dc:subject>release</dc:subject>
+    <summary type="html">&lt;p&gt;Major release with performance improvements.&lt;/p&gt;</summary>
+    <content type="xhtml">
+      <div xmlns="http://www.w3.org/1999/xhtml">
+        <p>Version 2.0 includes significant performance improvements and bug fixes.</p>
+        <ul>
+          <li>Improved XML parsing speed by 40%</li>
+          <li>Reduced memory allocation during tokenization</li>
+          <li>Fixed namespace handling edge cases</li>
+        </ul>
+      </div>
+    </content>
+    <author>
+      <name>Chris Burdess</name>
+      <email>dog@gnu.org</email>
+    </author>
+    <media:thumbnail url="https://example.org/images/release-2.0.png" width="120" height="90"/>
+    <georss:point>55.9533 -3.1883</georss:point>
+  </entry>
+  <entry>
+    <title>Namespace Support Improved</title>
+    <link href="https://example.org/releases/1.9" rel="alternate" type="text/html"/>
+    <id>urn:uuid:3456d695-cfb8-4ebb-bbbb-90ea455efb7b</id>
+    <updated>2026-02-10T14:00:00Z</updated>
+    <published>2026-02-10T14:00:00Z</published>
+    <dc:subject>enhancement</dc:subject>
+    <summary type="text">Better namespace prefix mapping and scope tracking.</summary>
+    <author>
+      <name>Chris Burdess</name>
+    </author>
+    <media:thumbnail url="https://example.org/images/ns-fix.png" width="120" height="90"/>
+  </entry>
+  <entry>
+    <title>Initial Benchmark Suite</title>
+    <link href="https://example.org/releases/1.8" rel="alternate" type="text/html"/>
+    <id>urn:uuid:7890e695-cfb8-4ebb-cccc-a1fb566fgc8c</id>
+    <updated>2026-01-28T09:15:00Z</updated>
+    <published>2026-01-28T09:15:00Z</published>
+    <dc:subject>tooling</dc:subject>
+    <summary type="text">Added JMH benchmarks for parser comparison.</summary>
+    <author>
+      <name>Chris Burdess</name>
+    </author>
+  </entry>
+</feed>
