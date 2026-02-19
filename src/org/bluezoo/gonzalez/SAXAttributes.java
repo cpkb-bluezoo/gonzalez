@@ -368,12 +368,12 @@ class SAXAttributes implements Attributes2 {
         // Once returned to pool, QName objects can be modified, breaking HashMap lookups
         
         // Remove keys individually instead of calling clear()
-        // This preserves HashMap Entry objects for reuse, avoiding allocation overhead
-        for (QName key : qnameKeys) {
-            qnameMap.remove(key);
+        // Use index-based loop to avoid Iterator allocation from enhanced for-each
+        for (int i = 0, n = qnameKeys.size(); i < n; i++) {
+            qnameMap.remove(qnameKeys.get(i));
         }
-        for (String key : stringKeys) {
-            stringNameMap.remove(key);
+        for (int i = 0, n = stringKeys.size(); i < n; i++) {
+            stringNameMap.remove(stringKeys.get(i));
         }
         
         // Clear key tracking lists (ArrayList.clear() is fast and doesn't deallocate array)

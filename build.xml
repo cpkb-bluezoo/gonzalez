@@ -487,6 +487,40 @@
     </java>
   </target>
 
+  <target name='profile-alloc' depends='build-benchmark' description='Profile allocations using JFR'>
+    <echo message='Profiling allocations with JFR (single parse, new parser)...'/>
+    <java classname='org.openjdk.jmh.Main' fork='true'>
+      <classpath>
+        <pathelement location='${benchmark.build}'/>
+        <pathelement location='${build}'/>
+        <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
+        <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
+        <pathelement location='lib/jopt-simple-5.0.4.jar'/>
+        <pathelement location='lib/commons-math3-3.6.1.jar'/>
+      </classpath>
+      <jvmarg value='-XX:StartFlightRecording=filename=alloc-profile.jfr,settings=profile'/>
+      <arg value='-prof'/>
+      <arg value='gc'/>
+      <arg value='-f'/>
+      <arg value='1'/>
+      <arg value='-wi'/>
+      <arg value='3'/>
+      <arg value='-i'/>
+      <arg value='3'/>
+      <arg value='XMLParserBenchmark.largeFile_GonzalezByteBuffer$'/>
+    </java>
+    <echo message='JFR recording saved to alloc-profile.jfr'/>
+  </target>
+
+  <target name='profile-alloc-detail' depends='build-benchmark' description='Detailed allocation profiling with ThreadMXBean'>
+    <java classname='org.bluezoo.gonzalez.benchmark.AllocationProfiler' fork='true'>
+      <classpath>
+        <pathelement location='${benchmark.build}'/>
+        <pathelement location='${build}'/>
+      </classpath>
+    </java>
+  </target>
+
   <target name='clean-benchmark' description='Clean benchmark build artifacts'>
     <delete dir='${benchmark.build}'/>
     <echo message='Benchmark build directory cleaned'/>
