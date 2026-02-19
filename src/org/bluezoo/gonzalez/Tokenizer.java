@@ -244,9 +244,23 @@ class Tokenizer implements Locator2 {
     
     /**
      * Pre-expanded text for predefined entity references.
-     * Indexed by entity name: amp=0, lt=1, gt=2, apos=3, quot=4
+     * Indexed by entity name: amp=0, lt=1, gt=2, apos=3, quot=4.
+     * Each buffer is a single-character read-only view, pre-positioned and ready to pass
+     * directly to the consumer without any per-call allocation.
      */
-    private static final CharBuffer PREDEFINED_ENTITY_TEXT = CharBuffer.wrap("&<>'\"").asReadOnlyBuffer();
+    private static final CharBuffer[] PREDEFINED_ENTITY_BUFFERS = createPredefinedEntityBuffers();
+    
+    private static CharBuffer[] createPredefinedEntityBuffers() {
+        String entities = "&<>'\"";
+        CharBuffer[] buffers = new CharBuffer[entities.length()];
+        for (int i = 0; i < entities.length(); i++) {
+            CharBuffer buf = CharBuffer.allocate(1);
+            buf.put(entities.charAt(i));
+            buf.flip();
+            buffers[i] = buf.asReadOnlyBuffer();
+        }
+        return buffers;
+    }
     
     /**
      * Reusable buffer for character references (e.g., &#60; or &#x1F4A9;).
@@ -497,13 +511,13 @@ class Tokenizer implements Locator2 {
     // ===== Additional Setter Methods =====
     
     /**
-     * Checks if an entity name is a predefined entity and returns its index into PREDEFINED_ENTITY_TEXT.
+     * Checks if an entity name is a predefined entity and returns its index into PREDEFINED_ENTITY_BUFFERS.
      * Returns -1 if not a predefined entity.
      * 
      * @param charBuffer the character buffer
      * @param nameStart start of entity name in charBuffer
      * @param nameEnd end of entity name in charBuffer
-     * @return index into PREDEFINED_ENTITY_TEXT (0=&amp;, 1=&lt;, 2=&gt;, 3=', 4=") or -1 if not predefined
+     * @return index into PREDEFINED_ENTITY_BUFFERS (0=&amp;, 1=&lt;, 2=&gt;, 3=', 4=") or -1 if not predefined
      */
     private int getPredefinedEntityIndex(CharBuffer charBuffer, int nameStart, int nameEnd) {
         int nameLen = nameEnd - nameStart;
@@ -1117,11 +1131,10 @@ class Tokenizer implements Locator2 {
                             if (token == Token.GENERALENTITYREF) {
                                 int predefinedIndex = getPredefinedEntityIndex(charBuffer, tokenStart, tokenEnd);
                                 if (predefinedIndex >= 0) {
-                                    // It's predefined - emit PREDEFENTITYREF with window into predefined text
-                                    CharBuffer window = PREDEFINED_ENTITY_TEXT.duplicate();
-                                    window.position(predefinedIndex);
-                                    window.limit(predefinedIndex + 1);
-                                    consumer.receive(Token.PREDEFENTITYREF, window);
+                                    // It's predefined - emit PREDEFENTITYREF with pre-created buffer
+                                    CharBuffer predef = PREDEFINED_ENTITY_BUFFERS[predefinedIndex];
+                                    predef.position(0);
+                                    consumer.receive(Token.PREDEFENTITYREF, predef);
                                 } else {
                                     // General entity - emit name only
                                     emitTokenWindow(charBuffer, Token.GENERALENTITYREF, tokenStart, tokenLength);                                }
