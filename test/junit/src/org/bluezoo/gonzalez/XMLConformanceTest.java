@@ -460,10 +460,25 @@ public class XMLConformanceTest {
             
             switch (testType) {
                 case "not-wf":
-                case "error": // Some suites use "error" for well-formedness errors
                     // Expect fatal error
                     if (gotFatalError) {
                         result.actualResult = "not-wf (got expected fatal error)";
+                        result.passed = true;
+                    } else {
+                        result.actualResult = "PARSED (expected fatal error!)";
+                        result.passed = false;
+                        result.message = "Expected not-wf but parsed successfully";
+                    }
+                    break;
+                    
+                case "error":
+                    // W3C "error" means the processor must report an error,
+                    // which can be either a fatal error or a non-fatal error
+                    if (gotFatalError) {
+                        result.actualResult = "not-wf (got expected fatal error)";
+                        result.passed = true;
+                    } else if (gotValidationError[0]) {
+                        result.actualResult = "error (got expected error)";
                         result.passed = true;
                     } else {
                         result.actualResult = "PARSED (expected fatal error!)";

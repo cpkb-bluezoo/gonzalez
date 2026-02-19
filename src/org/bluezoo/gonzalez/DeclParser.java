@@ -92,7 +92,13 @@ abstract class DeclParser {
      */
     protected ReadResult tryRead(ByteBuffer data, String test) {
         for (int i = 0; i < test.length(); i++) {
-            int c = bom.nextChar(data);
+            int c;
+            try {
+                c = bom.nextChar(data);
+            } catch (IllegalArgumentException e) {
+                // Non-ASCII byte where ASCII was expected - not a match
+                return ReadResult.FAILURE;
+            }
             if (c == -1) {
                 return ReadResult.UNDERFLOW;
             }
@@ -145,7 +151,13 @@ abstract class DeclParser {
                 break;
         }
         ignoreWhitespace(data);
-        int quoteChar = bom.nextChar(data);
+        int quoteChar;
+        try {
+            quoteChar = bom.nextChar(data);
+        } catch (IllegalArgumentException e) {
+            data.position(savedPos);
+            return ReadResult.FAILURE;
+        }
         if (quoteChar == -1) {
             return ReadResult.UNDERFLOW;
         }
@@ -156,7 +168,13 @@ abstract class DeclParser {
         int otherQuote = (quoteChar == '"') ? '\'' : '"';
         StringBuilder buf = new StringBuilder();
         while (true) {
-            int c = bom.nextChar(data);
+            int c;
+            try {
+                c = bom.nextChar(data);
+            } catch (IllegalArgumentException e) {
+                data.position(savedPos);
+                return ReadResult.FAILURE;
+            }
             if (c == -1) {
                 return ReadResult.UNDERFLOW;
             }
@@ -201,7 +219,12 @@ abstract class DeclParser {
      * @return OK if at least one whitespace was consumed, FAILURE if no whitespace, UNDERFLOW if need more data
      */
     protected ReadResult requireWhitespace(ByteBuffer data) {
-        int c = bom.peekChar(data);
+        int c;
+        try {
+            c = bom.peekChar(data);
+        } catch (IllegalArgumentException e) {
+            return ReadResult.FAILURE;
+        }
         if (c == -1) {
             return ReadResult.UNDERFLOW;
         }
@@ -211,7 +234,11 @@ abstract class DeclParser {
         bom.nextChar(data); // consume first whitespace
         // Consume as much whitespace as possible
         while (true) {
-            c = bom.peekChar(data);
+            try {
+                c = bom.peekChar(data);
+            } catch (IllegalArgumentException e) {
+                return ReadResult.OK;
+            }
             if (c == -1 || !isWhitespace(c)) {
                 return ReadResult.OK;
             }
@@ -224,7 +251,12 @@ abstract class DeclParser {
      */
     protected void ignoreWhitespace(ByteBuffer data) {
         while (true) {
-            int c = bom.peekChar(data);
+            int c;
+            try {
+                c = bom.peekChar(data);
+            } catch (IllegalArgumentException e) {
+                return;
+            }
             if (c == -1 || !isWhitespace(c)) {
                 return;
             }

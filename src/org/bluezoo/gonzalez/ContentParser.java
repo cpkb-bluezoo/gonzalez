@@ -2622,8 +2622,11 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     "Namespace URI must be a URI (ASCII-only), not an IRI: " + attrValue);
             }
             
-            // Note: Relative URIs in namespace declarations are deprecated but not invalid
-            // per Namespaces in XML spec. We allow them for compatibility with real-world documents.
+            // Per Namespaces in XML 1.0 (Third Edition), relative URI references are deprecated
+            if (!attrValue.isEmpty() && !isAbsoluteURI(attrValue)) {
+                reportValidationError(
+                    "Relative namespace URI is deprecated: " + attrValue);
+            }
             
             // Check for reserved namespace URIs
             if (NamespaceScopeTracker.XML_NAMESPACE_URI.equals(attrValue)) {
@@ -2655,8 +2658,11 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     "Namespace URI must be a URI (ASCII-only), not an IRI: " + attrValue);
             }
             
-            // Note: Relative URIs in namespace declarations are deprecated but not invalid
-            // per Namespaces in XML spec. We allow them for compatibility with real-world documents.
+            // Per Namespaces in XML 1.0 (Third Edition), relative URI references are deprecated
+            if (!attrValue.isEmpty() && !isAbsoluteURI(attrValue)) {
+                reportValidationError(
+                    "Relative namespace URI is deprecated: " + attrValue);
+            }
             
             // Check for XML 1.1-style prefix unbinding in XML 1.0 documents
             if (attrValue.isEmpty() && !this.xml11) {
