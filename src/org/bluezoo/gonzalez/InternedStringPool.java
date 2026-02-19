@@ -218,10 +218,20 @@ class InternedStringPool {
             return false;
         }
         
-        int pos = buffer.position();
-        for (int i = 0; i < len; i++) {
-            if (str.charAt(i) != buffer.get(pos + i)) {
-                return false;
+        if (buffer.hasArray()) {
+            char[] chars = buffer.array();
+            int base = buffer.arrayOffset() + buffer.position();
+            for (int i = 0; i < len; i++) {
+                if (str.charAt(i) != chars[base + i]) {
+                    return false;
+                }
+            }
+        } else {
+            int pos = buffer.position();
+            for (int i = 0; i < len; i++) {
+                if (str.charAt(i) != buffer.get(pos + i)) {
+                    return false;
+                }
             }
         }
         
@@ -237,11 +247,19 @@ class InternedStringPool {
      */
     private int computeHash(CharBuffer buffer) {
         int h = 0;
-        int pos = buffer.position();
         int len = buffer.remaining();
         
-        for (int i = 0; i < len; i++) {
-            h = 31 * h + buffer.get(pos + i);
+        if (buffer.hasArray()) {
+            char[] chars = buffer.array();
+            int base = buffer.arrayOffset() + buffer.position();
+            for (int i = 0; i < len; i++) {
+                h = 31 * h + chars[base + i];
+            }
+        } else {
+            int pos = buffer.position();
+            for (int i = 0; i < len; i++) {
+                h = 31 * h + buffer.get(pos + i);
+            }
         }
         
         return h;

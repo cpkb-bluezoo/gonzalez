@@ -296,12 +296,14 @@ class ExternalEntityDecoder {
             startDecl = data.position();
             tokenizer.charPosition = 1; // BOM is 1 character
             tokenizer.columnNumber = 1;
+            tokenizer.locationValidCharPos = 1;
         } else if (b0 == 0xFF && b1 == 0xFE) {
             // UTF-16 Little Endian BOM
             bom = BOM.UTF16LE;
             startDecl = data.position();
             tokenizer.charPosition = 1;
             tokenizer.columnNumber = 1;
+            tokenizer.locationValidCharPos = 1;
         } else if (b0 == 0xEF && b1 == 0xBB) {
             // Potential UTF-8 BOM, need third byte
             if (!data.hasRemaining()) {
@@ -315,6 +317,7 @@ class ExternalEntityDecoder {
                 startDecl = data.position();
                 tokenizer.charPosition = 1;
                 tokenizer.columnNumber = 1;
+                tokenizer.locationValidCharPos = 1;
             } else {
                 // Not a BOM, restore position
                 data.position(startPos);
@@ -405,6 +408,7 @@ class ExternalEntityDecoder {
                     // Count newlines in declaration for line number tracking
                     // (declarations typically don't have newlines, but handle it correctly)
                     tokenizer.columnNumber += declChars;
+                    tokenizer.locationValidCharPos = tokenizer.charPosition;
                     
                     state = State.CONTENT;
                     return true;
@@ -488,7 +492,7 @@ class ExternalEntityDecoder {
      * Maximum CharBuffer size. Processing is done incrementally to avoid
      * allocating a buffer sized for the entire input.
      */
-    private static final int MAX_CHAR_BUFFER = 8192;
+    private static final int MAX_CHAR_BUFFER = 32768;
     
     /**
      * Decodes bytes to characters and sends to tokenizer.
@@ -554,35 +558,51 @@ class ExternalEntityDecoder {
      * for each CRLF encountered.
      */
     private void normalizeLineEndings() {
-        // Buffer is in write mode: normalize from 0 to position
         int end = charBuffer.position();
         if (end == 0) {
             return;
         }
-        
-        int writePos = 0;  // Where to write the next character
-        
+
+        char[] array = charBuffer.array();
+
+        // Fast scan: check if normalization is needed at all
+        boolean needsNormalization = (lastChar == '\r');
+        if (!needsNormalization) {
+            for (int i = 0; i < end; i++) {
+                char c = array[i];
+                if (c == '\r') {
+                    needsNormalization = true;
+                    break;
+                }
+                if (xml11 && (c == '\u0085' || c == '\u2028')) {
+                    needsNormalization = true;
+                    break;
+                }
+            }
+        }
+
+        if (!needsNormalization) {
+            lastChar = array[end - 1];
+            return;
+        }
+
+        int writePos = 0;
+
         for (int readPos = 0; readPos < end; readPos++) {
-            char c = charBuffer.get(readPos);
-            
+            char c = array[readPos];
+
             if (c == '\r') {
-                // Replace CR with LF
-                charBuffer.put(writePos++, '\n');
+                array[writePos++] = '\n';
             } else if (c == '\n' && lastChar == '\r') {
-                // CR LF: skip the LF entirely (the CR was already converted to LF)
-                // Don't write anything, don't increment writePos
+                // CR LF pair: skip the LF (CR was already converted)
             } else if (xml11 && (c == '\u0085' || c == '\u2028')) {
-                // XML 1.1 line endings: replace with LF
-                charBuffer.put(writePos++, '\n');
+                array[writePos++] = '\n';
             } else {
-                // Normal character: copy it to write position
-                charBuffer.put(writePos++, c);
+                array[writePos++] = c;
             }
             lastChar = c;
         }
-        
-        // Adjust buffer position to reflect any removed CRLF sequences
-        // Note that this is the *end* of the data normalized not the start
+
         charBuffer.position(writePos);
     }
 

@@ -162,18 +162,45 @@ class Tokenizer implements Locator2 {
 
     /**
      * Current line number (1-based).
+     * Only accurate up to locationValidCharPos; call catchUpLocation() before reading.
      */
     long lineNumber = 1;
 
     /**
      * Current column number (0-based, position in current line).
+     * Only accurate up to locationValidCharPos; call catchUpLocation() before reading.
      */
     long columnNumber = 0;
 
     /**
      * Total character position in the stream.
+     * Always kept up-to-date (incremented cheaply during tokenization).
      */
     long charPosition = 0;
+
+    /**
+     * The charPosition up to which lineNumber and columnNumber are accurate.
+     * When this equals charPosition, the location is fully up-to-date.
+     * When behind charPosition, a scan from this point is needed to compute
+     * the current line and column.
+     */
+    long locationValidCharPos = 0;
+
+    /**
+     * Character array for lazy location scanning (set during tokenize()).
+     * Valid only for the duration of a tokenize() call.
+     */
+    private char[] locationChars;
+
+    /**
+     * Array index in locationChars corresponding to locationCharPosBase.
+     */
+    private int locationArrayBase;
+
+    /**
+     * The charPosition that corresponds to locationArrayBase in the current chars array.
+     */
+    private long locationCharPosBase;
 
     /**
      * The XML version declared in the document (default "1.0").
@@ -298,12 +325,36 @@ class Tokenizer implements Locator2 {
 
     @Override
     public int getLineNumber() {
+        catchUpLocation();
         return lineNumber > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) lineNumber;
     }
 
     @Override
     public int getColumnNumber() {
+        catchUpLocation();
         return columnNumber > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) columnNumber;
+    }
+
+    /**
+     * Scans characters from the last checkpoint to the current charPosition
+     * to compute accurate lineNumber and columnNumber.
+     * Only performs work when the location is behind charPosition.
+     */
+    private void catchUpLocation() {
+        if (locationValidCharPos >= charPosition || locationChars == null) {
+            return;
+        }
+        int startIdx = (int)(locationValidCharPos - locationCharPosBase) + locationArrayBase;
+        int endIdx = (int)(charPosition - locationCharPosBase) + locationArrayBase;
+        for (int i = startIdx; i < endIdx; i++) {
+            if (locationChars[i] == '\n') {
+                lineNumber++;
+                columnNumber = 0;
+            } else {
+                columnNumber++;
+            }
+        }
+        locationValidCharPos = charPosition;
     }
 
     @Override
@@ -439,6 +490,8 @@ class Tokenizer implements Locator2 {
         charPosition = 0;
         lineNumber = 1;
         columnNumber = 0;
+        locationValidCharPos = 0;
+        locationChars = null;
     }
 
     // ===== Additional Setter Methods =====
@@ -845,12 +898,18 @@ class Tokenizer implements Locator2 {
         
         int pos = charBuffer.position();
         int limit = charBuffer.limit();
+        char[] chars = charBuffer.array();
+
+        // Set up lazy location tracking for this buffer
+        locationChars = chars;
+        locationArrayBase = pos;
+        locationCharPosBase = charPosition;
         
         while (pos < limit) {
             // Check if charset was switched - if so, restart tokenization from beginning of buffer
             
             
-            char c = charBuffer.get(pos);
+            char c = chars[pos];
             
             // Classify character
             CharClass cc = CharClass.classify(c, state, miniState, xml11, allowRestrictedChar);
@@ -881,15 +940,13 @@ class Tokenizer implements Locator2 {
                     // Fast path for CDATA in CONTENT state: bulk scan for delimiters
                     // This avoids per-character classification for long text runs
                     if (miniState == MiniState.ACCUMULATING_CDATA && state == TokenizerState.CONTENT) {
-                        // Scan ahead for '<', '&', or whitespace (CDATA delimiters in content)
                         while (++pos < limit) {
-                            char ch = charBuffer.get(pos);
+                            char ch = chars[pos];
                             if (ch == '<' || ch == '&' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
                                 break;
                             }
-                            // Check for illegal characters (control chars except whitespace)
-                            if (ch < 0x20 && ch != '\t' && ch != '\n' && ch != '\r') {
-                                break; // Let main loop handle the error
+                            if (ch < 0x20) {
+                                break;
                             }
                         }
                         continue;
@@ -897,14 +954,12 @@ class Tokenizer implements Locator2 {
                     // Fast path for NAME accumulation: bulk scan for name characters
                     if (miniState == MiniState.ACCUMULATING_NAME) {
                         while (++pos < limit) {
-                            char ch = charBuffer.get(pos);
-                            // NameChar: [A-Za-z0-9._:-] plus extended Unicode (handled by main loop)
+                            char ch = chars[pos];
                             if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
                                 (ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || 
                                 ch == '-' || ch == ':') {
                                 continue;
                             }
-                            // Non-ASCII or delimiter - let main loop handle it
                             break;
                         }
                         continue;
@@ -1079,17 +1134,8 @@ class Tokenizer implements Locator2 {
                 pos = posAfterChar;
             }
             
-            // Update location tracking for characters just consumed
-            for (int i = oldPos; i < pos; i++) {
-                char ch = charBuffer.get(i);
-                charPosition++;
-                if (ch == '\n') {
-                    lineNumber++;
-                    columnNumber = 0;
-                } else {
-                    columnNumber++;
-                }
-            }
+            // Update charPosition cheaply; line/column computed lazily on demand
+            charPosition += (pos - oldPos);
             
             // Change state if specified
             if (transition.stateToChangeTo != null) {
@@ -1174,6 +1220,10 @@ class Tokenizer implements Locator2 {
             // when more data arrives (from underflow)
             miniState = MiniState.READY;
         }
+
+        // Ensure location is fully up-to-date before chars reference goes out of scope
+        catchUpLocation();
+        locationChars = null;
     }
     
     // ===== Helper Methods =====

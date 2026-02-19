@@ -163,6 +163,12 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * while still avoiding allocation on every characters() call.
      */
     private char[] charArrayBuffer = new char[1024]; // Start with reasonable size
+
+    /**
+     * Reusable list for collecting prefix names during endPrefixMapping dispatch.
+     * Avoids allocating a new ArrayList on every element close in namespace-aware mode.
+     */
+    private ArrayList<String> prefixMappingBuffer;
     
     /**
      * Depth of external entity processing.
@@ -848,15 +854,12 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             charArrayBuffer = new char[1024];
         }
         
-        // Initialize intern pool if string interning is enabled
-        if (stringInterning && internPool == null) {
+        // Always initialize intern pool for name deduplication (avoids
+        // creating duplicate String objects for repeated element/attribute names)
+        if (internPool == null) {
             internPool = new InternedStringPool();
         }
-        
-        // Set string interning on intern pool
-        if (internPool != null) {
-            internPool.setStringInterning(stringInterning);
-        }
+        internPool.setStringInterning(stringInterning);
         
         // Initialize QName pool
         // Clear QName pool
@@ -1088,7 +1091,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * @return the interned string (if enabled), or a new string
      */
     private String intern(CharBuffer data) {
-        if (stringInterning && internPool != null) {
+        if (internPool != null) {
             return internPool.intern(data);
         }
         return data.toString();
@@ -1740,7 +1743,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             case S:
                 // Comment text
                 if (data != null) {
-                    currentCommentText.append(data.toString());
+                    appendBufferToBuilder(currentCommentText, data);
                 }
                 break;
                 
@@ -1930,22 +1933,38 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             return false;
         }
         
-        // Optimized search: only check for first character, then verify rest
-        // This is much faster than naive O(n*m) when the first char is rare
         int pos = buffer.position();
         int limit = pos + length - seqLen + 1;
         char first = sequence.charAt(0);
-        
-        outer:
-        for (int i = pos; i < limit; i++) {
-            if (buffer.get(i) == first) {
-                // Found first char, verify the rest
-                for (int j = 1; j < seqLen; j++) {
-                    if (buffer.get(i + j) != sequence.charAt(j)) {
-                        continue outer;
+
+        if (buffer.hasArray()) {
+            char[] chars = buffer.array();
+            int arrayOffset = buffer.arrayOffset();
+            int arrayPos = arrayOffset + pos;
+            int arrayLimit = arrayOffset + limit;
+            
+            outer:
+            for (int i = arrayPos; i < arrayLimit; i++) {
+                if (chars[i] == first) {
+                    for (int j = 1; j < seqLen; j++) {
+                        if (chars[i + j] != sequence.charAt(j)) {
+                            continue outer;
+                        }
                     }
+                    return true;
                 }
-                return true;
+            }
+        } else {
+            outer:
+            for (int i = pos; i < limit; i++) {
+                if (buffer.get(i) == first) {
+                    for (int j = 1; j < seqLen; j++) {
+                        if (buffer.get(i + j) != sequence.charAt(j)) {
+                            continue outer;
+                        }
+                    }
+                    return true;
+                }
             }
         }
         
@@ -2371,14 +2390,18 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 contentHandler.endElement(namespaceURI, localName, qName);
                 
                 // Fire endPrefixMapping in reverse order
-                ArrayList<String> prefixes = new ArrayList<>();
+                if (prefixMappingBuffer == null) {
+                    prefixMappingBuffer = new ArrayList<>();
+                } else {
+                    prefixMappingBuffer.clear();
+                }
                 Iterator<Map.Entry<String, String>> endDecl = 
                     namespaceTracker.getCurrentScopeDeclarations();
                 while (endDecl.hasNext()) {
-                    prefixes.add(endDecl.next().getKey());
+                    prefixMappingBuffer.add(endDecl.next().getKey());
                 }
-                for (int i = prefixes.size() - 1; i >= 0; i--) {
-                    contentHandler.endPrefixMapping(prefixes.get(i));
+                for (int i = prefixMappingBuffer.size() - 1; i >= 0; i--) {
+                    contentHandler.endPrefixMapping(prefixMappingBuffer.get(i));
                 }
                 
                 // Pop namespace context
@@ -2441,14 +2464,18 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             }
             
             // Fire endPrefixMapping for all declarations at this level (in reverse order)
-            ArrayList<String> prefixes = new ArrayList<>();
+            if (prefixMappingBuffer == null) {
+                prefixMappingBuffer = new ArrayList<>();
+            } else {
+                prefixMappingBuffer.clear();
+            }
             Iterator<Map.Entry<String, String>> declarations = 
                 namespaceTracker.getCurrentScopeDeclarations();
             while (declarations.hasNext()) {
-                prefixes.add(declarations.next().getKey());
+                prefixMappingBuffer.add(declarations.next().getKey());
             }
-            for (int i = prefixes.size() - 1; i >= 0; i--) {
-                contentHandler.endPrefixMapping(prefixes.get(i));
+            for (int i = prefixMappingBuffer.size() - 1; i >= 0; i--) {
+                contentHandler.endPrefixMapping(prefixMappingBuffer.get(i));
             }
             
             // Pop namespace context

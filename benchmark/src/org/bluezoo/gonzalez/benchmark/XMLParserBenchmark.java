@@ -62,10 +62,14 @@ public class XMLParserBenchmark {
     private byte[] smallBytes;
     private byte[] largeBytes;
 
+    private static final String JDK_XERCES_FACTORY =
+        "com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl";
+
     @Setup
     public void setup() throws Exception {
-        // Initialize SAX parser factory
-        saxParserFactory = SAXParserFactory.newInstance();
+        // Explicitly use JDK Xerces to avoid SPI hijacking by other SAX
+        // implementations (e.g., BFO SAX) on the classpath
+        saxParserFactory = SAXParserFactory.newInstance(JDK_XERCES_FACTORY, null);
         saxParserFactory.setNamespaceAware(false);
         saxParserFactory.setValidating(false);
         

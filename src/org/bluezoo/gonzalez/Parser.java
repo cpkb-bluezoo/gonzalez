@@ -105,6 +105,12 @@ public class Parser implements XMLReader, PSVIProvider {
     private final ContentParser xmlParser;
 
     /**
+     * Reusable byte buffer for parse() methods.
+     * Kept across resets to avoid per-parse allocation.
+     */
+    private ByteBuffer parseBuffer;
+
+    /**
      * Set to true to enable debugging output.
      */
     static final boolean debug = false;
@@ -178,7 +184,12 @@ public class Parser implements XMLReader, PSVIProvider {
 
         // Bridge pattern: read from InputStream and feed to decoder
         // Uses standard NIO buffer management: read, flip, receive, compact
-        ByteBuffer byteBuffer = ByteBuffer.allocate(4096);
+        if (parseBuffer == null || parseBuffer.capacity() < 32768) {
+            parseBuffer = ByteBuffer.allocate(32768);
+        } else {
+            parseBuffer.clear();
+        }
+        ByteBuffer byteBuffer = parseBuffer;
         byte[] array = byteBuffer.array();
         int bytesRead;
         
@@ -299,8 +310,13 @@ public class Parser implements XMLReader, PSVIProvider {
             throw new IllegalArgumentException("Channel cannot be null");
         }
 
-        // Use larger buffer for channel I/O (typically file-based)
-        ByteBuffer buffer = ByteBuffer.allocate(8192);
+        // Reuse parse buffer for channel I/O
+        if (parseBuffer == null) {
+            parseBuffer = ByteBuffer.allocate(8192);
+        } else {
+            parseBuffer.clear();
+        }
+        ByteBuffer buffer = parseBuffer;
         
         // Standard NIO read loop: read, flip, process, compact
         while (channel.read(buffer) != -1 || buffer.position() > 0) {
