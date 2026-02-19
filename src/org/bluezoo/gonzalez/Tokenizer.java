@@ -898,18 +898,21 @@ class Tokenizer implements Locator2 {
         
         int pos = charBuffer.position();
         int limit = charBuffer.limit();
-        char[] chars = charBuffer.array();
+        boolean hasDirectArray = charBuffer.hasArray() && !charBuffer.isReadOnly();
+        char[] chars = hasDirectArray ? charBuffer.array() : null;
 
         // Set up lazy location tracking for this buffer
-        locationChars = chars;
-        locationArrayBase = pos;
-        locationCharPosBase = charPosition;
+        if (hasDirectArray) {
+            locationChars = chars;
+            locationArrayBase = pos;
+            locationCharPosBase = charPosition;
+        }
         
         while (pos < limit) {
             // Check if charset was switched - if so, restart tokenization from beginning of buffer
             
             
-            char c = chars[pos];
+            char c = hasDirectArray ? chars[pos] : charBuffer.get(pos);
             
             // Classify character
             CharClass cc = CharClass.classify(c, state, miniState, xml11, allowRestrictedChar);
@@ -939,7 +942,7 @@ class Tokenizer implements Locator2 {
                 if (shouldContinue) {
                     // Fast path for CDATA in CONTENT state: bulk scan for delimiters
                     // This avoids per-character classification for long text runs
-                    if (miniState == MiniState.ACCUMULATING_CDATA && state == TokenizerState.CONTENT) {
+                    if (hasDirectArray && miniState == MiniState.ACCUMULATING_CDATA && state == TokenizerState.CONTENT) {
                         while (++pos < limit) {
                             char ch = chars[pos];
                             if (ch == '<' || ch == '&' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r') {
@@ -952,7 +955,7 @@ class Tokenizer implements Locator2 {
                         continue;
                     }
                     // Fast path for NAME accumulation: bulk scan for name characters
-                    if (miniState == MiniState.ACCUMULATING_NAME) {
+                    if (hasDirectArray && miniState == MiniState.ACCUMULATING_NAME) {
                         while (++pos < limit) {
                             char ch = chars[pos];
                             if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
@@ -1134,8 +1137,22 @@ class Tokenizer implements Locator2 {
                 pos = posAfterChar;
             }
             
-            // Update charPosition cheaply; line/column computed lazily on demand
-            charPosition += (pos - oldPos);
+            // Update location tracking
+            if (hasDirectArray) {
+                // Lazy: just bump charPosition, line/column computed on demand
+                charPosition += (pos - oldPos);
+            } else {
+                // Eager: no backing array for lazy scan, track per character
+                for (int i = oldPos; i < pos; i++) {
+                    charPosition++;
+                    if (charBuffer.get(i) == '\n') {
+                        lineNumber++;
+                        columnNumber = 0;
+                    } else {
+                        columnNumber++;
+                    }
+                }
+            }
             
             // Change state if specified
             if (transition.stateToChangeTo != null) {
@@ -1222,8 +1239,10 @@ class Tokenizer implements Locator2 {
         }
 
         // Ensure location is fully up-to-date before chars reference goes out of scope
-        catchUpLocation();
-        locationChars = null;
+        if (hasDirectArray) {
+            catchUpLocation();
+            locationChars = null;
+        }
     }
     
     // ===== Helper Methods =====

@@ -1860,7 +1860,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         
         // Zero-copy: pass backing array directly to handler
         // The tokenizer has already set position/limit to define the window
-        if (buffer.hasArray()) {
+        if (buffer.hasArray() && !buffer.isReadOnly()) {
             char[] array = buffer.array();
             int offset = buffer.arrayOffset() + buffer.position();
             int length = buffer.remaining();
@@ -1937,7 +1937,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         int limit = pos + length - seqLen + 1;
         char first = sequence.charAt(0);
 
-        if (buffer.hasArray()) {
+        if (buffer.hasArray() && !buffer.isReadOnly()) {
             char[] chars = buffer.array();
             int arrayOffset = buffer.arrayOffset();
             int arrayPos = arrayOffset + pos;

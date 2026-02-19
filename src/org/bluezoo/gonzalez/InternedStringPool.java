@@ -218,7 +218,7 @@ class InternedStringPool {
             return false;
         }
         
-        if (buffer.hasArray()) {
+        if (buffer.hasArray() && !buffer.isReadOnly()) {
             char[] chars = buffer.array();
             int base = buffer.arrayOffset() + buffer.position();
             for (int i = 0; i < len; i++) {
@@ -249,7 +249,7 @@ class InternedStringPool {
         int h = 0;
         int len = buffer.remaining();
         
-        if (buffer.hasArray()) {
+        if (buffer.hasArray() && !buffer.isReadOnly()) {
             char[] chars = buffer.array();
             int base = buffer.arrayOffset() + buffer.position();
             for (int i = 0; i < len; i++) {
