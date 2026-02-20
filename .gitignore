@@ -25,6 +25,10 @@
 hs_err_pid*
 replay_pid*
 
+build/
+dist/
+doc/
+
 test/junit/results/
 test/output/
 
