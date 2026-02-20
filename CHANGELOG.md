@@ -2,6 +2,47 @@
 
 All notable changes to Gonzalez will be documented in this file.
 
+## [2.0] - XXXX-XX-XX
+
+### Changed
+
+- **Breaking: XMLWriter redesigned to implement SAX2 interfaces.** XMLWriter now
+  directly implements `ContentHandler`, `LexicalHandler`, `DTDHandler`, and
+  `DeclHandler`. The previous custom `write*`-prefixed API has been replaced with
+  standard SAX event methods, allowing XMLWriter to be wired directly into a SAX
+  pipeline as an event sink with no adapter layer.
+
+- **XMLWriter configuration via setters.** `IndentConfig`, `Charset`, XML 1.1 mode,
+  and standalone mode are now configured via setter methods (`setIndentConfig`,
+  `setCharset`, `setXml11`, `setStandalone`) instead of constructor parameters.
+
+### Added
+
+- **XMLWriter DOCTYPE output.** XMLWriter can now serialize complete DOCTYPE
+  declarations including element, attribute, entity, and notation declarations
+  received via DeclHandler and DTDHandler events.
+
+- **XMLWriter standalone conversion mode.** When `setStandalone(true)` is called,
+  the writer omits external DOCTYPE identifiers and inlines all DTD declarations
+  (both internal and external subset) into the internal subset, producing a
+  self-contained document.
+
+- **Parser DeclHandler support.** The parser now fires `DeclHandler` events
+  (`elementDecl`, `attributeDecl`, `internalEntityDecl`, `externalEntityDecl`)
+  when DTD declarations are parsed. Set via the standard SAX property
+  `http://xml.org/sax/properties/declaration-handler`.
+
+- **Parser startEntity/endEntity events.** The parser now fires
+  `LexicalHandler.startEntity`/`endEntity` events for general entity expansion
+  in document content and for the external DTD subset boundary (`[dtd]`).
+
+- **XSLT 1.0/2.0/3.0 transformer.** `GonzalezTransformer` and `GonzalezTemplates`
+  provide a JAXP-compliant XSLT processor with streaming SAX-based transformation,
+  XPath 3.1 expression evaluation, and forward-compatible processing.
+
+- **XSD schema validation.** `XSDValidator` provides XML Schema validation
+  integrated with the Gonzalez parsing pipeline.
+
 ## [1.0] - 2026-01-10
 
 ### Added

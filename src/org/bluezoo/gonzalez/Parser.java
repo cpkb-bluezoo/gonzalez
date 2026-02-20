@@ -26,7 +26,9 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
 import java.nio.channels.ReadableByteChannel;
+import java.nio.channels.WritableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.IllegalCharsetNameException;
 import java.nio.charset.UnsupportedCharsetException;
@@ -34,15 +36,18 @@ import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.schema.TypedValue;
 import org.bluezoo.gonzalez.schema.Validity;
 import org.bluezoo.gonzalez.schema.ValidationSource;
+import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
 import org.xml.sax.EntityResolver;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.InputSource;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXNotRecognizedException;
 import org.xml.sax.SAXNotSupportedException;
 import org.xml.sax.XMLReader;
+import org.xml.sax.ext.DeclHandler;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -628,6 +633,9 @@ public class Parser implements XMLReader, PSVIProvider {
      * <tr><td>{@code http://xml.org/sax/properties/lexical-handler}</td>
      *     <td>{@link org.xml.sax.ext.LexicalHandler}</td>
      *     <td>Handler for lexical events (comments, CDATA, entity boundaries)</td></tr>
+     * <tr><td>{@code http://xml.org/sax/properties/declaration-handler}</td>
+     *     <td>{@link org.xml.sax.ext.DeclHandler}</td>
+     *     <td>Handler for DTD declaration events (element, attribute, entity declarations)</td></tr>
      * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/dtd-parser}</td>
      *     <td>{@link DTDParser}</td>
      *     <td>(Read-only) The DTD parser instance, if DOCTYPE was encountered</td></tr>
@@ -644,6 +652,9 @@ public class Parser implements XMLReader, PSVIProvider {
         // SAX2 extension properties
         if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
             return xmlParser.getLexicalHandler();
+        }
+        if ("http://xml.org/sax/properties/declaration-handler".equals(name)) {
+            return xmlParser.getDeclHandler();
         }
         // Gonzalez-specific properties
         if ("http://www.nongnu.org/gonzalez/properties/dtd-parser".equals(name)) {
@@ -671,6 +682,12 @@ public class Parser implements XMLReader, PSVIProvider {
                 xmlParser.setLexicalHandler((LexicalHandler) value);
             } else {
                 throw new SAXNotSupportedException("Value must be a LexicalHandler");
+            }
+        } else if ("http://xml.org/sax/properties/declaration-handler".equals(name)) {
+            if (value instanceof DeclHandler) {
+                xmlParser.setDeclHandler((DeclHandler) value);
+            } else {
+                throw new SAXNotSupportedException("Value must be a DeclHandler");
             }
         } else {
             throw new SAXNotRecognizedException("Property not recognized: " + name);
@@ -953,27 +970,171 @@ public class Parser implements XMLReader, PSVIProvider {
     }
     
     /**
-     * Command-line entry point for testing the parser.
+     * Command-line entry point for parsing and pretty-printing XML.
      *
-     * <p>Parses XML files specified as command-line arguments using a
-     * default (no-op) content handler. Useful for testing well-formedness
-     * of XML documents.
+     * <p>By default, parses each XML file and writes indented output to
+     * stdout using {@link XMLWriter} with 2-space indentation. This acts
+     * as both a well-formedness check and a pretty-printer.
      *
-     * <p>Usage: {@code java org.bluezoo.gonzalez.Parser file1.xml [file2.xml ...]}
+     * <p>With the {@code -v} flag, dumps all SAX events with locator
+     * information instead, useful for debugging parser behavior.
      *
-     * @param args paths to XML files to parse
+     * <p>Usage: {@code java org.bluezoo.gonzalez.Parser [-v] file1.xml [file2.xml ...]}
+     *
+     * @param args optional -v flag followed by paths to XML files to parse
      * @throws Exception if parsing fails
      */
     public static void main(String[] args) throws Exception {
+        boolean verbose = false;
+        int fileStart = 0;
+        if (args.length > 0 && "-v".equals(args[0])) {
+            verbose = true;
+            fileStart = 1;
+        }
+        if (fileStart >= args.length) {
+            System.err.println("Usage: java org.bluezoo.gonzalez.Parser [-v] file1.xml [file2.xml ...]");
+            System.exit(1);
+        }
         Parser parser = new Parser();
-        parser.setContentHandler(new org.xml.sax.helpers.DefaultHandler());
-        for (String arg : args) {
-            File file = new File(arg);
+        if (verbose) {
+            parser.setContentHandler(new VerboseHandler());
+        } else {
+            WritableByteChannel out = Channels.newChannel(System.out);
+            XMLWriter writer = new XMLWriter(out);
+            writer.setIndentConfig(IndentConfig.spaces2());
+            parser.setContentHandler(writer);
+            parser.setProperty("http://xml.org/sax/properties/lexical-handler", writer);
+            parser.setProperty("http://xml.org/sax/properties/declaration-handler", writer);
+            parser.setDTDHandler(writer);
+        }
+        for (int i = fileStart; i < args.length; i++) {
+            File file = new File(args[i]);
             try (InputStream in = new FileInputStream(file)) {
                 InputSource src = new InputSource(in);
                 src.setSystemId(file.toURI().toString());
                 parser.parse(src);
             }
+        }
+    }
+
+    /**
+     * SAX event handler that prints every event with locator information.
+     * Used by the {@code -v} command-line flag for debugging.
+     */
+    static class VerboseHandler extends org.xml.sax.helpers.DefaultHandler {
+
+        private Locator locator;
+
+        @Override
+        public void setDocumentLocator(Locator locator) {
+            this.locator = locator;
+            printEvent("setDocumentLocator",
+                    "systemId=" + locator.getSystemId()
+                    + ", publicId=" + locator.getPublicId());
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            printEvent("startDocument", "");
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            printEvent("endDocument", "");
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes attributes) throws SAXException {
+            StringBuilder attrs = new StringBuilder();
+            for (int i = 0; i < attributes.getLength(); i++) {
+                if (i > 0) {
+                    attrs.append(", ");
+                }
+                attrs.append(attributes.getQName(i));
+                attrs.append("=\"");
+                attrs.append(attributes.getValue(i));
+                attrs.append("\"");
+            }
+            String detail = qName;
+            if (attrs.length() > 0) {
+                detail = qName + " [" + attrs + "]";
+            }
+            printEvent("startElement", detail);
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            printEvent("endElement", qName);
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            String text = new String(ch, start, length);
+            String display = escapeWhitespace(text);
+            if (display.length() > 60) {
+                display = display.substring(0, 60) + "...";
+            }
+            printEvent("characters", "\"" + display + "\"");
+        }
+
+        @Override
+        public void ignorableWhitespace(char[] ch, int start, int length)
+                throws SAXException {
+            String text = new String(ch, start, length);
+            String display = escapeWhitespace(text);
+            printEvent("ignorableWhitespace", "\"" + display + "\"");
+        }
+
+        @Override
+        public void processingInstruction(String target, String data)
+                throws SAXException {
+            printEvent("processingInstruction", target + " \"" + data + "\"");
+        }
+
+        @Override
+        public void skippedEntity(String name) throws SAXException {
+            printEvent("skippedEntity", name);
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri)
+                throws SAXException {
+            printEvent("startPrefixMapping", prefix + " -> " + uri);
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            printEvent("endPrefixMapping", prefix);
+        }
+
+        private static String escapeWhitespace(String text) {
+            StringBuilder sb = new StringBuilder(text.length());
+            for (int i = 0; i < text.length(); i++) {
+                char c = text.charAt(i);
+                if (c == '\n') {
+                    sb.append("\\n");
+                } else if (c == '\r') {
+                    sb.append("\\r");
+                } else if (c == '\t') {
+                    sb.append("\\t");
+                } else {
+                    sb.append(c);
+                }
+            }
+            return sb.toString();
+        }
+
+        private void printEvent(String eventName, String details) {
+            String location = "";
+            if (locator != null) {
+                location = String.format("[%4d:%-3d] ",
+                        locator.getLineNumber(), locator.getColumnNumber());
+            }
+            System.out.println(location + eventName + ": " + details);
+            System.out.flush();
         }
     }
 

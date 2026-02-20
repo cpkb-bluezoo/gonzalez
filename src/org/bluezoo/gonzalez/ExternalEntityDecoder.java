@@ -76,6 +76,11 @@ class ExternalEntityDecoder {
     private Charset charset;
     
     /**
+     * Previous charset from last parse, kept for decoder reuse.
+     */
+    private Charset previousCharset;
+    
+    /**
      * The BOM detected at start of document.
      * Determines byte encoding for declaration parsing.
      */
@@ -238,14 +243,14 @@ class ExternalEntityDecoder {
      */
     public void reset() {
         state = State.INIT;
+        // Keep previous charset/decoder for reuse if next document uses same encoding
+        previousCharset = charset;
         charset = null;
         bom = BOM.NONE;
         xml11 = false;
-        // Reset decoder but keep the object if charset stays the same
         if (decoder != null) {
             decoder.reset();
         }
-        decoder = null;  // Will be recreated for new charset
         // Keep charBuffer allocated - just clear it
         if (charBuffer != null) {
             charBuffer.clear();
@@ -446,10 +451,14 @@ class ExternalEntityDecoder {
             tokenizer.encoding = charset.name();
         }
         
-        // Create the CharsetDecoder
-        decoder = charset.newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT);
+        // Reuse existing decoder if charset unchanged, otherwise create new one
+        if (decoder == null || !charset.equals(previousCharset)) {
+            decoder = charset.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+        } else {
+            decoder.reset();
+        }
     }
     
     /**

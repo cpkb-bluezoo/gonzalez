@@ -5,9 +5,9 @@ Non-blocking streaming XML parser and serializer for event-driven I/O
 This is Gonzalez, a data-driven XML parser and serializer using non-blocking,
 event-driven I/O. Unlike traditional SAX parsers that pull data from an
 InputSource, Gonzalez is completely feedforward: you push data to it as it
-arrives, and it produces SAX events without ever blocking, as long as the
-documents are standalone. The XMLWriter provides the inverse: streaming XML
-serialization to NIO channels.
+arrives, and it produces SAX events without ever blocking for I/O, as long as
+the documents are standalone. The XMLWriter provides the inverse: streaming
+XML serialization to NIO channels.
 
 ## Features
 
@@ -23,12 +23,15 @@ serialization to NIO channels.
 - Java NIO throughput: uses ByteBuffer for content I/O operations
 
 ### Serializer (XMLWriter)
+- SAX2 native: implements `ContentHandler`, `LexicalHandler`, `DTDHandler`, `DeclHandler`
 - NIO-first: writes to `WritableByteChannel` with automatic buffering
-- namespace-aware: full support for prefixed and default namespaces
+- SAX pipeline ready: wire directly as parser event sink, no adapter needed
+- namespace-aware: full support for prefixed and default namespaces via `startPrefixMapping`
+- DOCTYPE output: supports inline DTD declarations with standalone conversion mode
 - pretty-print: optional indentation via `IndentConfig`
 - empty element optimization: automatically emits `<foo/>` instead of `<foo></foo>`
 - proper escaping: handles special characters in content and attributes
-- UTF-8 output: all output is UTF-8 encoded
+- configurable encoding: UTF-8 (default), ISO-8859-1, US-ASCII, or any Java charset
 
 ## Architecture
 
@@ -99,16 +102,19 @@ blocking process.
 
 ## XSLT Transformer
 
-Gonzalez includes an XSLT 1.0 transformer that follows the same design principles
-as the parser: event-driven processing with predictable resource usage. The
-transformer integrates with standard JAXP APIs (`TransformerFactory`, `Templates`,
-`Transformer`) and can be used as a drop-in replacement for other XSLT processors.
+Gonzalez includes an XSLT 3.0 transformer that follows the same design
+principles as the parser: event-driven processing with predictable resource
+usage. The transformer integrates with standard JAXP APIs
+(`TransformerFactory`, `Templates`, `Transformer`) and can be used as a
+drop-in replacement for other XSLT processors.
 
 Key features:
 - **JAXP compliant** - Standard `TransformerFactory` interface
 - **Streaming support** - SAX-based transformation pipeline
-- **Iterative XPath parser** - Pratt algorithm with explicit stacks, no recursion
-- **Forward-compatible mode** - Graceful handling of XSLT 2.0+ constructs
+- **Iterative XPath parser** - Pratt algorithm with explicit stacks, no
+  recursion
+- **Forward-compatible** - Graceful handling of later XSLT version
+  constructs
 
 See **[XSLT.md](XSLT.md)** for detailed documentation on the transformer design,
 features, test methodology, and performance characteristics.
@@ -199,31 +205,55 @@ XML 1.1 line-end delimiters are also supported in XML 1.1 documents.
 
 ### XMLWriter Usage
 
-The XMLWriter provides streaming XML serialization to any `WritableByteChannel`:
+The XMLWriter implements SAX2 interfaces directly, so it can be wired into a
+SAX pipeline as an event sink with no adapter:
+
+```java
+import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.XMLWriter;
+
+// Parse and serialize: wire parser directly to writer
+Parser parser = new Parser();
+FileChannel channel = FileChannel.open(path, WRITE, CREATE);
+XMLWriter writer = new XMLWriter(channel);
+writer.setIndentConfig(IndentConfig.spaces2());
+
+parser.setContentHandler(writer);
+parser.setProperty("http://xml.org/sax/properties/lexical-handler", writer);
+parser.parse(inputSource);
+writer.close();
+```
+
+For standalone use, call SAX methods directly:
 
 ```java
 import org.bluezoo.gonzalez.XMLWriter;
-import org.bluezoo.gonzalez.IndentConfig;
-import java.io.FileOutputStream;
-import java.nio.channels.Channels;
+import org.xml.sax.helpers.AttributesImpl;
 
-// Write to a file with pretty-printing
 try (FileOutputStream fos = new FileOutputStream("output.xml")) {
-    XMLWriter writer = new XMLWriter(fos, IndentConfig.spaces2());
-    
-    writer.writeStartElement("http://example.com/ns", "root");
-    writer.writeDefaultNamespace("http://example.com/ns");
-    writer.writeAttribute("version", "1.0");
-    
-    writer.writeStartElement("item");
-    writer.writeAttribute("id", "1");
-    writer.writeCharacters("Hello, World!");
-    writer.writeEndElement();
-    
-    writer.writeStartElement("empty");
-    writer.writeEndElement();  // Emits <empty/>
-    
-    writer.writeEndElement();
+    XMLWriter writer = new XMLWriter(fos);
+    writer.setIndentConfig(IndentConfig.spaces2());
+
+    AttributesImpl atts = new AttributesImpl();
+    atts.addAttribute("", "version", "version", "CDATA", "1.0");
+
+    writer.startDocument();
+    writer.startPrefixMapping("", "http://example.com/ns");
+    writer.startElement("http://example.com/ns", "root", "root", atts);
+
+    AttributesImpl itemAtts = new AttributesImpl();
+    itemAtts.addAttribute("", "id", "id", "CDATA", "1");
+    writer.startElement("http://example.com/ns", "item", "item", itemAtts);
+    char[] text = "Hello, World!".toCharArray();
+    writer.characters(text, 0, text.length);
+    writer.endElement("http://example.com/ns", "item", "item");
+
+    writer.startElement("http://example.com/ns", "empty", "empty", new AttributesImpl());
+    writer.endElement("http://example.com/ns", "empty", "empty");
+
+    writer.endElement("http://example.com/ns", "root", "root");
+    writer.endPrefixMapping("");
+    writer.endDocument();
     writer.close();
 }
 ```
@@ -234,17 +264,6 @@ Output:
   <item id="1">Hello, World!</item>
   <empty/>
 </root>
-```
-
-For high-performance scenarios, write directly to a `WritableByteChannel`:
-
-```java
-FileChannel channel = FileChannel.open(path, 
-    StandardOpenOption.WRITE, StandardOpenOption.CREATE);
-XMLWriter writer = new XMLWriter(channel);
-// ... write XML ...
-writer.close();
-channel.close();
 ```
 
 ## Building
@@ -281,10 +300,12 @@ Benchmark results comparing Gonzalez with the JDK's bundled Xerces SAX parser
 
 | Document Size | Gonzalez | Xerces | Comparison |
 |---------------|----------|--------|------------|
-| Small (~1KB)  | 14.5 µs  | 102 µs | **7x faster** |
-| Large (~1MB)  | 8.2 ms   | 4.3 ms | 1.9x slower |
+| Small plain (1.3KB) | 9.1 µs | 11.2 µs | Gonzalez **1.23x faster** |
+| Small NS-heavy (2.9KB) | 18.3 µs | 18.6 µs | **Essentially tied** |
+| Large plain (1MB) | 4026 µs | 1755 µs | Xerces 2.3x faster |
+| Large NS-heavy (1.4MB) | 9876 µs | 4408 µs | Xerces 2.2x faster |
 
-For small documents, Gonzalez significantly outperforms Xerces due to its
+For small documents, Gonzalez can slightly outperform Xerces due to its
 lightweight architecture and efficient NIO buffer handling.
 
 For larger documents, Xerces is faster due to decades of micro-optimisation
@@ -296,6 +317,10 @@ benchmarks:
   connection, allowing integration with async frameworks like Netty or Gumdrop
 - **Memory efficiency**: Documents are processed in chunks without loading
   the entire file into memory
+
+Xerces and other blocking I/O based parsers require you either to wait for
+the entire document to arrive, or to allocate another thread specifically
+for that parse.
 
 ## Conformance
 

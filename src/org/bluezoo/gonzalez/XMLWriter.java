@@ -30,53 +30,61 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import org.xml.sax.Attributes;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.DTDHandler;
+import org.xml.sax.Locator;
+import org.xml.sax.SAXException;
+import org.xml.sax.ext.DeclHandler;
+import org.xml.sax.ext.LexicalHandler;
 
 /**
- * Streaming XML writer with NIO-first design.
+ * SAX2 event serializer that writes XML to a {@link WritableByteChannel}.
  * <p>
- * This class provides an efficient, streaming approach to XML serialization
- * that writes to a {@link WritableByteChannel}. The writer uses an internal
- * buffer and automatically sends chunks to the channel when the buffer fills
- * beyond a threshold.
+ * This class implements the SAX2 {@link ContentHandler}, {@link LexicalHandler},
+ * {@link DTDHandler}, and {@link DeclHandler} interfaces, allowing it to be
+ * wired directly into a SAX pipeline as an event sink. It writes the received
+ * events as well-formed XML to the configured byte channel.
  * <p>
- * The writer supports full namespace handling, pretty-print indentation, and
- * automatic empty element optimization (emitting {@code <foo/>} instead of
- * {@code <foo></foo>} when an element has no content).
+ * The writer uses an internal buffer and automatically sends chunks to the
+ * channel when the buffer fills beyond a threshold. It supports full namespace
+ * handling, pretty-print indentation, and automatic empty element optimization
+ * (emitting {@code <foo/>} instead of {@code <foo></foo>} when an element has
+ * no content).
  * <p>
- * This class does not perform extensive well-formedness checking: the user
- * is responsible for ensuring elements are properly nested. However, it does
- * maintain an element stack for closing tags and tracks namespace bindings.
- * Character data is properly escaped.
+ * Configuration is set via setter methods that must be called before
+ * {@link #startDocument()}:
+ * <ul>
+ *   <li>{@link #setIndentConfig(IndentConfig)} - optional indentation</li>
+ *   <li>{@link #setCharset(Charset)} - output encoding (default UTF-8)</li>
+ *   <li>{@link #setXml11(boolean)} - XML 1.1 output mode</li>
+ *   <li>{@link #setStandalone(boolean)} - standalone DOCTYPE conversion mode</li>
+ * </ul>
  *
  * <h2>Usage Example</h2>
  * <pre>{@code
- * // Write to a file
- * FileChannel channel = FileChannel.open(path, StandardOpenOption.WRITE, StandardOpenOption.CREATE);
+ * // Wire parser directly to writer
+ * Parser parser = new Parser();
+ * FileChannel channel = FileChannel.open(path, WRITE, CREATE);
  * XMLWriter writer = new XMLWriter(channel);
- * 
- * writer.writeStartElement("http://example.com/ns", "root");
- * writer.writeDefaultNamespace("http://example.com/ns");
- * writer.writeAttribute("id", "1");
- * writer.writeCharacters("Hello, World!");
- * writer.writeEndElement();
+ *
+ * parser.setContentHandler(writer);
+ * parser.setProperty("http://xml.org/sax/properties/lexical-handler", writer);
+ * parser.parse(inputSource);
  * writer.close();
- * 
- * // Output: <root xmlns="http://example.com/ns" id="1">Hello, World!</root>
  * }</pre>
  *
- * <h2>Empty Element Optimization</h2>
+ * <h2>Standalone Conversion</h2>
  * <p>
- * When {@link #writeEndElement()} is called immediately after
- * {@link #writeStartElement(String)} with no intervening content, the writer
- * automatically emits a self-closing tag:
- * <pre>{@code
- * writer.writeStartElement("br");
- * writer.writeEndElement();
- * // Output: <br/>
- * }</pre>
+ * When {@link #setStandalone(boolean) standalone} mode is enabled, the writer
+ * omits external DOCTYPE identifiers and inlines all DTD declarations into
+ * the internal subset, producing a self-contained document. When disabled
+ * (the default), only internal subset declarations are written.
  *
  * <h2>Thread Safety</h2>
  * <p>
@@ -84,7 +92,8 @@ import java.util.Map;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-public class XMLWriter {
+public class XMLWriter
+        implements ContentHandler, LexicalHandler, DTDHandler, DeclHandler {
 
     private static final int DEFAULT_CAPACITY = 4096;
     private static final float SEND_THRESHOLD = 0.75f;
@@ -92,518 +101,718 @@ public class XMLWriter {
     private final WritableByteChannel channel;
     private ByteBuffer buffer;
     private final int sendThreshold;
-    private final IndentConfig indentConfig;
-    private final Charset charset;
-    private final boolean xml11;  // XML 1.1 mode for control character handling
+
+    // Configuration (set before startDocument)
+    private IndentConfig indentConfig;
+    private Charset charset;
+    private boolean xml11;
+    private boolean standalone;
+
+    // Source locator for enriching error messages
+    private Locator locator;
 
     // Element stack for tracking open elements
     private final Deque<ElementInfo> elementStack = new ArrayDeque<>();
-    
+
     // Namespace context: maps prefix -> URI at current scope
-    // We use a stack of maps, one per element depth
     private final Deque<Map<String, String>> namespaceStack = new ArrayDeque<>();
-    
+
+    // Buffered prefix mappings to emit as xmlns attributes in the next startElement
+    private final List<PrefixMapping> pendingPrefixMappings = new ArrayList<>();
+
     // Pending start tag that hasn't been closed yet (for empty element optimization)
     private boolean pendingStartTag = false;
-    
+
     // Whether we've written any content since the start tag
     private boolean hasContent = false;
-    
+
     // Whether we've written nested elements (for indentation of closing tag)
     private boolean hasNestedElements = false;
-    
+
     // Track if we're at the document start (for indentation)
     private boolean atDocumentStart = true;
+
+    // CDATA state
+    private boolean inCDATA = false;
+
+    // DOCTYPE state
+    private boolean inDTD = false;
+    private boolean dtdInternalSubsetOpen = false;
+    private boolean inExternalSubset = false;
+
+    /**
+     * A buffered prefix mapping.
+     */
+    private static class PrefixMapping {
+        final String prefix;
+        final String uri;
+
+        PrefixMapping(String prefix, String uri) {
+            this.prefix = prefix;
+            this.uri = uri;
+        }
+    }
 
     /**
      * Information about an open element.
      */
     private static class ElementInfo {
-        final String prefix;
-        final String localName;
-        final String namespaceURI;
-        
-        ElementInfo(String prefix, String localName, String namespaceURI) {
-            this.prefix = prefix;
-            this.localName = localName;
-            this.namespaceURI = namespaceURI;
-        }
-        
-        /**
-         * Returns the qualified name (prefix:localName or just localName).
-         */
-        String getQName() {
-            if (prefix != null && !prefix.isEmpty()) {
-                return prefix + ":" + localName;
-            }
-            return localName;
+        final String qName;
+        final boolean hadContent;
+        final boolean hadNestedElements;
+
+        ElementInfo(String qName, boolean hadContent, boolean hadNestedElements) {
+            this.qName = qName;
+            this.hadContent = hadContent;
+            this.hadNestedElements = hadNestedElements;
         }
     }
 
     /**
-     * Creates a new XML writer with default capacity (4KB) and no indentation.
+     * Creates a new XML writer with default capacity (4KB) writing to an output stream.
      *
      * @param out the output stream to write to
      */
     public XMLWriter(OutputStream out) {
-        this(new OutputStreamChannel(out), DEFAULT_CAPACITY, null);
+        this(new OutputStreamChannel(out), DEFAULT_CAPACITY);
     }
 
     /**
-     * Creates a new XML writer with default capacity and optional indentation.
-     *
-     * @param out the output stream to write to
-     * @param indentConfig the indentation configuration, or null for no indentation
-     */
-    public XMLWriter(OutputStream out, IndentConfig indentConfig) {
-        this(new OutputStreamChannel(out), DEFAULT_CAPACITY, indentConfig);
-    }
-
-    /**
-     * Creates a new XML writer with default capacity (4KB) and no indentation.
+     * Creates a new XML writer with default capacity (4KB).
      *
      * @param channel the channel to write to
      */
     public XMLWriter(WritableByteChannel channel) {
-        this(channel, DEFAULT_CAPACITY, null);
+        this(channel, DEFAULT_CAPACITY);
     }
 
     /**
-     * Creates a new XML writer with specified buffer capacity and no indentation.
+     * Creates a new XML writer with specified buffer capacity.
      *
      * @param channel the channel to write to
      * @param bufferCapacity initial buffer capacity in bytes
      */
     public XMLWriter(WritableByteChannel channel, int bufferCapacity) {
-        this(channel, bufferCapacity, null);
-    }
-
-    /**
-     * Creates a new XML writer with specified buffer capacity and optional indentation.
-     *
-     * @param channel the channel to write to
-     * @param bufferCapacity initial buffer capacity in bytes
-     * @param indentConfig the indentation configuration, or null for no indentation
-     */
-    public XMLWriter(WritableByteChannel channel, int bufferCapacity, IndentConfig indentConfig) {
-        this(channel, bufferCapacity, indentConfig, null);
-    }
-
-    /**
-     * Creates a new XML writer with specified buffer capacity, indentation, and character encoding.
-     *
-     * @param channel the channel to write to
-     * @param bufferCapacity initial buffer capacity in bytes
-     * @param indentConfig the indentation configuration, or null for no indentation
-     * @param charset the character encoding to use, or null for UTF-8
-     */
-    public XMLWriter(WritableByteChannel channel, int bufferCapacity, IndentConfig indentConfig, Charset charset) {
-        this(channel, bufferCapacity, indentConfig, charset, false);
-    }
-
-    /**
-     * Creates a new XML writer with specified buffer capacity, indentation, character encoding, and XML version.
-     *
-     * @param channel the channel to write to
-     * @param bufferCapacity initial buffer capacity in bytes
-     * @param indentConfig the indentation configuration, or null for no indentation
-     * @param charset the character encoding to use, or null for UTF-8
-     * @param xml11 true for XML 1.1 output mode (escapes CR as &#13;)
-     */
-    public XMLWriter(WritableByteChannel channel, int bufferCapacity, IndentConfig indentConfig, Charset charset, boolean xml11) {
         this.channel = channel;
         this.buffer = ByteBuffer.allocate(bufferCapacity);
         this.sendThreshold = (int) (bufferCapacity * SEND_THRESHOLD);
+        this.charset = StandardCharsets.UTF_8;
+        namespaceStack.push(new HashMap<String, String>());
+    }
+
+    // ========== Configuration Setters ==========
+
+    /**
+     * Sets the indentation configuration.
+     * Must be called before {@link #startDocument()}.
+     *
+     * @param indentConfig the indentation configuration, or null for no indentation
+     */
+    public void setIndentConfig(IndentConfig indentConfig) {
         this.indentConfig = indentConfig;
+    }
+
+    /**
+     * Sets the output character encoding.
+     * Must be called before {@link #startDocument()}.
+     *
+     * @param charset the character encoding, or null for UTF-8
+     */
+    public void setCharset(Charset charset) {
         this.charset = charset != null ? charset : StandardCharsets.UTF_8;
+    }
+
+    /**
+     * Sets XML 1.1 output mode. When enabled, CR characters and C1 control
+     * characters are escaped as character references.
+     * Must be called before {@link #startDocument()}.
+     *
+     * @param xml11 true for XML 1.1 mode
+     */
+    public void setXml11(boolean xml11) {
         this.xml11 = xml11;
-        // Initialize root namespace scope
-        namespaceStack.push(new HashMap<>());
-    }
-
-    // ========== Element Methods ==========
-
-    /**
-     * Writes a start element with no namespace.
-     *
-     * @param localName the local name of the element
-     * @throws IOException if there is an error writing data
-     */
-    public void writeStartElement(String localName) throws IOException {
-        writeStartElement(null, localName, null);
     }
 
     /**
-     * Writes a start element with a namespace URI.
-     * The prefix will be looked up from existing namespace bindings or left empty
-     * (requiring a subsequent {@link #writeDefaultNamespace(String)} call).
+     * Sets standalone DOCTYPE conversion mode. When enabled, external DOCTYPE
+     * identifiers (SYSTEM/PUBLIC) are omitted and all DTD declarations are
+     * inlined into the internal subset, producing a self-contained document.
+     * Must be called before {@link #startDocument()}.
      *
-     * @param namespaceURI the namespace URI
-     * @param localName the local name of the element
-     * @throws IOException if there is an error writing data
+     * @param standalone true for standalone conversion mode
      */
-    public void writeStartElement(String namespaceURI, String localName) throws IOException {
-        String prefix = getPrefix(namespaceURI);
-        writeStartElement(prefix, localName, namespaceURI);
+    public void setStandalone(boolean standalone) {
+        this.standalone = standalone;
     }
 
-    /**
-     * Writes a start element with an explicit prefix and namespace URI.
-     *
-     * @param prefix the namespace prefix (may be null or empty for default namespace)
-     * @param localName the local name of the element
-     * @param namespaceURI the namespace URI (may be null)
-     * @throws IOException if there is an error writing data
-     */
-    public void writeStartElement(String prefix, String localName, String namespaceURI) throws IOException {
-        // Close any pending start tag first
-        closePendingStartTag(false);
-        
-        // Write indentation if configured
-        if (indentConfig != null && !atDocumentStart) {
-            writeIndent();
+    // ========== ContentHandler ==========
+
+    @Override
+    public void setDocumentLocator(Locator locator) {
+        this.locator = locator;
+    }
+
+    @Override
+    public void startDocument() throws SAXException {
+        // No output -- the XML declaration is only written if explicitly
+        // requested via a processing instruction or configuration
+    }
+
+    @Override
+    public void endDocument() throws SAXException {
+        try {
+            flush();
+        } catch (IOException e) {
+            throw wrapIOException(e);
         }
-        atDocumentStart = false;
-        
-        // Write the start tag opening
-        ensureCapacity(1);
-        buffer.put((byte) '<');
-        
-        // Write the qualified name
-        if (prefix != null && !prefix.isEmpty()) {
-            writeRawString(prefix);
-            ensureCapacity(1);
-            buffer.put((byte) ':');
-        }
-        writeRawString(localName);
-        
-        // Push element onto stack
-        elementStack.push(new ElementInfo(prefix, localName, namespaceURI));
-        
-        // Push new namespace scope
-        namespaceStack.push(new HashMap<>());
-        
-        // Mark that we have a pending start tag
-        pendingStartTag = true;
-        hasContent = false;
-        hasNestedElements = false;
-        
-        sendIfNeeded();
     }
 
-    /**
-     * Writes an end element for the most recently opened element.
-     * If the element has no content, this will emit a self-closing tag.
-     *
-     * @throws IOException if there is an error writing data
-     * @throws IllegalStateException if there is no open element
-     */
-    public void writeEndElement() throws IOException {
-        if (elementStack.isEmpty()) {
-            throw new IllegalStateException("No open element to close");
-        }
-        
-        ElementInfo element = elementStack.pop();
-        
-        // Pop namespace scope
-        namespaceStack.pop();
-        
-        if (pendingStartTag && !hasContent) {
-            // Empty element - close with />
-            ensureCapacity(2);
-            buffer.put((byte) '/');
-            buffer.put((byte) '>');
-            pendingStartTag = false;
-        } else {
-            // Close pending start tag if needed
+    @Override
+    public void startPrefixMapping(String prefix, String uri) throws SAXException {
+        pendingPrefixMappings.add(new PrefixMapping(prefix, uri));
+    }
+
+    @Override
+    public void endPrefixMapping(String prefix) throws SAXException {
+        // Namespace scoping is handled by the element stack
+    }
+
+    @Override
+    public void startElement(String uri, String localName, String qName, Attributes atts)
+            throws SAXException {
+        try {
             closePendingStartTag(false);
-            
-            // Write indentation for closing tag only if we had nested elements
-            // (not just text content)
-            if (indentConfig != null && hasNestedElements) {
+
+            if (indentConfig != null && !atDocumentStart) {
                 writeIndent();
             }
-            
-            // Write closing tag
-            ensureCapacity(2);
+            atDocumentStart = false;
+
+            ensureCapacity(1);
             buffer.put((byte) '<');
-            buffer.put((byte) '/');
-            writeRawString(element.getQName());
-            ensureCapacity(1);
-            buffer.put((byte) '>');
-        }
-        
-        // Parent element now has content (nested elements specifically)
-        hasContent = true;
-        hasNestedElements = true;
-        
-        sendIfNeeded();
-    }
 
-    // ========== Attribute Methods ==========
+            String effectiveQName = (qName != null && !qName.isEmpty()) ? qName : localName;
+            writeRawString(effectiveQName);
 
-    /**
-     * Writes an attribute with no namespace.
-     *
-     * @param localName the attribute name
-     * @param value the attribute value
-     * @throws IOException if there is an error writing data
-     * @throws IllegalStateException if not in a start element
-     */
-    public void writeAttribute(String localName, String value) throws IOException {
-        writeAttribute(null, null, localName, value);
-    }
+            // Push new namespace scope
+            namespaceStack.push(new HashMap<String, String>());
 
-    /**
-     * Writes an attribute with a namespace URI.
-     *
-     * @param namespaceURI the namespace URI
-     * @param localName the local name of the attribute
-     * @param value the attribute value
-     * @throws IOException if there is an error writing data
-     * @throws IllegalStateException if not in a start element
-     */
-    public void writeAttribute(String namespaceURI, String localName, String value) throws IOException {
-        String prefix = getPrefix(namespaceURI);
-        writeAttribute(prefix, namespaceURI, localName, value);
-    }
-
-    /**
-     * Writes an attribute with an explicit prefix and namespace URI.
-     *
-     * @param prefix the namespace prefix (may be null or empty)
-     * @param namespaceURI the namespace URI (may be null)
-     * @param localName the local name of the attribute
-     * @param value the attribute value
-     * @throws IOException if there is an error writing data
-     * @throws IllegalStateException if not in a start element
-     */
-    public void writeAttribute(String prefix, String namespaceURI, String localName, String value) 
-            throws IOException {
-        if (!pendingStartTag) {
-            throw new IllegalStateException("Attributes must be written immediately after writeStartElement");
-        }
-        
-        ensureCapacity(1);
-        buffer.put((byte) ' ');
-        
-        // Write qualified name
-        if (prefix != null && !prefix.isEmpty()) {
-            writeRawString(prefix);
-            ensureCapacity(1);
-            buffer.put((byte) ':');
-        }
-        writeRawString(localName);
-        
-        // Write ="value"
-        ensureCapacity(2);
-        buffer.put((byte) '=');
-        buffer.put((byte) '"');
-        writeEscapedAttributeValue(value);
-        ensureCapacity(1);
-        buffer.put((byte) '"');
-        
-        sendIfNeeded();
-    }
-
-    // ========== Namespace Methods ==========
-
-    /**
-     * Writes a namespace declaration.
-     * <p>
-     * If the same prefix is already bound to the same URI in an ancestor scope,
-     * the declaration is skipped to avoid redundant xmlns attributes.
-     *
-     * @param prefix the namespace prefix
-     * @param namespaceURI the namespace URI
-     * @throws IOException if there is an error writing data
-     * @throws IllegalStateException if not in a start element
-     */
-    public void writeNamespace(String prefix, String namespaceURI) throws IOException {
-        if (!pendingStartTag) {
-            throw new IllegalStateException("Namespace declarations must be written immediately after writeStartElement");
-        }
-        
-        // Check if this binding already exists in an ancestor scope (not current scope)
-        // If so, we don't need to redeclare it
-        String existingUri = getNamespaceURIFromAncestors(prefix);
-        if (namespaceURI.equals(existingUri)) {
-            // Binding already in scope from ancestor - skip redundant declaration
-            // But still record it in current scope for proper tracking
-            if (!namespaceStack.isEmpty()) {
-                namespaceStack.peek().put(prefix, namespaceURI);
+            // Write buffered namespace declarations
+            for (int i = 0; i < pendingPrefixMappings.size(); i++) {
+                PrefixMapping pm = pendingPrefixMappings.get(i);
+                writeNamespaceDeclaration(pm.prefix, pm.uri);
+                namespaceStack.peek().put(
+                    pm.prefix != null ? pm.prefix : "", pm.uri);
             }
-            return;
-        }
-        
-        // Record the binding in current scope
-        if (!namespaceStack.isEmpty()) {
-            namespaceStack.peek().put(prefix, namespaceURI);
-        }
-        
-        ensureCapacity(7); // " xmlns:"
-        buffer.put((byte) ' ');
-        buffer.put((byte) 'x');
-        buffer.put((byte) 'm');
-        buffer.put((byte) 'l');
-        buffer.put((byte) 'n');
-        buffer.put((byte) 's');
-        buffer.put((byte) ':');
-        writeRawString(prefix);
-        ensureCapacity(2);
-        buffer.put((byte) '=');
-        buffer.put((byte) '"');
-        writeEscapedNamespaceURI(namespaceURI);
-        ensureCapacity(1);
-        buffer.put((byte) '"');
-        
-        sendIfNeeded();
-    }
+            pendingPrefixMappings.clear();
 
-    /**
-     * Writes a default namespace declaration.
-     * <p>
-     * If the default namespace is already bound to the same URI in an ancestor scope,
-     * the declaration is skipped to avoid redundant xmlns attributes.
-     *
-     * @param namespaceURI the namespace URI
-     * @throws IOException if there is an error writing data
-     * @throws IllegalStateException if not in a start element
-     */
-    public void writeDefaultNamespace(String namespaceURI) throws IOException {
-        if (!pendingStartTag) {
-            throw new IllegalStateException("Namespace declarations must be written immediately after writeStartElement");
-        }
-        
-        // Check if this binding already exists in an ancestor scope (not current scope)
-        // For default namespace, null (no binding) is equivalent to "" (no namespace)
-        String existingUri = getNamespaceURIFromAncestors("");
-        boolean alreadyInScope = namespaceURI.equals(existingUri) ||
-            (namespaceURI.isEmpty() && existingUri == null);
-        if (alreadyInScope) {
-            // Binding already in scope from ancestor - skip redundant declaration
-            if (!namespaceStack.isEmpty()) {
-                namespaceStack.peek().put("", namespaceURI);
-            }
-            return;
-        }
-        
-        // Record the binding in current scope (empty string = default namespace)
-        if (!namespaceStack.isEmpty()) {
-            namespaceStack.peek().put("", namespaceURI);
-        }
-        
-        ensureCapacity(7); // " xmlns="
-        buffer.put((byte) ' ');
-        buffer.put((byte) 'x');
-        buffer.put((byte) 'm');
-        buffer.put((byte) 'l');
-        buffer.put((byte) 'n');
-        buffer.put((byte) 's');
-        buffer.put((byte) '=');
-        buffer.put((byte) '"');
-        writeEscapedNamespaceURI(namespaceURI);
-        ensureCapacity(1);
-        buffer.put((byte) '"');
-        
-        sendIfNeeded();
-    }
-
-    /**
-     * Gets the prefix bound to a namespace URI, or null if not bound.
-     *
-     * @param namespaceURI the namespace URI
-     * @return the prefix, or null if not bound
-     */
-    public String getPrefix(String namespaceURI) {
-        if (namespaceURI == null || namespaceURI.isEmpty()) {
-            return null;
-        }
-        // Search from innermost scope outward
-        for (Map<String, String> scope : namespaceStack) {
-            for (Map.Entry<String, String> entry : scope.entrySet()) {
-                if (namespaceURI.equals(entry.getValue())) {
-                    return entry.getKey();
+            // Write attributes
+            if (atts != null) {
+                int len = atts.getLength();
+                for (int i = 0; i < len; i++) {
+                    String attQName = atts.getQName(i);
+                    if (attQName == null || attQName.isEmpty()) {
+                        String attLocal = atts.getLocalName(i);
+                        String attPrefix = "";
+                        String attUri = atts.getURI(i);
+                        if (attUri != null && !attUri.isEmpty()) {
+                            attPrefix = getPrefix(attUri);
+                            if (attPrefix == null) {
+                                attPrefix = "";
+                            }
+                        }
+                        if (attPrefix.isEmpty()) {
+                            attQName = attLocal;
+                        } else {
+                            attQName = attPrefix + ":" + attLocal;
+                        }
+                    }
+                    String attValue = atts.getValue(i);
+                    writeAttributeOutput(attQName, attValue);
                 }
             }
+
+            elementStack.push(new ElementInfo(effectiveQName, hasContent, hasNestedElements));
+
+            pendingStartTag = true;
+            hasContent = false;
+            hasNestedElements = false;
+
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
         }
-        return null;
     }
 
-    /**
-     * Gets the namespace URI bound to a prefix, or null if not bound.
-     *
-     * @param prefix the namespace prefix
-     * @return the namespace URI, or null if not bound
-     */
-    public String getNamespaceURI(String prefix) {
-        if (prefix == null) {
-            prefix = "";
-        }
-        // Search from innermost scope outward
-        for (Map<String, String> scope : namespaceStack) {
-            String uri = scope.get(prefix);
-            if (uri != null) {
-                return uri;
+    @Override
+    public void endElement(String uri, String localName, String qName) throws SAXException {
+        try {
+            if (elementStack.isEmpty()) {
+                throw new SAXException("No open element to close");
             }
-        }
-        return null;
-    }
 
-    /**
-     * Gets the namespace URI bound to a prefix from ancestor scopes only.
-     * This excludes the current (innermost) scope, checking only parent elements.
-     *
-     * @param prefix the namespace prefix (empty string for default namespace)
-     * @return the namespace URI from ancestors, or null if not bound
-     */
-    private String getNamespaceURIFromAncestors(String prefix) {
-        if (prefix == null) {
-            prefix = "";
-        }
-        // Skip first scope (current element), search ancestors only
-        boolean first = true;
-        for (Map<String, String> scope : namespaceStack) {
-            if (first) {
-                first = false;
-                continue; // Skip current scope
+            ElementInfo element = elementStack.pop();
+            namespaceStack.pop();
+
+            if (pendingStartTag && !hasContent) {
+                ensureCapacity(2);
+                buffer.put((byte) '/');
+                buffer.put((byte) '>');
+                pendingStartTag = false;
+            } else {
+                closePendingStartTag(false);
+
+                if (indentConfig != null && hasNestedElements) {
+                    writeIndent();
+                }
+
+                ensureCapacity(2);
+                buffer.put((byte) '<');
+                buffer.put((byte) '/');
+                writeRawString(element.qName);
+                ensureCapacity(1);
+                buffer.put((byte) '>');
             }
-            String uri = scope.get(prefix);
-            if (uri != null) {
-                return uri;
+
+            hasContent = element.hadContent;
+            hasNestedElements = element.hadNestedElements;
+            // Parent now has content (nested element)
+            hasContent = true;
+            hasNestedElements = true;
+
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void characters(char[] ch, int start, int length) throws SAXException {
+        try {
+            if (length == 0) {
+                return;
             }
+            closePendingStartTag(true);
+            if (inCDATA) {
+                writeRawChars(ch, start, length);
+            } else {
+                writeEscapedCharacters(ch, start, length);
+            }
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
         }
-        return null;
     }
 
-    // ========== Character Content Methods ==========
+    @Override
+    public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
+        characters(ch, start, length);
+    }
 
-    /**
-     * Writes character content, escaping special characters.
-     *
-     * @param text the text to write
-     * @throws IOException if there is an error writing data
-     */
-    public void writeCharacters(String text) throws IOException {
-        if (text == null || text.isEmpty()) {
-            return;
+    @Override
+    public void processingInstruction(String target, String data) throws SAXException {
+        try {
+            closePendingStartTag(true);
+
+            if (indentConfig != null && !atDocumentStart) {
+                writeIndent();
+            }
+            atDocumentStart = false;
+
+            ensureCapacity(2);
+            buffer.put((byte) '<');
+            buffer.put((byte) '?');
+            writeRawString(target);
+            if (data != null && !data.isEmpty()) {
+                ensureCapacity(1);
+                buffer.put((byte) ' ');
+                writeRawString(data);
+            }
+            ensureCapacity(2);
+            buffer.put((byte) '?');
+            buffer.put((byte) '>');
+
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
         }
-        closePendingStartTag(true);
-        writeEscapedCharacters(text);
-        sendIfNeeded();
     }
 
-    /**
-     * Writes character content from a character array, escaping special characters.
-     *
-     * @param text the character array
-     * @param start the start offset
-     * @param len the number of characters to write
-     * @throws IOException if there is an error writing data
-     */
-    public void writeCharacters(char[] text, int start, int len) throws IOException {
-        writeCharacters(new String(text, start, len));
+    @Override
+    public void skippedEntity(String name) throws SAXException {
+        try {
+            closePendingStartTag(true);
+            ensureCapacity(2 + name.length());
+            buffer.put((byte) '&');
+            writeRawString(name);
+            buffer.put((byte) ';');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
     }
+
+    // ========== LexicalHandler ==========
+
+    @Override
+    public void comment(char[] ch, int start, int length) throws SAXException {
+        try {
+            // In DTD mode, apply internal/external subset filtering
+            if (inDTD && !shouldWriteDeclaration()) {
+                return;
+            }
+
+            closePendingStartTag(true);
+
+            if (inDTD) {
+                openInternalSubsetIfNeeded();
+            }
+
+            if (indentConfig != null && !atDocumentStart && !inDTD) {
+                writeIndent();
+            }
+            atDocumentStart = false;
+
+            ensureCapacity(4);
+            buffer.put((byte) '<');
+            buffer.put((byte) '!');
+            buffer.put((byte) '-');
+            buffer.put((byte) '-');
+            writeRawChars(ch, start, length);
+            ensureCapacity(3);
+            buffer.put((byte) '-');
+            buffer.put((byte) '-');
+            buffer.put((byte) '>');
+
+            if (inDTD) {
+                ensureCapacity(1);
+                buffer.put((byte) '\n');
+            }
+
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void startCDATA() throws SAXException {
+        try {
+            closePendingStartTag(true);
+            inCDATA = true;
+            ensureCapacity(9);
+            buffer.put((byte) '<');
+            buffer.put((byte) '!');
+            buffer.put((byte) '[');
+            buffer.put((byte) 'C');
+            buffer.put((byte) 'D');
+            buffer.put((byte) 'A');
+            buffer.put((byte) 'T');
+            buffer.put((byte) 'A');
+            buffer.put((byte) '[');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void endCDATA() throws SAXException {
+        try {
+            inCDATA = false;
+            ensureCapacity(3);
+            buffer.put((byte) ']');
+            buffer.put((byte) ']');
+            buffer.put((byte) '>');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void startDTD(String name, String publicId, String systemId) throws SAXException {
+        try {
+            inDTD = true;
+            dtdInternalSubsetOpen = false;
+            inExternalSubset = false;
+
+            ensureCapacity(10);
+            buffer.put((byte) '<');
+            buffer.put((byte) '!');
+            buffer.put((byte) 'D');
+            buffer.put((byte) 'O');
+            buffer.put((byte) 'C');
+            buffer.put((byte) 'T');
+            buffer.put((byte) 'Y');
+            buffer.put((byte) 'P');
+            buffer.put((byte) 'E');
+            buffer.put((byte) ' ');
+            writeRawString(name);
+
+            if (!standalone) {
+                if (publicId != null) {
+                    writeRawString(" PUBLIC \"");
+                    writeRawString(publicId);
+                    writeRawString("\" \"");
+                    if (systemId != null) {
+                        writeRawString(systemId);
+                    }
+                    ensureCapacity(1);
+                    buffer.put((byte) '"');
+                } else if (systemId != null) {
+                    writeRawString(" SYSTEM \"");
+                    writeRawString(systemId);
+                    ensureCapacity(1);
+                    buffer.put((byte) '"');
+                }
+            }
+
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void endDTD() throws SAXException {
+        try {
+            if (dtdInternalSubsetOpen) {
+                ensureCapacity(2);
+                buffer.put((byte) ']');
+                buffer.put((byte) '>');
+            } else {
+                ensureCapacity(1);
+                buffer.put((byte) '>');
+            }
+            if (indentConfig != null) {
+                ensureCapacity(1);
+                buffer.put((byte) '\n');
+            }
+            inDTD = false;
+            dtdInternalSubsetOpen = false;
+            inExternalSubset = false;
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void startEntity(String name) throws SAXException {
+        if ("[dtd]".equals(name)) {
+            inExternalSubset = true;
+        }
+    }
+
+    @Override
+    public void endEntity(String name) throws SAXException {
+        if ("[dtd]".equals(name)) {
+            inExternalSubset = false;
+        }
+    }
+
+    // ========== DTDHandler ==========
+
+    @Override
+    public void notationDecl(String name, String publicId, String systemId)
+            throws SAXException {
+        try {
+            if (!shouldWriteDeclaration()) {
+                return;
+            }
+            openInternalSubsetIfNeeded();
+
+            writeRawString("  <!NOTATION ");
+            writeRawString(name);
+            if (publicId != null) {
+                writeRawString(" PUBLIC \"");
+                writeRawString(publicId);
+                ensureCapacity(1);
+                buffer.put((byte) '"');
+                if (systemId != null) {
+                    writeRawString(" \"");
+                    writeRawString(systemId);
+                    ensureCapacity(1);
+                    buffer.put((byte) '"');
+                }
+            } else if (systemId != null) {
+                writeRawString(" SYSTEM \"");
+                writeRawString(systemId);
+                ensureCapacity(1);
+                buffer.put((byte) '"');
+            }
+            ensureCapacity(2);
+            buffer.put((byte) '>');
+            buffer.put((byte) '\n');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void unparsedEntityDecl(String name, String publicId,
+            String systemId, String notationName) throws SAXException {
+        try {
+            if (!shouldWriteDeclaration()) {
+                return;
+            }
+            openInternalSubsetIfNeeded();
+
+            writeRawString("  <!ENTITY ");
+            writeRawString(name);
+            if (publicId != null) {
+                writeRawString(" PUBLIC \"");
+                writeRawString(publicId);
+                writeRawString("\" \"");
+                writeRawString(systemId);
+                ensureCapacity(1);
+                buffer.put((byte) '"');
+            } else {
+                writeRawString(" SYSTEM \"");
+                writeRawString(systemId);
+                ensureCapacity(1);
+                buffer.put((byte) '"');
+            }
+            writeRawString(" NDATA ");
+            writeRawString(notationName);
+            ensureCapacity(2);
+            buffer.put((byte) '>');
+            buffer.put((byte) '\n');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    // ========== DeclHandler ==========
+
+    @Override
+    public void elementDecl(String name, String model) throws SAXException {
+        try {
+            if (!shouldWriteDeclaration()) {
+                return;
+            }
+            openInternalSubsetIfNeeded();
+
+            writeRawString("  <!ELEMENT ");
+            writeRawString(name);
+            ensureCapacity(1);
+            buffer.put((byte) ' ');
+            writeRawString(model);
+            ensureCapacity(2);
+            buffer.put((byte) '>');
+            buffer.put((byte) '\n');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void attributeDecl(String eName, String aName, String type,
+            String mode, String value) throws SAXException {
+        try {
+            if (!shouldWriteDeclaration()) {
+                return;
+            }
+            openInternalSubsetIfNeeded();
+
+            writeRawString("  <!ATTLIST ");
+            writeRawString(eName);
+            ensureCapacity(1);
+            buffer.put((byte) ' ');
+            writeRawString(aName);
+            ensureCapacity(1);
+            buffer.put((byte) ' ');
+            writeRawString(type);
+            if (mode != null && !mode.isEmpty()) {
+                ensureCapacity(1);
+                buffer.put((byte) ' ');
+                writeRawString(mode);
+            }
+            if (value != null) {
+                writeRawString(" \"");
+                writeEscapedAttributeValue(value);
+                ensureCapacity(1);
+                buffer.put((byte) '"');
+            }
+            ensureCapacity(2);
+            buffer.put((byte) '>');
+            buffer.put((byte) '\n');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void internalEntityDecl(String name, String value) throws SAXException {
+        try {
+            if (!shouldWriteDeclaration()) {
+                return;
+            }
+            openInternalSubsetIfNeeded();
+
+            if (name.startsWith("%")) {
+                writeRawString("  <!ENTITY % ");
+                writeRawString(name.substring(1));
+            } else {
+                writeRawString("  <!ENTITY ");
+                writeRawString(name);
+            }
+            writeRawString(" \"");
+            writeEscapedEntityValue(value);
+            ensureCapacity(3);
+            buffer.put((byte) '"');
+            buffer.put((byte) '>');
+            buffer.put((byte) '\n');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    @Override
+    public void externalEntityDecl(String name, String publicId, String systemId)
+            throws SAXException {
+        try {
+            if (!shouldWriteDeclaration()) {
+                return;
+            }
+            openInternalSubsetIfNeeded();
+
+            if (name.startsWith("%")) {
+                writeRawString("  <!ENTITY % ");
+                writeRawString(name.substring(1));
+            } else {
+                writeRawString("  <!ENTITY ");
+                writeRawString(name);
+            }
+            if (publicId != null) {
+                writeRawString(" PUBLIC \"");
+                writeRawString(publicId);
+                writeRawString("\" \"");
+                writeRawString(systemId);
+                ensureCapacity(1);
+                buffer.put((byte) '"');
+            } else {
+                writeRawString(" SYSTEM \"");
+                writeRawString(systemId);
+                ensureCapacity(1);
+                buffer.put((byte) '"');
+            }
+            ensureCapacity(2);
+            buffer.put((byte) '>');
+            buffer.put((byte) '\n');
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
+        }
+    }
+
+    // ========== Non-SAX Extension Methods ==========
 
     /**
      * Writes raw content without XML escaping.
@@ -613,160 +822,23 @@ public class XMLWriter {
      * special characters like &lt;, &gt;, or &amp;.
      * <p>
      * <b>Warning:</b> Using this method can produce output that is not
-     * well-formed XML. It should only be used when explicitly requested
-     * (e.g., via xsl:value-of disable-output-escaping="yes").
+     * well-formed XML.
      *
      * @param text the raw text to write without escaping
-     * @throws IOException if there is an error writing data
+     * @throws SAXException if there is an error writing data
      */
-    public void writeRaw(String text) throws IOException {
-        if (text == null || text.isEmpty()) {
-            return;
+    public void writeRaw(String text) throws SAXException {
+        try {
+            if (text == null || text.isEmpty()) {
+                return;
+            }
+            closePendingStartTag(true);
+            writeRawString(text);
+            sendIfNeeded();
+        } catch (IOException e) {
+            throw wrapIOException(e);
         }
-        closePendingStartTag(true);
-        writeRawString(text);
-        sendIfNeeded();
     }
-
-    /**
-     * Writes a CDATA section.
-     * <p>
-     * Note: If the data contains "]]&gt;", the CDATA section will be split.
-     *
-     * @param data the CDATA content
-     * @throws IOException if there is an error writing data
-     */
-    public void writeCData(String data) throws IOException {
-        closePendingStartTag(true);
-        
-        // Handle the case where data contains ]]>
-        int start = 0;
-        int end;
-        while ((end = data.indexOf("]]>", start)) >= 0) {
-            // Write up to and including ]]
-            writeCDataSection(data.substring(start, end + 2));
-            // Continue after ]]
-            start = end + 2;
-        }
-        // Write remaining content
-        if (start < data.length()) {
-            writeCDataSection(data.substring(start));
-        }
-        
-        sendIfNeeded();
-    }
-
-    private void writeCDataSection(String data) throws IOException {
-        ensureCapacity(9); // <![CDATA[
-        buffer.put((byte) '<');
-        buffer.put((byte) '!');
-        buffer.put((byte) '[');
-        buffer.put((byte) 'C');
-        buffer.put((byte) 'D');
-        buffer.put((byte) 'A');
-        buffer.put((byte) 'T');
-        buffer.put((byte) 'A');
-        buffer.put((byte) '[');
-        writeRawString(data);
-        ensureCapacity(3); // ]]>
-        buffer.put((byte) ']');
-        buffer.put((byte) ']');
-        buffer.put((byte) '>');
-    }
-
-    // ========== Comment and PI Methods ==========
-
-    /**
-     * Writes an XML comment.
-     * <p>
-     * Note: The comment text must not contain "--" or end with "-".
-     *
-     * @param comment the comment text
-     * @throws IOException if there is an error writing data
-     */
-    public void writeComment(String comment) throws IOException {
-        closePendingStartTag(true);
-        
-        if (indentConfig != null && !atDocumentStart) {
-            writeIndent();
-        }
-        atDocumentStart = false;
-        
-        ensureCapacity(4); // <!--
-        buffer.put((byte) '<');
-        buffer.put((byte) '!');
-        buffer.put((byte) '-');
-        buffer.put((byte) '-');
-        writeRawString(comment);
-        ensureCapacity(3); // -->
-        buffer.put((byte) '-');
-        buffer.put((byte) '-');
-        buffer.put((byte) '>');
-        
-        sendIfNeeded();
-    }
-
-    /**
-     * Writes a processing instruction with no data.
-     *
-     * @param target the PI target
-     * @throws IOException if there is an error writing data
-     */
-    public void writeProcessingInstruction(String target) throws IOException {
-        writeProcessingInstruction(target, null);
-    }
-
-    /**
-     * Writes a processing instruction.
-     *
-     * @param target the PI target
-     * @param data the PI data (may be null)
-     * @throws IOException if there is an error writing data
-     */
-    public void writeProcessingInstruction(String target, String data) throws IOException {
-        closePendingStartTag(true);
-        
-        if (indentConfig != null && !atDocumentStart) {
-            writeIndent();
-        }
-        atDocumentStart = false;
-        
-        ensureCapacity(2); // <?
-        buffer.put((byte) '<');
-        buffer.put((byte) '?');
-        writeRawString(target);
-        if (data != null && !data.isEmpty()) {
-            ensureCapacity(1);
-            buffer.put((byte) ' ');
-            writeRawString(data);
-        }
-        ensureCapacity(2); // ?>
-        buffer.put((byte) '?');
-        buffer.put((byte) '>');
-        
-        sendIfNeeded();
-    }
-
-    // ========== Entity Reference Method ==========
-
-    /**
-     * Writes an entity reference.
-     *
-     * @param name the entity name (without &amp; and ;)
-     * @throws IOException if there is an error writing data
-     */
-    public void writeEntityRef(String name) throws IOException {
-        closePendingStartTag(true);
-        
-        ensureCapacity(2 + name.length());
-        buffer.put((byte) '&');
-        writeRawString(name);
-        buffer.put((byte) ';');
-        
-        sendIfNeeded();
-    }
-
-    // ========== Flush and Close ==========
 
     /**
      * Flushes any buffered data to the channel.
@@ -774,7 +846,11 @@ public class XMLWriter {
      * @throws IOException if there is an error sending data
      */
     public void flush() throws IOException {
-        closePendingStartTag(false);
+        try {
+            closePendingStartTag(false);
+        } catch (IOException e) {
+            throw e;
+        }
         if (buffer.position() > 0) {
             send();
         }
@@ -793,7 +869,100 @@ public class XMLWriter {
         flush();
     }
 
+    // ========== Namespace Lookup ==========
+
+    /**
+     * Gets the prefix bound to a namespace URI, or null if not bound.
+     *
+     * @param namespaceURI the namespace URI
+     * @return the prefix, or null if not bound
+     */
+    public String getPrefix(String namespaceURI) {
+        if (namespaceURI == null || namespaceURI.isEmpty()) {
+            return null;
+        }
+        for (Map<String, String> scope : namespaceStack) {
+            for (Map.Entry<String, String> entry : scope.entrySet()) {
+                if (namespaceURI.equals(entry.getValue())) {
+                    return entry.getKey();
+                }
+            }
+        }
+        return null;
+    }
+
     // ========== Internal Helper Methods ==========
+
+    /**
+     * Wraps an IOException as a SAXException, including locator information
+     * if available to indicate how far the writer progressed.
+     */
+    private SAXException wrapIOException(IOException e) {
+        if (locator != null) {
+            String msg = e.getMessage() + " [at line " + locator.getLineNumber()
+                + ", column " + locator.getColumnNumber() + "]";
+            return new SAXException(msg, e);
+        }
+        return new SAXException(e);
+    }
+
+    /**
+     * Determines whether a DTD declaration event should be written.
+     * In standalone mode, all declarations are written. In normal mode,
+     * only declarations from the internal subset are written.
+     */
+    private boolean shouldWriteDeclaration() {
+        if (!inDTD) {
+            return false;
+        }
+        if (standalone) {
+            return true;
+        }
+        return !inExternalSubset;
+    }
+
+    /**
+     * Lazily opens the internal subset bracket in the DOCTYPE declaration.
+     */
+    private void openInternalSubsetIfNeeded() throws IOException {
+        if (!dtdInternalSubsetOpen) {
+            writeRawString(" [\n");
+            dtdInternalSubsetOpen = true;
+        }
+    }
+
+    /**
+     * Writes a namespace declaration as an xmlns attribute.
+     */
+    private void writeNamespaceDeclaration(String prefix, String uri) throws IOException {
+        if (prefix == null || prefix.isEmpty()) {
+            writeRawString(" xmlns=\"");
+        } else {
+            writeRawString(" xmlns:");
+            writeRawString(prefix);
+            ensureCapacity(2);
+            buffer.put((byte) '=');
+            buffer.put((byte) '"');
+        }
+        writeEscapedNamespaceURI(uri);
+        ensureCapacity(1);
+        buffer.put((byte) '"');
+    }
+
+    /**
+     * Writes an attribute name="value" pair.
+     */
+    private void writeAttributeOutput(String qName, String value) throws IOException {
+        ensureCapacity(1);
+        buffer.put((byte) ' ');
+        writeRawString(qName);
+        ensureCapacity(2);
+        buffer.put((byte) '=');
+        buffer.put((byte) '"');
+        writeEscapedAttributeValue(value);
+        ensureCapacity(1);
+        buffer.put((byte) '"');
+    }
 
     /**
      * Closes a pending start tag by writing the closing '&gt;'.
@@ -835,17 +1004,28 @@ public class XMLWriter {
     }
 
     /**
+     * Writes raw characters without escaping, using the configured charset.
+     */
+    private void writeRawChars(char[] ch, int start, int length) throws IOException {
+        String s = new String(ch, start, length);
+        byte[] bytes = s.getBytes(charset);
+        ensureCapacity(bytes.length);
+        buffer.put(bytes);
+    }
+
+    /**
      * Writes character content with XML escaping (&lt;, &gt;, &amp;).
      */
-    private void writeEscapedCharacters(String s) throws IOException {
-        for (int i = 0; i < s.length(); ) {
-            int codePoint = s.codePointAt(i);
+    private void writeEscapedCharacters(char[] ch, int start, int length) throws IOException {
+        int end = start + length;
+        for (int i = start; i < end; ) {
+            int codePoint = Character.codePointAt(ch, i);
             int charCount = Character.charCount(codePoint);
-            
+
             if (buffer.remaining() < 12) {
                 growBuffer(buffer.capacity() * 2);
             }
-            
+
             if (codePoint == '<') {
                 buffer.put((byte) '&');
                 buffer.put((byte) 'l');
@@ -862,49 +1042,35 @@ public class XMLWriter {
                 buffer.put((byte) 'm');
                 buffer.put((byte) 'p');
                 buffer.put((byte) ';');
-            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n' && 
-                       (codePoint != '\r' || xml11)) {
-                // Control character (C0) - write as character reference
-                // For XML 1.1, we also escape CR to preserve it (otherwise it gets normalized to LF)
+            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
+                       && (codePoint != '\r' || xml11)) {
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
                 buffer.put((byte) codePoint);
             } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
-                // C1 control characters (0x7F-0x9F) in XML 1.1 mode
-                // These include NEL (0x85) which needs to be escaped to preserve it
                 writeCharacterReference(codePoint);
             } else if (xml11 && codePoint == 0x2028) {
-                // LSEP (Line Separator, U+2028) in XML 1.1 mode
-                // Must be escaped to preserve it, as it's a line-ending character
                 writeCharacterReference(codePoint);
             } else {
                 writeEncodedCodePoint(codePoint);
             }
-            
+
             i += charCount;
         }
     }
 
     /**
      * Writes an attribute value with XML escaping (&lt;, &gt;, &amp;, &quot;).
-     * <p>
-     * In XML 1.1 mode, additionally escapes:
-     * <ul>
-     *   <li>C1 control characters (0x7F-0x9F) including NEL (0x85)</li>
-     *   <li>LSEP (0x2028) - line separator</li>
-     * </ul>
-     * These characters must be escaped in attribute values to preserve them,
-     * as they would otherwise be normalized to spaces during parsing.
      */
     private void writeEscapedAttributeValue(String s) throws IOException {
         for (int i = 0; i < s.length(); ) {
             int codePoint = s.codePointAt(i);
             int charCount = Character.charCount(codePoint);
-            
+
             if (buffer.remaining() < 12) {
                 growBuffer(buffer.capacity() * 2);
             }
-            
+
             if (codePoint == '<') {
                 buffer.put((byte) '&');
                 buffer.put((byte) 'l');
@@ -931,50 +1097,84 @@ public class XMLWriter {
             } else if (codePoint == '\t') {
                 buffer.put((byte) '\t');
             } else if (codePoint == '\n') {
-                // Normalize newlines in attributes
                 buffer.put((byte) ' ');
             } else if (codePoint == '\r') {
-                // Normalize newlines in attributes
                 buffer.put((byte) ' ');
             } else if (codePoint < 0x20) {
-                // Control character - write as character reference
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
                 buffer.put((byte) codePoint);
             } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
-                // C1 control characters (0x7F-0x9F) in XML 1.1 mode
-                // These include NEL (0x85) which must be escaped to preserve in attributes
                 writeCharacterReference(codePoint);
             } else if (xml11 && codePoint == 0x2028) {
-                // LSEP (line separator) in XML 1.1 mode - must be escaped in attributes
                 writeCharacterReference(codePoint);
             } else {
                 writeEncodedCodePoint(codePoint);
             }
-            
+
+            i += charCount;
+        }
+    }
+
+    /**
+     * Writes an entity replacement value with escaping for DTD internal subset.
+     * Escapes &amp;, %, and " characters.
+     */
+    private void writeEscapedEntityValue(String s) throws IOException {
+        for (int i = 0; i < s.length(); ) {
+            int codePoint = s.codePointAt(i);
+            int charCount = Character.charCount(codePoint);
+
+            if (buffer.remaining() < 12) {
+                growBuffer(buffer.capacity() * 2);
+            }
+
+            if (codePoint == '&') {
+                buffer.put((byte) '&');
+                buffer.put((byte) 'a');
+                buffer.put((byte) 'm');
+                buffer.put((byte) 'p');
+                buffer.put((byte) ';');
+            } else if (codePoint == '%') {
+                buffer.put((byte) '&');
+                buffer.put((byte) '#');
+                buffer.put((byte) '3');
+                buffer.put((byte) '7');
+                buffer.put((byte) ';');
+            } else if (codePoint == '"') {
+                buffer.put((byte) '&');
+                buffer.put((byte) 'q');
+                buffer.put((byte) 'u');
+                buffer.put((byte) 'o');
+                buffer.put((byte) 't');
+                buffer.put((byte) ';');
+            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
+                       && codePoint != '\r') {
+                writeCharacterReference(codePoint);
+            } else if (codePoint < 0x80) {
+                buffer.put((byte) codePoint);
+            } else {
+                writeEncodedCodePoint(codePoint);
+            }
+
             i += charCount;
         }
     }
 
     /**
      * Writes a namespace URI value with XML 1.1 escaping.
-     * <p>
-     * In XML 1.1 mode, all non-ASCII characters (codePoint >= 0x80) are written
-     * as numeric character references. This ensures namespace URIs are encoded
-     * in a way that is compatible with XML 1.0 parsers and conforms to W3C
-     * XSLT serialization requirements for XML 1.1 output.
-     * <p>
-     * In XML 1.0 mode, this behaves identically to {@link #writeEscapedAttributeValue(String)}.
+     * In XML 1.1 mode, all non-ASCII characters are written as numeric
+     * character references.
      */
     private void writeEscapedNamespaceURI(String s) throws IOException {
         for (int i = 0; i < s.length(); ) {
             int codePoint = s.codePointAt(i);
             int charCount = Character.charCount(codePoint);
-            
+
             if (buffer.remaining() < 12) {
                 growBuffer(buffer.capacity() * 2);
             }
-            
+
             if (codePoint == '<') {
                 buffer.put((byte) '&');
                 buffer.put((byte) 'l');
@@ -998,20 +1198,17 @@ public class XMLWriter {
                 buffer.put((byte) 'o');
                 buffer.put((byte) 't');
                 buffer.put((byte) ';');
-            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n' && codePoint != '\r') {
-                // Control character - write as character reference
+            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
+                       && codePoint != '\r') {
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
                 buffer.put((byte) codePoint);
             } else if (xml11) {
-                // In XML 1.1 mode, escape ALL non-ASCII characters in namespace URIs
-                // This ensures compatibility and meets W3C conformance test expectations
                 writeCharacterReference(codePoint);
             } else {
-                // In XML 1.0 mode, write non-ASCII characters using the charset encoding
                 writeEncodedCodePoint(codePoint);
             }
-            
+
             i += charCount;
         }
     }
@@ -1021,32 +1218,25 @@ public class XMLWriter {
      * If the character cannot be encoded, uses a numeric character reference.
      */
     private void writeEncodedCodePoint(int codePoint) throws IOException {
-        // For UTF-8, always encode as UTF-8 bytes
         if (charset == StandardCharsets.UTF_8) {
             writeUtf8CodePoint(codePoint);
             return;
         }
-        
-        // For ISO-8859-1, check if character is in range
+
         if (charset == StandardCharsets.ISO_8859_1) {
             if (codePoint <= 0xFF) {
                 buffer.put((byte) codePoint);
             } else {
-                // Character not in ISO-8859-1 - use character reference
                 writeCharacterReference(codePoint);
             }
             return;
         }
-        
-        // For US-ASCII, only 0-127 are valid
+
         if (charset == StandardCharsets.US_ASCII) {
-            // codePoint is already >= 0x80 at this point, so always escape
             writeCharacterReference(codePoint);
             return;
         }
-        
-        // For other charsets, try to encode
-        // Fall back to character reference if encoding fails
+
         CharBuffer cb = CharBuffer.wrap(Character.toChars(codePoint));
         CharsetEncoder encoder = charset.newEncoder();
         if (encoder.canEncode(cb)) {
@@ -1061,11 +1251,7 @@ public class XMLWriter {
 
     /**
      * Writes a character reference in the appropriate format.
-     * <p>
-     * In XML 1.1 mode, uses hexadecimal format (&#xNNNN;) which is more commonly
-     * expected by XML 1.1 conformance tests and aligns with Unicode notation.
-     * In XML 1.0 mode, uses decimal format (&#NNN;) for broader compatibility.
-     * Both formats are valid per XML spec.
+     * XML 1.1 mode uses hexadecimal, XML 1.0 mode uses decimal.
      */
     private void writeCharacterReference(int codePoint) throws IOException {
         if (xml11) {
@@ -1075,11 +1261,8 @@ public class XMLWriter {
         }
     }
 
-    /**
-     * Writes a character reference in decimal format (&#NNN;).
-     */
     private void writeDecimalCharacterReference(int codePoint) throws IOException {
-        ensureCapacity(12); // &#nnnnnnnn; (up to 10 digits for large codepoints)
+        ensureCapacity(12);
         buffer.put((byte) '&');
         buffer.put((byte) '#');
         String decimal = Integer.toString(codePoint);
@@ -1089,12 +1272,8 @@ public class XMLWriter {
         buffer.put((byte) ';');
     }
 
-    /**
-     * Writes a character reference in hexadecimal format (&#xNNNN;).
-     * Uses uppercase hex digits for consistency.
-     */
     private void writeHexCharacterReference(int codePoint) throws IOException {
-        ensureCapacity(12); // &#xNNNNNN; (up to 8 hex digits for large codepoints)
+        ensureCapacity(12);
         buffer.put((byte) '&');
         buffer.put((byte) '#');
         buffer.put((byte) 'x');
@@ -1157,7 +1336,7 @@ public class XMLWriter {
      * Adapter that wraps an OutputStream as a WritableByteChannel.
      */
     static class OutputStreamChannel implements WritableByteChannel {
-        
+
         private final OutputStream out;
         private boolean open = true;
 
@@ -1196,4 +1375,3 @@ public class XMLWriter {
         }
     }
 }
-

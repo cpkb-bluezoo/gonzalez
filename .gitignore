@@ -25,5 +25,9 @@
 hs_err_pid*
 replay_pid*
 
+test/junit/results/
+test/output/
+
 # XSLT conformance test output
 xslconf/
+

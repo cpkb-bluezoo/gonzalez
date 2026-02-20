@@ -37,6 +37,7 @@ import org.xml.sax.ErrorHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
+import org.xml.sax.ext.DeclHandler;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -123,6 +124,7 @@ class DTDParser implements TokenConsumer {
     private ContentHandler contentHandler;
     private DTDHandler dtdHandler;
     private LexicalHandler lexicalHandler;
+    private DeclHandler declHandler;
     private ErrorHandler errorHandler;
     
     /**
@@ -394,6 +396,14 @@ class DTDParser implements TokenConsumer {
      */
     public void setLexicalHandler(LexicalHandler handler) {
         this.lexicalHandler = handler;
+    }
+
+    /**
+     * Sets the declaration handler for receiving DTD declaration events.
+     * @param handler the declaration handler
+     */
+    public void setDeclHandler(DeclHandler handler) {
+        this.declHandler = handler;
     }
 
     /**
@@ -1105,7 +1115,8 @@ class DTDParser implements TokenConsumer {
                 // Start parsing element declaration - create dedicated parser
                 savedState = state;
                 state = State.IN_ELEMENTDECL;
-                elementDeclParser = new ElementDeclParser(this, locator);
+                boolean fromExternalElement = xmlParser.isProcessingExternalEntity();
+                elementDeclParser = new ElementDeclParser(this, locator, fromExternalElement);
                 break;
 
             case START_ATTLISTDECL:
@@ -1803,6 +1814,17 @@ class DTDParser implements TokenConsumer {
         
         // Intern element name for fast comparison
         elementDecls.put(internedName, decl);
+        
+        // Report to DeclHandler if present
+        if (declHandler != null) {
+            String model;
+            if (decl.contentModel != null) {
+                model = decl.contentModel.toString();
+            } else {
+                model = decl.contentType.name();
+            }
+            declHandler.elementDecl(decl.name, model);
+        }
     }
 
     /**
@@ -1872,6 +1894,66 @@ class DTDParser implements TokenConsumer {
                 }
             }
         }
+        
+        // Report to DeclHandler if present
+        if (declHandler != null) {
+            for (AttributeDeclaration attr : attributeMap.values()) {
+                String typeStr = formatAttributeType(attr);
+                String modeStr = formatAttributeMode(attr);
+                String valueStr = formatAttributeDefault(attr);
+                declHandler.attributeDecl(elementName, attr.name, typeStr, modeStr, valueStr);
+            }
+        }
+    }
+    
+    /**
+     * Formats the attribute type string for DeclHandler.attributeDecl.
+     * For enumeration types, reconstructs the parenthesized form.
+     */
+    private String formatAttributeType(AttributeDeclaration attr) {
+        if (attr.enumeration != null && !attr.enumeration.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            if ("NOTATION".equals(attr.type)) {
+                sb.append("NOTATION ");
+            }
+            sb.append('(');
+            for (int i = 0; i < attr.enumeration.size(); i++) {
+                if (i > 0) {
+                    sb.append('|');
+                }
+                sb.append(attr.enumeration.get(i));
+            }
+            sb.append(')');
+            return sb.toString();
+        }
+        return attr.type;
+    }
+    
+    /**
+     * Formats the attribute default mode for DeclHandler.attributeDecl.
+     */
+    private String formatAttributeMode(AttributeDeclaration attr) {
+        if (attr.mode == Token.REQUIRED) {
+            return "#REQUIRED";
+        }
+        if (attr.mode == Token.IMPLIED) {
+            return "#IMPLIED";
+        }
+        if (attr.mode == Token.FIXED) {
+            return "#FIXED";
+        }
+        return null;
+    }
+    
+    /**
+     * Formats the attribute default value for DeclHandler.attributeDecl.
+     * Returns null if no default value.
+     */
+    private String formatAttributeDefault(AttributeDeclaration attr) {
+        if (attr.defaultValue == null) {
+            return null;
+        }
+        return entityStack.replacementTextToString(attr.defaultValue);
     }
 
     /**
@@ -1948,6 +2030,11 @@ class DTDParser implements TokenConsumer {
                     }
                 }
             }
+            
+            // Report parameter entity to DeclHandler (SAX uses % prefix for PE names)
+            if (declHandler != null) {
+                reportEntityDecl(entity, "%" + entity.name);
+            }
         } else {
             // General entity
             if (entities == null) {
@@ -1968,6 +2055,26 @@ class DTDParser implements TokenConsumer {
                     entity.notationName
                 );
             }
+            
+            // Report parsed general entity to DeclHandler
+            if (declHandler != null && entity.isParsed()) {
+                reportEntityDecl(entity, entity.name);
+            }
+        }
+    }
+    
+    /**
+     * Reports an entity declaration to the DeclHandler.
+     * For internal entities, fires internalEntityDecl.
+     * For external parsed entities, fires externalEntityDecl.
+     */
+    private void reportEntityDecl(EntityDeclaration entity, String name) throws SAXException {
+        if (entity.isInternal()) {
+            String value = entityStack.replacementTextToString(entity.replacementText);
+            declHandler.internalEntityDecl(name, value);
+        } else if (entity.isParsed()) {
+            declHandler.externalEntityDecl(name,
+                entity.externalID.publicId, entity.externalID.systemId);
         }
     }
 
@@ -2019,12 +2126,18 @@ class DTDParser implements TokenConsumer {
         }
         
         try {
+            if (lexicalHandler != null) {
+                lexicalHandler.startEntity("[dtd]");
+            }
             // Use ContentParser's processExternalEntity to resolve and parse
             // the external DTD subset. This will create a nested Tokenizer
             // that sends tokens back through ContentParser to this DTDParser.
             // The DTDParser is in IN_INTERNAL_SUBSET state, so it processes
             // the tokens as markup declarations.
             xmlParser.processExternalEntity(doctypeName, publicId, systemId);
+            if (lexicalHandler != null) {
+                lexicalHandler.endEntity("[dtd]");
+            }
         } catch (IOException e) {
             // I/O error resolving external DTD
             // Report as SAX error if we have an error handler

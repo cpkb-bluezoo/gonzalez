@@ -1076,23 +1076,10 @@ class Tokenizer implements Locator2 {
                 posAfterChar = charBuffer.position();  // Update after consuming sequence
             }
             
-            // Emit token(s) if specified
-            // Determine if we should exclude the trigger character from the first token
-            // When emitting FROM ACCUMULATING_MARKUP_NAME, always exclude the trigger (e.g., % or whitespace)
-            // When transitioning TO accumulating states, also exclude the trigger
-            boolean excludeTrigger = (miniState == MiniState.ACCUMULATING_MARKUP_NAME ||
-                                     transition.nextMiniState == MiniState.ACCUMULATING_NAME ||
-                                     transition.nextMiniState == MiniState.ACCUMULATING_ENTITY_NAME ||
-                                     transition.nextMiniState == MiniState.ACCUMULATING_PARAM_ENTITY_NAME ||
-                                     (miniState == MiniState.SEEN_LT_BANG_OPEN_BRACKET && 
-                                      transition.nextMiniState == MiniState.READY &&
-                                      transition.stateToChangeTo == TokenizerState.CONDITIONAL_SECTION_KEYWORD) ||
-                                     transition.nextMiniState == MiniState.ACCUMULATING_MARKUP_NAME ||
-                                     transition.nextMiniState == MiniState.ACCUMULATING_CHAR_REF_DEC ||
-                                     transition.nextMiniState == MiniState.ACCUMULATING_CHAR_REF_HEX ||
-                                     transition.nextMiniState.isGreedyAccumulation());
+            // Emit token(s) if specified (excludeTrigger pre-computed in transition table)
+            boolean excludeTrigger = transition.excludeTrigger;
             
-            if (transition.tokensToEmit != null && !transition.tokensToEmit.isEmpty()) {
+            if (transition.hasTokensToEmit) {
                 
                 for (int i = 0; i < transition.tokensToEmit.size(); i++) {
                     Token token = transition.tokensToEmit.get(i);
@@ -1169,15 +1156,9 @@ class Tokenizer implements Locator2 {
                 }
             }
             
-            // Advance position
-            // Special case: if excludeTrigger is true and we're transitioning to READY from SEEN_LT_BANG_OPEN_BRACKET,
-            // don't advance pos so the trigger character can be processed in the next iteration
-            boolean skipAdvance = excludeTrigger && 
-                                  miniState == MiniState.SEEN_LT_BANG_OPEN_BRACKET && 
-                                  transition.nextMiniState == MiniState.READY &&
-                                  transition.stateToChangeTo == TokenizerState.CONDITIONAL_SECTION_KEYWORD;
+            // Advance position (skipAdvance pre-computed in transition table)
             int oldPos = pos;
-            if (!skipAdvance) {
+            if (!transition.skipAdvance) {
                 pos = posAfterChar;
             }
             
@@ -1373,7 +1354,6 @@ class Tokenizer implements Locator2 {
      */
     private void emitTokenWindow(CharBuffer charBuffer, Token token, int start, int length) throws SAXException {
         // Check if this is a NAME token in DOCTYPE context that should be a keyword
-        // This applies to both DOCTYPE (<!DOCTYPE doc SYSTEM...>) and DOCTYPE_INTERNAL (inside [...])
         if (token == Token.NAME && (state == TokenizerState.DOCTYPE || state == TokenizerState.DOCTYPE_INTERNAL)) {
             Token keywordToken = checkDOCTYPEKeyword(charBuffer, start, length);
             if (keywordToken != null) {
@@ -1382,7 +1362,6 @@ class Tokenizer implements Locator2 {
         }
         
         // Check if this is a NAME token in DOCTYPE_INTERNAL or CONDITIONAL_SECTION_INCLUDE that should be a DTD keyword
-        // (except for markup declaration names which are handled separately below)
         if (token == Token.NAME && 
             (state == TokenizerState.DOCTYPE_INTERNAL ||
              state == TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT ||
@@ -1390,13 +1369,11 @@ class Tokenizer implements Locator2 {
              state == TokenizerState.CONDITIONAL_SECTION_INCLUDE) &&
             miniState != MiniState.ACCUMULATING_MARKUP_NAME) {
             Token keywordToken = checkDTDKeyword(charBuffer, start, length);
-            // checkDTDKeyword returns Token.NAME if not a keyword, so we don't need to check for null
             token = keywordToken;
         }
         
         // Check if this is a conditional section keyword (INCLUDE or IGNORE)
         if (token == Token.NAME && state == TokenizerState.CONDITIONAL_SECTION_KEYWORD) {
-            // Check for "INCLUDE" or "IGNORE"
             if (length == 7 && 
                 charBuffer.get(start) == 'I' &&
                 charBuffer.get(start + 1) == 'N' &&
@@ -1417,7 +1394,6 @@ class Tokenizer implements Locator2 {
                 token = Token.IGNORE;
                 pendingConditionalType = Token.IGNORE;
             }
-            // If not INCLUDE or IGNORE, it's an error - but we'll let the parser handle that
         }
         
         // Check if this is a markup declaration name in DOCTYPE_INTERNAL or CONDITIONAL_SECTION_INCLUDE
@@ -1431,60 +1407,44 @@ class Tokenizer implements Locator2 {
         }
         
         // Check if this is a PI target name and validate it's not "xml" (case-insensitive)
-        // Per XML 1.0 spec rule 17: PITarget names matching [Xx][Mm][Ll] are reserved
         if (token == Token.NAME && state == TokenizerState.PI_TARGET) {
             if (length == 3) {
                 char c0 = charBuffer.get(start);
                 char c1 = charBuffer.get(start + 1);
                 char c2 = charBuffer.get(start + 2);
                 if ((c0 == 'x' || c0 == 'X') && (c1 == 'm' || c1 == 'M') && (c2 == 'l' || c2 == 'L')) {
-                    // This is ALWAYS an error in PI_TARGET state because:
-                    // 1. If we're at the start of an external entity the <?xml is handled by DeclParser not Tokenizer
-                    // 2. After the first text declaration, subsequent <?xml...?> are illegal PIs
-                    // WFC: Processing Instructions (Production 16)
-                    // "Processing instruction targets matching [Xx][Mm][Ll] are reserved"
                     throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
                 }
             }
         }
         
-
         // Track nested conditional sections in IGNORE mode
-        // When we emit START_CONDITIONAL in IGNORE mode, increment depth
         if (token == Token.START_CONDITIONAL && state == TokenizerState.CONDITIONAL_SECTION_IGNORE) {
             ignoreConditionalDepth++;
         }
         
         // Special handling for END_CDATA in conditional sections
-        // When we emit ]]>, pop back to the previous state if we're in a conditional context
         if (token == Token.END_CDATA && 
             (state == TokenizerState.CONDITIONAL_SECTION_INCLUDE || 
              state == TokenizerState.CONDITIONAL_SECTION_IGNORE)) {
             
-            // For IGNORE sections, track nesting depth
             if (state == TokenizerState.CONDITIONAL_SECTION_IGNORE && ignoreConditionalDepth > 0) {
-                // Still inside nested conditional, just decrement depth
                 ignoreConditionalDepth--;
             } else {
-                // Pop back to the state we were in before entering this conditional section
                 if (conditionalStateStack != null && !conditionalStateStack.isEmpty()) {
                     TokenizerState previousState = conditionalStateStack.pop();
                     changeState(previousState);
                 }
-                // Reset depth counter when exiting IGNORE mode
                 ignoreConditionalDepth = 0;
             }
         }
 
-        // Normal tokens go to main consumer
         if (token.hasAssociatedText()) {
-            // Set window into charBuffer (no duplicate needed - consumer won't modify position)
             int savedPosition = charBuffer.position();
             int savedLimit = charBuffer.limit();
             charBuffer.position(start);
             charBuffer.limit(start + length);
             consumer.receive(token, charBuffer);
-            // Restore position/limit for tokenizer to continue
             charBuffer.position(savedPosition);
             charBuffer.limit(savedLimit);
         } else {

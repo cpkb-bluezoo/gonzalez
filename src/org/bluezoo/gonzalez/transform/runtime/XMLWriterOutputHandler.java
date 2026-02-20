@@ -28,6 +28,7 @@ import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.AttributesImpl;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -35,9 +36,7 @@ import java.nio.channels.Channels;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,27 +53,8 @@ import java.util.Map;
  * be added after startElement), which is required for XSLT's attribute and
  * namespace output order independence.
  *
- * <p>As a ContentHandler, it can receive SAX events from any SAX source and
- * serialize them to a byte channel or output stream, making it suitable for
- * JAXP StreamResult output.
- *
- * <h2>Example Usage</h2>
- * <pre>{@code
- * // As XSLT OutputHandler
- * XMLWriterOutputHandler handler = new XMLWriterOutputHandler(channel, properties);
- * handler.startDocument();
- * handler.startElement("", "root", "root");
- * handler.attribute("", "id", "id", "1");
- * handler.characters("Hello");
- * handler.endElement("", "root", "root");
- * handler.endDocument();
- *
- * // As SAX ContentHandler (sink)
- * XMLWriterOutputHandler handler = new XMLWriterOutputHandler(outputStream);
- * XMLReader reader = XMLReaderFactory.createXMLReader();
- * reader.setContentHandler(handler);
- * reader.parse(inputSource);
- * }</pre>
+ * <p>As a ContentHandler, it delegates directly to {@link XMLWriter}'s SAX
+ * interface methods, since XMLWriter implements ContentHandler natively.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -84,7 +64,6 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     private final OutputProperties outputProperties;
     
     // Character map for XSLT 2.0+ character mapping during serialization
-    // Keys are Unicode code points (int) to support supplementary characters
     private Map<Integer, String> characterMappings;
 
     // Deferred element state for OutputHandler mode
@@ -98,12 +77,9 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     
     // Buffered namespaces for pending element
     private final List<PendingNamespace> pendingNamespaces = new ArrayList<PendingNamespace>();
-
-    // Buffered namespace prefixes from startPrefixMapping (for ContentHandler mode)
-    private final Deque<PrefixMapping> pendingPrefixes = new ArrayDeque<>();
     
     // Reusable prefix-to-namespace map (for performance)
-    private final Map<String, String> prefixToNamespaceMap = new HashMap<>();
+    private final Map<String, String> prefixToNamespaceMap = new HashMap<String, String>();
     
     // XSLT 2.0 atomic value spacing state
     private boolean atomicValuePending = false;
@@ -153,19 +129,19 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     public XMLWriterOutputHandler(WritableByteChannel channel, OutputProperties properties) {
         this.outputProperties = properties != null ? properties : new OutputProperties();
         
-        IndentConfig indentConfig = null;
+        this.writer = new XMLWriter(channel);
+        
         if (outputProperties.isIndent()) {
-            indentConfig = new IndentConfig(' ', 2);
+            writer.setIndentConfig(new IndentConfig(' ', 2));
         }
         
-        // Use the specified encoding, defaulting to UTF-8
         String encoding = outputProperties.getEncoding();
         Charset charset = (encoding != null) ? Charset.forName(encoding) : StandardCharsets.UTF_8;
+        writer.setCharset(charset);
         
-        // Check for XML 1.1 output mode (for proper control character escaping)
         boolean xml11 = "1.1".equals(outputProperties.getVersion());
+        writer.setXml11(xml11);
         
-        this.writer = new XMLWriter(channel, 4096, indentConfig, charset, xml11);
         this.inPendingElement = false;
     }
 
@@ -249,20 +225,15 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
 
     @Override
     public void startDocument() throws SAXException {
-        // XML declaration is handled by XMLWriter if needed
         if (!outputProperties.isOmitXmlDeclaration() && 
             outputProperties.getMethod() == OutputProperties.Method.XML) {
-            try {
-                String encoding = outputProperties.getEncoding();
-                if (encoding == null) {
-                    encoding = "UTF-8";
-                }
-                String standalone = outputProperties.isStandalone() ? " standalone=\"yes\"" : "";
-                writer.writeProcessingInstruction("xml", 
-                    "version=\"" + outputProperties.getVersion() + "\" encoding=\"" + encoding + "\"" + standalone);
-            } catch (IOException e) {
-                throw new SAXException("Error writing XML declaration", e);
+            String encoding = outputProperties.getEncoding();
+            if (encoding == null) {
+                encoding = "UTF-8";
             }
+            String standalone = outputProperties.isStandalone() ? " standalone=\"yes\"" : "";
+            writer.processingInstruction("xml", 
+                "version=\"" + outputProperties.getVersion() + "\" encoding=\"" + encoding + "\"" + standalone);
         }
     }
 
@@ -280,7 +251,6 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     public void startElement(String namespaceURI, String localName, String qName) throws SAXException {
         flushPendingElement();
         
-        // Store element info for deferred output
         pendingUri = namespaceURI;
         pendingLocalName = localName;
         pendingQName = qName;
@@ -292,15 +262,9 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     @Override
     public void endElement(String namespaceURI, String localName, String qName) throws SAXException {
         if (inPendingElement) {
-            // Empty element - write start then let XMLWriter handle self-closing
             writePendingStartElement();
         }
-        
-        try {
-            writer.writeEndElement();
-        } catch (IOException e) {
-            throw new SAXException("Error writing end element", e);
-        }
+        writer.endElement(namespaceURI, localName, qName);
     }
 
     @Override
@@ -310,15 +274,12 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             throw new SAXException("attribute() called outside of element start");
         }
         
-        // Buffer attribute, using key to detect and merge duplicates
-        // Key is {nsUri}localName to handle namespaced attributes correctly
         String key = (namespaceURI != null && !namespaceURI.isEmpty()) 
             ? "{" + namespaceURI + "}" + localName 
             : localName;
         
         PendingAttribute existing = pendingAttributes.get(key);
         if (existing != null) {
-            // Update existing attribute value (later values override earlier)
             existing.value = value;
         } else {
             pendingAttributes.put(key, new PendingAttribute(namespaceURI, localName, qName, value));
@@ -331,12 +292,10 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             throw new SAXException("namespace() called outside of element start");
         }
         
-        // Skip the xml prefix - it's implicitly bound and should never be declared
         if (OutputHandlerUtils.isXmlPrefix(prefix)) {
             return;
         }
         
-        // Buffer namespace declaration
         pendingNamespaces.add(new PendingNamespace(prefix, uri));
     }
 
@@ -344,14 +303,11 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     public void characters(String text) throws SAXException {
         flushPendingElement();
         
-        try {
-            if (characterMappings == null || characterMappings.isEmpty()) {
-                writer.writeCharacters(text);
-            } else {
-                writeCharactersWithMapping(text);
-            }
-        } catch (IOException e) {
-            throw new SAXException("Error writing characters", e);
+        if (characterMappings == null || characterMappings.isEmpty()) {
+            char[] ch = text.toCharArray();
+            writer.characters(ch, 0, ch.length);
+        } else {
+            writeCharactersWithMapping(text);
         }
     }
     
@@ -359,7 +315,7 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
      * Writes characters with character mapping applied.
      * Characters with mappings are written raw (unescaped), others are escaped.
      */
-    private void writeCharactersWithMapping(String text) throws IOException {
+    private void writeCharactersWithMapping(String text) throws SAXException {
         StringBuilder normalChars = null;
         
         int i = 0;
@@ -368,12 +324,11 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             String replacement = characterMappings.get(codePoint);
             
             if (replacement != null) {
-                // Flush any accumulated normal characters
                 if (normalChars != null && normalChars.length() > 0) {
-                    writer.writeCharacters(normalChars.toString());
+                    char[] ch = normalChars.toString().toCharArray();
+                    writer.characters(ch, 0, ch.length);
                     normalChars.setLength(0);
                 }
-                // Write replacement raw (unescaped) - per XSLT spec
                 writer.writeRaw(replacement);
             } else {
                 if (normalChars == null) {
@@ -384,50 +339,34 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             i += Character.charCount(codePoint);
         }
         
-        // Flush any remaining normal characters
         if (normalChars != null && normalChars.length() > 0) {
-            writer.writeCharacters(normalChars.toString());
+            char[] ch = normalChars.toString().toCharArray();
+            writer.characters(ch, 0, ch.length);
         }
     }
 
     @Override
     public void charactersRaw(String text) throws SAXException {
-        // For disable-output-escaping, write without XML escaping
         flushPendingElement();
-        
-        try {
-            writer.writeRaw(text);
-        } catch (IOException e) {
-            throw new SAXException("Error writing raw characters", e);
-        }
+        writer.writeRaw(text);
     }
 
     @Override
     public void comment(String text) throws SAXException {
         flushPendingElement();
-        
-        try {
-            writer.writeComment(text);
-        } catch (IOException e) {
-            throw new SAXException("Error writing comment", e);
-        }
+        char[] ch = text.toCharArray();
+        writer.comment(ch, 0, ch.length);
     }
 
     @Override
     public void processingInstruction(String target, String data) throws SAXException {
         flushPendingElement();
-        
-        try {
-            writer.writeProcessingInstruction(target, data);
-        } catch (IOException e) {
-            throw new SAXException("Error writing processing instruction", e);
-        }
+        writer.processingInstruction(target, data);
     }
 
     @Override
     public void flush() throws SAXException {
         flushPendingElement();
-        
         try {
             writer.flush();
         } catch (IOException e) {
@@ -439,91 +378,46 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
 
     @Override
     public void setDocumentLocator(Locator locator) {
-        // Locator not needed for serialization
+        writer.setDocumentLocator(locator);
     }
 
     @Override
     public void startPrefixMapping(String prefix, String uri) throws SAXException {
-        // Buffer prefix mappings for the next startElement
-        pendingPrefixes.add(new PrefixMapping(prefix, uri));
+        writer.startPrefixMapping(prefix, uri);
     }
 
     @Override
     public void endPrefixMapping(String prefix) throws SAXException {
-        // Namespace scope is handled automatically by XMLWriter
+        writer.endPrefixMapping(prefix);
     }
 
     @Override
     public void startElement(String uri, String localName, String qName, Attributes atts) 
             throws SAXException {
         flushPendingElement();
-        
-        try {
-            // Write the start element
-            String prefix = OutputHandlerUtils.extractPrefix(qName);
-            writer.writeStartElement(prefix, localName, uri);
-            
-            // Write any buffered namespace declarations
-            while (!pendingPrefixes.isEmpty()) {
-                PrefixMapping pm = pendingPrefixes.poll();
-                if (pm.prefix == null || pm.prefix.isEmpty()) {
-                    writer.writeDefaultNamespace(pm.uri);
-                } else {
-                    writer.writeNamespace(pm.prefix, pm.uri);
-                }
-            }
-            
-            // Write attributes
-            for (int i = 0; i < atts.getLength(); i++) {
-                String attrPrefix = OutputHandlerUtils.extractPrefix(atts.getQName(i));
-                if (attrPrefix != null && !attrPrefix.isEmpty()) {
-                    writer.writeAttribute(attrPrefix, atts.getURI(i), atts.getLocalName(i), atts.getValue(i));
-                } else {
-                    writer.writeAttribute(atts.getLocalName(i), atts.getValue(i));
-                }
-            }
-        } catch (IOException e) {
-            throw new SAXException("Error writing start element", e);
-        }
+        writer.startElement(uri, localName, qName, atts);
     }
-
-    // Note: endElement(String, String, String) is shared between ContentHandler and OutputHandler
-    // The implementation in the OutputHandler section handles both cases.
 
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
         flushPendingElement();
         
-        try {
-            if (characterMappings == null || characterMappings.isEmpty()) {
-                writer.writeCharacters(ch, start, length);
-            } else {
-                // Delegate to String version for character mapping
-                writeCharactersWithMapping(new String(ch, start, length));
-            }
-        } catch (IOException e) {
-            throw new SAXException("Error writing characters", e);
+        if (characterMappings == null || characterMappings.isEmpty()) {
+            writer.characters(ch, start, length);
+        } else {
+            writeCharactersWithMapping(new String(ch, start, length));
         }
     }
 
     @Override
     public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
-        // Write as regular characters (or could be discarded based on config)
         characters(ch, start, length);
     }
-
-    // Note: processingInstruction(String, String) is shared between ContentHandler and OutputHandler
-    // The implementation in the OutputHandler section handles both cases.
 
     @Override
     public void skippedEntity(String name) throws SAXException {
         flushPendingElement();
-        
-        try {
-            writer.writeEntityRef(name);
-        } catch (IOException e) {
-            throw new SAXException("Error writing entity reference", e);
-        }
+        writer.skippedEntity(name);
     }
 
     // ========== Private Helpers ==========
@@ -547,121 +441,86 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
             return;
         }
         
-        try {
-            String elementPrefix = OutputHandlerUtils.extractPrefix(pendingQName);
-            String actualElementPrefix = elementPrefix;
-            String actualQName = pendingQName;
-            
-            // Namespace fixup: check for conflicts between element prefix and xsl:namespace declarations
-            // A conflict occurs when a namespace declaration uses the same prefix but different URI
-            PendingNamespace conflictingNs = null;
-            if (elementPrefix != null && !elementPrefix.isEmpty() && !pendingUri.isEmpty()) {
-                for (PendingNamespace ns : pendingNamespaces) {
-                    if (elementPrefix.equals(ns.prefix) && !pendingUri.equals(ns.uri)) {
-                        conflictingNs = ns;
-                        break;
-                    }
-                }
-                
-                if (conflictingNs != null) {
-                    // Conflict! Generate a new prefix for the element
-                    actualElementPrefix = generateUniquePrefix(elementPrefix);
-                    actualQName = actualElementPrefix + ":" + pendingLocalName;
-                    
-                    // Remove any existing declaration for the element's namespace with the old prefix
-                    // (this is the declaration that was output by the literal result element)
-                    pendingNamespaces.removeIf(ns -> 
-                        elementPrefix.equals(ns.prefix) && pendingUri.equals(ns.uri));
-                    
-                    // Add namespace declaration for the element's namespace with new prefix
-                    pendingNamespaces.add(new PendingNamespace(actualElementPrefix, pendingUri));
-                }
-            }
-            
-            writer.writeStartElement(actualElementPrefix, pendingLocalName, pendingUri);
-            
-            // Track prefix-to-namespace mappings (reuse map for performance)
-            prefixToNamespaceMap.clear();
-            
-            // Write buffered namespace declarations and track them
+        String elementPrefix = OutputHandlerUtils.extractPrefix(pendingQName);
+        String actualElementPrefix = elementPrefix;
+        String actualQName = pendingQName;
+        
+        // Namespace fixup: check for conflicts between element prefix and xsl:namespace declarations
+        PendingNamespace conflictingNs = null;
+        if (elementPrefix != null && !elementPrefix.isEmpty() && !pendingUri.isEmpty()) {
             for (PendingNamespace ns : pendingNamespaces) {
-                if (ns.prefix == null || ns.prefix.isEmpty()) {
-                    writer.writeDefaultNamespace(ns.uri);
-                } else {
-                    writer.writeNamespace(ns.prefix, ns.uri);
-                    prefixToNamespaceMap.put(ns.prefix, ns.uri);
+                if (elementPrefix.equals(ns.prefix) && !pendingUri.equals(ns.uri)) {
+                    conflictingNs = ns;
+                    break;
                 }
             }
-            pendingNamespaces.clear();
             
-            // Write buffered attributes (already deduplicated), applying fixup to attribute prefixes
-            for (PendingAttribute attr : pendingAttributes.values()) {
-                String attrPrefix = OutputHandlerUtils.extractPrefix(attr.qName);
-                String actualAttrPrefix = attrPrefix;
-                String actualAttrQName = attr.qName;
+            if (conflictingNs != null) {
+                actualElementPrefix = generateUniquePrefix(elementPrefix);
+                actualQName = actualElementPrefix + ":" + pendingLocalName;
                 
-                // If the attribute used the same prefix as the element and we renamed it, update the attribute
-                if (attrPrefix != null && attrPrefix.equals(elementPrefix) && !actualElementPrefix.equals(elementPrefix)) {
-                    actualAttrPrefix = actualElementPrefix;
-                    actualAttrQName = actualAttrPrefix + ":" + attr.localName;
-                }
+                pendingNamespaces.removeIf(ns -> 
+                    elementPrefix.equals(ns.prefix) && pendingUri.equals(ns.uri));
                 
-                // Handle namespaced attributes
-                // Skip xml prefix - it's implicitly bound and should never be declared
-                if (actualAttrPrefix != null && !actualAttrPrefix.isEmpty() && 
-                    !OutputHandlerUtils.isXmlPrefix(actualAttrPrefix) &&
-                    attr.namespaceURI != null && !attr.namespaceURI.isEmpty()) {
-                    String existingUri = prefixToNamespaceMap.get(actualAttrPrefix);
-                    if (existingUri == null) {
-                        // Prefix not declared - add namespace declaration
-                        writer.writeNamespace(actualAttrPrefix, attr.namespaceURI);
-                        prefixToNamespaceMap.put(actualAttrPrefix, attr.namespaceURI);
-                    } else if (!existingUri.equals(attr.namespaceURI)) {
-                        // Prefix conflict! Generate a new unique prefix
-                        actualAttrPrefix = generateUniquePrefix(actualAttrPrefix);
-                        actualAttrQName = actualAttrPrefix + ":" + attr.localName;
-                        // Add namespace declaration for the new prefix
-                        writer.writeNamespace(actualAttrPrefix, attr.namespaceURI);
-                        prefixToNamespaceMap.put(actualAttrPrefix, attr.namespaceURI);
-                    }
-                }
-                
-                if (actualAttrPrefix != null && !actualAttrPrefix.isEmpty()) {
-                    writer.writeAttribute(actualAttrPrefix, attr.namespaceURI, attr.localName, attr.value);
-                } else {
-                    writer.writeAttribute(attr.localName, attr.value);
-                }
+                pendingNamespaces.add(new PendingNamespace(actualElementPrefix, pendingUri));
             }
-            pendingAttributes.clear();
-            
-            inPendingElement = false;
-        } catch (IOException e) {
-            throw new SAXException("Error writing start element", e);
         }
+        
+        // Send prefix mappings to writer
+        prefixToNamespaceMap.clear();
+        for (PendingNamespace ns : pendingNamespaces) {
+            String nsPrefix = (ns.prefix != null) ? ns.prefix : "";
+            writer.startPrefixMapping(nsPrefix, ns.uri);
+            if (!nsPrefix.isEmpty()) {
+                prefixToNamespaceMap.put(nsPrefix, ns.uri);
+            }
+        }
+        pendingNamespaces.clear();
+        
+        // Build Attributes for the start element
+        AttributesImpl atts = new AttributesImpl();
+        for (PendingAttribute attr : pendingAttributes.values()) {
+            String attrPrefix = OutputHandlerUtils.extractPrefix(attr.qName);
+            String actualAttrPrefix = attrPrefix;
+            String actualAttrQName = attr.qName;
+            
+            if (attrPrefix != null && attrPrefix.equals(elementPrefix) && !actualElementPrefix.equals(elementPrefix)) {
+                actualAttrPrefix = actualElementPrefix;
+                actualAttrQName = actualAttrPrefix + ":" + attr.localName;
+            }
+            
+            if (actualAttrPrefix != null && !actualAttrPrefix.isEmpty() && 
+                !OutputHandlerUtils.isXmlPrefix(actualAttrPrefix) &&
+                attr.namespaceURI != null && !attr.namespaceURI.isEmpty()) {
+                String existingUri = prefixToNamespaceMap.get(actualAttrPrefix);
+                if (existingUri == null) {
+                    writer.startPrefixMapping(actualAttrPrefix, attr.namespaceURI);
+                    prefixToNamespaceMap.put(actualAttrPrefix, attr.namespaceURI);
+                } else if (!existingUri.equals(attr.namespaceURI)) {
+                    actualAttrPrefix = generateUniquePrefix(actualAttrPrefix);
+                    actualAttrQName = actualAttrPrefix + ":" + attr.localName;
+                    writer.startPrefixMapping(actualAttrPrefix, attr.namespaceURI);
+                    prefixToNamespaceMap.put(actualAttrPrefix, attr.namespaceURI);
+                }
+            }
+            
+            String nsUri = (attr.namespaceURI != null) ? attr.namespaceURI : "";
+            atts.addAttribute(nsUri, attr.localName, actualAttrQName, "CDATA", attr.value);
+        }
+        pendingAttributes.clear();
+        
+        writer.startElement(pendingUri, pendingLocalName, actualQName, atts);
+        
+        inPendingElement = false;
     }
     
     /**
      * Generates a unique prefix by appending a number suffix.
-     * Uses a simple counter to ensure uniqueness within the current element.
      */
     private int prefixCounter = 0;
     
     private String generateUniquePrefix(String basePrefix) {
-        // Generate prefix like "p_0", "p_1", etc.
         return basePrefix + "_" + (prefixCounter++);
-    }
-
-    /**
-     * Holds a prefix-to-URI mapping from startPrefixMapping.
-     */
-    private static final class PrefixMapping {
-        final String prefix;
-        final String uri;
-
-        PrefixMapping(String prefix, String uri) {
-            this.prefix = prefix;
-            this.uri = uri;
-        }
     }
     
     @Override
@@ -688,8 +547,6 @@ public final class XMLWriterOutputHandler implements OutputHandler, ContentHandl
     public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
             throws org.xml.sax.SAXException {
         if (value != null) {
-            // In element content, add space between adjacent atomic values (XSLT 2.0+)
-            // But NOT in attribute content
             if (atomicValuePending && !inAttributeContent) {
                 characters(" ");
             }

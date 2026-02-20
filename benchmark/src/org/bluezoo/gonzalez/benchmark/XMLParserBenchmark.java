@@ -23,26 +23,25 @@ package org.bluezoo.gonzalez.benchmark;
 
 import org.bluezoo.gonzalez.Parser;
 import org.openjdk.jmh.annotations.*;
-import org.xml.sax.InputSource;
-import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import javax.xml.parsers.SAXParser;
 import javax.xml.parsers.SAXParserFactory;
-import java.io.*;
+import java.io.ByteArrayInputStream;
+import java.io.FileNotFoundException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.concurrent.TimeUnit;
 
 /**
- * JMH benchmark comparing Gonzalez parser performance with default Java SAX parser.
- * 
- * Tests both small (~1K) and large (>100K) XML documents without DOCTYPE declarations.
- * 
+ * JMH benchmark comparing Gonzalez (ByteBuffer API) with JDK Xerces.
+ *
+ * <p>Tests two document types (plain XML and namespace-heavy XML) with
+ * namespace-aware processing on or off, for both small and large files.
+ *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
 @BenchmarkMode(Mode.AverageTime)
@@ -53,149 +52,113 @@ import java.util.concurrent.TimeUnit;
 @Fork(value = 2, jvmArgs = {"-Xms2G", "-Xmx2G"})
 public class XMLParserBenchmark {
 
-    private SAXParserFactory saxParserFactory;
+    @Param({"plain", "namespaced"})
+    private String docType;
+
+    @Param({"true", "false"})
+    private boolean namespaceAware;
+
+    private SAXParserFactory jdkFactory;
     private DefaultHandler emptyHandler;
-    
-    private Path smallFile;
-    private Path largeFile;
-    
+
     private byte[] smallBytes;
     private byte[] largeBytes;
+
+    private Parser reusableParser;
 
     private static final String JDK_XERCES_FACTORY =
         "com.sun.org.apache.xerces.internal.jaxp.SAXParserFactoryImpl";
 
     @Setup
     public void setup() throws Exception {
-        // Explicitly use JDK Xerces to avoid SPI hijacking by other SAX
-        // implementations (e.g., BFO SAX) on the classpath
-        saxParserFactory = SAXParserFactory.newInstance(JDK_XERCES_FACTORY, null);
-        saxParserFactory.setNamespaceAware(false);
-        saxParserFactory.setValidating(false);
-        
-        // Empty handler for SAX parsing
+        jdkFactory = SAXParserFactory.newInstance(JDK_XERCES_FACTORY, null);
+        jdkFactory.setNamespaceAware(namespaceAware);
+        jdkFactory.setValidating(false);
+
         emptyHandler = new DefaultHandler();
-        
-        // Locate test files
-        smallFile = Paths.get("benchmark/resources/small.xml");
-        largeFile = Paths.get("benchmark/resources/large.xml");
-        
+
+        Path smallFile;
+        Path largeFile;
+        if ("namespaced".equals(docType)) {
+            smallFile = Paths.get("benchmark/resources/small-ns.xml");
+            largeFile = Paths.get("benchmark/resources/large-ns.xml");
+        } else {
+            smallFile = Paths.get("benchmark/resources/small.xml");
+            largeFile = Paths.get("benchmark/resources/large.xml");
+        }
+
         if (!Files.exists(smallFile)) {
             throw new FileNotFoundException("Small test file not found: " + smallFile);
         }
         if (!Files.exists(largeFile)) {
             throw new FileNotFoundException("Large test file not found: " + largeFile);
         }
-        
-        // Pre-load file contents into byte arrays for Gonzalez benchmarks
+
         smallBytes = Files.readAllBytes(smallFile);
         largeBytes = Files.readAllBytes(largeFile);
-        
+
         System.out.println("Benchmark setup complete:");
+        System.out.println("  Document type:    " + docType);
+        System.out.println("  Namespace-aware:  " + namespaceAware);
+        System.out.println("  JDK SAX factory:  " + jdkFactory.getClass().getName());
         System.out.println("  Small file: " + smallFile + " (" + smallBytes.length + " bytes)");
         System.out.println("  Large file: " + largeFile + " (" + largeBytes.length + " bytes)");
     }
 
-    // ===== Small File Benchmarks =====
+    // ===== Small File =====
 
     @Benchmark
-    public void smallFile_JavaSAX() throws Exception {
-        SAXParser parser = saxParserFactory.newSAXParser();
-        try (InputStream is = Files.newInputStream(smallFile)) {
-            parser.parse(is, emptyHandler);
-        }
+    public void smallFile_JDK() throws Exception {
+        SAXParser parser = jdkFactory.newSAXParser();
+        InputStream is = new ByteArrayInputStream(smallBytes);
+        parser.parse(is, emptyHandler);
+        is.close();
     }
 
     @Benchmark
-    public void smallFile_GonzalezByteBuffer() throws Exception {
+    public void smallFile_Gonzalez() throws Exception {
         Parser parser = new Parser();
-        parser.setFeature("http://xml.org/sax/features/namespaces", false);
+        parser.setFeature("http://xml.org/sax/features/namespaces", namespaceAware);
         parser.setContentHandler(emptyHandler);
-        
+
         ByteBuffer buffer = ByteBuffer.wrap(smallBytes);
         parser.receive(buffer);
         parser.close();
     }
 
+    // ===== Large File =====
+
     @Benchmark
-    public void smallFile_GonzalezFileChannel() throws Exception {
+    public void largeFile_JDK() throws Exception {
+        SAXParser parser = jdkFactory.newSAXParser();
+        InputStream is = new ByteArrayInputStream(largeBytes);
+        parser.parse(is, emptyHandler);
+        is.close();
+    }
+
+    @Benchmark
+    public void largeFile_Gonzalez() throws Exception {
         Parser parser = new Parser();
-        parser.setFeature("http://xml.org/sax/features/namespaces", false);
+        parser.setFeature("http://xml.org/sax/features/namespaces", namespaceAware);
         parser.setContentHandler(emptyHandler);
-        
-        try (FileChannel channel = FileChannel.open(smallFile, StandardOpenOption.READ)) {
-            ByteBuffer buffer = ByteBuffer.allocate(8192);
-            while (channel.read(buffer) != -1) {
-                buffer.flip();
-                parser.receive(buffer);
-                buffer.clear();
-            }
-            parser.close();
-        }
-    }
 
-    // ===== Large File Benchmarks =====
-
-    @Benchmark
-    public void largeFile_JavaSAX() throws Exception {
-        SAXParser parser = saxParserFactory.newSAXParser();
-        try (InputStream is = Files.newInputStream(largeFile)) {
-            parser.parse(is, emptyHandler);
-        }
-    }
-
-    @Benchmark
-    public void largeFile_JavaSAX_Buffered8K() throws Exception {
-        SAXParser parser = saxParserFactory.newSAXParser();
-        try (InputStream is = new BufferedInputStream(Files.newInputStream(largeFile), 8192)) {
-            parser.parse(is, emptyHandler);
-        }
-    }
-
-    @Benchmark
-    public void largeFile_GonzalezByteBuffer() throws Exception {
-        Parser parser = new Parser();
-        parser.setFeature("http://xml.org/sax/features/namespaces", false);
-        parser.setContentHandler(emptyHandler);
-        
         ByteBuffer buffer = ByteBuffer.wrap(largeBytes);
         parser.receive(buffer);
         parser.close();
     }
 
-    // Reusable parser instance for reset benchmark
-    private Parser reusableParser;
-    
     @Benchmark
-    public void largeFile_GonzalezByteBuffer_Reuse() throws Exception {
+    public void largeFile_Gonzalez_Reuse() throws Exception {
         if (reusableParser == null) {
             reusableParser = new Parser();
-            reusableParser.setFeature("http://xml.org/sax/features/namespaces", false);
+            reusableParser.setFeature("http://xml.org/sax/features/namespaces", namespaceAware);
             reusableParser.setContentHandler(emptyHandler);
         } else {
             reusableParser.reset();
         }
-        
+
         ByteBuffer buffer = ByteBuffer.wrap(largeBytes);
         reusableParser.receive(buffer);
         reusableParser.close();
     }
-
-    @Benchmark
-    public void largeFile_GonzalezFileChannel() throws Exception {
-        Parser parser = new Parser();
-        parser.setFeature("http://xml.org/sax/features/namespaces", false);
-        parser.setContentHandler(emptyHandler);
-        
-        try (FileChannel channel = FileChannel.open(largeFile, StandardOpenOption.READ)) {
-            ByteBuffer buffer = ByteBuffer.allocate(8192);
-            while (channel.read(buffer) != -1) {
-                buffer.flip();
-                parser.receive(buffer);
-                buffer.clear();
-            }
-            parser.close();
-        }
-    }
 }
-

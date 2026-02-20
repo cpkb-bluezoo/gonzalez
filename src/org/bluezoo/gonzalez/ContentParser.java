@@ -43,6 +43,7 @@ import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
+import org.xml.sax.ext.DeclHandler;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -110,6 +111,11 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * SAX lexical handler for receiving lexical events.
      */
     private LexicalHandler lexicalHandler;
+    
+    /**
+     * SAX declaration handler for receiving DTD declaration events.
+     */
+    private DeclHandler declHandler;
     
     /**
      * SAX error handler for error reporting.
@@ -442,6 +448,22 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      */
     public LexicalHandler getLexicalHandler() {
         return lexicalHandler;
+    }
+
+    /**
+     * Sets the declaration handler for receiving DTD declaration events.
+     * @param handler the declaration handler
+     */
+    public void setDeclHandler(DeclHandler handler) {
+        this.declHandler = handler;
+    }
+
+    /**
+     * Gets the declaration handler.
+     * @return the declaration handler, or null if not set
+     */
+    public DeclHandler getDeclHandler() {
+        return declHandler;
     }
 
     /**
@@ -1016,6 +1038,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 dtdParser.setContentHandler(contentHandler);
                 dtdParser.setDTDHandler(dtdHandler);
                 dtdParser.setLexicalHandler(lexicalHandler);
+                dtdParser.setDeclHandler(declHandler);
                 dtdParser.setErrorHandler(errorHandler);
                 break;
                 
@@ -1063,16 +1086,16 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 rootElementSeen = true;  // Mark that root element has started
             }
             
+            // Record this element as a child of its parent (for validation)
+            // Must happen before pushing the child, so peekLast() sees the parent
+            if (validationEnabled && dtdParser != null && elementDepth > 1) {
+                recordChildElement(currentElementName);
+            }
+
             // Push element onto stack for well-formedness and validation
             // (validator will be null if validation is disabled)
             if (elementStack != null && elementContextPool != null) {
                 elementStack.addLast(elementContextPool.checkout(currentElementName, null, entityExpansionDepth));
-            }
-
-            // Record this element as a child of its parent (for validation)
-            if (validationEnabled && dtdParser != null && elementDepth > 1) {
-                // We're inside another element, record this as a child
-                recordChildElement(currentElementName);
             }
             
             state = State.ELEMENT_NAME;
@@ -1381,14 +1404,13 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 String uri = "";
                 String localName = currentAttributeName;
                 
-                if (isNamespaceDecl && namespacesEnabled && namespaceTracker != null) {
-                    // Namespace declarations can be resolved immediately
-                    try {
-                        QName attrQName = namespaceTracker.processName(currentAttributeName, true, qnamePool);
-                        uri = attrQName.getURI();
-                        localName = attrQName.getLocalName();
-                    } catch (NamespaceException e) {
-                        throw fatalError(e.getMessage());
+                if (isNamespaceDecl && namespacesEnabled) {
+                    // Namespace declarations get the XMLNS namespace URI directly
+                    // (not resolved through processName, which rejects xmlns)
+                    uri = NamespaceScopeTracker.XMLNS_NAMESPACE_URI;
+                    int colonIdx = currentAttributeName.indexOf(':');
+                    if (colonIdx >= 0) {
+                        localName = currentAttributeName.substring(colonIdx + 1);
                     }
                 }
                 // Non-xmlns attributes: leave uri="" and localName=qName for now
@@ -1467,10 +1489,24 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     private void handleElementContent(Token token, CharBuffer data) throws SAXException {
         switch (token) {
             case CDATA:
-                // Character data
-                // Check for forbidden ]]> sequence (need to check CharBuffer directly)
-                if (containsSequence(data, "]]>")) {
-                    throw fatalError("The character sequence ']]>' must not appear in content");
+                // Character data - check for forbidden ]]> sequence
+                if (data.hasArray() && !data.isReadOnly()) {
+                    char[] cdataChars = data.array();
+                    int cdataOff = data.arrayOffset() + data.position();
+                    int cdataEnd = cdataOff + data.remaining() - 2;
+                    for (int ci = cdataOff; ci < cdataEnd; ci++) {
+                        if (cdataChars[ci] == ']' && cdataChars[ci + 1] == ']' && cdataChars[ci + 2] == '>') {
+                            throw fatalError("The character sequence ']]>' must not appear in content");
+                        }
+                    }
+                } else {
+                    int cdataPos = data.position();
+                    int cdataEnd = cdataPos + data.remaining() - 2;
+                    for (int ci = cdataPos; ci < cdataEnd; ci++) {
+                        if (data.get(ci) == ']' && data.get(ci + 1) == ']' && data.get(ci + 2) == '>') {
+                            throw fatalError("The character sequence ']]>' must not appear in content");
+                        }
+                    }
                 }
                 
                 if (validationEnabled && dtdParser != null) {
@@ -1586,6 +1622,13 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                     validateNotEmptyElement("whitespace");
                 }
                 
+                // VC: Standalone Document Declaration (Section 2.9)
+                // If standalone="yes" and the element has element-only content declared
+                // in the external DTD subset, whitespace in that element's content is an error
+                if (validationEnabled && dtdParser != null && dtdParser.isStandalone()) {
+                    validateStandaloneWhitespace();
+                }
+                
                 // Record for validation if needed (for non-EMPTY elements)
                 if (validationEnabled && dtdParser != null) {
                     String whitespace = data.toString();
@@ -1629,21 +1672,24 @@ throw fatalError("Expected element name after '</', got: " + token);
             case GT:
                 // End of end tag
                 // Validate end tag name matches start tag (well-formedness constraint)
-                // Note: element stack is maintained for well-formedness checking
                 if (elementStack != null && !elementStack.isEmpty()) {
                     String expectedName = elementStack.peekLast().elementName;
                     if (!currentElementName.equals(expectedName)) {
 throw fatalError("End tag </" + currentElementName + "> does not match start tag <" + expectedName + ">");
                     }
-                    // Pop the element from stack and return to pool
+                }
+
+                // Fire endElement (handles namespaces, validation, etc.)
+                // Must happen before stack pop so popElementValidator sees this element
+                fireEndElement(currentElementName);
+
+                // Pop the element from stack and return to pool
+                if (elementStack != null && !elementStack.isEmpty()) {
                     ElementValidationContext ctx = elementStack.removeLast();
                     if (elementContextPool != null) {
                         elementContextPool.returnToPool(ctx);
                     }
                 }
-
-                // Fire endElement (handles namespaces, etc.)
-                fireEndElement(currentElementName);
                 elementDepth--;
                 if (elementDepth == 0) {
                     state = State.AFTER_ROOT;
@@ -1914,62 +1960,6 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                (attrName.length() == 5 || attrName.charAt(5) == ':');
     }
     
-    /**
-     * Checks if a CharBuffer contains a specific character sequence without allocating a String.
-     * 
-     * @param buffer the CharBuffer to search
-     * @param sequence the sequence to find
-     * @return true if the sequence is found
-     */
-    private boolean containsSequence(CharBuffer buffer, String sequence) {
-        if (buffer == null || sequence == null || sequence.isEmpty()) {
-            return false;
-        }
-        
-        int length = buffer.remaining();
-        int seqLen = sequence.length();
-        
-        if (length < seqLen) {
-            return false;
-        }
-        
-        int pos = buffer.position();
-        int limit = pos + length - seqLen + 1;
-        char first = sequence.charAt(0);
-
-        if (buffer.hasArray() && !buffer.isReadOnly()) {
-            char[] chars = buffer.array();
-            int arrayOffset = buffer.arrayOffset();
-            int arrayPos = arrayOffset + pos;
-            int arrayLimit = arrayOffset + limit;
-            
-            outer:
-            for (int i = arrayPos; i < arrayLimit; i++) {
-                if (chars[i] == first) {
-                    for (int j = 1; j < seqLen; j++) {
-                        if (chars[i + j] != sequence.charAt(j)) {
-                            continue outer;
-                        }
-                    }
-                    return true;
-                }
-            }
-        } else {
-            outer:
-            for (int i = pos; i < limit; i++) {
-                if (buffer.get(i) == first) {
-                    for (int j = 1; j < seqLen; j++) {
-                        if (buffer.get(i + j) != sequence.charAt(j)) {
-                            continue outer;
-                        }
-                    }
-                    return true;
-                }
-            }
-        }
-        
-        return false;
-    }
     
     /**
      * Gets a StringBuilder from the pool, or creates a new one if pool is empty.
@@ -2121,11 +2111,17 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             // Same mechanism as external DTD subset
             if (entity.externalID != null) {
                 try {
+                    if (lexicalHandler != null) {
+                        lexicalHandler.startEntity(entityName);
+                    }
                     processExternalEntity(
                         entityName,
                         entity.externalID.publicId,
                         entity.externalID.systemId
                     );
+                    if (lexicalHandler != null) {
+                        lexicalHandler.endEntity(entityName);
+                    }
                 } catch (IOException e) {
                     throw fatalError(
                         "Failed to resolve external entity '&" + entityName + ";': " + e.getMessage(),
@@ -2148,7 +2144,13 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         // and nested entity references are expanded recursively
         // The tokenizer will start in the current tokenizer state (tracked via tokenizerState callback)
         if (!unexpandedValue.isEmpty()) {
+            if (lexicalHandler != null) {
+                lexicalHandler.startEntity(entityName);
+            }
             retokenizeInternalEntity(entityName, unexpandedValue, entity);
+            if (lexicalHandler != null) {
+                lexicalHandler.endEntity(entityName);
+            }
         }
     }
     
@@ -2987,6 +2989,36 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     "Validity Constraint: Element Valid (Section 3.1). " +
                     "Element '" + context.elementName + "' is declared EMPTY but contains " + contentType + ".");
             }
+        }
+    }
+    
+    /**
+     * Validates the standalone document declaration constraint for whitespace
+     * in element-only content.
+     * Used for VC: Standalone Document Declaration (Section 2.9) - if standalone="yes"
+     * and the element has element-only content declared in the external DTD subset,
+     * whitespace directly within that element's content is a validity error.
+     * 
+     * @throws SAXException if the error handler throws
+     */
+    private void validateStandaloneWhitespace() throws SAXException {
+        if (elementStack == null || elementStack.isEmpty()) {
+            return;
+        }
+        
+        ElementValidationContext context = elementStack.peekLast();
+        if (context.elementName == null) {
+            return;
+        }
+        
+        ElementDeclaration decl = dtdParser.getElementDeclaration(context.elementName);
+        if (decl != null && decl.contentType == ElementDeclaration.ContentType.ELEMENT
+                && decl.fromExternalSubset) {
+            reportValidationError(
+                "Validity Constraint: Standalone Document Declaration (Section 2.9). " +
+                "Document has standalone=\"yes\" but external DTD subset declares element '" +
+                context.elementName + "' with element-only content, " +
+                "and white space occurs directly within its content.");
         }
     }
     

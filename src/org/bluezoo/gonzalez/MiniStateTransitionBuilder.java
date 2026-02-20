@@ -1947,11 +1947,28 @@ class MiniStateTransitionBuilder {
          * @return the MiniStateBuilder to continue defining transitions
          */
         MiniStateBuilder done() {
+            List<Token> tokens = tokensToEmit.isEmpty() ? null : new ArrayList<>(tokensToEmit);
+            
+            boolean excludeTrigger = (currentMiniState == MiniState.ACCUMULATING_MARKUP_NAME ||
+                                     nextMiniState == MiniState.ACCUMULATING_NAME ||
+                                     nextMiniState == MiniState.ACCUMULATING_ENTITY_NAME ||
+                                     nextMiniState == MiniState.ACCUMULATING_PARAM_ENTITY_NAME ||
+                                     (currentMiniState == MiniState.SEEN_LT_BANG_OPEN_BRACKET && 
+                                      nextMiniState == MiniState.READY &&
+                                      stateToChangeTo == TokenizerState.CONDITIONAL_SECTION_KEYWORD) ||
+                                     nextMiniState == MiniState.ACCUMULATING_MARKUP_NAME ||
+                                     nextMiniState == MiniState.ACCUMULATING_CHAR_REF_DEC ||
+                                     nextMiniState == MiniState.ACCUMULATING_CHAR_REF_HEX ||
+                                     nextMiniState.isGreedyAccumulation());
+            
+            boolean skipAdvance = excludeTrigger && 
+                                  currentMiniState == MiniState.SEEN_LT_BANG_OPEN_BRACKET && 
+                                  nextMiniState == MiniState.READY &&
+                                  stateToChangeTo == TokenizerState.CONDITIONAL_SECTION_KEYWORD;
+            
             Transition transition = new Transition(
-                nextMiniState,
-                tokensToEmit.isEmpty() ? null : new ArrayList<>(tokensToEmit),
-                stateToChangeTo,
-                sequenceToConsume
+                nextMiniState, tokens, stateToChangeTo, sequenceToConsume,
+                excludeTrigger, skipAdvance
             );
             
             Map<CharClass, Transition> miniStateMap = 
@@ -1970,16 +1987,23 @@ class MiniStateTransitionBuilder {
      */
     static class Transition {
         final MiniState nextMiniState;
-        final List<Token> tokensToEmit;  // Changed from single token to list
+        final List<Token> tokensToEmit;
         final TokenizerState stateToChangeTo;
         final String sequenceToConsume;
+        final boolean excludeTrigger;
+        final boolean hasTokensToEmit;
+        final boolean skipAdvance;
         
         Transition(MiniState nextMiniState, List<Token> tokensToEmit, 
-                   TokenizerState stateToChangeTo, String sequenceToConsume) {
+                   TokenizerState stateToChangeTo, String sequenceToConsume,
+                   boolean excludeTrigger, boolean skipAdvance) {
             this.nextMiniState = nextMiniState;
             this.tokensToEmit = tokensToEmit != null ? tokensToEmit : Collections.emptyList();
             this.stateToChangeTo = stateToChangeTo;
             this.sequenceToConsume = sequenceToConsume;
+            this.excludeTrigger = excludeTrigger;
+            this.hasTokensToEmit = tokensToEmit != null && !tokensToEmit.isEmpty();
+            this.skipAdvance = skipAdvance;
         }
 
         @Override

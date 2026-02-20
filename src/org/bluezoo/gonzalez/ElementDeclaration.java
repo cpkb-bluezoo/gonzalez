@@ -72,6 +72,12 @@ class ElementDeclaration {
      */
     ContentModel contentModel;
 
+    /**
+     * Whether this element was declared in the external DTD subset.
+     * Used for VC: Standalone Document Declaration (Section 2.9).
+     */
+    boolean fromExternalSubset;
+
     @Override
     public String toString() {
         StringBuilder sb = new StringBuilder();

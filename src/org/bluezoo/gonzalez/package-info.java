@@ -173,48 +173,41 @@
  *
  * <h2>XML Serialization (XMLWriter)</h2>
  *
- * <p>The {@link org.bluezoo.gonzalez.XMLWriter} provides streaming XML serialization
- * to any {@link java.nio.channels.WritableByteChannel}. It uses an internal buffer
- * and automatically flushes to the channel when needed.
+ * <p>The {@link org.bluezoo.gonzalez.XMLWriter} implements the SAX2
+ * {@link org.xml.sax.ContentHandler}, {@link org.xml.sax.ext.LexicalHandler},
+ * {@link org.xml.sax.DTDHandler}, and {@link org.xml.sax.ext.DeclHandler}
+ * interfaces directly, allowing it to be wired into a SAX pipeline as an
+ * event sink. It writes received events as XML to a
+ * {@link java.nio.channels.WritableByteChannel}.
  *
  * <p>Key features:
  * <ul>
+ *   <li><b>SAX2 native:</b> Implements ContentHandler, LexicalHandler, DTDHandler,
+ *       DeclHandler for direct pipeline wiring</li>
  *   <li><b>NIO-first:</b> Writes to WritableByteChannel with automatic buffering</li>
  *   <li><b>Namespace-aware:</b> Full support for prefixed and default namespaces</li>
+ *   <li><b>DOCTYPE output:</b> Supports inline DTD declarations with standalone
+ *       conversion mode</li>
  *   <li><b>Pretty-print:</b> Optional indentation via {@link org.bluezoo.gonzalez.IndentConfig}</li>
  *   <li><b>Empty element optimization:</b> Automatically emits {@code <foo/>} instead
  *       of {@code <foo></foo>} when appropriate</li>
- *   <li><b>UTF-8 output:</b> All output is UTF-8 encoded</li>
+ *   <li><b>Configurable encoding:</b> UTF-8 (default), ISO-8859-1, US-ASCII, or any
+ *       Java charset</li>
  * </ul>
  *
  * <pre>{@code
+ * import org.bluezoo.gonzalez.Parser;
  * import org.bluezoo.gonzalez.XMLWriter;
- * import org.bluezoo.gonzalez.IndentConfig;
  *
- * // Write to a file with pretty-printing
- * try (FileOutputStream fos = new FileOutputStream("output.xml")) {
- *     XMLWriter writer = new XMLWriter(fos, IndentConfig.spaces2());
+ * // Wire parser directly to writer for parse-and-serialize
+ * Parser parser = new Parser();
+ * FileChannel channel = FileChannel.open(path, WRITE, CREATE);
+ * XMLWriter writer = new XMLWriter(channel);
  *
- *     writer.writeStartElement("http://example.com/ns", "root");
- *     writer.writeDefaultNamespace("http://example.com/ns");
- *     writer.writeAttribute("version", "1.0");
- *
- *     writer.writeStartElement("item");
- *     writer.writeAttribute("id", "1");
- *     writer.writeCharacters("Hello, World!");
- *     writer.writeEndElement();
- *
- *     writer.writeStartElement("empty");
- *     writer.writeEndElement();  // Emits <empty/>
- *
- *     writer.writeEndElement();
- *     writer.close();
- * }
- * // Output:
- * // <root xmlns="http://example.com/ns" version="1.0">
- * //   <item id="1">Hello, World!</item>
- * //   <empty/>
- * // </root>
+ * parser.setContentHandler(writer);
+ * parser.setProperty("http://xml.org/sax/properties/lexical-handler", writer);
+ * parser.parse(inputSource);
+ * writer.close();
  * }</pre>
  *
  * <h2>Architecture</h2>

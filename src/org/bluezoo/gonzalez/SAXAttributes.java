@@ -22,9 +22,7 @@
 package org.bluezoo.gonzalez;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import org.xml.sax.Attributes;
 import org.xml.sax.ext.Attributes2;
 
@@ -35,8 +33,9 @@ import org.xml.sax.ext.Attributes2;
  * whether attributes were specified in the document or came from DTD defaults,
  * and whether they were declared in the DTD.
  *
- * <p>The implementation is namespace-aware first and optimized for lookup
- * performance using multiple indexing strategies:
+ * <p>The implementation is namespace-aware and optimized for the common case
+ * of elements with few attributes (1-5), using linear scan for zero-allocation
+ * lookups. Attribute objects are pooled for reuse across elements.
  * <ul>
  *   <li>Direct lookup by {@link QName} (namespace URI + local name)</li>
  *   <li>Lookup by qualified name string (for non-namespace-aware code)</li>
@@ -132,19 +131,6 @@ class SAXAttributes implements Attributes2 {
     // Number of active attributes (vs pool size)
     private int attributeCount;
 
-    // Namespace-aware lookup (CRITICAL PATH - primary access method)
-    private Map<QName, Attribute> qnameMap;
-
-    // Non-namespace-aware lookup (for legacy SAX methods and DTD)
-    private Map<String, Attribute> stringNameMap;
-    
-    // Track keys for efficient clearing without Entry reallocation
-    // These lists store the keys added in the current element, allowing us to
-    // remove only those keys instead of calling clear() which would require
-    // reallocating all Entry objects on the next element
-    private List<QName> qnameKeys;
-    private List<String> stringKeys;
-
     // Element name for lazy DTD lookup
     private String elementName;
     private DTDParser dtdParser;
@@ -167,13 +153,6 @@ class SAXAttributes implements Attributes2 {
     public SAXAttributes() {
         this.attributes = new ArrayList<>();
         this.attributeCount = 0;
-        // Initial capacity of 24 handles typical elements with many attributes
-        // Avoids resize operations during addAttribute() calls
-        this.qnameMap = new HashMap<>(24);
-        this.stringNameMap = new HashMap<>(24);
-        // Track keys to avoid clear() overhead (which forces Entry reallocation)
-        this.qnameKeys = new ArrayList<>(24);
-        this.stringKeys = new ArrayList<>(24);
     }
 
     /**
@@ -246,19 +225,13 @@ class SAXAttributes implements Attributes2 {
                 }
                 
                 // Update the QName with resolved namespace
-                // First remove from qnameMap with old key
-                qnameMap.remove(qname);
-                
-                // Update the QName
                 qname.update(uri, localName, qnameStr);
                 
-                // Re-add to qnameMap with updated key
-                // Check for duplicates by expanded name
-                if (qnameMap.containsKey(qname)) {
+                // Check for duplicates by expanded name via linear scan
+                if (findByExpandedName(uri, localName, i) != null) {
                     throw new NamespaceException("Duplicate attribute by expanded name: {" + 
                             uri + "}" + localName + " (qName: " + qnameStr + ")");
                 }
-                qnameMap.put(qname, attr);
             }
         }
     }
@@ -289,8 +262,8 @@ class SAXAttributes implements Attributes2 {
      */
     public void addAttribute(String uri, String localName, String qName,
             String type, Object value, boolean specified) throws NamespaceException {
-        // Check for duplicate attribute by string name (well-formedness constraint)
-        if (stringNameMap.containsKey(qName)) {
+        // Check for duplicate attribute by qName (well-formedness constraint)
+        if (findByQName(qName) != null) {
             throw new NamespaceException("Duplicate attribute: " + qName);
         }
 
@@ -299,9 +272,7 @@ class SAXAttributes implements Attributes2 {
         qnameKey.update(uri, localName, qName);
 
         // Check for duplicate by expanded name (namespace-aware duplicate detection)
-        // Two attributes are duplicates if they have the same namespace URI and local name
-        if (qnameMap.containsKey(qnameKey)) {
-            // Return QName to pool since we're rejecting this attribute
+        if (findByExpandedName(uri, localName) != null) {
             qnamePool.returnToPool(qnameKey);
             throw new NamespaceException("Duplicate attribute by expanded name: {" + 
                     uri + "}" + localName + " (qName: " + qName + ")");
@@ -310,25 +281,15 @@ class SAXAttributes implements Attributes2 {
         // Get Attribute object from pool or create new
         Attribute attr;
         if (attributeCount < attributes.size()) {
-            // Reuse existing Attribute object from pool
             attr = attributes.get(attributeCount);
             attr.update(qnameKey, type, value, specified, currentElementName, qName);
         } else {
-            // Create new Attribute and add to pool
             attr = new Attribute();
             attr.update(qnameKey, type, value, specified, currentElementName, qName);
             attributes.add(attr);
         }
 
         attributeCount++;
-
-        // Add to lookup indices
-        qnameMap.put(qnameKey, attr);
-        stringNameMap.put(qName, attr);
-        
-        // Track keys for efficient removal in clear()
-        qnameKeys.add(qnameKey);
-        stringKeys.add(qName);
     }
 
     /**
@@ -340,62 +301,88 @@ class SAXAttributes implements Attributes2 {
     public void setType(int index, String type) {
         if (index >= 0 && index < attributeCount) {
             Attribute attr = attributes.get(index);
-            // Just update the type field (Attribute is now mutable)
             attr.type = type;
-            // Maps still point to same object, no need to update
         }
     }
 
     /**
-     * Clears all attributes.
-     * Does NOT remove Attribute objects from the pool - reuses them for next element.
-     * Returns QName objects to the QName pool for reuse.
-     */
-    /**
      * Clears all attributes, preparing for the next element.
-     * 
-     * <p>Performance optimization: Instead of calling HashMap.clear() which
-     * nulls all entries (forcing reallocation of Entry objects on next put()),
-     * we selectively remove only the keys we added. This keeps the HashMap's
-     * internal Entry objects alive for reuse, dramatically reducing allocations
-     * in documents with many elements.
-     * 
-     * <p>With 15,000 elements × 5 attributes, this saves ~75,000 Entry allocations
-     * (~2.4 MB) by reusing existing Entry objects.
+     * Returns QName objects to the pool and recycles StringBuilder values.
+     * Attribute objects themselves are retained in the pool for reuse.
      */
     public void clear() {
-        // IMPORTANT: Remove keys from maps BEFORE returning QNames to pool
-        // Once returned to pool, QName objects can be modified, breaking HashMap lookups
-        
-        // Remove keys individually instead of calling clear()
-        // Use index-based loop to avoid Iterator allocation from enhanced for-each
-        for (int i = 0, n = qnameKeys.size(); i < n; i++) {
-            qnameMap.remove(qnameKeys.get(i));
-        }
-        for (int i = 0, n = stringKeys.size(); i < n; i++) {
-            stringNameMap.remove(stringKeys.get(i));
-        }
-        
-        // Clear key tracking lists (ArrayList.clear() is fast and doesn't deallocate array)
-        qnameKeys.clear();
-        stringKeys.clear();
-        
-        // NOW it's safe to return QName objects to pool and recycle StringBuilders
         for (int i = 0; i < attributeCount; i++) {
             Attribute attr = attributes.get(i);
             qnamePool.returnToPool(attr.qname);
             
-            // Recycle StringBuilder values if recycler is set
             if (stringBuilderRecycler != null && attr.value instanceof StringBuilder) {
                 stringBuilderRecycler.recycle((StringBuilder) attr.value);
             }
-            attr.value = null;  // Clear reference to avoid holding onto recycled StringBuilder
+            attr.value = null;
         }
         
-        attributeCount = 0;  // Reset active count, keep pooled Attribute objects
+        attributeCount = 0;
         
         elementName = null;
         dtdParser = null;
+    }
+
+    // Linear scan helpers for zero-allocation attribute lookup.
+    // For typical XML with 1-5 attributes per element, this is faster
+    // than HashMap due to cache locality and eliminates Node allocation.
+
+    private Attribute findByQName(String qName) {
+        for (int i = 0; i < attributeCount; i++) {
+            Attribute attr = attributes.get(i);
+            if (attr.qname.getQName().equals(qName)) {
+                return attr;
+            }
+        }
+        return null;
+    }
+
+    private int findIndexByQName(String qName) {
+        for (int i = 0; i < attributeCount; i++) {
+            if (attributes.get(i).qname.getQName().equals(qName)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private Attribute findByExpandedName(String uri, String localName) {
+        for (int i = 0; i < attributeCount; i++) {
+            Attribute attr = attributes.get(i);
+            QName qname = attr.qname;
+            if (qname.getLocalName().equals(localName) && qname.getURI().equals(uri)) {
+                return attr;
+            }
+        }
+        return null;
+    }
+
+    private Attribute findByExpandedName(String uri, String localName, int excludeIndex) {
+        for (int i = 0; i < attributeCount; i++) {
+            if (i == excludeIndex) {
+                continue;
+            }
+            Attribute attr = attributes.get(i);
+            QName qname = attr.qname;
+            if (qname.getLocalName().equals(localName) && qname.getURI().equals(uri)) {
+                return attr;
+            }
+        }
+        return null;
+    }
+
+    private int findIndexByExpandedName(String uri, String localName) {
+        for (int i = 0; i < attributeCount; i++) {
+            QName qname = attributes.get(i).qname;
+            if (qname.getLocalName().equals(localName) && qname.getURI().equals(uri)) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     // Attributes interface
@@ -459,48 +446,21 @@ class SAXAttributes implements Attributes2 {
 
     @Override
     public int getIndex(String uri, String localName) {
-        // Create temporary QName for lookup (checkout from pool)
-        QName key = qnamePool.checkout();
-        key.update(uri, localName, "");
-        Attribute attr = qnameMap.get(key);
-
-        // Return temporary QName to pool
-        qnamePool.returnToPool(key);
-
-        if (attr == null) {
-            return -1;
-        }
-
-        // Find index in list
-        return attributes.indexOf(attr);
+        return findIndexByExpandedName(uri, localName);
     }
 
     @Override
     public int getIndex(String qName) {
-        Attribute attr = stringNameMap.get(qName);
-
-        if (attr == null) {
-            return -1;
-        }
-
-        // Find index in list
-        return attributes.indexOf(attr);
+        return findIndexByQName(qName);
     }
 
     @Override
     public String getType(String uri, String localName) {
-        QName key = qnamePool.checkout();
-        key.update(uri, localName, "");
-        Attribute attr = qnameMap.get(key);
-
-        // Return temporary QName to pool
-        qnamePool.returnToPool(key);
-
+        Attribute attr = findByExpandedName(uri, localName);
         if (attr == null) {
             return null;
         }
 
-        // Check DTD for more specific type information
         if (dtdParser != null && elementName != null) {
             AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
                     elementName, attr.qname.getQName());
@@ -514,13 +474,11 @@ class SAXAttributes implements Attributes2 {
 
     @Override
     public String getType(String qName) {
-        Attribute attr = stringNameMap.get(qName);
-
+        Attribute attr = findByQName(qName);
         if (attr == null) {
             return null;
         }
 
-        // Check DTD for more specific type information
         if (dtdParser != null && elementName != null) {
             AttributeDeclaration decl = dtdParser.getAttributeDeclaration(
                     elementName, qName);
@@ -534,19 +492,13 @@ class SAXAttributes implements Attributes2 {
 
     @Override
     public String getValue(String uri, String localName) {
-        QName key = qnamePool.checkout();
-        key.update(uri, localName, "");
-        Attribute attr = qnameMap.get(key);
-
-        // Return temporary QName to pool
-        qnamePool.returnToPool(key);
-
+        Attribute attr = findByExpandedName(uri, localName);
         return (attr != null) ? attr.getValueAsString(normalizer) : null;
     }
 
     @Override
     public String getValue(String qName) {
-        Attribute attr = stringNameMap.get(qName);
+        Attribute attr = findByQName(qName);
         return (attr != null) ? attr.getValueAsString(normalizer) : null;
     }
 
@@ -570,7 +522,7 @@ class SAXAttributes implements Attributes2 {
 
     @Override
     public boolean isDeclared(String qName) {
-        Attribute attr = stringNameMap.get(qName);
+        Attribute attr = findByQName(qName);
         if (attr == null) {
             throw new IllegalArgumentException("Unknown attribute: " + qName);
         }
@@ -585,13 +537,7 @@ class SAXAttributes implements Attributes2 {
 
     @Override
     public boolean isDeclared(String uri, String localName) {
-        QName key = qnamePool.checkout();
-        key.update(uri, localName, "");
-        Attribute attr = qnameMap.get(key);
-
-        // Return temporary QName to pool
-        qnamePool.returnToPool(key);
-
+        Attribute attr = findByExpandedName(uri, localName);
         if (attr == null) {
             throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
         }
@@ -616,7 +562,7 @@ class SAXAttributes implements Attributes2 {
 
     @Override
     public boolean isSpecified(String qName) {
-        Attribute attr = stringNameMap.get(qName);
+        Attribute attr = findByQName(qName);
         if (attr == null) {
             throw new IllegalArgumentException("Unknown attribute: " + qName);
         }
@@ -625,13 +571,7 @@ class SAXAttributes implements Attributes2 {
 
     @Override
     public boolean isSpecified(String uri, String localName) {
-        QName key = qnamePool.checkout();
-        key.update(uri, localName, "");
-        Attribute attr = qnameMap.get(key);
-
-        // Return temporary QName to pool
-        qnamePool.returnToPool(key);
-
+        Attribute attr = findByExpandedName(uri, localName);
         if (attr == null) {
             throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
         }

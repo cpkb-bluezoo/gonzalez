@@ -90,15 +90,20 @@ class ElementDeclParser {
     /** Track if we just saw a separator (| or ,) expecting a following element */
     private boolean sawSeparator = false;
     
+    /** Whether this declaration is from the external DTD subset */
+    private final boolean fromExternalSubset;
+    
     /**
      * Creates an element declaration parser.
      * 
      * @param dtdParser the parent DTD parser
      * @param locator the locator for error reporting
+     * @param fromExternalSubset true if parsing from external DTD subset
      */
-    ElementDeclParser(DTDParser dtdParser, Locator locator) {
+    ElementDeclParser(DTDParser dtdParser, Locator locator, boolean fromExternalSubset) {
         this.dtdParser = dtdParser;
         this.locator = locator;
+        this.fromExternalSubset = fromExternalSubset;
     }
     
     /**
@@ -690,6 +695,9 @@ class ElementDeclParser {
             elementDecl.contentModel != null) {
             validateDeterministic(elementDecl.contentModel);
         }
+        
+        // Record whether this declaration came from the external DTD subset
+        elementDecl.fromExternalSubset = fromExternalSubset;
         
         // Add to parent DTD parser's element declarations
         dtdParser.addElementDeclaration(elementDecl);
