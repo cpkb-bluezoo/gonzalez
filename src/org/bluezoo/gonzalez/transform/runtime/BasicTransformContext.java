@@ -30,6 +30,8 @@ import java.util.regex.Matcher;
 
 import javax.xml.transform.ErrorListener;
 
+import org.xml.sax.SAXException;
+
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
@@ -74,6 +76,7 @@ public class BasicTransformContext implements TransformContext {
     private final Map<String, XPathValue> tunnelParameters;  // XSLT 2.0 tunnel params
     private org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime cachedCurrentDateTime;  // Cached for current-dateTime()
     private final OutputHandler principalOutput;  // Principal output for xsl:result-document
+    private final java.util.Set<String> usedResultUris;  // Track URIs for XTDE1490
     private final org.bluezoo.gonzalez.transform.ErrorHandlingMode errorHandlingMode;  // Error handling mode
 
     /**
@@ -157,7 +160,7 @@ public class BasicTransformContext implements TransformContext {
         this(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size, currentMode,
              variableScope, functionLibrary, matcher, outputHandler, accumulatorManager,
              errorListener, currentTemplateRule, staticBaseURI, runtimeValidator, regexMatcher,
-             tunnelParameters, keysBeingEvaluated, new HashSet<>(), principalOutput);
+             tunnelParameters, keysBeingEvaluated, new HashSet<>(), new HashSet<>(), principalOutput);
     }
 
     private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
@@ -168,7 +171,7 @@ public class BasicTransformContext implements TransformContext {
             TemplateRule currentTemplateRule, String staticBaseURI,
             RuntimeSchemaValidator runtimeValidator, Matcher regexMatcher,
             Map<String, XPathValue> tunnelParameters, Set<String> keysBeingEvaluated,
-            Set<String> variablesBeingEvaluated, OutputHandler principalOutput) {
+            Set<String> variablesBeingEvaluated, Set<String> usedResultUris, OutputHandler principalOutput) {
         this.stylesheet = stylesheet;
         this.contextNode = contextNode;
         this.xsltCurrentNode = xsltCurrentNode;
@@ -189,6 +192,7 @@ public class BasicTransformContext implements TransformContext {
         this.tunnelParameters = tunnelParameters != null ? tunnelParameters : Collections.emptyMap();
         this.keysBeingEvaluated = keysBeingEvaluated;
         this.variablesBeingEvaluated = variablesBeingEvaluated;
+        this.usedResultUris = usedResultUris;
         this.principalOutput = principalOutput;
         // Default to STRICT mode for spec compliance
         // TODO: Make this configurable via API or system property
@@ -256,7 +260,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope.push(), functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     /**
@@ -270,7 +274,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope.globalOnly(), functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     /**
@@ -284,7 +288,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             mode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     /**
@@ -300,7 +304,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, node, xsltCurrentNode, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
     
     /**
@@ -314,7 +318,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, node, node, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
     
     /**
@@ -331,7 +335,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrent, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
     
     /**
@@ -347,7 +351,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, node, xsltCurrentNode, item, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
     
     /**
@@ -372,7 +376,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     /**
@@ -390,7 +394,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, newScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     @Override
@@ -409,7 +413,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, rule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     /**
@@ -420,10 +424,12 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext withStaticBaseURI(String baseURI) {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        BasicTransformContext ctx = new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, baseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
+        ctx.throwOnUndefinedVariable = this.throwOnUndefinedVariable;
+        return ctx;
     }
 
     @Override
@@ -446,7 +452,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, matcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, matcher, tunnelParameters, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     @Override
@@ -470,7 +476,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, merged, keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, merged, keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     @Override
@@ -481,7 +487,7 @@ public class BasicTransformContext implements TransformContext {
         return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, Collections.emptyMap(), keysBeingEvaluated, variablesBeingEvaluated, principalOutput);
+            runtimeValidator, regexMatcher, Collections.emptyMap(), keysBeingEvaluated, variablesBeingEvaluated, usedResultUris, principalOutput);
     }
 
     /**
@@ -529,7 +535,7 @@ public class BasicTransformContext implements TransformContext {
         }
         
         XPathValue value = variableScope.lookup(namespaceURI, localName);
-        if (value == null && throwOnUndefinedVariable) {
+        if (value == null) {
             throw new XPathVariableException(namespaceURI, localName);
         }
         return value;
@@ -777,6 +783,14 @@ public class BasicTransformContext implements TransformContext {
     @Override
     public OutputHandler getPrincipalOutput() {
         return principalOutput;
+    }
+
+    @Override
+    public void claimResultDocumentUri(String uri) throws SAXException {
+        if (!usedResultUris.add(uri)) {
+            throw new SAXException("XTDE1490: Cannot write to result document URI '" + uri +
+                "' because it has already been used");
+        }
     }
 
     @Override

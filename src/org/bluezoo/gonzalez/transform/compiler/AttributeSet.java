@@ -35,17 +35,37 @@ import java.util.*;
  * <p>Attribute sets define reusable groups of attributes that can be
  * applied to literal result elements via xsl:use-attribute-sets.
  *
+ * <p>When multiple xsl:attribute-set elements share the same name, they
+ * are merged into a single attribute set with multiple definitions.
+ * Each definition is evaluated in document order: first its inherited
+ * attribute sets (use-attribute-sets), then its own attribute instructions.
+ *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class AttributeSet {
 
     private final String name;
-    private final List<String> useAttributeSets;
-    private final SequenceNode attributes;
-    private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
+    private final List<Definition> definitions;
+    private final ComponentVisibility visibility;
 
     /**
-     * Creates an attribute set.
+     * A single xsl:attribute-set definition with its own use-attribute-sets
+     * and attribute instructions.
+     */
+    private static final class Definition {
+        final List<String> useAttributeSets;
+        final SequenceNode attributes;
+
+        Definition(List<String> useAttributeSets, SequenceNode attributes) {
+            this.useAttributeSets = useAttributeSets != null ?
+                Collections.unmodifiableList(new ArrayList<>(useAttributeSets)) :
+                Collections.emptyList();
+            this.attributes = attributes != null ? attributes : SequenceNode.EMPTY;
+        }
+    }
+
+    /**
+     * Creates an attribute set with a single definition.
      *
      * @param name the attribute set name
      * @param useAttributeSets names of other attribute sets to include
@@ -56,7 +76,7 @@ public final class AttributeSet {
     }
 
     /**
-     * Creates an attribute set with visibility.
+     * Creates an attribute set with a single definition and visibility.
      *
      * @param name the attribute set name
      * @param useAttributeSets names of other attribute sets to include
@@ -66,10 +86,15 @@ public final class AttributeSet {
     public AttributeSet(String name, List<String> useAttributeSets, SequenceNode attributes,
                        ComponentVisibility visibility) {
         this.name = name;
-        this.useAttributeSets = useAttributeSets != null ? 
-            Collections.unmodifiableList(new ArrayList<>(useAttributeSets)) : 
-            Collections.emptyList();
-        this.attributes = attributes != null ? attributes : SequenceNode.EMPTY;
+        List<Definition> defs = new ArrayList<>();
+        defs.add(new Definition(useAttributeSets, attributes));
+        this.definitions = Collections.unmodifiableList(defs);
+        this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
+    }
+
+    private AttributeSet(String name, List<Definition> definitions, ComponentVisibility visibility) {
+        this.name = name;
+        this.definitions = Collections.unmodifiableList(new ArrayList<>(definitions));
         this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
     }
 
@@ -83,21 +108,38 @@ public final class AttributeSet {
     }
 
     /**
-     * Returns the names of included attribute sets.
+     * Returns all use-attribute-sets names from all definitions.
      *
-     * @return the use-attribute-sets names (immutable)
+     * @return the combined use-attribute-sets names (for validation)
      */
     public List<String> getUseAttributeSets() {
-        return useAttributeSets;
+        List<String> allSets = new ArrayList<>();
+        for (Definition def : definitions) {
+            for (String set : def.useAttributeSets) {
+                if (!allSets.contains(set)) {
+                    allSets.add(set);
+                }
+            }
+        }
+        return allSets;
     }
 
     /**
-     * Returns the attribute instructions.
+     * Returns the combined attribute instructions from all definitions.
      *
      * @return the attributes
      */
     public SequenceNode getAttributes() {
-        return attributes;
+        if (definitions.size() == 1) {
+            return definitions.get(0).attributes;
+        }
+        List<XSLTNode> allNodes = new ArrayList<>();
+        for (Definition def : definitions) {
+            if (def.attributes != null) {
+                allNodes.addAll(def.attributes.getChildren());
+            }
+        }
+        return new SequenceNode(allNodes);
     }
 
     /**
@@ -116,49 +158,32 @@ public final class AttributeSet {
      * @return a new AttributeSet with the specified visibility
      */
     public AttributeSet withVisibility(ComponentVisibility newVisibility) {
-        return new AttributeSet(name, useAttributeSets, attributes, newVisibility);
+        return new AttributeSet(name, definitions, newVisibility);
     }
 
     /**
-     * Merges this attribute set with another.
-     * The other set's attributes take precedence for conflicts.
-     * Used when multiple xsl:attribute-set declarations have the same name.
+     * Merges this attribute set with another having the same name.
+     * Preserves definition order so that each definition's inherited sets
+     * and body attributes are evaluated in the correct sequence.
      *
      * @param other the other attribute set (later definition)
      * @return a new merged attribute set
      */
     public AttributeSet mergeWith(AttributeSet other) {
-        // Merge use-attribute-sets
-        List<String> mergedUseSets = new ArrayList<>(this.useAttributeSets);
-        for (String set : other.useAttributeSets) {
-            if (!mergedUseSets.contains(set)) {
-                mergedUseSets.add(set);
-            }
-        }
-        
-        // Merge attributes: this first, then other (other overrides for conflicts)
-        List<org.bluezoo.gonzalez.transform.ast.XSLTNode> mergedNodes = new ArrayList<>();
-        if (this.attributes != null) {
-            mergedNodes.addAll(this.attributes.getChildren());
-        }
-        if (other.attributes != null) {
-            mergedNodes.addAll(other.attributes.getChildren());
-        }
-        SequenceNode mergedAttrs = new SequenceNode(mergedNodes);
-        
-        // Later visibility takes precedence
-        ComponentVisibility mergedVisibility = other.visibility != null ? 
+        List<Definition> mergedDefs = new ArrayList<>(this.definitions);
+        mergedDefs.addAll(other.definitions);
+        ComponentVisibility mergedVisibility = other.visibility != null ?
             other.visibility : this.visibility;
-        return new AttributeSet(name, mergedUseSets, mergedAttrs, mergedVisibility);
+        return new AttributeSet(name, mergedDefs, mergedVisibility);
     }
 
     /**
      * Applies this attribute set to the current element being constructed.
-     * First applies any included attribute sets, then the attributes defined
-     * directly in this set.
+     * Each definition is evaluated in order: first its inherited attribute
+     * sets, then its own attribute instructions.
      *
-     * <p>Per XSLT spec, attribute sets are evaluated with only top-level 
-     * variables and parameters in scope, not local variables from the 
+     * <p>Per XSLT spec, attribute sets are evaluated with only top-level
+     * variables and parameters in scope, not local variables from the
      * invoking template.
      *
      * @param context the transform context
@@ -166,24 +191,22 @@ public final class AttributeSet {
      * @throws SAXException if an error occurs
      */
     public void apply(TransformContext context, OutputHandler output) throws SAXException {
-        // Create a context with only global variables visible
-        // This ensures attribute sets don't see local variables
         TransformContext globalContext = context.withGlobalVariablesOnly();
-        
-        // First, apply included attribute sets (recursively)
-        if (!useAttributeSets.isEmpty()) {
-            CompiledStylesheet stylesheet = context.getStylesheet();
-            for (String includedName : useAttributeSets) {
+        CompiledStylesheet stylesheet = context.getStylesheet();
+
+        for (Definition def : definitions) {
+            // First, apply this definition's inherited attribute sets
+            for (String includedName : def.useAttributeSets) {
                 AttributeSet included = stylesheet.getAttributeSet(includedName);
                 if (included != null) {
                     included.apply(globalContext, output);
                 }
             }
-        }
-        
-        // Then apply this set's attributes (can override included ones)
-        if (attributes != null) {
-            attributes.execute(globalContext, output);
+
+            // Then apply this definition's own attributes (can override inherited)
+            if (def.attributes != null) {
+                def.attributes.execute(globalContext, output);
+            }
         }
     }
 

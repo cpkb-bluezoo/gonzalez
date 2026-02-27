@@ -68,6 +68,12 @@ public class StylesheetResolver {
     // Global template declaration counter - increments for each template
     // Shared across the entire import tree to ensure unique declaration indices
     private final int[] templateCounter;
+    
+    // Allowed protocols for stylesheet access (empty = none, "all" = unrestricted)
+    private String allowedProtocols = "";
+
+    // Allowed protocols for external DTD access (empty = none, "all" = unrestricted)
+    private String accessExternalDTD = "";
 
     /**
      * Creates a new stylesheet resolver with no custom URI resolver.
@@ -92,11 +98,33 @@ public class StylesheetResolver {
      * Private constructor for child resolvers that share state.
      */
     private StylesheetResolver(URIResolver uriResolver, Set<String> loadedStylesheets, 
-                               int[] precedenceCounter, int[] templateCounter) {
+                               int[] precedenceCounter, int[] templateCounter,
+                               String allowedProtocols, String accessExternalDTD) {
         this.uriResolver = uriResolver;
         this.loadedStylesheets = loadedStylesheets;
         this.precedenceCounter = precedenceCounter;
         this.templateCounter = templateCounter;
+        this.allowedProtocols = allowedProtocols;
+        this.accessExternalDTD = accessExternalDTD;
+    }
+
+    /**
+     * Sets the allowed URL protocols for stylesheet resolution.
+     *
+     * @param protocols comma-separated list of allowed protocols,
+     *                  "all" for unrestricted, or empty string for none
+     */
+    public void setAllowedProtocols(String protocols) {
+        this.allowedProtocols = (protocols != null) ? protocols : "";
+    }
+
+    /**
+     * Sets the allowed protocols for external DTD access.
+     *
+     * @param protocols comma-separated list of protocols, "all", or ""
+     */
+    public void setAccessExternalDTD(String protocols) {
+        this.accessExternalDTD = (protocols != null) ? protocols : "";
     }
 
     /**
@@ -106,7 +134,8 @@ public class StylesheetResolver {
      * @return a new resolver sharing the loaded set and counters
      */
     StylesheetResolver createChild() {
-        return new StylesheetResolver(uriResolver, loadedStylesheets, precedenceCounter, templateCounter);
+        return new StylesheetResolver(uriResolver, loadedStylesheets, 
+            precedenceCounter, templateCounter, allowedProtocols, accessExternalDTD);
     }
     
     /**
@@ -218,7 +247,9 @@ public class StylesheetResolver {
             reader.parse(inputSource);
             
             try {
-                return compiler.getCompiledStylesheet();
+                // Skip cross-reference validation for sub-stylesheets since
+                // references may target definitions in sibling or parent modules
+                return compiler.getCompiledStylesheet(false);
             } catch (javax.xml.transform.TransformerConfigurationException e) {
                 throw new SAXException(e.getMessage(), e);
             }
@@ -277,6 +308,12 @@ public class StylesheetResolver {
      */
     private InputSource getInputSource(String href, String baseUri, String resolvedUri) 
             throws SAXException, IOException {
+        
+        // Check protocol restriction before resolving
+        if (!isProtocolAllowed(resolvedUri, allowedProtocols)) {
+            throw new SAXException(
+                "Access denied to stylesheet protocol by security policy: " + resolvedUri);
+        }
         
         // Try custom URI resolver first
         if (uriResolver != null) {
@@ -371,16 +408,66 @@ public class StylesheetResolver {
 
     /**
      * Creates an XMLReader for parsing stylesheets.
+     * Entity processing is enabled when accessExternalDTD is configured.
      */
     private XMLReader createXMLReader() throws SAXException {
+        XMLReader reader;
         try {
             // Try to use Gonzalez parser if available
             Class<?> parserClass = Class.forName("org.bluezoo.gonzalez.Parser");
-            return (XMLReader) parserClass.getDeclaredConstructor().newInstance();
+            reader = (XMLReader) parserClass.getDeclaredConstructor().newInstance();
         } catch (Exception e) {
             // Fall back to default
-            return XMLReaderFactory.createXMLReader();
+            reader = XMLReaderFactory.createXMLReader();
         }
+        // Configure entity processing based on accessExternalDTD setting
+        boolean allowDTD = accessExternalDTD != null && !accessExternalDTD.isEmpty();
+        try {
+            reader.setFeature("http://xml.org/sax/features/external-general-entities", allowDTD);
+            reader.setFeature("http://xml.org/sax/features/external-parameter-entities", allowDTD);
+        } catch (SAXException e) {
+            // Parser may not support these features
+        }
+        if (allowDTD) {
+            try {
+                reader.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD",
+                    accessExternalDTD);
+            } catch (SAXException e) {
+                // Parser may not support this property
+            }
+        }
+        return reader;
+    }
+
+    private static boolean isProtocolAllowed(String uri, String allowedProtocols) {
+        if (uri == null) {
+            return true;
+        }
+        if (allowedProtocols == null || allowedProtocols.isEmpty()) {
+            return false;
+        }
+        if ("all".equals(allowedProtocols)) {
+            return true;
+        }
+        int colonIndex = uri.indexOf(':');
+        if (colonIndex <= 0) {
+            return true;
+        }
+        String protocol = uri.substring(0, colonIndex);
+        int start = 0;
+        int len = allowedProtocols.length();
+        while (start < len) {
+            int comma = allowedProtocols.indexOf(',', start);
+            if (comma < 0) {
+                comma = len;
+            }
+            String allowed = allowedProtocols.substring(start, comma).trim();
+            if (protocol.equalsIgnoreCase(allowed)) {
+                return true;
+            }
+            start = comma + 1;
+        }
+        return false;
     }
 
     /**

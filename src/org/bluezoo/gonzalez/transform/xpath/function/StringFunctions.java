@@ -24,8 +24,10 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -56,7 +58,20 @@ import org.bluezoo.gonzalez.transform.xpath.Collation;
  */
 public final class StringFunctions {
 
+    private static final Map<String, Pattern> regexCache = new HashMap<>();
+
     private StringFunctions() {}
+
+    private static Pattern getCachedPattern(String regex, int flags)
+            throws PatternSyntaxException {
+        String key = regex + "\0" + flags;
+        Pattern p = regexCache.get(key);
+        if (p == null) {
+            p = Pattern.compile(regex, flags);
+            regexCache.put(key, p);
+        }
+        return p;
+    }
 
     /**
      * XPath 1.0 string() function.
@@ -649,7 +664,7 @@ public final class StringFunctions {
             
             try {
                 int javaFlags = parseRegexFlags(flags);
-                Pattern p = Pattern.compile(pattern, javaFlags);
+                Pattern p = getCachedPattern(pattern, javaFlags);
                 return XPathBoolean.of(p.matcher(input).find());
             } catch (PatternSyntaxException e) {
                 throw new XPathException("Invalid regular expression: " + pattern, e);
@@ -681,7 +696,7 @@ public final class StringFunctions {
             
             try {
                 int javaFlags = parseRegexFlags(flags);
-                Pattern p = Pattern.compile(pattern, javaFlags);
+                Pattern p = getCachedPattern(pattern, javaFlags);
                 // XPath uses $1, $2 for groups but Java also uses that, so should be compatible
                 return XPathString.of(p.matcher(input).replaceAll(replacement));
             } catch (PatternSyntaxException e) {
@@ -726,7 +741,7 @@ public final class StringFunctions {
             
             try {
                 int javaFlags = parseRegexFlags(flags);
-                Pattern p = Pattern.compile(pattern, javaFlags);
+                Pattern p = getCachedPattern(pattern, javaFlags);
                 String[] tokens = p.split(input, -1);  // -1 to keep trailing empty strings
                 
                 List<XPathValue> result = new ArrayList<>();

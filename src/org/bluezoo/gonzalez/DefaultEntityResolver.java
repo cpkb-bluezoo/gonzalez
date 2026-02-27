@@ -63,6 +63,12 @@ class DefaultEntityResolver implements EntityResolver {
     private final URL baseURL;
 
     /**
+     * Comma-separated list of allowed URL protocols.
+     * Empty string means no protocols allowed. "all" means all protocols allowed.
+     */
+    private String allowedProtocols = "";
+
+    /**
      * Creates a DefaultEntityResolver with current directory as base.
      */
     public DefaultEntityResolver() {
@@ -77,6 +83,73 @@ class DefaultEntityResolver implements EntityResolver {
      */
     public DefaultEntityResolver(URL baseURL) {
         this.baseURL = baseURL;
+    }
+
+    /**
+     * Sets the allowed URL protocols for entity resolution.
+     *
+     * @param protocols comma-separated list of allowed protocols
+     *                  (e.g. "file,http,https"), "all" for unrestricted,
+     *                  or empty string for none
+     */
+    public void setAllowedProtocols(String protocols) {
+        this.allowedProtocols = (protocols != null) ? protocols : "";
+    }
+
+    /**
+     * Checks if a URL's protocol is allowed by the current policy.
+     *
+     * @param url the URL to check
+     * @throws SAXException if the protocol is not allowed
+     */
+    private void checkProtocol(URL url) throws SAXException {
+        String protocol = url.getProtocol();
+        if (!isProtocolAllowed(protocol, allowedProtocols)) {
+            throw new SAXException(
+                "Access denied to protocol '" + protocol +
+                "' by security policy (allowed: " +
+                (allowedProtocols.isEmpty() ? "none" : allowedProtocols) + ")");
+        }
+    }
+
+    /**
+     * Checks if a URI string's protocol is in the allowed protocols list.
+     * Extracts the protocol from the URI before the first colon.
+     *
+     * @param uri the URI string to check
+     * @param allowedProtocols comma-separated allowed protocols (e.g. "file,http"),
+     *                         "all" for unrestricted, or "" for none
+     * @return true if the protocol is allowed
+     */
+    static boolean isProtocolAllowed(String uri, String allowedProtocols) {
+        if (uri == null) {
+            return true;
+        }
+        if (allowedProtocols == null || allowedProtocols.isEmpty()) {
+            return false;
+        }
+        if ("all".equals(allowedProtocols)) {
+            return true;
+        }
+        int colonIndex = uri.indexOf(':');
+        if (colonIndex <= 0) {
+            return true;
+        }
+        String protocol = uri.substring(0, colonIndex);
+        int start = 0;
+        int len = allowedProtocols.length();
+        while (start < len) {
+            int comma = allowedProtocols.indexOf(',', start);
+            if (comma < 0) {
+                comma = len;
+            }
+            String allowed = allowedProtocols.substring(start, comma).trim();
+            if (protocol.equalsIgnoreCase(allowed)) {
+                return true;
+            }
+            start = comma + 1;
+        }
+        return false;
     }
 
     /**
@@ -262,7 +335,9 @@ class DefaultEntityResolver implements EntityResolver {
      * @return a new DefaultEntityResolver with the specified base
      */
     public DefaultEntityResolver withBase(URL baseURL) {
-        return new DefaultEntityResolver(baseURL);
+        DefaultEntityResolver resolver = new DefaultEntityResolver(baseURL);
+        resolver.setAllowedProtocols(this.allowedProtocols);
+        return resolver;
     }
 }
 

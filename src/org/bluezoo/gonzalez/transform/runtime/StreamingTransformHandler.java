@@ -57,6 +57,7 @@ public final class StreamingTransformHandler implements ContentHandler {
     private StreamingNode currentNode;
     private long documentOrder;
     private boolean documentStarted;
+    private final Map<String, String> reusableNsBindings = new HashMap<String, String>();
 
     /**
      * Creates a new streaming transform handler.
@@ -127,15 +128,15 @@ public final class StreamingTransformHandler implements ContentHandler {
             prefix = qName.substring(0, colonIdx);
         }
         
-        // Collect namespace bindings from parent
-        Map<String, String> nsBindings = new HashMap<String, String>();
+        // Collect namespace bindings from parent (reuse map to avoid allocation)
+        reusableNsBindings.clear();
         if (currentNode != null) {
-            nsBindings.putAll(currentNode.getNamespaceBindings());
+            reusableNsBindings.putAll(currentNode.getNamespaceBindings());
         }
         
         // Create a new streaming node using factory method
         StreamingNode node = StreamingNode.createElement(
-            uri, localName, prefix, atts, nsBindings, currentNode, documentOrder
+            uri, localName, prefix, atts, reusableNsBindings, currentNode, documentOrder
         );
         
         currentNode = node;

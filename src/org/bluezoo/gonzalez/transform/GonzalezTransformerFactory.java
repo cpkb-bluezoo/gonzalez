@@ -78,6 +78,13 @@ import org.bluezoo.gonzalez.transform.compiler.StylesheetResolver;
  */
 public class GonzalezTransformerFactory extends SAXTransformerFactory {
 
+    private static final String FEATURE_SECURE_PROCESSING =
+        "http://javax.xml.XMLConstants/feature/secure-processing";
+    private static final String ACCESS_EXTERNAL_DTD =
+        "http://javax.xml.XMLConstants/property/accessExternalDTD";
+    private static final String ACCESS_EXTERNAL_STYLESHEET =
+        "http://javax.xml.XMLConstants/property/accessExternalStylesheet";
+
     /** Factory attributes for configuration. */
     private final Map<String, Object> attributes = new HashMap<>();
     
@@ -86,6 +93,15 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     
     /** Error listener for reporting compilation and transformation errors. */
     private ErrorListener errorListener;
+
+    /** Whether secure processing is enabled (default: true). */
+    private boolean secureProcessing = true;
+
+    /** Allowed protocols for external DTD access (default: empty = none). */
+    private String accessExternalDTD = "";
+
+    /** Allowed protocols for external stylesheet access (default: empty = none). */
+    private String accessExternalStylesheet = "";
 
     /**
      * Creates a new transformer factory.
@@ -137,7 +153,9 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     public Templates newTemplates(Source source) throws TransformerConfigurationException {
         try {
             CompiledStylesheet stylesheet = compileStylesheet(source);
-            return new GonzalezTemplates(stylesheet);
+            GonzalezTemplates templates = new GonzalezTemplates(stylesheet);
+            templates.setAccessExternalDTD(accessExternalDTD);
+            return templates;
         } catch (SAXException | IOException e) {
             throw new TransformerConfigurationException("Failed to compile stylesheet", e);
         }
@@ -149,6 +167,8 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         
         // Create resolver for imports/includes
         StylesheetResolver resolver = new StylesheetResolver(uriResolver);
+        resolver.setAllowedProtocols(accessExternalStylesheet);
+        resolver.setAccessExternalDTD(accessExternalDTD);
         
         // Create compiler with resolver and base URI
         StylesheetCompiler compiler = new StylesheetCompiler(resolver, baseUri);
@@ -260,6 +280,22 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         reader.setFeature("http://xml.org/sax/features/namespaces", true);
         reader.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
         
+        // Configure entity processing based on accessExternalDTD setting
+        boolean allowDTD = accessExternalDTD != null && !accessExternalDTD.isEmpty();
+        try {
+            reader.setFeature("http://xml.org/sax/features/external-general-entities", allowDTD);
+            reader.setFeature("http://xml.org/sax/features/external-parameter-entities", allowDTD);
+        } catch (SAXException e) {
+            // Platform parser may not support these features
+        }
+        if (allowDTD) {
+            try {
+                reader.setProperty(ACCESS_EXTERNAL_DTD, accessExternalDTD);
+            } catch (SAXException e) {
+                // Parser may not support this property
+            }
+        }
+        
         return reader;
     }
 
@@ -311,6 +347,16 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     @Override
     public void setFeature(String name, boolean value) throws TransformerConfigurationException {
+        if (FEATURE_SECURE_PROCESSING.equals(name)) {
+            this.secureProcessing = value;
+            if (value) {
+                this.accessExternalDTD = "";
+                this.accessExternalStylesheet = "";
+            } else {
+                this.accessExternalDTD = "all";
+                this.accessExternalStylesheet = "all";
+            }
+        }
         attributes.put(name, value);
     }
 
@@ -322,6 +368,10 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     @Override
     public boolean getFeature(String name) {
+        if (FEATURE_SECURE_PROCESSING.equals(name)) {
+            return secureProcessing;
+        }
+        
         Object value = attributes.get(name);
         if (value instanceof Boolean) {
             return (Boolean) value;
@@ -347,6 +397,19 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     @Override
     public void setAttribute(String name, Object value) throws IllegalArgumentException {
+        if (ACCESS_EXTERNAL_DTD.equals(name)) {
+            if (value instanceof String) {
+                this.accessExternalDTD = (String) value;
+            } else {
+                throw new IllegalArgumentException("Value must be a String");
+            }
+        } else if (ACCESS_EXTERNAL_STYLESHEET.equals(name)) {
+            if (value instanceof String) {
+                this.accessExternalStylesheet = (String) value;
+            } else {
+                throw new IllegalArgumentException("Value must be a String");
+            }
+        }
         attributes.put(name, value);
     }
 
@@ -359,6 +422,12 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     @Override
     public Object getAttribute(String name) throws IllegalArgumentException {
+        if (ACCESS_EXTERNAL_DTD.equals(name)) {
+            return accessExternalDTD;
+        }
+        if (ACCESS_EXTERNAL_STYLESHEET.equals(name)) {
+            return accessExternalStylesheet;
+        }
         return attributes.get(name);
     }
 

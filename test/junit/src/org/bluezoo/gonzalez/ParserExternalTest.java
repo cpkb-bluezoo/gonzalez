@@ -79,6 +79,7 @@ public class ParserExternalTest {
         parser.setContentHandler(handler);
         parser.setProperty("http://xml.org/sax/properties/lexical-handler", handler);
         parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+        parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
 
         String systemId = xmlFile.toURI().toString();
         parser.parse(systemId);
@@ -105,6 +106,7 @@ public class ParserExternalTest {
         parser.setContentHandler(handler);
         parser.setProperty("http://xml.org/sax/properties/lexical-handler", handler);
         parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+        parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
 
         String systemId = xmlFile.toURI().toString();
         parser.parse(systemId);

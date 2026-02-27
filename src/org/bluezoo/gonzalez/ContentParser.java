@@ -90,12 +90,16 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     private boolean namespacesEnabled = true;              // SAX2 default
     private boolean namespacePrefixesEnabled = false;      // SAX2 default
     private boolean validationEnabled = false;             // Off by default
-    private boolean externalGeneralEntitiesEnabled = true; // On by default
-    private boolean externalParameterEntitiesEnabled = true; // On by default
+    private boolean externalGeneralEntitiesEnabled = false; // Off by default (secure)
+    private boolean externalParameterEntitiesEnabled = false; // Off by default (secure)
     private boolean resolveDTDURIsEnabled = true;          // On by default
     private boolean stringInterning = true;                // On by default - intern strings passed to handlers
     private boolean xml11 = false;                         // Document XML version (1.0 or 1.1)
     private String documentVersion = "1.0";                // Document XML version string (for entity compatibility checking)
+    
+    // Security settings
+    private String accessExternalDTD = "";                  // Allowed protocols for external DTD access (empty = none)
+    private int entityExpansionLimit = EntityStack.DEFAULT_EXPANSION_LIMIT;
     
     /**
      * SAX content handler for receiving document events.
@@ -168,7 +172,9 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * This avoids exposing the CharBuffer's backing array directly (security risk)
      * while still avoiding allocation on every characters() call.
      */
-    private char[] charArrayBuffer = new char[1024]; // Start with reasonable size
+    private static final int CHAR_BUFFER_INITIAL_SIZE = 1024;
+    private static final int ENTITY_READ_BUFFER_SIZE = 4096;
+    private char[] charArrayBuffer = new char[CHAR_BUFFER_INITIAL_SIZE];
 
     /**
      * Reusable list for collecting prefix names during endPrefixMapping dispatch.
@@ -580,6 +586,26 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         this.stringInterning = enabled;
     }
 
+    public String getAccessExternalDTD() {
+        return accessExternalDTD;
+    }
+
+    public void setAccessExternalDTD(String protocols) {
+        this.accessExternalDTD = (protocols != null) ? protocols : "";
+        // Clear default entity resolver so it will be recreated with new setting
+        if (defaultEntityResolver != null) {
+            defaultEntityResolver = null;
+        }
+    }
+
+    public int getEntityExpansionLimit() {
+        return entityExpansionLimit;
+    }
+
+    public void setEntityExpansionLimit(int limit) {
+        this.entityExpansionLimit = limit;
+    }
+
     // ========================================================================
     // State Management
     // ========================================================================
@@ -610,6 +636,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 // No base systemId, use current directory
                 defaultEntityResolver = new DefaultEntityResolver();
             }
+            defaultEntityResolver.setAllowedProtocols(accessExternalDTD);
         }
         return defaultEntityResolver;
     }
@@ -683,6 +710,18 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 // Skip general entity reference
                 return;
             }
+        }
+        
+        // Check protocol restriction (defense-in-depth)
+        if (systemId != null && !accessExternalDTD.isEmpty()) {
+            if (!DefaultEntityResolver.isProtocolAllowed(systemId, accessExternalDTD)) {
+                throw new SAXException(
+                    "Access to external entity denied by accessExternalDTD property: " + systemId);
+            }
+        } else if (systemId != null && accessExternalDTD.isEmpty()) {
+            throw new SAXException(
+                "Access to external entity denied by accessExternalDTD property " +
+                "(no protocols allowed): " + systemId);
         }
         
         // Get entity resolution helper (always available, uses default if needed)
@@ -795,7 +834,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             
             // Feed entity data to decoder (same logic as Parser.parse())
             try {
-                byte[] buffer = new byte[4096];
+                byte[] buffer = new byte[ENTITY_READ_BUFFER_SIZE];
                 int bytesRead;
                 
                 while ((bytesRead = inputStream.read(buffer)) != -1) {
@@ -861,6 +900,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         documentStarted = false;
         elementDepth = 0;
         rootElementSeen = false;
+        entityExpansionDepth = 0;
         
         // Clear DTD parser (allow GC)
         dtdParser = null;
@@ -873,7 +913,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         
         // Reset reusable char array to reasonable size if it grew too large
         if (charArrayBuffer.length > 8192) {
-            charArrayBuffer = new char[1024];
+            charArrayBuffer = new char[CHAR_BUFFER_INITIAL_SIZE];
         }
         
         // Always initialize intern pool for name deduplication (avoids
@@ -1634,10 +1674,22 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                     String whitespace = data.toString();
                     recordTextContent(whitespace);
                     if (contentHandler != null) {
-                        contentHandler.characters(whitespace.toCharArray(), 0, whitespace.length());
+                        if (isElementOnlyContent()) {
+                            contentHandler.ignorableWhitespace(
+                                whitespace.toCharArray(), 0, whitespace.length());
+                        } else {
+                            contentHandler.characters(
+                                whitespace.toCharArray(), 0, whitespace.length());
+                        }
+                    }
+                } else if (dtdParser != null && isElementOnlyContent()) {
+                    // DTD declares element-only content: report as ignorable whitespace
+                    // even without validation (SAX allows non-validating parsers to do this)
+                    if (contentHandler != null) {
+                        sendIgnorableWhitespaceFromBuffer(data, contentHandler);
                     }
                 } else if (contentHandler != null) {
-                    // Fast path: send directly from buffer
+                    // No DTD or mixed/any content: send as regular characters
                     sendCharactersFromBuffer(data, contentHandler);
                 }
                 break;
@@ -1923,6 +1975,46 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
     }
     
+    /**
+     * Sends character data from a CharBuffer as ignorable whitespace.
+     * Same zero-copy approach as sendCharactersFromBuffer.
+     */
+    private void sendIgnorableWhitespaceFromBuffer(CharBuffer buffer, ContentHandler handler) throws SAXException {
+        if (buffer == null || handler == null || !buffer.hasRemaining()) {
+            return;
+        }
+        
+        if (buffer.hasArray() && !buffer.isReadOnly()) {
+            char[] array = buffer.array();
+            int offset = buffer.arrayOffset() + buffer.position();
+            int length = buffer.remaining();
+            handler.ignorableWhitespace(array, offset, length);
+        } else {
+            int length = buffer.remaining();
+            if (charArrayBuffer.length < length) {
+                int newSize = Integer.highestOneBit(length) << 1;
+                charArrayBuffer = new char[newSize];
+            }
+            buffer.get(charArrayBuffer, 0, length);
+            handler.ignorableWhitespace(charArrayBuffer, 0, length);
+        }
+    }
+
+    /**
+     * Checks if the current element has element-only content per its DTD declaration.
+     */
+    private boolean isElementOnlyContent() {
+        if (dtdParser == null || elementStack == null || elementStack.isEmpty()) {
+            return false;
+        }
+        ElementValidationContext context = elementStack.peekLast();
+        if (context.elementName == null) {
+            return false;
+        }
+        ElementDeclaration decl = dtdParser.getElementDeclaration(context.elementName);
+        return decl != null && decl.contentType == ElementDeclaration.ContentType.ELEMENT;
+    }
+
     /**
      * Appends CharBuffer to StringBuilder without allocating a String.
      * Uses StringBuilder.append(CharSequence) which CharBuffer implements.

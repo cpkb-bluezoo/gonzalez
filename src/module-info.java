@@ -14,6 +14,7 @@
  */
 module org.bluezoo.gonzalez {
     requires java.xml;
+    requires org.bluezoo.json;
     exports org.bluezoo.gonzalez;
     exports org.bluezoo.gonzalez.schema;
     exports org.bluezoo.gonzalez.schema.xsd;

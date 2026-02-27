@@ -59,7 +59,11 @@ public interface XPathValue {
         /** XPath 2.0+ sequence type. */
         SEQUENCE,
         /** XPath 2.0+ untyped atomic value. */
-        ATOMIC
+        ATOMIC,
+        /** XPath 3.1 map type. */
+        MAP,
+        /** XPath 3.1 array type. */
+        ARRAY
     }
 
     /**

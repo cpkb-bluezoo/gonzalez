@@ -25,6 +25,7 @@ import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
 import org.bluezoo.gonzalez.transform.runtime.HTMLOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TextOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.xml.sax.*;
@@ -82,6 +83,13 @@ public class GonzalezTransformer extends Transformer {
     
     /** Initial template name for XSLT 2.0+ initial-template support. */
     private String initialTemplate;
+    private String initialMode;
+
+    /** XPath expression to select the initial context node from the source. */
+    private String initialContextSelect;
+
+    /** Allowed protocols for external DTD access. */
+    private String accessExternalDTD = "";
 
     /**
      * Creates a transformer with a stylesheet (or null for identity transform).
@@ -126,9 +134,14 @@ public class GonzalezTransformer extends Transformer {
 
     private void performIdentityTransform(Source source, Result result) 
             throws SAXException, IOException, TransformerException {
-        // Use SAX to copy input to output
         XMLReader reader = getXMLReader(source);
-        ContentHandler handler = getOutputHandler(result);
+        ContentHandler handler;
+        if (result instanceof SAXResult) {
+            handler = ((SAXResult) result).getHandler();
+        } else {
+            OutputHandler oh = getStreamOutputHandler(result);
+            handler = new OutputHandlerSAXAdapter(oh);
+        }
         
         reader.setContentHandler(handler);
         
@@ -138,8 +151,13 @@ public class GonzalezTransformer extends Transformer {
 
     private void performTransform(Source source, Result result) 
             throws SAXException, IOException, TransformerException {
-        // Create the transformation handler
-        ContentHandler outputHandler = getOutputHandler(result);
+        OutputHandler outputHandler;
+        if (result instanceof SAXResult) {
+            ContentHandler ch = ((SAXResult) result).getHandler();
+            outputHandler = new GonzalezTransformHandler.ContentHandlerOutputAdapter(ch);
+        } else {
+            outputHandler = getStreamOutputHandler(result);
+        }
         
         // Create the transformation pipeline
         GonzalezTransformHandler transformHandler = 
@@ -148,6 +166,16 @@ public class GonzalezTransformer extends Transformer {
         // Set initial template if specified (XSLT 2.0+ feature)
         if (initialTemplate != null) {
             transformHandler.setInitialTemplate(initialTemplate);
+        }
+        
+        // Set initial mode if specified
+        if (initialMode != null) {
+            transformHandler.setInitialMode(initialMode);
+        }
+        
+        // Set initial context select if specified
+        if (initialContextSelect != null) {
+            transformHandler.setInitialContextSelect(initialContextSelect);
         }
         
         // Parse input through the transform
@@ -170,6 +198,15 @@ public class GonzalezTransformer extends Transformer {
         reader.parse(inputSource);
     }
 
+    /**
+     * Sets the allowed protocols for external DTD access.
+     *
+     * @param accessExternalDTD comma-separated list of protocols, "all", or ""
+     */
+    void setAccessExternalDTD(String accessExternalDTD) {
+        this.accessExternalDTD = accessExternalDTD != null ? accessExternalDTD : "";
+    }
+
     private XMLReader getXMLReader(Source source) throws SAXException {
         if (source instanceof SAXSource) {
             SAXSource ss = (SAXSource) source;
@@ -178,13 +215,33 @@ public class GonzalezTransformer extends Transformer {
             }
         }
         
+        XMLReader reader;
         try {
             // Try Gonzalez parser
             Class<?> parserClass = Class.forName("org.bluezoo.gonzalez.Parser");
-            return (XMLReader) parserClass.getDeclaredConstructor().newInstance();
+            reader = (XMLReader) parserClass.getDeclaredConstructor().newInstance();
         } catch (Exception e) {
-            return XMLReaderFactory.createXMLReader();
+            reader = XMLReaderFactory.createXMLReader();
         }
+
+        // Configure entity processing based on accessExternalDTD setting
+        boolean allowDTD = accessExternalDTD != null && !accessExternalDTD.isEmpty();
+        try {
+            reader.setFeature("http://xml.org/sax/features/external-general-entities", allowDTD);
+            reader.setFeature("http://xml.org/sax/features/external-parameter-entities", allowDTD);
+        } catch (SAXException e) {
+            // Platform parser may not support these features
+        }
+        if (allowDTD) {
+            try {
+                reader.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD",
+                    accessExternalDTD);
+            } catch (SAXException e) {
+                // Parser may not support this property
+            }
+        }
+
+        return reader;
     }
 
     private InputSource getInputSource(Source source) throws TransformerException {
@@ -279,12 +336,7 @@ public class GonzalezTransformer extends Transformer {
         return Channels.newInputStream(openChannel(uri));
     }
 
-    private ContentHandler getOutputHandler(Result result) throws TransformerException, IOException {
-        if (result instanceof SAXResult) {
-            // SAX result: forward events directly to the ContentHandler (native, most efficient)
-            return ((SAXResult) result).getHandler();
-        }
-        
+    private OutputHandler getStreamOutputHandler(Result result) throws TransformerException, IOException {
         if (result instanceof StreamResult) {
             StreamResult sr = (StreamResult) result;
             String method = outputProperties.getProperty("method", "xml").toLowerCase();
@@ -539,6 +591,36 @@ public class GonzalezTransformer extends Transformer {
     }
 
     /**
+     * Sets the initial mode for XSLT 2.0+ support.
+     * If set, the initial apply-templates uses this mode instead of the default.
+     *
+     * @param mode the initial mode name
+     */
+    public void setInitialMode(String mode) {
+        this.initialMode = mode;
+    }
+
+    /**
+     * Returns the initial mode name.
+     *
+     * @return the initial mode name, or null
+     */
+    public String getInitialMode() {
+        return initialMode;
+    }
+
+    /**
+     * Sets an XPath expression to select the initial context node from the
+     * source document. When set, the transformation uses the selected node
+     * instead of the document root as the initial context item.
+     *
+     * @param xpath the XPath expression
+     */
+    public void setInitialContextSelect(String xpath) {
+        this.initialContextSelect = xpath;
+    }
+
+    /**
      * Command-line entry point for running XSLT transformations.
      * Usage: java org.bluezoo.gonzalez.transform.GonzalezTransformer <stylesheet.xsl> <input.xml> [<output>] [-it <template>]
      *
@@ -625,6 +707,89 @@ public class GonzalezTransformer extends Transformer {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace(System.err);
             System.exit(1);
+        }
+    }
+
+    /**
+     * Adapter that wraps an OutputHandler as a SAX ContentHandler.
+     * Used by the identity transform path to pipe SAX events from a reader
+     * to an OutputHandler without going through the XSLT engine.
+     */
+    private static class OutputHandlerSAXAdapter implements ContentHandler {
+
+        private final OutputHandler output;
+        private final java.util.List<String[]> pendingPrefixMappings =
+            new java.util.ArrayList<String[]>();
+
+        OutputHandlerSAXAdapter(OutputHandler output) {
+            this.output = output;
+        }
+
+        @Override
+        public void setDocumentLocator(Locator locator) {
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            output.startDocument();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            output.endDocument();
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri) {
+            pendingPrefixMappings.add(new String[] { prefix, uri });
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) {
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName, Attributes atts)
+                throws SAXException {
+            String effectiveUri = (uri != null) ? uri : "";
+            String effectiveQName = (qName != null && !qName.isEmpty()) ? qName : localName;
+            output.startElement(effectiveUri, localName, effectiveQName);
+            for (int i = 0; i < pendingPrefixMappings.size(); i++) {
+                String[] pm = pendingPrefixMappings.get(i);
+                output.namespace(pm[0], pm[1]);
+            }
+            pendingPrefixMappings.clear();
+            int len = atts.getLength();
+            for (int i = 0; i < len; i++) {
+                output.attribute(atts.getURI(i), atts.getLocalName(i), atts.getQName(i),
+                    atts.getValue(i));
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) throws SAXException {
+            String effectiveUri = (uri != null) ? uri : "";
+            String effectiveQName = (qName != null && !qName.isEmpty()) ? qName : localName;
+            output.endElement(effectiveUri, localName, effectiveQName);
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) throws SAXException {
+            output.characters(new String(ch, start, length));
+        }
+
+        @Override
+        public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
+            output.characters(new String(ch, start, length));
+        }
+
+        @Override
+        public void processingInstruction(String target, String data) throws SAXException {
+            output.processingInstruction(target, data);
+        }
+
+        @Override
+        public void skippedEntity(String name) {
         }
     }
 

@@ -102,6 +102,8 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     // XSLT 2.0 atomic value spacing state
     private boolean atomicValuePending = false;
     private boolean inAttributeContent = false;
+    private boolean contentReceived = false;
+    private boolean claimedByResultDocument = false;
 
     /**
      * HTML void elements - these have no end tag.
@@ -286,6 +288,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
 
     @Override
     public void startElement(String namespaceURI, String localName, String qName) throws SAXException {
+        contentReceived = true;
         flushStartTag();
         
         if (indent && depth > 0) {
@@ -452,6 +455,7 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
 
     @Override
     public void characters(String text) throws SAXException {
+        contentReceived = true;
         flushStartTag();
         
         if (inRawTextElement) {
@@ -572,6 +576,21 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
             characters(value.asString());
             atomicValuePending = true;
         }
+    }
+
+    @Override
+    public boolean hasReceivedContent() {
+        return contentReceived;
+    }
+
+    @Override
+    public void markClaimedByResultDocument() {
+        claimedByResultDocument = true;
+    }
+
+    @Override
+    public boolean isClaimedByResultDocument() {
+        return claimedByResultDocument;
     }
 
 }

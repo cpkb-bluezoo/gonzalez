@@ -172,6 +172,9 @@ public final class ResultDocumentHandler implements OutputHandler {
         }
         
         if (prefix == null || prefix.isEmpty()) {
+            if (uri == null || uri.isEmpty()) {
+                return;
+            }
             pendingAttributes.append(" xmlns=\"");
             pendingAttributes.append(uri);
             pendingAttributes.append('"');

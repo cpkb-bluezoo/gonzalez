@@ -140,8 +140,8 @@ public class ParserEntityTest {
         parse(xml, handler);
     }
 
-    @Test(expected = SAXParseException.class)
-    public void testExternalEntityNotYetImplementedInContent() throws Exception {
+    @Test
+    public void testExternalEntitySkippedWhenDisabled() throws Exception {
         String xml = "<?xml version='1.0'?>\n" +
                     "<!DOCTYPE root [\n" +
                     "  <!ENTITY external SYSTEM \"external.xml\">\n" +
@@ -150,6 +150,7 @@ public class ParserEntityTest {
 
         ContentCapture handler = new ContentCapture();
         parse(xml, handler);
+        // External entities are disabled by default, so &external; is silently skipped
     }
 
     // ========== EntityRefInAttributeTest ==========

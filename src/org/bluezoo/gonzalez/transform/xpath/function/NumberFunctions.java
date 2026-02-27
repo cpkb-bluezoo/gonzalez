@@ -201,21 +201,28 @@ public final class NumberFunctions {
     public static final Function ROUND = new Function() {
         @Override public String getName() { return "round"; }
         @Override public int getMinArgs() { return 1; }
-        @Override public int getMaxArgs() { return 1; }
-        @Override public ArgType[] getArgumentTypes() { return new ArgType[] { ArgType.NUMERIC }; }
+        @Override public int getMaxArgs() { return 2; }
+        @Override public ArgType[] getArgumentTypes() { return new ArgType[] { ArgType.NUMERIC, ArgType.NUMERIC }; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
             double value = args.get(0).asNumber();
             
-            // XPath 1.0 specifies round-half-to-positive-infinity
-            // Math.round uses round-half-up which is the same for positive numbers
-            // but differs for negative (e.g., -0.5 should round to 0, not -1)
             if (Double.isNaN(value) || Double.isInfinite(value)) {
                 return XPathNumber.of(value);
             }
-            
-            // Handle negative numbers specially for XPath semantics
+
+            // XPath 3.0: round($value, $precision) — round to N decimal places
+            if (args.size() >= 2) {
+                int precision = (int) args.get(1).asNumber();
+                double factor = Math.pow(10.0, precision);
+                double scaled = value * factor;
+                // Round half to even for negative, half away from zero for positive
+                double rounded = Math.floor(scaled + 0.5);
+                return XPathNumber.of(rounded / factor);
+            }
+
+            // XPath 1.0: round-half-to-positive-infinity
             if (value < 0 && value > -0.5) {
                 return XPathNumber.of(-0.0);
             }
@@ -581,8 +588,10 @@ public final class NumberFunctions {
             return sb.toString();
         }
         
+        private static final int MAX_ROMAN_NUMERAL = 3999;
+
         private String toRoman(long value, boolean upperCase) {
-            if (value <= 0 || value > 3999) {
+            if (value <= 0 || value > MAX_ROMAN_NUMERAL) {
                 return Long.toString(value);  // Out of range for Roman numerals
             }
             
@@ -658,34 +667,41 @@ public final class NumberFunctions {
                 return format.equals("W") ? "ZERO" : format.equals("w") ? "zero" : "Zero";
             }
             
+            StringBuilder sb = new StringBuilder();
+            buildWords(value, sb);
+            return applyWordCase(sb.toString(), format);
+        }
+        
+        private void buildWords(long value, StringBuilder sb) {
             String[] ones = {"", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
                             "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
                             "seventeen", "eighteen", "nineteen"};
             String[] tens = {"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"};
             
             if (value < 20) {
-                String result = ones[(int)value];
-                return applyWordCase(result, format);
+                sb.append(ones[(int) value]);
             } else if (value < 100) {
-                String result = tens[(int)(value / 10)];
+                sb.append(tens[(int) (value / 10)]);
                 if (value % 10 > 0) {
-                    result += "-" + ones[(int)(value % 10)];
+                    sb.append('-');
+                    sb.append(ones[(int) (value % 10)]);
                 }
-                return applyWordCase(result, format);
             } else if (value < 1000) {
-                String result = ones[(int)(value / 100)] + " hundred";
+                sb.append(ones[(int) (value / 100)]);
+                sb.append(" hundred");
                 if (value % 100 > 0) {
-                    result += " " + toWords(value % 100, "w");
+                    sb.append(' ');
+                    buildWords(value % 100, sb);
                 }
-                return applyWordCase(result, format);
             } else if (value < 1000000) {
-                String result = toWords(value / 1000, "w") + " thousand";
+                buildWords(value / 1000, sb);
+                sb.append(" thousand");
                 if (value % 1000 > 0) {
-                    result += " " + toWords(value % 1000, "w");
+                    sb.append(' ');
+                    buildWords(value % 1000, sb);
                 }
-                return applyWordCase(result, format);
             } else {
-                return Long.toString(value);  // Too large for simple words
+                sb.append(Long.toString(value));
             }
         }
         

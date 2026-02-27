@@ -21,7 +21,10 @@
 
 package org.bluezoo.gonzalez.transform.xpath;
 
+import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.transform.xpath.expr.BinaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.ContextItemExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.DynamicFunctionCallExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
 import org.bluezoo.gonzalez.transform.xpath.expr.FilterExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.ForExpr;
@@ -30,6 +33,12 @@ import org.bluezoo.gonzalez.transform.xpath.expr.IfExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.LetExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Literal;
 import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
+import org.bluezoo.gonzalez.transform.xpath.expr.ArgumentPlaceholder;
+import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.ArrayConstructorExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.LookupExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.MapConstructorExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.NamedFunctionRefExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Operator;
 import org.bluezoo.gonzalez.transform.xpath.expr.PathExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.QuantifiedExpr;
@@ -157,6 +166,7 @@ public final class XPathParser {
         // Function call construction
         String functionPrefix;
         String functionName;
+        String functionResolvedURI;
         
         // Filter expression construction (primary expr waiting for predicates)
         Expr filterBase;
@@ -294,10 +304,12 @@ public final class XPathParser {
      */
     private ParseContext parseOperand(ParseContext ctx, Deque<ParseContext> contextStack) 
             throws XPathSyntaxException {
-        // Count unary negations
+        // Handle unary operators: minus (negate) and plus (no-op)
         ctx.negationCount = 0;
-        while (lexer.current() == XPathToken.MINUS) {
-            ctx.negationCount++;
+        while (lexer.current() == XPathToken.MINUS || lexer.current() == XPathToken.PLUS) {
+            if (lexer.current() == XPathToken.MINUS) {
+                ctx.negationCount++;
+            }
             lexer.advance();
         }
 
@@ -373,6 +385,41 @@ public final class XPathParser {
                 return ctx;
             }
 
+            case DOT: {
+                // .(args) - context item used as a function
+                lexer.advance();
+                ctx.filterBase = new ContextItemExpr();
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case LBRACKET: {
+                // XPath 3.1 square-bracket array constructor: [expr1, expr2, ...]
+                Expr arrayExpr = parseArrayConstructor();
+                ctx.filterBase = arrayExpr;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
+            case QUESTION: {
+                // Check what follows '?' to disambiguate:
+                // ?* or ?name or ?N → unary lookup (shorthand for .?...)
+                // ? alone (followed by , or ) or end) → argument placeholder
+                XPathToken afterQ = lexer.peek();
+                if (afterQ == XPathToken.STAR || afterQ == XPathToken.NCNAME
+                        || afterQ == XPathToken.NUMBER_LITERAL || isNCNameOrKeyword()) {
+                    Expr lookupExpr = parseLookup(new ContextItemExpr());
+                    ctx.filterBase = lookupExpr;
+                    ctx.state = ParseState.PATH_CONTINUATION;
+                    return ctx;
+                }
+                // Argument placeholder for partial application
+                lexer.advance(); // consume '?'
+                ctx.filterBase = ArgumentPlaceholder.INSTANCE;
+                ctx.state = ParseState.PATH_CONTINUATION;
+                return ctx;
+            }
+
             case LPAREN:
                 return startParenthesizedExpr(ctx, contextStack);
 
@@ -413,16 +460,65 @@ public final class XPathParser {
             }
 
             case NCNAME:
-                // Could be a function call
+                // Could be inline function, function call, map/array constructor, or named function ref
                 XPathToken next = lexer.peek();
+                if (next == XPathToken.LPAREN && "function".equals(lexer.value())) {
+                    Expr inlineFunc = parseInlineFunctionExpr();
+                    ctx.filterBase = inlineFunc;
+                    ctx.state = ParseState.PATH_CONTINUATION;
+                    return ctx;
+                }
+                if (next == XPathToken.LBRACE && "map".equals(lexer.value())) {
+                    Expr mapExpr = parseMapConstructor();
+                    ctx.filterBase = mapExpr;
+                    ctx.state = ParseState.PATH_CONTINUATION;
+                    return ctx;
+                }
+                if (next == XPathToken.LBRACE && "array".equals(lexer.value())) {
+                    Expr arrayExpr = parseCurlyArrayConstructor();
+                    ctx.filterBase = arrayExpr;
+                    ctx.state = ParseState.PATH_CONTINUATION;
+                    return ctx;
+                }
+                if (next == XPathToken.HASH) {
+                    Expr funcRef = parseNamedFunctionRef();
+                    ctx.filterBase = funcRef;
+                    ctx.state = ParseState.PATH_CONTINUATION;
+                    return ctx;
+                }
                 if (next == XPathToken.LPAREN) {
                     return startFunctionCall(ctx, contextStack);
                 }
-                if (next == XPathToken.COLON && isPrefixedFunctionCall()) {
-                    return startFunctionCall(ctx, contextStack);
+                if (next == XPathToken.COLON) {
+                    if (isPrefixedFunctionRef()) {
+                        Expr funcRef = parseNamedFunctionRef();
+                        ctx.filterBase = funcRef;
+                        ctx.state = ParseState.PATH_CONTINUATION;
+                        return ctx;
+                    }
+                    if (isPrefixedFunctionCall()) {
+                        return startFunctionCall(ctx, contextStack);
+                    }
                 }
                 // Fall through - not a primary expression
                 break;
+
+            case URIQNAME: {
+                // XPath 3.0 URIQualifiedName: Q{uri}local
+                // Could be function call Q{uri}local(...) or function ref Q{uri}local#N
+                XPathToken uriNext = lexer.peek();
+                if (uriNext == XPathToken.LPAREN) {
+                    return startURIQualifiedFunctionCall(ctx, contextStack);
+                }
+                if (uriNext == XPathToken.HASH) {
+                    Expr funcRef = parseURIQualifiedFunctionRef();
+                    ctx.filterBase = funcRef;
+                    ctx.state = ParseState.PATH_CONTINUATION;
+                    return ctx;
+                }
+                // Fall through - not a primary expression
+                break;
+            }
 
             default:
                 break;
@@ -570,6 +666,244 @@ public final class XPathParser {
     }
 
     /**
+     * Parses an XPath 3.1 inline function expression:
+     * {@code function($p1, $p2) { body }} or
+     * {@code function($p1 as xs:string) as xs:integer { body }}.
+     * Type annotations are parsed and ignored.
+     */
+    private Expr parseInlineFunctionExpr() throws XPathSyntaxException {
+        lexer.expect(XPathToken.NCNAME); // consume 'function'
+        lexer.expect(XPathToken.LPAREN);
+
+        List<String> paramNames = new ArrayList<String>();
+
+        if (lexer.current() != XPathToken.RPAREN) {
+            // Parse first parameter
+            lexer.expect(XPathToken.DOLLAR);
+            String paramName = lexer.value();
+            lexer.expect(XPathToken.NCNAME);
+            paramNames.add(paramName);
+
+            // Skip optional type annotation: "as <SequenceType>"
+            skipParamTypeAnnotation();
+
+            // Parse additional parameters
+            while (lexer.match(XPathToken.COMMA)) {
+                lexer.expect(XPathToken.DOLLAR);
+                paramName = lexer.value();
+                lexer.expect(XPathToken.NCNAME);
+                paramNames.add(paramName);
+                skipParamTypeAnnotation();
+            }
+        }
+
+        lexer.expect(XPathToken.RPAREN);
+
+        // Skip optional return type annotation: "as <SequenceType>"
+        if (lexer.current() == XPathToken.NCNAME && "as".equals(lexer.value())) {
+            lexer.advance(); // consume 'as'
+            skipSequenceType();
+        }
+
+        lexer.expect(XPathToken.LBRACE);
+
+        Expr body;
+        if (lexer.current() == XPathToken.RBRACE) {
+            body = Literal.string("");
+        } else {
+            body = parseSubExpression();
+        }
+
+        lexer.expect(XPathToken.RBRACE);
+
+        return new InlineFunctionExpr(paramNames, body);
+    }
+
+    /**
+     * Skips an optional "as SequenceType" annotation on a function parameter.
+     */
+    private void skipParamTypeAnnotation() throws XPathSyntaxException {
+        if (lexer.current() == XPathToken.NCNAME && "as".equals(lexer.value())) {
+            lexer.advance(); // consume 'as'
+            skipSequenceType();
+        }
+    }
+
+    /**
+     * Skips a sequence type specification (e.g. xs:string, xs:integer*, item()+, etc.)
+     * Used to consume type annotations that we parse but do not enforce.
+     */
+    private void skipSequenceType() throws XPathSyntaxException {
+        // Handle "empty-sequence()"
+        if (lexer.current() == XPathToken.NCNAME && "empty-sequence".equals(lexer.value())) {
+            lexer.advance();
+            if (lexer.current() == XPathToken.LPAREN) {
+                lexer.advance();
+                lexer.expect(XPathToken.RPAREN);
+            }
+            return;
+        }
+
+        // Skip the item type: NCName (possibly prefixed), or node()/item()/element() etc.
+        if (lexer.current() == XPathToken.NCNAME) {
+            lexer.advance(); // consume first name
+            if (lexer.match(XPathToken.COLON)) {
+                // Prefixed type like xs:string
+                if (lexer.current() == XPathToken.NCNAME) {
+                    lexer.advance();
+                }
+            }
+            // Handle function type: function(...) as ...
+            if (lexer.current() == XPathToken.LPAREN) {
+                int depth = 1;
+                lexer.advance();
+                while (depth > 0 && lexer.current() != XPathToken.EOF) {
+                    if (lexer.current() == XPathToken.LPAREN) {
+                        depth++;
+                    } else if (lexer.current() == XPathToken.RPAREN) {
+                        depth--;
+                    }
+                    lexer.advance();
+                }
+            }
+        } else if (lexer.current() == XPathToken.URIQNAME) {
+            lexer.advance();
+        }
+
+        // Skip occurrence indicator: ?, *, +
+        if (lexer.current() == XPathToken.QUESTION || lexer.current() == XPathToken.STAR) {
+            lexer.advance();
+        } else if (lexer.current() == XPathToken.PLUS) {
+            lexer.advance();
+        }
+    }
+
+    /**
+     * Parses an XPath 3.1 map constructor: map { key : value, ... }
+     */
+    private Expr parseMapConstructor() throws XPathSyntaxException {
+        lexer.expect(XPathToken.NCNAME);
+        lexer.expect(XPathToken.LBRACE);
+
+        List<Expr> keyExprs = new ArrayList<Expr>();
+        List<Expr> valueExprs = new ArrayList<Expr>();
+
+        if (lexer.current() != XPathToken.RBRACE) {
+            Expr key = parseSubExpression();
+            lexer.expect(XPathToken.COLON);
+            Expr value = parseSubExpression();
+            keyExprs.add(key);
+            valueExprs.add(value);
+
+            while (lexer.match(XPathToken.COMMA)) {
+                key = parseSubExpression();
+                lexer.expect(XPathToken.COLON);
+                value = parseSubExpression();
+                keyExprs.add(key);
+                valueExprs.add(value);
+            }
+        }
+
+        lexer.expect(XPathToken.RBRACE);
+        return new MapConstructorExpr(keyExprs, valueExprs);
+    }
+
+    /**
+     * Parses an XPath 3.1 square-bracket array constructor: [expr1, expr2, ...]
+     */
+    private Expr parseArrayConstructor() throws XPathSyntaxException {
+        lexer.expect(XPathToken.LBRACKET);
+
+        List<Expr> members = new ArrayList<>();
+
+        if (lexer.current() != XPathToken.RBRACKET) {
+            members.add(parseSubExpression());
+
+            while (lexer.match(XPathToken.COMMA)) {
+                members.add(parseSubExpression());
+            }
+        }
+
+        lexer.expect(XPathToken.RBRACKET);
+        return new ArrayConstructorExpr(members);
+    }
+
+    /**
+     * Parses an XPath 3.1 curly-brace array constructor: array { expr1, expr2, ... }
+     * Unlike [a, b, c] which creates one member per expression, array{} wraps
+     * the single expression result into array members.
+     */
+    private Expr parseCurlyArrayConstructor() throws XPathSyntaxException {
+        lexer.expect(XPathToken.NCNAME); // consume 'array'
+        lexer.expect(XPathToken.LBRACE);
+
+        List<Expr> members = new ArrayList<>();
+
+        if (lexer.current() != XPathToken.RBRACE) {
+            members.add(parseSubExpression());
+
+            while (lexer.match(XPathToken.COMMA)) {
+                members.add(parseSubExpression());
+            }
+        }
+
+        lexer.expect(XPathToken.RBRACE);
+        return new ArrayConstructorExpr(members);
+    }
+
+    /**
+     * Checks if the base expression is in a valid context for dynamic function call.
+     * XPath 3.1: PostfixExpr ::= PrimaryExpr (Predicate | ArgumentList | Lookup)*
+     * Any primary/postfix expression can be followed by (args).
+     */
+    private boolean isDynamicCallContext(Expr base) {
+        if (base instanceof Literal) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Parses a dynamic function call: base(args).
+     */
+    private Expr parseDynamicFunctionCall(Expr base) throws XPathSyntaxException {
+        lexer.expect(XPathToken.LPAREN);
+        List<Expr> args = new ArrayList<Expr>();
+        if (lexer.current() != XPathToken.RPAREN) {
+            args.add(parseSubExpression());
+            while (lexer.match(XPathToken.COMMA)) {
+                args.add(parseSubExpression());
+            }
+        }
+        lexer.expect(XPathToken.RPAREN);
+        return new DynamicFunctionCallExpr(base, args);
+    }
+
+    /**
+     * Parses a lookup specifier after '?': key name, wildcard, or integer.
+     */
+    private Expr parseLookup(Expr base) throws XPathSyntaxException {
+        lexer.expect(XPathToken.QUESTION);
+        XPathToken t = lexer.current();
+        if (t == XPathToken.STAR) {
+            lexer.advance();
+            return new LookupExpr(base, true);
+        }
+        if (t == XPathToken.NCNAME || isNCNameOrKeyword()) {
+            String key = lexer.value();
+            lexer.advance();
+            return new LookupExpr(base, key);
+        }
+        if (t == XPathToken.NUMBER_LITERAL) {
+            String key = lexer.value();
+            lexer.advance();
+            return new LookupExpr(base, key);
+        }
+        throw new XPathSyntaxException("Expected key specifier after '?'",
+            lexer.getExpression(), lexer.tokenStart());
+    }
+
+    /**
      * Parses a sub-expression (complete expression within a larger construct).
      * Uses a fresh parse context.
      */
@@ -642,9 +976,22 @@ public final class XPathParser {
     private ParseContext handlePathContinuation(ParseContext ctx) throws XPathSyntaxException {
         // Check for predicates
         if (lexer.current() == XPathToken.LBRACKET) {
-            // Use a separate list for predicates to avoid mixing with function arguments
             ctx.predicateItems = new ArrayList<>();
             ctx.state = ParseState.BUILDING_FILTER;
+            return ctx;
+        }
+
+        // Check for lookup operator (XPath 3.1): expr?key, expr?*, expr?N
+        if (lexer.current() == XPathToken.QUESTION) {
+            Expr lookupExpr = parseLookup(ctx.filterBase);
+            ctx.filterBase = lookupExpr;
+            return ctx;
+        }
+
+        // Check for dynamic function call (XPath 3.1): expr(args)
+        if (lexer.current() == XPathToken.LPAREN && isDynamicCallContext(ctx.filterBase)) {
+            Expr callExpr = parseDynamicFunctionCall(ctx.filterBase);
+            ctx.filterBase = callExpr;
             return ctx;
         }
 
@@ -782,10 +1129,16 @@ public final class XPathParser {
 
         lexer.expect(XPathToken.LPAREN);
 
+        // Resolve namespace prefix at compile time if possible
+        String resolvedURI = null;
+        if (prefix != null && namespaceResolver != null) {
+            resolvedURI = namespaceResolver.resolve(prefix);
+        }
+
         // Check for empty argument list
         if (lexer.current() == XPathToken.RPAREN) {
             lexer.advance();
-            Expr func = new FunctionCall(prefix, localName, new ArrayList<>());
+            Expr func = new FunctionCall(prefix, localName, resolvedURI, new ArrayList<>());
             ctx.filterBase = func;
             ctx.state = ParseState.PATH_CONTINUATION;
             return ctx;
@@ -802,6 +1155,7 @@ public final class XPathParser {
             ParseContext funcCtx = new ParseContext(ContextType.TOP_LEVEL);
             funcCtx.functionPrefix = prefix;
             funcCtx.functionName = localName;
+            funcCtx.functionResolvedURI = resolvedURI;
             funcCtx.items = new ArrayList<>();
             funcCtx.state = ParseState.BUILDING_FUNCTION;
             funcCtx.nestedInExpression = true;  // Mark as nested
@@ -811,9 +1165,75 @@ public final class XPathParser {
         // Top-level function call - use current context
         ctx.functionPrefix = prefix;
         ctx.functionName = localName;
+        ctx.functionResolvedURI = resolvedURI;
         ctx.items = new ArrayList<>();
         ctx.state = ParseState.BUILDING_FUNCTION;
         return ctx;
+    }
+
+    /**
+     * Starts a function call from a URIQualifiedName token: Q{uri}local(args).
+     * The value is in Clark notation "{uri}local".
+     */
+    private ParseContext startURIQualifiedFunctionCall(ParseContext ctx,
+            Deque<ParseContext> contextStack) throws XPathSyntaxException {
+        String clark = lexer.value();
+        lexer.advance(); // consume URIQNAME
+
+        // Parse Clark notation: {uri}local
+        int closeBrace = clark.indexOf('}');
+        String uri = clark.substring(1, closeBrace);
+        String localName = clark.substring(closeBrace + 1);
+
+        lexer.expect(XPathToken.LPAREN);
+
+        // Check for empty argument list
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+            Expr func = new FunctionCall(null, localName, uri, new ArrayList<>());
+            ctx.filterBase = func;
+            ctx.state = ParseState.PATH_CONTINUATION;
+            return ctx;
+        }
+
+        if (ctx.type == ContextType.FUNCTION_ARG || ctx.type == ContextType.PREDICATE
+                || ctx.type == ContextType.PARENTHESIZED || ctx.type == ContextType.SEQUENCE) {
+            contextStack.push(ctx);
+            ParseContext funcCtx = new ParseContext(ContextType.TOP_LEVEL);
+            funcCtx.functionPrefix = null;
+            funcCtx.functionName = localName;
+            funcCtx.functionResolvedURI = uri;
+            funcCtx.items = new ArrayList<>();
+            funcCtx.state = ParseState.BUILDING_FUNCTION;
+            funcCtx.nestedInExpression = true;
+            return funcCtx;
+        }
+
+        ctx.functionPrefix = null;
+        ctx.functionName = localName;
+        ctx.functionResolvedURI = uri;
+        ctx.items = new ArrayList<>();
+        ctx.state = ParseState.BUILDING_FUNCTION;
+        return ctx;
+    }
+
+    /**
+     * Parses a function reference from a URIQualifiedName: Q{uri}local#arity.
+     */
+    private Expr parseURIQualifiedFunctionRef() throws XPathSyntaxException {
+        String clark = lexer.value();
+        lexer.advance(); // consume URIQNAME
+
+        int closeBrace = clark.indexOf('}');
+        String uri = clark.substring(1, closeBrace);
+        String localName = clark.substring(closeBrace + 1);
+
+        lexer.expect(XPathToken.HASH);
+        String arityStr = lexer.value();
+        lexer.expect(XPathToken.NUMBER_LITERAL);
+        int arity = Integer.parseInt(arityStr);
+
+        return new NamedFunctionRefExpr(null, localName, uri, arity);
     }
 
     /**
@@ -887,7 +1307,8 @@ public final class XPathParser {
 
         // Pop back to parent context
         ParseContext parent = contextStack.pop();
-        Expr func = new FunctionCall(parent.functionPrefix, parent.functionName, ctx.items);
+        Expr func = new FunctionCall(parent.functionPrefix, parent.functionName,
+            parent.functionResolvedURI, ctx.items);
         
         // Check if this was a nested function call within another expression
         if (parent.nestedInExpression) {
@@ -1009,7 +1430,12 @@ public final class XPathParser {
         XPathToken token = lexer.current();
 
         // These always start steps, not primary expressions
-        if (token == XPathToken.DOT || token == XPathToken.DOUBLE_DOT || token == XPathToken.AT) {
+        // Exception: .(args) is a dynamic function call, not a step
+        if (token == XPathToken.DOT) {
+            XPathToken next = lexer.peek();
+            return next != XPathToken.LPAREN;
+        }
+        if (token == XPathToken.DOUBLE_DOT || token == XPathToken.AT) {
             return true;
         }
 
@@ -1031,14 +1457,32 @@ public final class XPathParser {
                 // Otherwise it's a function call
                 return false;
             }
-            // Check for prefixed function call: prefix:name(
+            // Check for prefixed function call or reference: prefix:name( or prefix:name#N
             if (next == XPathToken.COLON) {
-                if (isPrefixedFunctionCall()) {
-                    return false;  // It's a function call, not a location path
+                if (isPrefixedFunctionCall() || isPrefixedFunctionRef()) {
+                    return false;
                 }
                 return true;
             }
+            // name#arity is a function reference, not a step
+            if (next == XPathToken.HASH) {
+                return false;
+            }
+            // map{...} and array{...} are constructors, not steps
+            if (next == XPathToken.LBRACE &&
+                    ("map".equals(lexer.value()) || "array".equals(lexer.value()))) {
+                return false;
+            }
             // No paren or colon follows - it's an element name (step)
+            return true;
+        }
+
+        // URIQualifiedName: Q{uri}local — function call or reference, not a step
+        if (token == XPathToken.URIQNAME) {
+            XPathToken next = lexer.peek();
+            if (next == XPathToken.LPAREN || next == XPathToken.HASH) {
+                return false;
+            }
             return true;
         }
 
@@ -1047,10 +1491,10 @@ public final class XPathParser {
             return true;
         }
         
-        // XPath 2.0 kind tests: element(), attribute(), document-node(), schema-element(), schema-attribute()
+        // XPath 2.0/3.0 kind tests: element(), attribute(), document-node(), namespace-node(), schema-element(), schema-attribute()
         if (token == XPathToken.ELEMENT || token == XPathToken.ATTRIBUTE ||
-            token == XPathToken.DOCUMENT_NODE || token == XPathToken.SCHEMA_ELEMENT ||
-            token == XPathToken.SCHEMA_ATTRIBUTE) {
+            token == XPathToken.DOCUMENT_NODE || token == XPathToken.NAMESPACE_NODE ||
+            token == XPathToken.SCHEMA_ELEMENT || token == XPathToken.SCHEMA_ATTRIBUTE) {
             // These are kind tests when followed by (
             if (lexer.peek() == XPathToken.LPAREN) {
                 return true;
@@ -1098,6 +1542,70 @@ public final class XPathParser {
     }
 
     /**
+     * Checks if the current position starts a prefixed function reference: prefix:name#arity.
+     * Used when an NCNAME is followed by COLON and we need to disambiguate between
+     * prefix:name(args) and prefix:name#arity.
+     */
+    private boolean isPrefixedFunctionRef() {
+        int savedPos = lexer.getPosition();
+        XPathToken savedCurrent = lexer.current();
+        String savedValue = lexer.value();
+        int savedStart = lexer.tokenStart();
+        
+        try {
+            if (lexer.current() != XPathToken.NCNAME) {
+                return false;
+            }
+            lexer.advance();
+            
+            if (lexer.current() != XPathToken.COLON) {
+                return false;
+            }
+            lexer.advance();
+            
+            if (lexer.current() != XPathToken.NCNAME) {
+                return false;
+            }
+            lexer.advance();
+            
+            return lexer.current() == XPathToken.HASH;
+        } finally {
+            lexer.restore(savedPos, savedCurrent, savedValue, savedStart);
+        }
+    }
+
+    /**
+     * Parses a named function reference: name#arity or prefix:name#arity.
+     * Returns a NamedFunctionRefExpr that evaluates to a function item.
+     */
+    private Expr parseNamedFunctionRef() throws XPathSyntaxException {
+        String prefix = null;
+        String localName = lexer.value();
+        lexer.advance();
+        
+        // Check for prefix:localname pattern
+        if (lexer.current() == XPathToken.COLON) {
+            prefix = localName;
+            lexer.advance();
+            localName = lexer.value();
+            lexer.advance();
+        }
+        
+        // Consume the '#'
+        lexer.expect(XPathToken.HASH);
+        
+        // Parse the arity (integer literal)
+        if (lexer.current() != XPathToken.NUMBER_LITERAL) {
+            throw new XPathSyntaxException("Expected integer arity after '#'",
+                lexer.getExpression(), lexer.tokenStart());
+        }
+        int arity = (int) Double.parseDouble(lexer.value());
+        lexer.advance();
+        
+        return new NamedFunctionRefExpr(prefix, localName, arity);
+    }
+
+    /**
      * Parses a variable reference ($name). This is leaf-level, no nested expressions.
      */
     private Expr parseVariableReference() throws XPathSyntaxException {
@@ -1112,16 +1620,19 @@ public final class XPathParser {
         String name = lexer.value();
         lexer.advance();
 
-        // Check for prefix:localname
+        // Check for prefix:localname - only consume colon if followed by a valid local name
         if (lexer.current() == XPathToken.COLON) {
-            lexer.advance();
-            if (!isNCNameOrKeyword()) {
-                throw new XPathSyntaxException("Expected local name after prefix",
-                    lexer.getExpression(), lexer.tokenStart());
+            XPathToken afterColon = lexer.peek();
+            if (afterColon == XPathToken.NCNAME || isKeywordToken(afterColon)) {
+                lexer.advance();
+                String localName = lexer.value();
+                lexer.advance();
+                String resolvedUri = null;
+                if (namespaceResolver != null) {
+                    resolvedUri = namespaceResolver.resolve(name);
+                }
+                return new VariableReference(name, localName, resolvedUri);
             }
-            String localName = lexer.value();
-            lexer.advance();
-            return new VariableReference(name, localName);
         }
 
         return new VariableReference(name);
@@ -1138,6 +1649,26 @@ public final class XPathParser {
             return true;
         }
         // Keywords that can also be used as NCNames
+        switch (t) {
+            case AND: case OR: case DIV: case MOD:
+            case IF: case THEN: case ELSE:
+            case FOR: case LET: case RETURN: case IN:
+            case SOME: case EVERY: case SATISFIES:
+            case INSTANCE: case OF: case AS:
+            case TREAT: case CASTABLE: case CAST:
+            case INTERSECT: case EXCEPT:
+            case TO: case EQ: case NE: case LT: case LE: case GT: case GE:
+            case IS: case PRECEDES: case FOLLOWS:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Checks if the given token type is a keyword that can be used as an NCName.
+     */
+    private boolean isKeywordToken(XPathToken t) {
         switch (t) {
             case AND: case OR: case DIV: case MOD:
             case IF: case THEN: case ELSE:
@@ -1248,11 +1779,23 @@ public final class XPathParser {
             return parseStepPredicates(step);
         }
 
-        // Check for function call as a step (e.g., $tree/id('A004'))
+        // Check for function call as a step (e.g., $tree/id('A004') or path/xs:date(.))
         // A function call step is name followed by '(' - not an axis specifier
         if (lexer.current() == XPathToken.NCNAME && lexer.peek() == XPathToken.LPAREN) {
-            // This is a function call, not a step with an axis
             Expr funcExpr = parseFunctionCallAsStep();
+            Step step = Step.expression(funcExpr);
+            return parseStepPredicates(step);
+        }
+        // Prefixed function call as step (e.g., path/xs:date(.))
+        if (lexer.current() == XPathToken.NCNAME && lexer.peek() == XPathToken.COLON
+                && isPrefixedFunctionCall()) {
+            Expr funcExpr = parsePrefixedFunctionCallAsStep();
+            Step step = Step.expression(funcExpr);
+            return parseStepPredicates(step);
+        }
+        // URIQualifiedName function call as step (e.g., path/Q{f}attribute(.))
+        if (lexer.current() == XPathToken.URIQNAME && lexer.peek() == XPathToken.LPAREN) {
+            Expr funcExpr = parseURIQualifiedFunctionCallAsStep();
             Step step = Step.expression(funcExpr);
             return parseStepPredicates(step);
         }
@@ -1262,7 +1805,7 @@ public final class XPathParser {
         // - attribute() uses ATTRIBUTE axis
         // - element(), document-node() use CHILD axis
         if ((lexer.current() == XPathToken.ELEMENT || lexer.current() == XPathToken.ATTRIBUTE ||
-             lexer.current() == XPathToken.DOCUMENT_NODE) && lexer.peek() == XPathToken.LPAREN) {
+             lexer.current() == XPathToken.DOCUMENT_NODE || lexer.current() == XPathToken.NAMESPACE_NODE) && lexer.peek() == XPathToken.LPAREN) {
             // attribute() kind test uses attribute axis by default
             Step.Axis defaultAxis = (lexer.current() == XPathToken.ATTRIBUTE) 
                 ? Step.Axis.ATTRIBUTE : Step.Axis.CHILD;
@@ -1309,6 +1852,64 @@ public final class XPathParser {
         lexer.expect(XPathToken.RPAREN);
         
         return new FunctionCall(null, funcName, args);
+    }
+
+    /**
+     * Parses a prefixed function call as a step in a path expression.
+     * e.g., /BOOKLIST/BOOKS/ITEM/PUB-DATE/xs:date(.)
+     */
+    private Expr parsePrefixedFunctionCallAsStep() throws XPathSyntaxException {
+        String prefix = lexer.value();
+        lexer.advance(); // consume prefix
+        lexer.advance(); // consume COLON
+        String localName = lexer.value();
+        lexer.advance(); // consume local name
+        lexer.advance(); // consume LPAREN
+
+        // Resolve namespace prefix at compile time
+        String resolvedURI = null;
+        if (namespaceResolver != null) {
+            resolvedURI = namespaceResolver.resolve(prefix);
+        }
+
+        // Parse arguments
+        List<Expr> args = new ArrayList<>();
+        if (lexer.current() != XPathToken.RPAREN) {
+            args.add(parseSubExpression());
+            while (lexer.current() == XPathToken.COMMA) {
+                lexer.advance();
+                args.add(parseSubExpression());
+            }
+        }
+        lexer.expect(XPathToken.RPAREN);
+
+        return new FunctionCall(prefix, localName, resolvedURI, args);
+    }
+
+    /**
+     * Parses a URIQualifiedName function call as a path step.
+     * e.g., path/Q{f}attribute('x', string(.))
+     */
+    private Expr parseURIQualifiedFunctionCallAsStep() throws XPathSyntaxException {
+        String clark = lexer.value();
+        lexer.advance(); // consume URIQNAME
+        lexer.advance(); // consume LPAREN
+
+        int closeBrace = clark.indexOf('}');
+        String uri = clark.substring(1, closeBrace);
+        String localName = clark.substring(closeBrace + 1);
+
+        List<Expr> args = new ArrayList<>();
+        if (lexer.current() != XPathToken.RPAREN) {
+            args.add(parseSubExpression());
+            while (lexer.current() == XPathToken.COMMA) {
+                lexer.advance();
+                args.add(parseSubExpression());
+            }
+        }
+        lexer.expect(XPathToken.RPAREN);
+
+        return new FunctionCall(null, localName, uri, args);
     }
 
     /**
@@ -1454,10 +2055,10 @@ public final class XPathParser {
             return new Step(axis, nodeTestType);
         }
         
-        // XPath 2.0 kind tests: element(), attribute(), document-node(), schema-element(), schema-attribute()
+        // XPath 2.0/3.0 kind tests: element(), attribute(), document-node(), namespace-node(), schema-element(), schema-attribute()
         if (token == XPathToken.ELEMENT || token == XPathToken.ATTRIBUTE || 
-            token == XPathToken.DOCUMENT_NODE || token == XPathToken.SCHEMA_ELEMENT ||
-            token == XPathToken.SCHEMA_ATTRIBUTE) {
+            token == XPathToken.DOCUMENT_NODE || token == XPathToken.NAMESPACE_NODE ||
+            token == XPathToken.SCHEMA_ELEMENT || token == XPathToken.SCHEMA_ATTRIBUTE) {
             Step.NodeTestType nodeTestType;
             switch (token) {
                 case ELEMENT:
@@ -1468,6 +2069,9 @@ public final class XPathParser {
                     break;
                 case DOCUMENT_NODE:
                     nodeTestType = Step.NodeTestType.DOCUMENT_NODE;
+                    break;
+                case NAMESPACE_NODE:
+                    nodeTestType = Step.NodeTestType.NAMESPACE_NODE;
                     break;
                 case SCHEMA_ELEMENT:
                     nodeTestType = Step.NodeTestType.SCHEMA_ELEMENT;
@@ -1628,6 +2232,12 @@ public final class XPathParser {
                 return uri;
             }
         }
+        // XPST0081: undeclared namespace prefix
+        if (namespaceResolver != null) {
+            throw new XPathSyntaxException(
+                "XPST0081: No namespace declared for prefix '" + prefix + "'",
+                lexer.getExpression(), lexer.tokenStart());
+        }
         return prefix;
     }
 
@@ -1718,7 +2328,7 @@ public final class XPathParser {
         SequenceType.ItemKind itemKind;
         String namespaceURI = null;
         String localName = null;
-        String typeName = null;  // For element(name, type) or attribute(name, type)
+        QName typeName = null;  // For element(name, type) or attribute(name, type)
         
         XPathToken token = lexer.current();
         
@@ -1787,16 +2397,11 @@ public final class XPathParser {
                     if (lexer.current() == XPathToken.COMMA) {
                         lexer.advance();
                         String[] typeQName = parseAtomicTypeName();
-                        // Store prefixed type name for matching (e.g., "xs:string")
-                        if (typeQName[0] != null) {
-                            typeName = "{" + typeQName[0] + "}" + typeQName[1];
-                        } else {
-                            typeName = typeQName[1];
-                        }
+                        String typeUri = typeQName[0] != null ? typeQName[0] : "";
+                        typeName = new QName(typeUri, typeQName[1], typeQName[1]);
                         // Optional '?' for nillable types (e.g., xs:untyped?)
                         if (lexer.current() == XPathToken.QUESTION) {
                             lexer.advance();
-                            // Note: nillable flag not currently tracked, just consume the '?'
                         }
                     }
                 }
@@ -1821,12 +2426,8 @@ public final class XPathParser {
                     if (lexer.current() == XPathToken.COMMA) {
                         lexer.advance();
                         String[] typeQName = parseAtomicTypeName();
-                        // Store prefixed type name for matching (e.g., "xs:string")
-                        if (typeQName[0] != null) {
-                            typeName = "{" + typeQName[0] + "}" + typeQName[1];
-                        } else {
-                            typeName = typeQName[1];
-                        }
+                        String typeUri = typeQName[0] != null ? typeQName[0] : "";
+                        typeName = new QName(typeUri, typeQName[1], typeQName[1]);
                         // Optional '?' for nillable types
                         if (lexer.current() == XPathToken.QUESTION) {
                             lexer.advance();
@@ -1841,6 +2442,13 @@ public final class XPathParser {
                 lexer.advance();
                 expectToken(XPathToken.LPAREN, "(");
                 // Could have element() inside, but we simplify
+                expectToken(XPathToken.RPAREN, ")");
+                break;
+                
+            case NAMESPACE_NODE:
+                itemKind = SequenceType.ItemKind.NAMESPACE_NODE;
+                lexer.advance();
+                expectToken(XPathToken.LPAREN, "(");
                 expectToken(XPathToken.RPAREN, ")");
                 break;
                 
@@ -1869,6 +2477,23 @@ public final class XPathParser {
                 break;
                 
             case NCNAME:
+                // Check for map(...) or array(...) type tests
+                if ("map".equals(lexer.value()) && lexer.peek() == XPathToken.LPAREN) {
+                    itemKind = SequenceType.ItemKind.MAP;
+                    lexer.advance();
+                    expectToken(XPathToken.LPAREN, "(");
+                    // Skip contents: map(*) or map(K, V)
+                    skipParenthesizedContent();
+                    break;
+                }
+                if ("array".equals(lexer.value()) && lexer.peek() == XPathToken.LPAREN) {
+                    itemKind = SequenceType.ItemKind.ARRAY;
+                    lexer.advance();
+                    expectToken(XPathToken.LPAREN, "(");
+                    skipParenthesizedContent();
+                    break;
+                }
+                // Fall through to atomic type
             case PREFIX:
                 // Atomic type reference (e.g., xs:integer, xs:string)
                 itemKind = SequenceType.ItemKind.ATOMIC;
@@ -1952,12 +2577,16 @@ public final class XPathParser {
         if (lexer.current() == XPathToken.COLON) {
             lexer.advance();
             
-            // Resolve prefix to namespace
+            // Resolve prefix to namespace URI
             String prefix = firstPart;
-            if ("xs".equals(prefix) || "xsd".equals(prefix)) {
-                namespaceURI = SequenceType.XS_NAMESPACE;
-            } else if (namespaceResolver != null) {
+            if (namespaceResolver != null) {
                 namespaceURI = namespaceResolver.resolve(prefix);
+            }
+            if (namespaceURI == null) {
+                // Fallback for common XSD prefixes when no resolver available
+                if ("xs".equals(prefix) || "xsd".equals(prefix)) {
+                    namespaceURI = SequenceType.XS_NAMESPACE;
+                }
             }
             
             if (lexer.current() != XPathToken.NCNAME) {
@@ -1983,6 +2612,27 @@ public final class XPathParser {
                 lexer.getExpression(), lexer.tokenStart());
         }
         lexer.advance();
+    }
+
+    /**
+     * Skips tokens until a matching closing parenthesis is found.
+     * Assumes the opening parenthesis has already been consumed.
+     */
+    private void skipParenthesizedContent() throws XPathSyntaxException {
+        int depth = 1;
+        while (depth > 0) {
+            XPathToken t = lexer.current();
+            if (t == XPathToken.EOF) {
+                throw new XPathSyntaxException("Unexpected end of expression in type test",
+                    lexer.getExpression(), lexer.tokenStart());
+            }
+            if (t == XPathToken.LPAREN) {
+                depth++;
+            } else if (t == XPathToken.RPAREN) {
+                depth--;
+            }
+            lexer.advance();
+        }
     }
 
 }

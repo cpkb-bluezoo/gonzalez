@@ -70,33 +70,47 @@ public final class PathExpr implements Expr {
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         XPathValue filterResult = filter.evaluate(context);
-        
+
         if (filterResult == null) {
             return XPathNodeSet.EMPTY;
         }
-        
-        if (!filterResult.isNodeSet()) {
-            throw new XPathException("Path expression requires node-set from filter");
+
+        // Collect context nodes from the filter result
+        List<XPathNode> contextNodes = new ArrayList<>();
+
+        if (filterResult.isNodeSet()) {
+            XPathNodeSet nodeSet = filterResult.asNodeSet();
+            if (nodeSet != null) {
+                for (XPathNode n : nodeSet) {
+                    contextNodes.add(n);
+                }
+            }
+        } else if (filterResult.isSequence()) {
+            // XPath 2.0+: sequences may contain nodes
+            for (XPathValue item : (XPathSequence) filterResult) {
+                if (item instanceof XPathNode) {
+                    contextNodes.add((XPathNode) item);
+                }
+            }
+        } else if (filterResult instanceof XPathNode) {
+            contextNodes.add((XPathNode) filterResult);
         }
-        
-        XPathNodeSet nodeSet = filterResult.asNodeSet();
-        if (nodeSet == null || nodeSet.isEmpty()) {
+
+        if (contextNodes.isEmpty()) {
             return XPathNodeSet.EMPTY;
         }
-        
-        // Evaluate the path for each node in the filter result
-        // In XPath 2.0+, path steps can return atomic values (e.g., local-name())
+
+        // Evaluate the path for each context node
         List<XPathNode> nodeResults = new ArrayList<>();
         List<XPathValue> atomicResults = new ArrayList<>();
         boolean hasAtomicResults = false;
-        
-        for (XPathNode node : nodeSet) {
+
+        for (XPathNode node : contextNodes) {
             XPathContext nodeContext = context.withContextNode(node);
             XPathValue pathResult = path.evaluate(nodeContext);
-            
+
             if (pathResult.isNodeSet()) {
                 for (XPathNode resultNode : pathResult.asNodeSet()) {
-                    // Add if not already present (union semantics)
                     boolean found = false;
                     for (XPathNode existing : nodeResults) {
                         if (existing.isSameNode(resultNode)) {
@@ -109,7 +123,6 @@ public final class PathExpr implements Expr {
                     }
                 }
             } else if (pathResult.isSequence()) {
-                // Handle sequences from path steps
                 for (XPathValue item : (XPathSequence) pathResult) {
                     if (item instanceof XPathNode) {
                         nodeResults.add((XPathNode) item);
@@ -119,20 +132,18 @@ public final class PathExpr implements Expr {
                     }
                 }
             } else {
-                // Atomic value (string, number, etc.) from function call step
                 atomicResults.add(pathResult);
                 hasAtomicResults = true;
             }
         }
-        
-        // Return atomic values if present (XPath 2.0+ simple map semantics)
+
         if (hasAtomicResults) {
             if (atomicResults.size() == 1) {
                 return atomicResults.get(0);
             }
             return new XPathSequence(atomicResults);
         }
-        
+
         if (nodeResults.isEmpty()) {
             return XPathNodeSet.EMPTY;
         }

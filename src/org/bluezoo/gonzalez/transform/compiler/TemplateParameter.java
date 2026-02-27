@@ -37,6 +37,7 @@ public final class TemplateParameter {
     private final XPathExpression selectExpr;
     private final SequenceNode defaultContent;
     private final boolean tunnel; // XSLT 2.0: whether this is a tunnel parameter
+    private final boolean required; // XSLT 2.0: whether required="yes"
 
     /**
      * Creates a template parameter without namespace.
@@ -46,7 +47,7 @@ public final class TemplateParameter {
      * @param defaultContent the default content (may be null)
      */
     public TemplateParameter(String localName, XPathExpression selectExpr, SequenceNode defaultContent) {
-        this(null, localName, selectExpr, defaultContent, false);
+        this(null, localName, selectExpr, defaultContent, false, false);
     }
 
     /**
@@ -58,7 +59,7 @@ public final class TemplateParameter {
      * @param defaultContent the default content (may be null)
      */
     public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, SequenceNode defaultContent) {
-        this(namespaceURI, localName, selectExpr, defaultContent, false);
+        this(namespaceURI, localName, selectExpr, defaultContent, false, false);
     }
 
     /**
@@ -72,12 +73,28 @@ public final class TemplateParameter {
      */
     public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, 
                             SequenceNode defaultContent, boolean tunnel) {
+        this(namespaceURI, localName, selectExpr, defaultContent, tunnel, false);
+    }
+
+    /**
+     * Creates a template parameter with all options.
+     *
+     * @param namespaceURI the namespace URI (may be null)
+     * @param localName the parameter local name
+     * @param selectExpr the select expression (may be null)
+     * @param defaultContent the default content (may be null)
+     * @param tunnel whether this is a tunnel parameter (XSLT 2.0)
+     * @param required whether this parameter is required (XSLT 2.0)
+     */
+    public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, 
+                            SequenceNode defaultContent, boolean tunnel, boolean required) {
         this.namespaceURI = namespaceURI;
         this.localName = localName;
         this.expandedName = makeExpandedName(namespaceURI, localName);
         this.selectExpr = selectExpr;
         this.defaultContent = defaultContent;
         this.tunnel = tunnel;
+        this.required = required;
     }
 
     /**
@@ -153,6 +170,16 @@ public final class TemplateParameter {
      */
     public boolean isTunnel() {
         return tunnel;
+    }
+
+    /**
+     * Returns true if this parameter is required (XSLT 2.0).
+     * A required parameter must be supplied by the calling instruction.
+     *
+     * @return true if this parameter is required
+     */
+    public boolean isRequired() {
+        return required;
     }
 
     @Override

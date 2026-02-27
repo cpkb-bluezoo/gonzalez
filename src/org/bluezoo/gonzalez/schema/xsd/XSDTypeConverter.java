@@ -116,7 +116,8 @@ public final class XSDTypeConverter {
                 case "NMTOKENS":
                 case "IDREFS":
                 case "ENTITIES":
-                    return normalizeCollapse(lexicalValue).split("\\s+");
+                    String collapsed = normalizeCollapse(lexicalValue);
+                    return XSDUtils.splitWhitespace(collapsed);
 
                 // Boolean
                 case "boolean":

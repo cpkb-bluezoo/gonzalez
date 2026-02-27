@@ -42,6 +42,9 @@ public class GonzalezTemplates implements Templates {
     /** The compiled XSLT stylesheet. */
     private final CompiledStylesheet stylesheet;
 
+    /** Allowed protocols for external DTD access. */
+    private String accessExternalDTD = "";
+
     /**
      * Creates templates from a compiled stylesheet.
      *
@@ -49,6 +52,15 @@ public class GonzalezTemplates implements Templates {
      */
     public GonzalezTemplates(CompiledStylesheet stylesheet) {
         this.stylesheet = stylesheet;
+    }
+
+    /**
+     * Sets the allowed protocols for external DTD access.
+     *
+     * @param accessExternalDTD comma-separated list of protocols, "all", or ""
+     */
+    void setAccessExternalDTD(String accessExternalDTD) {
+        this.accessExternalDTD = accessExternalDTD != null ? accessExternalDTD : "";
     }
 
     /**
@@ -62,7 +74,9 @@ public class GonzalezTemplates implements Templates {
      */
     @Override
     public Transformer newTransformer() throws TransformerConfigurationException {
-        return new GonzalezTransformer(stylesheet);
+        GonzalezTransformer transformer = new GonzalezTransformer(stylesheet);
+        transformer.setAccessExternalDTD(accessExternalDTD);
+        return transformer;
     }
 
     /**

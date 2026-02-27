@@ -144,19 +144,25 @@ public final class ResultDocumentNode implements XSLTNode {
             if (href != null && !href.isEmpty()) {
                 // Create file output for secondary document
                 URI uri = resolveHref(href, context);
-                outputStream = new FileOutputStream(uri.getPath());
+                java.io.File outFile = new java.io.File(uri.getPath());
+                java.io.File parentDir = outFile.getParentFile();
+                if (parentDir != null && !parentDir.exists()) {
+                    parentDir.mkdirs();
+                }
+                outputStream = new FileOutputStream(outFile);
                 secondaryOutput = new ResultDocumentHandler(outputStream, props);
             } else {
                 // No href - write to principal output
-                // This is important for nested result-document: the inner one
-                // with no href should write to the original principal output,
-                // not to the current secondary output handler
                 OutputHandler principalOutput = context.getPrincipalOutput();
-                if (principalOutput != null) {
-                    secondaryOutput = principalOutput;
-                } else {
-                    secondaryOutput = output;
+                OutputHandler target = principalOutput != null ? principalOutput : output;
+                // XTDE1490: error if the principal output already has content (implicit or
+                // from another xsl:result-document) creating duplicate result trees
+                if (target.hasReceivedContent()) {
+                    throw new SAXException("XTDE1490: Cannot write to the principal output URI " +
+                        "because it has already been used");
                 }
+                context.claimResultDocumentUri("");
+                secondaryOutput = target;
                 usingPrincipalOutput = true;
             }
 
@@ -173,6 +179,9 @@ public final class ResultDocumentNode implements XSLTNode {
             // Only end document for secondary outputs
             if (!usingPrincipalOutput) {
                 secondaryOutput.endDocument();
+            } else {
+                // Block subsequent implicit writes to the principal output
+                secondaryOutput.markClaimedByResultDocument();
             }
 
         } catch (IOException e) {

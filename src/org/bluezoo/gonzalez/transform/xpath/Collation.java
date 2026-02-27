@@ -69,6 +69,25 @@ public class Collation {
     }
 
     /**
+     * Returns whether the given URI is a recognized collation URI.
+     *
+     * @param uri the collation URI
+     * @return true if recognized
+     */
+    public static boolean isRecognized(String uri) {
+        if (uri == null || uri.isEmpty() || CODEPOINT_URI.equals(uri)) {
+            return true;
+        }
+        if (HTML_ASCII_CASE_INSENSITIVE_URI.equals(uri)) {
+            return true;
+        }
+        if (uri.startsWith(UCA_BASE_URI)) {
+            return true;
+        }
+        return false;
+    }
+    
+    /**
      * Gets a collation for the given URI.
      *
      * @param uri the collation URI, or null for default

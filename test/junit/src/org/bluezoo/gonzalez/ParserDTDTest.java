@@ -277,6 +277,7 @@ public class ParserDTDTest {
             LexicalHandler lexicalHandler = new MinimalLexicalHandler();
             Parser parser = createParser(contentHandler, lexicalHandler, null, null);
             parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+            parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
             parser.parse(xmlFile.toURI().toString());
 
             DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);

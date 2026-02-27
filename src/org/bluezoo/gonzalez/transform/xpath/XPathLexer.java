@@ -229,6 +229,12 @@ public final class XPathLexer {
                 currentValue = "!";
                 return currentToken;
 
+            case '#':
+                position++;
+                currentToken = XPathToken.HASH;
+                currentValue = "#";
+                return currentToken;
+
             case '<':
                 if (position + 1 < length && expression.charAt(position + 1) == '=') {
                     position += 2;
@@ -329,6 +335,18 @@ public final class XPathLexer {
                     currentToken = XPathToken.STAR;
                 }
                 currentValue = "*";
+                return currentToken;
+
+            case '{':
+                position++;
+                currentToken = XPathToken.LBRACE;
+                currentValue = "{";
+                return currentToken;
+
+            case '}':
+                position++;
+                currentToken = XPathToken.RBRACE;
+                currentValue = "}";
                 return currentToken;
         }
 
@@ -507,7 +525,21 @@ public final class XPathLexer {
         position++; // skip opening quote
         int start = position;
         
-        while (position < length && expression.charAt(position) != quote) {
+        // XPath 2.0+: doubled quotes ('') inside a string literal represent
+        // a single quote character. Check if we need unescaping.
+        boolean hasEscapedQuotes = false;
+        while (position < length) {
+            char c = expression.charAt(position);
+            if (c == quote) {
+                // Check for doubled quote (escaped)
+                int next = position + 1;
+                if (next < length && expression.charAt(next) == quote) {
+                    hasEscapedQuotes = true;
+                    position += 2;
+                    continue;
+                }
+                break;
+            }
             position++;
         }
         
@@ -517,7 +549,26 @@ public final class XPathLexer {
             return currentToken;
         }
         
-        currentValue = expression.substring(start, position);
+        if (hasEscapedQuotes) {
+            // Unescape doubled quotes
+            String raw = expression.substring(start, position);
+            StringBuilder sb = new StringBuilder(raw.length());
+            String doubled = new String(new char[]{quote, quote});
+            int idx = 0;
+            while (idx < raw.length()) {
+                int found = raw.indexOf(doubled, idx);
+                if (found < 0) {
+                    sb.append(raw.substring(idx));
+                    break;
+                }
+                sb.append(raw.substring(idx, found));
+                sb.append(quote);
+                idx = found + 2;
+            }
+            currentValue = sb.toString();
+        } else {
+            currentValue = expression.substring(start, position);
+        }
         position++; // skip closing quote
         currentToken = XPathToken.STRING_LITERAL;
         return currentToken;
@@ -585,6 +636,11 @@ public final class XPathLexer {
         
         String name = expression.substring(start, position);
         
+        // XPath 3.0: Q{uri}local — URIQualifiedName
+        if ("Q".equals(name) && position < length && expression.charAt(position) == '{') {
+            return scanURIQualifiedName();
+        }
+        
         // Check for axis specifier (name followed by ::)
         skipWhitespace();
         if (position + 1 < length && expression.charAt(position) == ':' && 
@@ -632,7 +688,38 @@ public final class XPathLexer {
         currentValue = name;
         return currentToken;
     }
-    
+
+    /**
+     * Scans an XPath 3.0 URIQualifiedName: Q{uri}local.
+     * Called when "Q" has been consumed and next char is '{'.
+     * Returns value in Clark notation: "{uri}local".
+     */
+    private XPathToken scanURIQualifiedName() {
+        position++; // consume '{'
+        int uriStart = position;
+        while (position < length && expression.charAt(position) != '}') {
+            position++;
+        }
+        if (position >= length) {
+            currentToken = XPathToken.ERROR;
+            currentValue = "Unterminated URIQualifiedName";
+            return currentToken;
+        }
+        String uri = expression.substring(uriStart, position);
+        position++; // consume '}'
+
+        // Read local name
+        int localStart = position;
+        while (position < length && isNameChar(expression.charAt(position))) {
+            position++;
+        }
+        String local = expression.substring(localStart, position);
+
+        currentToken = XPathToken.URIQNAME;
+        currentValue = "{" + uri + "}" + local;
+        return currentToken;
+    }
+
     /**
      * Determines if the current context expects an expression keyword.
      * Keywords like 'if', 'for', 'let', 'some', 'every' start new expressions.
@@ -731,6 +818,7 @@ public final class XPathLexer {
             case "schema-element": return XPathToken.SCHEMA_ELEMENT;
             case "schema-attribute": return XPathToken.SCHEMA_ATTRIBUTE;
             case "document-node": return XPathToken.DOCUMENT_NODE;
+            case "namespace-node": return XPathToken.NAMESPACE_NODE;
             default: return null;
         }
     }
@@ -802,6 +890,7 @@ public final class XPathLexer {
             case RPAREN:
             case RBRACKET:
             case NCNAME:
+            case URIQNAME:
             case STRING_LITERAL:
             case NUMBER_LITERAL:
             case NODE_TYPE_COMMENT:

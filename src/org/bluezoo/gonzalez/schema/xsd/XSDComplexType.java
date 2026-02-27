@@ -85,6 +85,7 @@ public class XSDComplexType extends XSDType {
     
     // Attribute declarations
     private final Map<String, XSDAttribute> attributes = new LinkedHashMap<>();
+    private Map<String, XSDAttribute> cachedMergedAttributes;
     
     // Content model (simplified: just a list of allowed child elements)
     private final List<XSDParticle> particles = new ArrayList<>();
@@ -246,11 +247,17 @@ public class XSDComplexType extends XSDType {
             return Collections.unmodifiableMap(attributes);
         }
         
+        // Return cached merged attributes if available
+        if (cachedMergedAttributes != null) {
+            return cachedMergedAttributes;
+        }
+        
         // Collect inherited attributes first, then overlay with local ones
         Map<String, XSDAttribute> allAttrs = new LinkedHashMap<>();
         allAttrs.putAll(((XSDComplexType) baseType).getAttributes());
         allAttrs.putAll(attributes);
-        return Collections.unmodifiableMap(allAttrs);
+        cachedMergedAttributes = Collections.unmodifiableMap(allAttrs);
+        return cachedMergedAttributes;
     }
     
     /**

@@ -491,8 +491,10 @@ class Tokenizer implements Locator2 {
     public void reset() throws SAXException {
         state = initialState;
         miniState = MiniState.READY;
-        xml11 = false; // Reset to XML 1.0 mode
+        xml11 = false;
         returnState = null;
+        postDeclState = TokenizerState.PROLOG_BEFORE_DOCTYPE;
+        allowRestrictedChar = false;
         
         // Clear conditional section state
         if (conditionalStateStack != null) {
@@ -506,6 +508,16 @@ class Tokenizer implements Locator2 {
         columnNumber = 0;
         locationValidCharPos = 0;
         locationChars = null;
+
+        // Reset document metadata
+        version = "1.0";
+        documentVersion = "1.0";
+        standalone = null;
+        encoding = null;
+
+        // Synchronise cached transition table with the reset state
+        cachedTransitions = MiniStateTransitionBuilder.FLAT_TRANSITION_TABLE.get(initialState);
+        consumer.tokenizerState(initialState);
     }
 
     // ===== Additional Setter Methods =====

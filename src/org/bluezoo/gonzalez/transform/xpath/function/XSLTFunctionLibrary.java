@@ -39,21 +39,29 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeWithBaseURI;
+import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.expr.PartialFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathAnyURI;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathTypeException;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.file.InvalidPathException;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
@@ -77,6 +85,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 
 /**
  * XSLT-specific function library.
@@ -100,6 +109,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
 
     /** Singleton instance. */
     public static final XSLTFunctionLibrary INSTANCE = new XSLTFunctionLibrary();
+
+    private static final Map<String, java.util.regex.Pattern> regexCache = new HashMap<>();
 
     private final Map<String, Function> xsltFunctions;
 
@@ -149,6 +160,26 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         map.put("xml-to-json", new XmlToJsonFunction());
         map.put("parse-json", new ParseJsonFunction());
         
+        // XPath 3.0 node-set functions
+        map.put("outermost", new OutermostFunction());
+        map.put("innermost", new InnermostFunction());
+        
+        // XPath 3.0/XSLT 3.0 utility functions
+        map.put("stream-available", new StreamAvailableFunction());
+        map.put("available-system-properties", new AvailableSystemPropertiesFunction());
+        map.put("current-output-uri", new CurrentOutputUriFunction());
+        map.put("unparsed-text-lines", new UnparsedTextLinesFunction());
+        map.put("parse-xml", new ParseXmlFunction());
+        map.put("parse-xml-fragment", new ParseXmlFragmentFunction());
+        
+        // XPath 3.0 higher-order functions
+        map.put("fold-left", new FoldLeftFunction());
+        map.put("fold-right", new FoldRightFunction());
+        map.put("for-each", new ForEachFunction());
+        map.put("filter", new FilterFunction());
+        map.put("for-each-pair", new ForEachPairFunction());
+        map.put("sort", new SortFunction());
+        
         this.xsltFunctions = Collections.unmodifiableMap(map);
     }
 
@@ -179,6 +210,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     private static final String MATH_NAMESPACE = "http://www.w3.org/2005/xpath-functions/math";
     private static final String MAP_NAMESPACE = "http://www.w3.org/2005/xpath-functions/map";
     private static final String ARRAY_NAMESPACE = "http://www.w3.org/2005/xpath-functions/array";
+    private static final int IO_BUFFER_SIZE = 8192;
     
     /**
      * Invokes a function with the given namespace, local name, and arguments.
@@ -442,32 +474,158 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
 
     /**
      * Invokes an XPath 3.1 map function.
-     * Basic stub implementations - full map support requires XDM map type.
      */
     private XPathValue invokeMapFunction(String localName, List<XPathValue> args) throws XPathException {
         switch (localName) {
             case "size":
-                // map:size($map) → xs:integer
-                return XPathNumber.of(0); // Stub: would need actual map support
+                return mapSize(args);
             case "keys":
-                // map:keys($map) → xs:anyAtomicType*
-                return XPathSequence.EMPTY;
+                return mapKeys(args);
             case "contains":
-                // map:contains($map, $key) → xs:boolean
-                return XPathBoolean.FALSE;
+                return mapContains(args);
             case "get":
-                // map:get($map, $key) → item()*
-                return XPathSequence.EMPTY;
+                return mapGet(args);
             case "put":
+                return mapPut(args);
             case "remove":
+                return mapRemove(args);
             case "entry":
+                return mapEntry(args);
             case "merge":
-            case "for-each":
+                return mapMerge(args);
             case "find":
-                // These require actual map implementation
+                return mapFind(args);
+            case "for-each":
                 return XPathSequence.EMPTY;
             default:
                 throw new XPathException("Unknown map function: map:" + localName);
+        }
+    }
+
+    private XPathMap requireMap(List<XPathValue> args, String funcName) throws XPathException {
+        if (args.isEmpty()) {
+            throw new XPathException("map:" + funcName + " requires a map argument");
+        }
+        XPathValue first = args.get(0);
+        if (first instanceof XPathMap) {
+            return (XPathMap) first;
+        }
+        throw new XPathException("map:" + funcName + ": first argument is not a map");
+    }
+
+    private XPathValue mapSize(List<XPathValue> args) throws XPathException {
+        XPathMap map = requireMap(args, "size");
+        return XPathNumber.of(map.size());
+    }
+
+    private XPathValue mapKeys(List<XPathValue> args) throws XPathException {
+        XPathMap map = requireMap(args, "keys");
+        List<XPathValue> keys = map.keys();
+        if (keys.isEmpty()) {
+            return XPathSequence.EMPTY;
+        }
+        return new XPathSequence(keys);
+    }
+
+    private XPathValue mapContains(List<XPathValue> args) throws XPathException {
+        XPathMap map = requireMap(args, "contains");
+        if (args.size() < 2) {
+            throw new XPathException("map:contains requires 2 arguments");
+        }
+        String key = args.get(1).asString();
+        return XPathBoolean.of(map.containsKey(key));
+    }
+
+    private XPathValue mapGet(List<XPathValue> args) throws XPathException {
+        XPathMap map = requireMap(args, "get");
+        if (args.size() < 2) {
+            throw new XPathException("map:get requires 2 arguments");
+        }
+        String key = args.get(1).asString();
+        XPathValue value = map.get(key);
+        if (value == null) {
+            return XPathSequence.EMPTY;
+        }
+        return value;
+    }
+
+    private XPathValue mapPut(List<XPathValue> args) throws XPathException {
+        XPathMap map = requireMap(args, "put");
+        if (args.size() < 3) {
+            throw new XPathException("map:put requires 3 arguments");
+        }
+        String key = args.get(1).asString();
+        XPathValue value = args.get(2);
+        return map.put(key, value);
+    }
+
+    private XPathValue mapRemove(List<XPathValue> args) throws XPathException {
+        XPathMap map = requireMap(args, "remove");
+        if (args.size() < 2) {
+            throw new XPathException("map:remove requires 2 arguments");
+        }
+        String key = args.get(1).asString();
+        return map.remove(key);
+    }
+
+    private XPathValue mapEntry(List<XPathValue> args) throws XPathException {
+        if (args.size() < 2) {
+            throw new XPathException("map:entry requires 2 arguments");
+        }
+        String key = args.get(0).asString();
+        XPathValue value = args.get(1);
+        Map<String, XPathValue> entries = new LinkedHashMap<String, XPathValue>();
+        entries.put(key, value);
+        return new XPathMap(entries);
+    }
+
+    private XPathValue mapMerge(List<XPathValue> args) throws XPathException {
+        if (args.isEmpty()) {
+            throw new XPathException("map:merge requires at least 1 argument");
+        }
+        Map<String, XPathValue> merged = new LinkedHashMap<String, XPathValue>();
+        XPathValue first = args.get(0);
+        Iterator<XPathValue> it = first.sequenceIterator();
+        while (it.hasNext()) {
+            XPathValue item = it.next();
+            if (item instanceof XPathMap) {
+                XPathMap m = (XPathMap) item;
+                for (Map.Entry<String, XPathValue> entry : m.entries()) {
+                    merged.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        return new XPathMap(merged);
+    }
+
+    private XPathValue mapFind(List<XPathValue> args) throws XPathException {
+        if (args.size() < 2) {
+            throw new XPathException("map:find requires 2 arguments");
+        }
+        String key = args.get(1).asString();
+        List<XPathValue> found = new ArrayList<XPathValue>();
+        mapFindRecursive(args.get(0), key, found);
+        if (found.isEmpty()) {
+            return XPathSequence.EMPTY;
+        }
+        return new XPathSequence(found);
+    }
+
+    private void mapFindRecursive(XPathValue value, String key, List<XPathValue> found) {
+        if (value instanceof XPathMap) {
+            XPathMap map = (XPathMap) value;
+            XPathValue v = map.get(key);
+            if (v != null) {
+                found.add(v);
+            }
+            for (Map.Entry<String, XPathValue> entry : map.entries()) {
+                mapFindRecursive(entry.getValue(), key, found);
+            }
+        } else if (value instanceof XPathSequence) {
+            Iterator<XPathValue> it = value.sequenceIterator();
+            while (it.hasNext()) {
+                mapFindRecursive(it.next(), key, found);
+            }
         }
     }
 
@@ -565,8 +723,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             // Types like xs:boolean*, xs:integer, item()*, etc. should use sequence construction
             if (asType != null && isAtomicOrSequenceType(asType)) {
                 // Use sequence construction mode to preserve item boundaries
-                org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.SequenceBuilderOutputHandler output = 
-                    new org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.SequenceBuilderOutputHandler();
+                org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler output = 
+                    new org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler();
                 function.getBody().execute(funcContext, output);
                 result = output.getSequence();
                 
@@ -837,6 +995,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
             }
             
+            // Validate key name is a valid QName (XTDE1260)
+            if (!isValidQName(keyName)) {
+                throw new XPathException("XTDE1260: key name is not a valid QName: '" + keyName + "'");
+            }
+            
             // Expand key name to Clark notation (resolve prefix to URI)
             // This ensures key('bar:foo', ...) finds key defined as baz:foo 
             // when both prefixes map to the same namespace URI
@@ -844,7 +1007,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             KeyDefinition keyDef = stylesheet.getKeyDefinition(expandedName);
             if (keyDef == null) {
-                return XPathNodeSet.empty();
+                throw new XPathException("XTDE1260: No xsl:key declaration with name '" + keyName + "'");
             }
             
             // Check for circular reference in key evaluation
@@ -904,10 +1067,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                                        List<XPathNode> result, TransformContext context,
                                        Collation collation) 
                                        throws XPathException {
+            BasicTransformContext btx = (BasicTransformContext) context;
             // Check if this node matches the key pattern
             if (matchPattern.matches(node, context)) {
-                // Evaluate the use expression for this node
-                XPathContext nodeContext = context.withContextNode(node);
+                // Evaluate the use expression with current()=matched node (XSLT 2.0 spec)
+                XPathContext nodeContext = btx.withXsltCurrentNode(node);
                 XPathValue useValue = useExpr.evaluate(nodeContext);
                 
                 // Get the key value(s) for this node
@@ -948,8 +1112,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 while (attrs.hasNext()) {
                     XPathNode attr = attrs.next();
                     if (matchPattern.matches(attr, context)) {
-                        // Evaluate the use expression for this attribute
-                        XPathContext attrContext = context.withContextNode(attr);
+                        // Evaluate the use expression with current()=matched attr (XSLT 2.0 spec)
+                        XPathContext attrContext = btx.withXsltCurrentNode(attr);
                         XPathValue useValue = useExpr.evaluate(attrContext);
                         
                         // Get the key value(s) for this attribute
@@ -998,7 +1162,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
          * Expands a key name to Clark notation {uri}localname.
          * This resolves namespace prefixes using the XPath context.
          */
-        private String expandKeyName(String keyName, XPathContext context) {
+        private String expandKeyName(String keyName, XPathContext context)
+                throws XPathException {
             if (keyName == null) {
                 return null;
             }
@@ -1007,11 +1172,52 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 String prefix = keyName.substring(0, colon);
                 String localPart = keyName.substring(colon + 1);
                 String uri = context.resolveNamespacePrefix(prefix);
-                if (uri != null && !uri.isEmpty()) {
-                    return "{" + uri + "}" + localPart;
+                if (uri == null || uri.isEmpty()) {
+                    throw new XPathException("XTDE1260: No namespace declaration in scope " +
+                        "for prefix '" + prefix + "' in key name '" + keyName + "'");
                 }
+                return "{" + uri + "}" + localPart;
             }
             return keyName;
+        }
+        
+        private static boolean isValidQName(String name) {
+            if (name == null || name.isEmpty()) {
+                return false;
+            }
+            int colon = name.indexOf(':');
+            if (colon == 0 || colon == name.length() - 1) {
+                return false;
+            }
+            if (colon > 0) {
+                return isValidNCName(name.substring(0, colon))
+                    && isValidNCName(name.substring(colon + 1));
+            }
+            return isValidNCName(name);
+        }
+        
+        private static boolean isValidNCName(String name) {
+            if (name == null || name.isEmpty()) {
+                return false;
+            }
+            char first = name.charAt(0);
+            if (!isNameStartChar(first)) {
+                return false;
+            }
+            for (int i = 1; i < name.length(); i++) {
+                if (!isNameChar(name.charAt(i))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        
+        private static boolean isNameStartChar(char c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+        }
+        
+        private static boolean isNameChar(char c) {
+            return isNameStartChar(c) || (c >= '0' && c <= '9') || c == '-' || c == '.';
         }
     }
 
@@ -1242,13 +1448,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             String baseUri = context.getStaticBaseURI();
             
             // Try to load the document - catch any errors
-            try {
-                XPathNode doc = DocumentLoader.loadDocument(uri, baseUri, null, null);
-                return XPathBoolean.of(doc != null);
-            } catch (Exception e) {
-                // Any error means the document is not available
-                return XPathBoolean.FALSE;
-            }
+            XPathNode doc = DocumentLoader.loadDocument(uri, baseUri, null, null);
+            return XPathBoolean.of(doc != null);
         }
     }
 
@@ -1289,6 +1490,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 CompiledStylesheet stylesheet = tc.getStylesheet();
                 if (stylesheet != null) {
                     decFormat = stylesheet.getDecimalFormat(formatName);
+                    // XTDE1280: named decimal-format must be declared
+                    if (formatName != null && decFormat == null) {
+                        throw new XPathException("XTDE1280: Unknown decimal-format name: '" + formatName + "'");
+                    }
                 }
             }
             
@@ -1526,13 +1731,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 return pattern;
             }
             
-            // Translate custom symbols to Java DecimalFormat standard symbols
-            // NOTE: We do NOT translate minusSign here because in XSLT patterns,
-            // the minus character in a prefix/suffix is a LITERAL character,
-            // not the special minus-sign symbol. The minus-sign attribute only
-            // affects the DEFAULT negative prefix (when no explicit negative
-            // subpattern is given).
-            StringBuilder sb = new StringBuilder(pattern.length());
+            // Translate custom symbols to Java DecimalFormat standard symbols.
+            // When custom symbols replace the defaults, the original default characters
+            // become literals and must be quoted in the Java pattern.
+            StringBuilder sb = new StringBuilder(pattern.length() + 8);
             for (int i = 0; i < pattern.length(); i++) {
                 char c = pattern.charAt(i);
                 if (c == decimalSep) {
@@ -1545,15 +1747,43 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     sb.append('\u2030');
                 } else if (c == zeroDigit) {
                     sb.append('0');
+                } else if (isInZeroDigitFamily(c, zeroDigit)) {
+                    int offset = c - zeroDigit;
+                    sb.append((char) ('0' + offset));
                 } else if (c == digit) {
                     sb.append('#');
                 } else if (c == patternSep) {
                     sb.append(';');
+                } else if (isJavaPatternSpecial(c) && !isXsltFormatChar(c, decimalSep, groupingSep, percent, perMille, zeroDigit, digit, patternSep)) {
+                    sb.append('\'');
+                    sb.append(c);
+                    sb.append('\'');
                 } else {
                     sb.append(c);
                 }
             }
             return sb.toString();
+        }
+
+        private boolean isInZeroDigitFamily(char c, char zeroDigit) {
+            int offset = c - zeroDigit;
+            return offset > 0 && offset <= 9;
+        }
+
+        private boolean isJavaPatternSpecial(char c) {
+            return c == '0' || c == '#' || c == '.' || c == ',' ||
+                   c == '%' || c == '\u2030' || c == ';' ||
+                   (c >= '1' && c <= '9');
+        }
+
+        private boolean isXsltFormatChar(char c, char decimalSep, char groupingSep,
+                char percent, char perMille, char zeroDigit, char digit, char patternSep) {
+            if (c == decimalSep || c == groupingSep || c == percent || c == perMille ||
+                c == zeroDigit || c == digit || c == patternSep) {
+                return true;
+            }
+            int offset = c - zeroDigit;
+            return offset > 0 && offset <= 9;
         }
     }
 
@@ -1596,7 +1826,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             if (node == null) {
                 return XPathString.of("");
             }
-            return XPathString.of("id" + node.getDocumentOrder());
+            XPathNode root = node.getRoot();
+            int docId = System.identityHashCode(root);
+            String hex = Integer.toHexString(docId);
+            return XPathString.of("d" + hex + "n" + node.getDocumentOrder());
         }
     }
 
@@ -1622,40 +1855,107 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String name = args.get(0).asString();
-            
-            if ("xsl:version".equals(name)) {
-                // Per XSLT spec, this returns the version of XSLT implemented by the processor
-                // We support XSLT 3.0 features (though incomplete), so report 3.0
-                return XPathString.of("3.0");
-            }
-            if ("xsl:vendor".equals(name)) {
-                return XPathString.of("Gonzalez XSLT");
-            }
-            if ("xsl:vendor-url".equals(name)) {
-                return XPathString.of("https://www.nongnu.org/gonzalez/");
-            }
-            
-            // XSLT 3.0 package properties
-            if ("xsl:package-name".equals(name) || "xsl:package-version".equals(name)) {
-                // Try to get package info from the transform context
-                if (context instanceof org.bluezoo.gonzalez.transform.runtime.TransformContext) {
-                    org.bluezoo.gonzalez.transform.runtime.TransformContext tc = 
-                        (org.bluezoo.gonzalez.transform.runtime.TransformContext) context;
-                    org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet stylesheet = 
-                        tc.getStylesheet();
-                    if (stylesheet != null) {
-                        if ("xsl:package-name".equals(name)) {
-                            String pkgName = stylesheet.getPackageName();
-                            return XPathString.of(pkgName != null ? pkgName : "");
-                        } else {
-                            String pkgVersion = stylesheet.getPackageVersion();
-                            return XPathString.of(pkgVersion != null ? pkgVersion : "");
+
+            // XSLT 3.0: accept EQName syntax Q{uri}local in addition to QName
+            String namespaceURI = null;
+            String localName = null;
+
+            if (name.startsWith("Q{")) {
+                if (!isValidEQName(name)) {
+                    throw new XPathException("XTDE1390: system-property() argument is not a valid EQName: '" + name + "'");
+                }
+                int closeBrace = name.indexOf('}');
+                namespaceURI = name.substring(2, closeBrace);
+                localName = name.substring(closeBrace + 1);
+            } else {
+                if (!isValidQName(name)) {
+                    throw new XPathException("XTDE1390: system-property() argument is not a valid QName: '" + name + "'");
+                }
+                int colon = name.indexOf(':');
+                if (colon > 0) {
+                    String prefix = name.substring(0, colon);
+                    localName = name.substring(colon + 1);
+                    if ("xsl".equals(prefix)) {
+                        namespaceURI = XSLT_NAMESPACE;
+                    } else {
+                        namespaceURI = context.resolveNamespacePrefix(prefix);
+                        if (namespaceURI == null || namespaceURI.isEmpty()) {
+                            throw new XPathException("XTDE1390: No namespace declaration in scope for prefix '" +
+                                prefix + "' in system-property argument '" + name + "'");
                         }
                     }
+                } else {
+                    localName = name;
                 }
-                return XPathString.of("");
             }
-            
+
+            return lookupSystemProperty(namespaceURI, localName, context);
+        }
+
+        private static final String XSLT_NAMESPACE = "http://www.w3.org/1999/XSL/Transform";
+
+        private XPathValue lookupSystemProperty(String namespaceURI, String localName,
+                XPathContext context) throws XPathException {
+            if (XSLT_NAMESPACE.equals(namespaceURI)) {
+                if ("version".equals(localName)) {
+                    return XPathString.of("3.0");
+                }
+                if ("vendor".equals(localName)) {
+                    return XPathString.of("Gonzalez XSLT");
+                }
+                if ("vendor-url".equals(localName)) {
+                    return XPathString.of("https://www.nongnu.org/gonzalez/");
+                }
+                if ("product-name".equals(localName)) {
+                    return XPathString.of("Gonzalez");
+                }
+                if ("product-version".equals(localName)) {
+                    return XPathString.of("1.1");
+                }
+                if ("is-schema-aware".equals(localName)) {
+                    return XPathString.of("no");
+                }
+                if ("supports-serialization".equals(localName)) {
+                    return XPathString.of("yes");
+                }
+                if ("supports-backwards-compatibility".equals(localName)) {
+                    return XPathString.of("yes");
+                }
+                if ("supports-namespace-axis".equals(localName)) {
+                    return XPathString.of("yes");
+                }
+                if ("supports-streaming".equals(localName)) {
+                    return XPathString.of("no");
+                }
+                if ("supports-dynamic-evaluation".equals(localName)) {
+                    return XPathString.of("no");
+                }
+                if ("xpath-version".equals(localName)) {
+                    return XPathString.of("3.1");
+                }
+                if ("xsd-version".equals(localName)) {
+                    return XPathString.of("1.1");
+                }
+                if ("package-name".equals(localName) || "package-version".equals(localName)) {
+                    if (context instanceof org.bluezoo.gonzalez.transform.runtime.TransformContext) {
+                        org.bluezoo.gonzalez.transform.runtime.TransformContext tc =
+                            (org.bluezoo.gonzalez.transform.runtime.TransformContext) context;
+                        org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet stylesheet =
+                            tc.getStylesheet();
+                        if (stylesheet != null) {
+                            if ("package-name".equals(localName)) {
+                                String pkgName = stylesheet.getPackageName();
+                                return XPathString.of(pkgName != null ? pkgName : "");
+                            } else {
+                                String pkgVersion = stylesheet.getPackageVersion();
+                                return XPathString.of(pkgVersion != null ? pkgVersion : "");
+                            }
+                        }
+                    }
+                    return XPathString.of("");
+                }
+            }
+
             return XPathString.of("");
         }
     }
@@ -1753,6 +2053,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String name = args.get(0).asString();
+            
+            // XTDE1400: argument must be a valid EQName
+            if (!isValidQName(name) && !isValidEQName(name)) {
+                throw new XPathException("XTDE1400: function-available() argument is not a valid EQName: '" + name + "'");
+            }
+            
             boolean available = INSTANCE.hasFunction(null, name);
             return available ? XPathBoolean.TRUE : XPathBoolean.FALSE;
         }
@@ -1816,19 +2122,24 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 localName = qname;
             }
             
-            // Check if it's an xs: prefixed type
-            if ("xs".equals(prefix) || "xsd".equals(prefix)) {
+            // Resolve the prefix to a namespace URI
+            String namespaceURI = null;
+            if (prefix != null) {
+                namespaceURI = context.resolveNamespacePrefix(prefix);
+            }
+
+            // Check if it's in the XML Schema namespace
+            if (XS_NAMESPACE.equals(namespaceURI)) {
                 return BUILTIN_TYPES.contains(localName) ? XPathBoolean.TRUE : XPathBoolean.FALSE;
             }
-            
-            // No prefix or unknown prefix - check if we have schema imports
-            // For now, without import-schema support, return false for non-xs types
-            if (prefix != null) {
-                return XPathBoolean.FALSE;
+
+            // No prefix - check if it's a known built-in type
+            if (prefix == null) {
+                return BUILTIN_TYPES.contains(localName) ? XPathBoolean.TRUE : XPathBoolean.FALSE;
             }
-            
-            // Unprefixed - check if it's a known built-in type
-            return BUILTIN_TYPES.contains(localName) ? XPathBoolean.TRUE : XPathBoolean.FALSE;
+
+            // Non-XSD namespace - would need schema imports to check
+            return XPathBoolean.FALSE;
         }
     }
 
@@ -2052,13 +2363,17 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             if (context instanceof TransformContext) {
                 java.util.regex.Matcher matcher = ((TransformContext) context).getRegexMatcher();
                 if (matcher != null) {
-                    try {
-                        if (groupNum >= 0 && groupNum <= matcher.groupCount()) {
+                    int groupCount = matcher.groupCount();
+                    if (groupNum >= 0 && groupNum <= groupCount) {
+                        try {
                             String group = matcher.group(groupNum);
-                            return XPathString.of(group != null ? group : "");
+                            if (group == null) {
+                                group = "";
+                            }
+                            return XPathString.of(group);
+                        } catch (IllegalStateException e) {
+                            // No match operation has been performed yet
                         }
-                    } catch (IllegalStateException e) {
-                        // No match available
                     }
                 }
             }
@@ -2432,7 +2747,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     // For http/https, read from URL
                     java.io.InputStream is = uri.toURL().openStream();
                     java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
-                    byte[] buffer = new byte[8192];
+                    byte[] buffer = new byte[IO_BUFFER_SIZE];
                     int len;
                     while ((len = is.read(buffer)) != -1) {
                         baos.write(buffer, 0, len);
@@ -2444,11 +2759,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 byte[] bytes = java.nio.file.Files.readAllBytes(path);
                 String content = new String(bytes, charset);
                 return XPathString.of(content);
-            } catch (java.net.URISyntaxException e) {
+            } catch (URISyntaxException e) {
                 throw new XPathException("FOUT1170: Invalid URI: " + href);
             } catch (java.nio.charset.UnsupportedCharsetException e) {
                 throw new XPathException("FOUT1190: Unsupported encoding: " + encoding);
-            } catch (java.io.IOException e) {
+            } catch (IOException e) {
                 throw new XPathException("FOUT1170: Cannot read resource: " + href + " - " + e.getMessage());
             }
         }
@@ -2506,12 +2821,19 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                         conn.setRequestMethod("HEAD");
                         int responseCode = conn.getResponseCode();
                         conn.disconnect();
-                        return XPathBoolean.of(responseCode >= 200 && responseCode < 300);
-                    } catch (Exception e) {
+                        boolean success = responseCode >= 200 && responseCode < 300;
+                        return XPathBoolean.of(success);
+                    } catch (IOException e) {
+                        return XPathBoolean.FALSE;
+                    } catch (ClassCastException e) {
                         return XPathBoolean.FALSE;
                     }
                 }
-            } catch (Exception e) {
+            } catch (URISyntaxException e) {
+                return XPathBoolean.FALSE;
+            } catch (InvalidPathException e) {
+                return XPathBoolean.FALSE;
+            } catch (SecurityException e) {
                 return XPathBoolean.FALSE;
             }
         }
@@ -2549,7 +2871,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             if (flags.contains("x")) regexFlags |= java.util.regex.Pattern.COMMENTS;
             
             try {
-                java.util.regex.Pattern p = java.util.regex.Pattern.compile(pattern, regexFlags);
+                String cacheKey = pattern + "\0" + regexFlags;
+                java.util.regex.Pattern p = regexCache.get(cacheKey);
+                if (p == null) {
+                    p = java.util.regex.Pattern.compile(pattern, regexFlags);
+                    regexCache.put(cacheKey, p);
+                }
                 java.util.regex.Matcher m = p.matcher(input);
                 
                 // Build result XML as string (simplified - full implementation needs RTF)
@@ -2644,7 +2971,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             }
             
-            // Return a copy of the node (simplified - doesn't preserve full ancestor axis)
+            if (node == null) {
+                return XPathSequence.EMPTY;
+            }
+            // For fully navigable nodes, return as-is (already has all axes)
+            if (node.isFullyNavigable()) {
+                return XPathNodeSet.of(node);
+            }
+            // For streaming nodes, return as-is -- the streaming handler ensures
+            // the node state is captured at the point of call
             return XPathNodeSet.of(node);
         }
     }
@@ -2654,7 +2989,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     // ========================================================================
 
     /**
-     * json-to-xml($json-text) - Parses JSON text and returns an XML representation.
+     * json-to-xml($json-text) - Parses JSON text and returns an XML representation
+     * using the W3C XPath Functions namespace.
      */
     private static class JsonToXmlFunction implements Function {
         @Override
@@ -2669,28 +3005,90 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String json = args.get(0).asString();
-            // Options map (args[1]) ignored for now
-            
-            // Simple JSON to XML conversion
-            // Full implementation would need proper JSON parsing
-            StringBuilder xml = new StringBuilder();
-            xml.append("<fn:map xmlns:fn=\"http://www.w3.org/2005/xpath-functions\">");
-            // Simplified: just wrap the JSON text
-            xml.append(escapeXml(json));
-            xml.append("</fn:map>");
-            
-            return XPathString.of(xml.toString());
+            boolean escape = false;
+            String duplicates = "use-first";
+            if (args.size() > 1) {
+                XPathValue opts = args.get(1);
+                if (opts instanceof XPathMap) {
+                    XPathMap map = (XPathMap) opts;
+                    validateJsonOptions(map);
+                    escape = extractBooleanOption(map, "escape");
+                    XPathValue dupVal = map.get("duplicates");
+                    if (dupVal != null) {
+                        duplicates = dupVal.asString();
+                    }
+                }
+            }
+            try {
+                return JsonXmlConverter.jsonToXml(json, escape, duplicates);
+            } catch (org.xml.sax.SAXException e) {
+                throw new XPathException(e.getMessage());
+            }
         }
-        
-        private String escapeXml(String s) {
-            return s.replace("&", "&amp;")
-                    .replace("<", "&lt;")
-                    .replace(">", "&gt;");
+
+        private void validateJsonOptions(XPathMap map) throws XPathException {
+            for (Map.Entry<String, XPathValue> entry : map.entries()) {
+                String key = entry.getKey();
+                XPathValue value = entry.getValue();
+                switch (key) {
+                    case "liberal":
+                    case "escape":
+                    case "validate":
+                        validateBooleanOption(key, value);
+                        break;
+                    case "duplicates":
+                        validateStringOption(key, value);
+                        break;
+                    case "fallback":
+                        throw new XPathException("FOJS0005: option 'fallback' requires a function item");
+                    default:
+                        break;
+                }
+            }
+        }
+
+        private void validateBooleanOption(String key, XPathValue value) throws XPathException {
+            if (value instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) value;
+                if (seq.isEmpty()) {
+                    throw new XPathException("FOJS0005: option '" + key + "' must be a boolean, got empty sequence");
+                }
+                if (seq.size() > 1) {
+                    throw new XPathException("FOJS0005: option '" + key + "' must be a single boolean");
+                }
+            }
+            if (value instanceof XPathString) {
+                throw new XPathException("FOJS0005: option '" + key + "' must be a boolean, got string");
+            }
+        }
+
+        private void validateStringOption(String key, XPathValue value) throws XPathException {
+            if (value instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) value;
+                if (seq.isEmpty()) {
+                    throw new XPathException("FOJS0005: option '" + key + "' must be a string, got empty sequence");
+                }
+            }
+            if ("duplicates".equals(key)) {
+                String s = value.asString();
+                if (!"use-first".equals(s) && !"reject".equals(s) && !"retain".equals(s)) {
+                    throw new XPathException("FOJS0005: invalid value for 'duplicates': " + s);
+                }
+            }
+        }
+
+        private boolean extractBooleanOption(XPathMap map, String key) {
+            XPathValue value = map.get(key);
+            if (value != null) {
+                return value.asBoolean();
+            }
+            return false;
         }
     }
 
     /**
-     * xml-to-json($node) - Converts XML (in XPath functions namespace format) to JSON.
+     * xml-to-json($node) - Converts XML in the W3C XPath Functions namespace
+     * representation back to a JSON string.
      */
     private static class XmlToJsonFunction implements Function {
         @Override
@@ -2704,18 +3102,33 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            // Simplified implementation - returns string value
             XPathValue arg = args.get(0);
+            XPathNode node = null;
             if (arg instanceof XPathNode) {
-                return XPathString.of(((XPathNode) arg).getStringValue());
+                node = (XPathNode) arg;
             } else if (arg instanceof XPathNodeSet) {
-                StringBuilder sb = new StringBuilder();
-                for (XPathNode node : (XPathNodeSet) arg) {
-                    sb.append(node.getStringValue());
+                XPathNodeSet nodeSet = (XPathNodeSet) arg;
+                List<XPathNode> nodes = nodeSet.getNodes();
+                if (nodes != null && !nodes.isEmpty()) {
+                    node = nodes.get(0);
                 }
-                return XPathString.of(sb.toString());
+            } else if (arg instanceof XPathResultTreeFragment) {
+                XPathResultTreeFragment rtf = (XPathResultTreeFragment) arg;
+                XPathNodeSet nodeSet = rtf.asNodeSet();
+                List<XPathNode> nodes = nodeSet.getNodes();
+                if (nodes != null && !nodes.isEmpty()) {
+                    node = nodes.get(0);
+                }
             }
-            return XPathString.of(arg.asString());
+            if (node == null) {
+                throw new XPathException("FOJS0006: xml-to-json requires a node argument");
+            }
+            try {
+                String result = JsonXmlConverter.xmlToJson(node);
+                return XPathString.of(result);
+            } catch (org.xml.sax.SAXException e) {
+                throw new XPathException(e.getMessage());
+            }
         }
     }
 
@@ -2738,6 +3151,685 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             // Full implementation would need proper JSON parsing and XDM map/array support
             // For now, return the string
             return XPathString.of(json);
+        }
+    }
+
+    // ---- Shared QName/EQName validation helpers ----
+
+    static boolean isValidQName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        int colon = name.indexOf(':');
+        if (colon == 0 || colon == name.length() - 1) {
+            return false;
+        }
+        if (colon > 0) {
+            return isValidNCName(name.substring(0, colon))
+                && isValidNCName(name.substring(colon + 1));
+        }
+        return isValidNCName(name);
+    }
+
+    static boolean isValidNCName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        char first = name.charAt(0);
+        if (!isXmlNameStartChar(first)) {
+            return false;
+        }
+        for (int i = 1; i < name.length(); i++) {
+            if (!isXmlNameChar(name.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static boolean isValidEQName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        // EQName: Q{uri}local or NCName or prefix:local
+        if (name.startsWith("Q{")) {
+            int closeBrace = name.indexOf('}');
+            if (closeBrace < 0 || closeBrace == name.length() - 1) {
+                return false;
+            }
+            return isValidNCName(name.substring(closeBrace + 1));
+        }
+        return isValidQName(name);
+    }
+
+    // ========================================================================
+    // XSLT 3.0 current-output-uri() Function
+    // ========================================================================
+
+    /**
+     * current-output-uri() - Returns the URI of the current output destination.
+     */
+    private static class CurrentOutputUriFunction implements Function {
+        @Override
+        public String getName() { return "current-output-uri"; }
+
+        @Override
+        public int getMinArgs() { return 0; }
+
+        @Override
+        public int getMaxArgs() { return 0; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String outputUri = context.getStaticBaseURI();
+            if (outputUri != null) {
+                return XPathString.of(outputUri);
+            }
+            return XPathString.of("");
+        }
+    }
+
+    // ========================================================================
+    // XPath 3.0 unparsed-text-lines() Function
+    // ========================================================================
+
+    /**
+     * unparsed-text-lines($href) - Returns the lines of a text file as a sequence of strings.
+     */
+    private static class UnparsedTextLinesFunction implements Function {
+        @Override
+        public String getName() { return "unparsed-text-lines"; }
+
+        @Override
+        public int getMinArgs() { return 1; }
+
+        @Override
+        public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String href = args.get(0).asString();
+            if (href == null || href.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            
+            String encoding = null;
+            if (args.size() > 1 && args.get(1) != null) {
+                encoding = args.get(1).asString();
+            }
+            
+            String baseUri = context.getStaticBaseURI();
+            
+            try {
+                String resolvedHref = DocumentLoader.resolveUri(href, baseUri);
+                URL url = new URL(resolvedHref);
+                InputStream in = url.openStream();
+                byte[] data = readAllBytes(in);
+                in.close();
+                
+                String charset = encoding != null ? encoding : "UTF-8";
+                String text = new String(data, charset);
+                
+                String[] lines = text.split("\n", -1);
+                List<XPathValue> result = new ArrayList<XPathValue>();
+                for (String line : lines) {
+                    if (line.endsWith("\r")) {
+                        line = line.substring(0, line.length() - 1);
+                    }
+                    result.add(XPathString.of(line));
+                }
+                return new XPathSequence(result);
+            } catch (Exception e) {
+                throw new XPathException("FOUT1170: Error reading " + href + ": " + e.getMessage());
+            }
+        }
+        
+        private byte[] readAllBytes(InputStream in) throws IOException {
+            List<byte[]> chunks = new ArrayList<byte[]>();
+            int totalLen = 0;
+            byte[] buf = new byte[IO_BUFFER_SIZE];
+            int n;
+            while ((n = in.read(buf)) >= 0) {
+                byte[] chunk = new byte[n];
+                System.arraycopy(buf, 0, chunk, 0, n);
+                chunks.add(chunk);
+                totalLen += n;
+            }
+            byte[] result = new byte[totalLen];
+            int offset = 0;
+            for (byte[] chunk : chunks) {
+                System.arraycopy(chunk, 0, result, offset, chunk.length);
+                offset += chunk.length;
+            }
+            return result;
+        }
+    }
+
+    // ========================================================================
+    // XPath 3.0 parse-xml() / parse-xml-fragment() Functions
+    // ========================================================================
+
+    /**
+     * parse-xml($arg) - Parses an XML string and returns a document node.
+     */
+    private static class ParseXmlFunction implements Function {
+        @Override
+        public String getName() { return "parse-xml"; }
+
+        @Override
+        public int getMinArgs() { return 1; }
+
+        @Override
+        public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (arg == null) {
+                return XPathSequence.EMPTY;
+            }
+            String xml = arg.asString();
+            if (xml == null || xml.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            
+            try {
+                XPathNode doc = DocumentLoader.loadDocumentFromString(xml, null, null, null);
+                return XPathNodeSet.of(doc);
+            } catch (SAXException e) {
+                throw new XPathException("FODC0006: parse-xml failed: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * parse-xml-fragment($arg) - Parses an XML fragment and returns a document node.
+     */
+    private static class ParseXmlFragmentFunction implements Function {
+        @Override
+        public String getName() { return "parse-xml-fragment"; }
+
+        @Override
+        public int getMinArgs() { return 1; }
+
+        @Override
+        public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (arg == null) {
+                return XPathSequence.EMPTY;
+            }
+            String xml = arg.asString();
+            if (xml == null || xml.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            
+            // Wrap in a root element to make it well-formed
+            String wrapped = "<wrapper>" + xml + "</wrapper>";
+            try {
+                XPathNode doc = DocumentLoader.loadDocumentFromString(wrapped, null, null, null);
+                return XPathNodeSet.of(doc);
+            } catch (SAXException e) {
+                throw new XPathException("FODC0006: parse-xml-fragment failed: " + e.getMessage());
+            }
+        }
+    }
+
+    private static boolean isXmlNameStartChar(char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+    }
+
+    private static boolean isXmlNameChar(char c) {
+        return isXmlNameStartChar(c) || (c >= '0' && c <= '9') || c == '-' || c == '.';
+    }
+
+    // ========================================================================
+    // XPath 3.0 outermost() / innermost() Functions
+    // ========================================================================
+
+    /**
+     * outermost($nodes) - Returns nodes that have no ancestor in the input set.
+     * Nodes are returned in document order.
+     */
+    private static class OutermostFunction implements Function {
+        @Override
+        public String getName() { return "outermost"; }
+
+        @Override
+        public int getMinArgs() { return 1; }
+
+        @Override
+        public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (arg == null || (arg.isNodeSet() && ((XPathNodeSet) arg).isEmpty())) {
+                return XPathNodeSet.empty();
+            }
+            if (!arg.isNodeSet()) {
+                throw new XPathException("outermost() argument must be a node-set");
+            }
+            XPathNodeSet ns = (XPathNodeSet) arg;
+            List<XPathNode> nodes = ns.getNodes();
+            Set<XPathNode> nodeSet = new HashSet<XPathNode>(nodes);
+            List<XPathNode> result = new ArrayList<XPathNode>();
+            for (XPathNode node : nodes) {
+                if (!hasAncestorInSet(node, nodeSet)) {
+                    result.add(node);
+                }
+            }
+            return new XPathNodeSet(result);
+        }
+
+        private boolean hasAncestorInSet(XPathNode node, Set<XPathNode> nodeSet) {
+            XPathNode parent = node.getParent();
+            while (parent != null) {
+                if (nodeSet.contains(parent)) {
+                    return true;
+                }
+                parent = parent.getParent();
+            }
+            return false;
+        }
+    }
+
+    /**
+     * innermost($nodes) - Returns nodes that have no descendant in the input set.
+     * Nodes are returned in document order.
+     */
+    private static class InnermostFunction implements Function {
+        @Override
+        public String getName() { return "innermost"; }
+
+        @Override
+        public int getMinArgs() { return 1; }
+
+        @Override
+        public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (arg == null || (arg.isNodeSet() && ((XPathNodeSet) arg).isEmpty())) {
+                return XPathNodeSet.empty();
+            }
+            if (!arg.isNodeSet()) {
+                throw new XPathException("innermost() argument must be a node-set");
+            }
+            XPathNodeSet ns = (XPathNodeSet) arg;
+            List<XPathNode> nodes = ns.getNodes();
+            Set<XPathNode> nodeSet = new HashSet<XPathNode>(nodes);
+            List<XPathNode> result = new ArrayList<XPathNode>();
+            for (XPathNode node : nodes) {
+                if (!hasDescendantInSet(node, nodeSet)) {
+                    result.add(node);
+                }
+            }
+            return new XPathNodeSet(result);
+        }
+
+        private boolean hasDescendantInSet(XPathNode node, Set<XPathNode> nodeSet) {
+            for (XPathNode other : nodeSet) {
+                if (other == node) {
+                    continue;
+                }
+                XPathNode ancestor = other.getParent();
+                while (ancestor != null) {
+                    if (ancestor == node) {
+                        return true;
+                    }
+                    ancestor = ancestor.getParent();
+                }
+            }
+            return false;
+        }
+    }
+
+    // ========================================================================
+    // XSLT 3.0 stream-available() Function
+    // ========================================================================
+
+    /**
+     * stream-available($uri) - Returns true if streaming is available for the URI.
+     */
+    private static class StreamAvailableFunction implements Function {
+        @Override
+        public String getName() { return "stream-available"; }
+
+        @Override
+        public int getMinArgs() { return 1; }
+
+        @Override
+        public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue arg = args.get(0);
+            if (arg == null) {
+                return XPathBoolean.FALSE;
+            }
+            String uri = arg.asString();
+            if (uri == null || uri.isEmpty()) {
+                return XPathBoolean.FALSE;
+            }
+            return XPathBoolean.TRUE;
+        }
+    }
+
+    // ========================================================================
+    // XSLT 3.0 available-system-properties() Function
+    // ========================================================================
+
+    /**
+     * available-system-properties() - Returns the QNames of available system properties.
+     */
+    private static class AvailableSystemPropertiesFunction implements Function {
+        @Override
+        public String getName() { return "available-system-properties"; }
+
+        @Override
+        public int getMinArgs() { return 0; }
+
+        @Override
+        public int getMaxArgs() { return 0; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            String ns = "http://www.w3.org/1999/XSL/Transform";
+            String prefix = "xsl";
+            List<XPathValue> props = new ArrayList<XPathValue>();
+            props.add(XPathQName.of(ns, prefix, "version"));
+            props.add(XPathQName.of(ns, prefix, "vendor"));
+            props.add(XPathQName.of(ns, prefix, "vendor-url"));
+            props.add(XPathQName.of(ns, prefix, "product-name"));
+            props.add(XPathQName.of(ns, prefix, "product-version"));
+            props.add(XPathQName.of(ns, prefix, "is-schema-aware"));
+            props.add(XPathQName.of(ns, prefix, "supports-serialization"));
+            props.add(XPathQName.of(ns, prefix, "supports-backwards-compatibility"));
+            props.add(XPathQName.of(ns, prefix, "supports-namespace-axis"));
+            props.add(XPathQName.of(ns, prefix, "supports-streaming"));
+            props.add(XPathQName.of(ns, prefix, "supports-dynamic-evaluation"));
+            props.add(XPathQName.of(ns, prefix, "xpath-version"));
+            props.add(XPathQName.of(ns, prefix, "xsd-version"));
+            return new XPathSequence(props);
+        }
+    }
+
+    /**
+     * XPath 3.0 fn:fold-left($seq, $zero, $f) — processes items left to right.
+     * Applies function $f to accumulator and each item: $f($accumulator, $item).
+     */
+    private static class FoldLeftFunction implements Function {
+        @Override
+        public String getName() { return "fold-left"; }
+        @Override
+        public int getMinArgs() { return 3; }
+        @Override
+        public int getMaxArgs() { return 3; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue seq = args.get(0);
+            XPathValue accumulator = args.get(1);
+            XPathValue funcItem = args.get(2);
+
+            Iterator<XPathValue> it = seq.sequenceIterator();
+            while (it.hasNext()) {
+                XPathValue item = it.next();
+                List<XPathValue> callArgs = new ArrayList<XPathValue>(2);
+                callArgs.add(accumulator);
+                callArgs.add(item);
+                accumulator = invokeFunctionItem(funcItem, callArgs, context, "fold-left");
+            }
+            return accumulator;
+        }
+    }
+
+    /**
+     * XPath 3.0 fn:fold-right($seq, $zero, $f) — processes items right to left.
+     * Applies function $f to each item and accumulator: $f($item, $accumulator).
+     */
+    private static class FoldRightFunction implements Function {
+        @Override
+        public String getName() { return "fold-right"; }
+        @Override
+        public int getMinArgs() { return 3; }
+        @Override
+        public int getMaxArgs() { return 3; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue seq = args.get(0);
+            XPathValue accumulator = args.get(1);
+            XPathValue funcItem = args.get(2);
+
+            // Collect items to process right-to-left
+            List<XPathValue> items = new ArrayList<XPathValue>();
+            Iterator<XPathValue> it = seq.sequenceIterator();
+            while (it.hasNext()) {
+                items.add(it.next());
+            }
+            for (int i = items.size() - 1; i >= 0; i--) {
+                List<XPathValue> callArgs = new ArrayList<XPathValue>(2);
+                callArgs.add(items.get(i));
+                callArgs.add(accumulator);
+                accumulator = invokeFunctionItem(funcItem, callArgs, context, "fold-right");
+            }
+            return accumulator;
+        }
+    }
+
+    /**
+     * Invokes a function item value, supporting all function item types.
+     */
+    static XPathValue invokeFunctionItem(XPathValue funcItem, List<XPathValue> args,
+            XPathContext context, String callerName) throws XPathException {
+        if (funcItem instanceof InlineFunctionItem) {
+            return ((InlineFunctionItem) funcItem).invoke(args, context);
+        }
+        if (funcItem instanceof PartialFunctionItem) {
+            return ((PartialFunctionItem) funcItem).invoke(args, context);
+        }
+        if (funcItem instanceof XPathFunctionItem) {
+            return ((XPathFunctionItem) funcItem).invoke(args, context);
+        }
+        throw new XPathException(callerName + ": argument is not a function item");
+    }
+
+    /**
+     * XPath 3.0 fn:for-each($seq, $action) — applies a function to every item in a sequence.
+     */
+    private static class ForEachFunction implements Function {
+        @Override
+        public String getName() { return "for-each"; }
+        @Override
+        public int getMinArgs() { return 2; }
+        @Override
+        public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue seq = args.get(0);
+            XPathValue funcItem = args.get(1);
+
+            List<XPathValue> results = new ArrayList<XPathValue>();
+            Iterator<XPathValue> it = seq.sequenceIterator();
+            while (it.hasNext()) {
+                XPathValue item = it.next();
+                List<XPathValue> callArgs = new ArrayList<XPathValue>(1);
+                callArgs.add(item);
+                XPathValue result = invokeFunctionItem(funcItem, callArgs, context, "for-each");
+                // Flatten sequences into the result
+                if (result instanceof XPathSequence) {
+                    for (XPathValue v : (XPathSequence) result) {
+                        results.add(v);
+                    }
+                } else {
+                    results.add(result);
+                }
+            }
+            if (results.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            if (results.size() == 1) {
+                return results.get(0);
+            }
+            return new XPathSequence(results);
+        }
+    }
+
+    /**
+     * XPath 3.0 fn:filter($seq, $f) — returns items for which the function returns true.
+     */
+    private static class FilterFunction implements Function {
+        @Override
+        public String getName() { return "filter"; }
+        @Override
+        public int getMinArgs() { return 2; }
+        @Override
+        public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue seq = args.get(0);
+            XPathValue funcItem = args.get(1);
+
+            List<XPathValue> results = new ArrayList<XPathValue>();
+            Iterator<XPathValue> it = seq.sequenceIterator();
+            while (it.hasNext()) {
+                XPathValue item = it.next();
+                List<XPathValue> callArgs = new ArrayList<XPathValue>(1);
+                callArgs.add(item);
+                XPathValue result = invokeFunctionItem(funcItem, callArgs, context, "filter");
+                if (result.asBoolean()) {
+                    results.add(item);
+                }
+            }
+            if (results.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            if (results.size() == 1) {
+                return results.get(0);
+            }
+            return new XPathSequence(results);
+        }
+    }
+
+    /**
+     * XPath 3.0 fn:for-each-pair($seq1, $seq2, $f) — applies $f to corresponding pairs.
+     */
+    private static class ForEachPairFunction implements Function {
+        @Override
+        public String getName() { return "for-each-pair"; }
+        @Override
+        public int getMinArgs() { return 3; }
+        @Override
+        public int getMaxArgs() { return 3; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue seq1 = args.get(0);
+            XPathValue seq2 = args.get(1);
+            XPathValue funcItem = args.get(2);
+
+            List<XPathValue> results = new ArrayList<XPathValue>();
+            Iterator<XPathValue> it1 = seq1.sequenceIterator();
+            Iterator<XPathValue> it2 = seq2.sequenceIterator();
+            while (it1.hasNext() && it2.hasNext()) {
+                XPathValue item1 = it1.next();
+                XPathValue item2 = it2.next();
+                List<XPathValue> callArgs = new ArrayList<XPathValue>(2);
+                callArgs.add(item1);
+                callArgs.add(item2);
+                XPathValue result = invokeFunctionItem(funcItem, callArgs, context, "for-each-pair");
+                if (result instanceof XPathSequence) {
+                    for (XPathValue v : (XPathSequence) result) {
+                        results.add(v);
+                    }
+                } else {
+                    results.add(result);
+                }
+            }
+            if (results.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+            if (results.size() == 1) {
+                return results.get(0);
+            }
+            return new XPathSequence(results);
+        }
+    }
+
+    /**
+     * XPath 3.1 fn:sort($input) or fn:sort($input, $collation, $key) — sorts a sequence.
+     * The 1-arg form sorts by string value; the 3-arg form uses a key function.
+     */
+    private static class SortFunction implements Function {
+        @Override
+        public String getName() { return "sort"; }
+        @Override
+        public int getMinArgs() { return 1; }
+        @Override
+        public int getMaxArgs() { return 3; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue seq = args.get(0);
+
+            List<XPathValue> items = new ArrayList<XPathValue>();
+            Iterator<XPathValue> it = seq.sequenceIterator();
+            while (it.hasNext()) {
+                items.add(it.next());
+            }
+
+            if (items.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+
+            final XPathValue keyFunc;
+            if (args.size() >= 3) {
+                keyFunc = args.get(2);
+            } else {
+                keyFunc = null;
+            }
+
+            // Compute sort keys
+            final List<String> keys = new ArrayList<String>(items.size());
+            for (int i = 0; i < items.size(); i++) {
+                if (keyFunc != null) {
+                    List<XPathValue> callArgs = new ArrayList<XPathValue>(1);
+                    callArgs.add(items.get(i));
+                    XPathValue keyVal = invokeFunctionItem(keyFunc, callArgs, context, "sort");
+                    keys.add(keyVal.asString());
+                } else {
+                    keys.add(items.get(i).asString());
+                }
+            }
+
+            // Build index array and sort by keys
+            Integer[] indices = new Integer[items.size()];
+            for (int i = 0; i < indices.length; i++) {
+                indices[i] = Integer.valueOf(i);
+            }
+            java.util.Arrays.sort(indices, new java.util.Comparator<Integer>() {
+                @Override
+                public int compare(Integer a, Integer b) {
+                    return keys.get(a.intValue()).compareTo(keys.get(b.intValue()));
+                }
+            });
+
+            List<XPathValue> sorted = new ArrayList<XPathValue>(items.size());
+            for (int i = 0; i < indices.length; i++) {
+                sorted.add(items.get(indices[i].intValue()));
+            }
+
+            if (sorted.size() == 1) {
+                return sorted.get(0);
+            }
+            return new XPathSequence(sorted);
         }
     }
 }

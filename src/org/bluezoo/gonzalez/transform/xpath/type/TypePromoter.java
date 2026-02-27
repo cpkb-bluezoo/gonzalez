@@ -125,15 +125,11 @@ public class TypePromoter {
      * basic hardcoded checks.
      */
     private static boolean isSubtype(String actualType, String targetType) {
-        try {
-            XSDSimpleType actual = XSDSimpleType.getBuiltInType(actualType);
-            XSDSimpleType target = XSDSimpleType.getBuiltInType(targetType);
-            
-            if (actual != null && target != null) {
-                return actual.isSubtypeOf(target);
-            }
-        } catch (Exception e) {
-            // Fall through to basic checks
+        XSDSimpleType actual = XSDSimpleType.getBuiltInType(actualType);
+        XSDSimpleType target = XSDSimpleType.getBuiltInType(targetType);
+        
+        if (actual != null && target != null) {
+            return actual.isSubtypeOf(target);
         }
         
         // Basic fallback checks for common cases

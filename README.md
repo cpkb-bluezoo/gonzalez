@@ -266,6 +266,77 @@ Output:
 </root>
 ```
 
+## Security
+
+Gonzalez is **secure by default**. External entity processing and external DTD
+loading are disabled out of the box, protecting against XXE (XML External
+Entity) attacks, SSRF, and entity expansion bombs.
+
+### Default Security Settings
+
+| Setting | Default | Effect |
+|---------|---------|--------|
+| `external-general-entities` | `false` | External general entities are not resolved |
+| `external-parameter-entities` | `false` | External DTD subsets are not loaded |
+| `accessExternalDTD` | `""` (none) | No protocols allowed for external DTD access |
+| Entity expansion limit | 64,000 | Protects against billion-laughs entity bombs |
+
+### Enabling External Entities
+
+If you need to process documents with external DTDs or entity references, you
+must explicitly opt in to both the feature flags **and** the allowed protocols:
+
+```java
+Parser parser = new Parser();
+
+// Enable external entity processing
+parser.setFeature("http://xml.org/sax/features/external-general-entities", true);
+parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+
+// Allow specific protocols (required even when entities are enabled)
+parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
+```
+
+The `accessExternalDTD` property accepts:
+- `""` -- no protocols allowed (default)
+- `"all"` -- all protocols allowed
+- Comma-separated list -- e.g. `"file"`, `"file,http,https"`
+
+### JAXP Secure Processing
+
+Gonzalez recognizes the standard JAXP `FEATURE_SECURE_PROCESSING` feature.
+Setting it to `false` enables external entities and sets `accessExternalDTD`
+to `"all"`:
+
+```java
+// Via SAXParserFactory
+SAXParserFactory factory = new GonzalezSAXParserFactory();
+factory.setFeature("http://javax.xml.XMLConstants/feature/secure-processing", false);
+SAXParser parser = factory.newSAXParser();
+```
+
+### XSLT Transformer Security
+
+The transformer factory also enforces secure defaults. To allow stylesheet
+and DTD loading from files:
+
+```java
+GonzalezTransformerFactory factory = new GonzalezTransformerFactory();
+factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalStylesheet", "file");
+factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
+```
+
+### Entity Expansion Limit
+
+The default limit of 64,000 entity expansions matches the JDK default and
+protects against entity expansion attacks (billion laughs). To adjust:
+
+```java
+parser.setProperty("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit", 100000);
+```
+
+Set to `0` to disable the limit (not recommended for untrusted input).
+
 ## Building
 
 Use ant to build the project:
@@ -296,7 +367,7 @@ including:
 ## Performance
 
 Benchmark results comparing Gonzalez with the JDK's bundled Xerces SAX parser
-(Java 11, measured with JMH):
+(Java 21, measured with JMH):
 
 | Document Size | Gonzalez | Xerces | Comparison |
 |---------------|----------|--------|------------|
@@ -325,7 +396,9 @@ for that parse.
 ## Conformance
 
 Gonzalez has been tested with the W3C Conformance test suite xmlconf and
-achieves 100% conformance with that suite.
+achieves 100% conformance with that suite. The test data in `xmlconf/` is from
+the [20130923 release](https://www.w3.org/XML/Test/), the latest and final
+official release.
 
 ## Dependencies
 

@@ -135,6 +135,8 @@ public final class Step {
         ATTRIBUTE,
         /** The document-node() kind test (XPath 2.0). */
         DOCUMENT_NODE,
+        /** The namespace-node() kind test (XPath 3.0). */
+        NAMESPACE_NODE,
         /** The schema-element() kind test (XPath 2.0 schema-aware). */
         SCHEMA_ELEMENT,
         /** The schema-attribute() kind test (XPath 2.0 schema-aware). */

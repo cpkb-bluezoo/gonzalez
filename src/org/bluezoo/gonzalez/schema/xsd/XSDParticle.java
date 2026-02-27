@@ -387,7 +387,7 @@ public class XSDParticle {
         }
     }
     
-    private boolean matchesWildcard(String namespaceURI) {
+    boolean matchesWildcard(String namespaceURI) {
         switch (namespaceConstraint) {
             case "##any":
                 return true;

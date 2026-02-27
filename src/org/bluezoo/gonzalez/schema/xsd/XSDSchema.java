@@ -156,7 +156,12 @@ public class XSDSchema {
         // Track substitution group membership
         String subGroup = element.getSubstitutionGroup();
         if (subGroup != null) {
-            substitutionGroups.computeIfAbsent(subGroup, k -> new java.util.ArrayList<>()).add(element);
+            java.util.List<XSDElement> members = substitutionGroups.get(subGroup);
+            if (members == null) {
+                members = new java.util.ArrayList<>();
+                substitutionGroups.put(subGroup, members);
+            }
+            members.add(element);
         }
     }
     

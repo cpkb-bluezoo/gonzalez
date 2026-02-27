@@ -1165,15 +1165,20 @@ public final class DateTimeFunctions {
                         // Remove "0."
                         strValue = fracStr.substring(2);
                         // Pad or truncate to width
-                        while (strValue.length() < minWidth) {
-                            strValue = strValue + "0";
+                        StringBuilder padded = new StringBuilder(strValue);
+                        while (padded.length() < minWidth) {
+                            padded.append('0');
                         }
+                        strValue = padded.toString();
                         if (strValue.length() > maxWidth && maxWidth < Integer.MAX_VALUE) {
                             strValue = strValue.substring(0, maxWidth);
                         }
                     } else {
-                        strValue = "";
-                        for (int j = 0; j < minWidth; j++) strValue += "0";
+                        StringBuilder zeros = new StringBuilder(minWidth);
+                        for (int j = 0; j < minWidth; j++) {
+                            zeros.append('0');
+                        }
+                        strValue = zeros.toString();
                     }
                 }
                 break;

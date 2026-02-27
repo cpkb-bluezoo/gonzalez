@@ -23,7 +23,7 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
-import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler.SortSpec;
+import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.GroupingContext;

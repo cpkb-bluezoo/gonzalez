@@ -19,11 +19,11 @@ stylesheets are automatically analyzed for streamability.
 
 Current pass rates against the W3C XSLT 3.0 Conformance Test Suite:
 
-| Version | Tests | Passed | Rate |
+|| Version | Tests | Passed | Rate |
 |---------|-------|--------|------|
-| XSLT 1.0 | 2,024 | 1,993 | 98.5% |
-| XSLT 2.0 | 5,248 | 4,065 | 77.5% |
-| XSLT 3.0 | 6,368 | 4,728 | 74.2% |
+| XSLT 1.0 | 2,023 | 2,023 | 100.0% |
+| XSLT 2.0 | 4,729 | 4,018 | 85.0% |
+| XSLT 3.0 | 9,353 | 7,074 | 75.6% |
 
 ## Error Handling
 

@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
@@ -183,18 +185,25 @@ public final class AcceptDeclaration {
         return compiledPatterns;
     }
 
+    private static final Map<String, Pattern> namePatternCache = new HashMap<>();
+
     /**
      * Compiles a single EQName pattern to a regex pattern.
      */
     private static Pattern compileNamePattern(String namePattern) {
+        Pattern cached = namePatternCache.get(namePattern);
+        if (cached != null) {
+            return cached;
+        }
         // Handle wildcards in the pattern
-        String regex = namePattern
-            .replace(".", "\\.")
-            .replace("{", "\\{")
-            .replace("}", "\\}")
-            .replace("*", ".*");
-        
-        return Pattern.compile("^" + regex + "$");
+        String step1 = namePattern.replace(".", "\\.");
+        String step2 = step1.replace("{", "\\{");
+        String step3 = step2.replace("}", "\\}");
+        String regex = step3.replace("*", ".*");
+
+        cached = Pattern.compile("^" + regex + "$");
+        namePatternCache.put(namePattern, cached);
+        return cached;
     }
 
     @Override

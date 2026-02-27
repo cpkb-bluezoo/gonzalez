@@ -54,6 +54,7 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
     // XSLT 2.0 atomic value spacing state
     private boolean atomicValuePending = false;
     private boolean inAttributeContent = false;
+    private boolean contentReceived = false;
 
     /**
      * Creates an output handler.
@@ -222,6 +223,7 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
 
     @Override
     public void startElement(String namespaceURI, String localName, String qName) throws SAXException {
+        contentReceived = true;
         startElement(namespaceURI, localName, qName, new AttributesImpl());
     }
 
@@ -246,6 +248,7 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
 
     @Override
     public void characters(String text) throws SAXException {
+        contentReceived = true;
         closeStartTag();
         write(OutputHandlerUtils.escapeXmlText(text));
     }
@@ -290,6 +293,11 @@ public class SAXOutputHandler implements ContentHandler, OutputHandler {
     @Override
     public void setInAttributeContent(boolean inAttributeContent) {
         this.inAttributeContent = inAttributeContent;
+    }
+
+    @Override
+    public boolean hasReceivedContent() {
+        return contentReceived;
     }
 
 }

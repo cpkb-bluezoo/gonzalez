@@ -109,9 +109,14 @@ public class XSLTConformanceTest {
     }
     
     private static boolean shouldSkip(String name) {
+        // Don't skip anything when a name filter is active - the user is
+        // explicitly requesting test sets by name (e.g. -Dxslt.filter=regex)
+        if (NAME_FILTER != null) {
+            return false;
+        }
         String skipPatterns = SKIP_FILTER != null ? SKIP_FILTER : DEFAULT_SKIP;
         if ("none".equalsIgnoreCase(skipPatterns)) {
-            return false;  // Skip nothing
+            return false;
         }
         for (String pattern : skipPatterns.split(",")) {
             if (name.toLowerCase().contains(pattern.trim().toLowerCase())) {
@@ -124,6 +129,7 @@ public class XSLTConformanceTest {
     private static List<XSLTTestCase> allTests;
     private static List<TestResult> results = new ArrayList<>();
     private static GonzalezTransformerFactory factory;
+    private static PrintWriter reportWriter;
 
     private final XSLTTestCase testCase;
 
@@ -135,6 +141,8 @@ public class XSLTConformanceTest {
     public static Collection<Object[]> getTestCases() throws Exception {
         allTests = new ArrayList<>();
         factory = new GonzalezTransformerFactory();
+        factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
+        factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalStylesheet", "file");
 
         File catalogFile = new File(XSLT30_TEST_DIR, "catalog.xml");
         if (!catalogFile.exists()) {
@@ -181,6 +189,16 @@ public class XSLTConformanceTest {
 
         OUTPUT_DIR.mkdirs();
 
+        FileChannel reportChannel = FileChannel.open(REPORT_FILE.toPath(),
+                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        reportWriter = new PrintWriter(Channels.newOutputStream(reportChannel));
+        reportWriter.println("XSLT Conformance Test Report");
+        reportWriter.println("=============================");
+        reportWriter.println();
+        reportWriter.println("Results (streaming):");
+        reportWriter.println("--------------------");
+        reportWriter.flush();
+
         return params;
     }
 
@@ -211,6 +229,9 @@ public class XSLTConformanceTest {
 
         Parser parser = new Parser();
         parser.setFeature("http://xml.org/sax/features/namespaces", true);
+        parser.setFeature("http://xml.org/sax/features/external-general-entities", true);
+        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+        parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
         parser.setContentHandler(new DefaultHandler() {
             @Override
             public void startElement(String uri, String localName, String qName,
@@ -271,6 +292,9 @@ public class XSLTConformanceTest {
 
         Parser parser = new Parser();
         parser.setFeature("http://xml.org/sax/features/namespaces", true);
+        parser.setFeature("http://xml.org/sax/features/external-general-entities", true);
+        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+        parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
         parser.setContentHandler(new TestSetHandler(testDir, environments, tests));
 
         // Use FileChannel for NIO-native input
@@ -303,10 +327,19 @@ public class XSLTConformanceTest {
         private String specValue;
         private List<String> stylesheetFiles;
         private String initialTemplate;
+        private String initialMode;
         private String expectedXml;
         private String expectedError;
         private boolean expectsError;
+        private boolean inNot;
         private boolean requiresErrorOnMultipleMatch;
+        private boolean requiresSchemaAware;
+        private boolean testSetRequiresSchemaAware;
+        private boolean requiresUnsupportedFeature;
+        private String testSetSpecValue;
+        private Map<String, String> expectedResultDocuments;
+        private String currentResultDocumentUri;
+        private String resultDocAssertXml;
 
         TestSetHandler(File testDir, Map<String, Environment> environments,
                        List<XSLTTestCase> tests) {
@@ -336,6 +369,10 @@ public class XSLTConformanceTest {
                     if (env != null && currentTest != null) {
                         currentTest.sourceFile = env.sourceFile;
                         currentTest.sourceContent = env.sourceContent;
+                        currentTest.sourceSelect = env.sourceSelect;
+                        if (env.stylesheetFile != null) {
+                            currentTest.stylesheetFile = env.stylesheetFile;
+                        }
                     }
                 } else if (inTestCase) {
                     // Inline environment within test-case (no name or ref)
@@ -349,6 +386,10 @@ public class XSLTConformanceTest {
                         if (file != null) {
                             currentEnv.sourceFile = new File(testDir, file);
                         }
+                        String select = attrs.getValue("select");
+                        if (select != null) {
+                            currentEnv.sourceSelect = select;
+                        }
                     }
                 }
             } else if ("content".equals(localName)) {
@@ -361,14 +402,24 @@ public class XSLTConformanceTest {
                 specValue = null;
                 stylesheetFiles = new ArrayList<>();
                 initialTemplate = null;
+                initialMode = null;
                 expectedXml = null;
                 expectedError = null;
                 expectsError = false;
                 requiresErrorOnMultipleMatch = false;
+                requiresSchemaAware = false;
+                requiresUnsupportedFeature = false;
+                expectedResultDocuments = null;
+                currentResultDocumentUri = null;
             } else if ("dependencies".equals(localName)) {
                 inDependencies = true;
             } else if ("spec".equals(localName) && inDependencies) {
-                specValue = attrs.getValue("value");
+                String value = attrs.getValue("value");
+                if (inTestCase) {
+                    specValue = value;
+                } else {
+                    testSetSpecValue = value;
+                }
             } else if ("on-multiple-match".equals(localName) && inDependencies) {
                 // Tests with on-multiple-match="error" require the processor to signal
                 // an error when multiple templates match with the same precedence/priority.
@@ -376,6 +427,26 @@ public class XSLTConformanceTest {
                 String value = attrs.getValue("value");
                 if ("error".equals(value)) {
                     requiresErrorOnMultipleMatch = true;
+                }
+            } else if ("feature".equals(localName) && inDependencies) {
+                // Skip tests that require a schema-aware processor (SA).
+                // Gonzalez is a Basic XSLT processor, which the spec allows to
+                // not support schema-aware features.
+                // satisfied="false" means the test expects SA to be absent (run it).
+                // satisfied="true" or no satisfied attr means SA is required (skip it).
+                String value = attrs.getValue("value");
+                String satisfied = attrs.getValue("satisfied");
+                if ("schema_aware".equals(value) && !"false".equals(satisfied)) {
+                    if (inTestCase) {
+                        requiresSchemaAware = true;
+                    } else {
+                        testSetRequiresSchemaAware = true;
+                    }
+                }
+                // Gonzalez supports d-o-e, so skip tests that require it absent
+                if ("disabling_output_escaping".equals(value)
+                        && "false".equals(satisfied)) {
+                    requiresUnsupportedFeature = true;
                 }
             } else if ("test".equals(localName) && inTestCase) {
                 inTest = true;
@@ -385,25 +456,41 @@ public class XSLTConformanceTest {
                 if (file != null && !"secondary".equals(role)) {
                     stylesheetFiles.add(file);
                 }
+            } else if ("stylesheet".equals(localName) && currentEnv != null && !inTest) {
+                String file = attrs.getValue("file");
+                String role = attrs.getValue("role");
+                if (file != null && !"secondary".equals(role)) {
+                    currentEnv.stylesheetFile = new File(testDir, file);
+                }
             } else if ("initial-template".equals(localName) && inTest) {
                 initialTemplate = attrs.getValue("name");
+            } else if ("initial-mode".equals(localName) && inTest) {
+                initialMode = attrs.getValue("name");
             } else if ("result".equals(localName) && inTestCase) {
                 inResult = true;
+            } else if ("not".equals(localName) && inResult) {
+                inNot = true;
+            } else if ("assert-result-document".equals(localName) && inResult) {
+                currentResultDocumentUri = attrs.getValue("uri");
+                resultDocAssertXml = null;
             } else if ("assert-xml".equals(localName) && inResult) {
-                // Check for file attribute to load external expected output
                 String file = attrs.getValue("file");
                 if (file != null && !file.isEmpty()) {
                     try {
                         File expectedFile = new File(testDir, file);
-                        expectedXml = new String(java.nio.file.Files.readAllBytes(expectedFile.toPath()), 
+                        String fileContent = new String(
+                            java.nio.file.Files.readAllBytes(expectedFile.toPath()),
                             java.nio.charset.StandardCharsets.UTF_8);
+                        if (currentResultDocumentUri != null) {
+                            resultDocAssertXml = fileContent;
+                        } else {
+                            expectedXml = fileContent;
+                        }
                     } catch (IOException e) {
-                        // File not found or unreadable - leave expectedXml as null
-                        expectedXml = null;
+                        // File not found or unreadable
                     }
                 }
-                // Will also capture in characters() for inline content
-            } else if ("error".equals(localName) && inResult) {
+            } else if ("error".equals(localName) && inResult && !inNot) {
                 expectsError = true;
                 expectedError = attrs.getValue("code");
             }
@@ -432,32 +519,58 @@ public class XSLTConformanceTest {
                     // Inline environment - copy directly to test case
                     currentTest.sourceFile = currentEnv.sourceFile;
                     currentTest.sourceContent = currentEnv.sourceContent;
+                    currentTest.sourceSelect = currentEnv.sourceSelect;
+                    if (currentEnv.stylesheetFile != null) {
+                        currentTest.stylesheetFile = currentEnv.stylesheetFile;
+                    }
                 }
                 currentEnvName = null;
                 currentEnv = null;
             } else if ("assert-xml".equals(localName)) {
-                // Only use inline content if no file was loaded
                 String inlineContent = charBuffer.toString();
-                if (expectedXml == null || expectedXml.isEmpty()) {
-                    expectedXml = inlineContent;
+                if (currentResultDocumentUri != null) {
+                    // Inside assert-result-document: use inline content or file-loaded content
+                    String rdExpected = (inlineContent != null && !inlineContent.isEmpty())
+                        ? inlineContent : resultDocAssertXml;
+                    if (rdExpected != null) {
+                        if (expectedResultDocuments == null) {
+                            expectedResultDocuments = new LinkedHashMap<>();
+                        }
+                        expectedResultDocuments.put(currentResultDocumentUri, rdExpected);
+                    }
+                } else {
+                    // Primary output assertion
+                    if (expectedXml == null || expectedXml.isEmpty()) {
+                        expectedXml = inlineContent;
+                    }
                 }
+            } else if ("assert-result-document".equals(localName)) {
+                currentResultDocumentUri = null;
             } else if ("dependencies".equals(localName)) {
                 inDependencies = false;
             } else if ("test".equals(localName)) {
                 inTest = false;
+            } else if ("not".equals(localName)) {
+                inNot = false;
             } else if ("result".equals(localName)) {
                 inResult = false;
             } else if ("test-case".equals(localName)) {
                 // Finalize test case
                 // Skip tests that require on-multiple-match="error" - we use recovery behavior
-                if (currentTest != null && matchesVersionFilter(specValue) && !requiresErrorOnMultipleMatch) {
+                String effectiveSpec = (specValue != null) ? specValue : testSetSpecValue;
+                if (currentTest != null && matchesVersionFilter(effectiveSpec)
+                        && !requiresErrorOnMultipleMatch
+                        && !requiresSchemaAware && !testSetRequiresSchemaAware
+                        && !requiresUnsupportedFeature) {
                     if (!stylesheetFiles.isEmpty()) {
                         currentTest.stylesheetFile = new File(testDir, stylesheetFiles.get(0));
                     }
                     currentTest.initialTemplate = initialTemplate;
+                    currentTest.initialMode = initialMode;
                     currentTest.expectedXml = expectedXml;
                     currentTest.expectsError = expectsError;
                     currentTest.expectedError = expectedError;
+                    currentTest.expectedResultDocuments = expectedResultDocuments;
 
                     if (currentTest.stylesheetFile != null) {
                         tests.add(currentTest);
@@ -557,9 +670,16 @@ public class XSLTConformanceTest {
                 } else {
                     result.passed = false;
                     result.actualResult = "Compilation error";
-                    result.message = e.getMessage();
+                    String msg = e.getMessage();
+                    Throwable cause = e.getCause();
+                    while (cause != null) {
+                        msg = msg + " -> " + cause.getMessage();
+                        cause = cause.getCause();
+                    }
+                    result.message = msg;
                 }
                 results.add(result);
+                writeResult(result);
                 if (!result.passed) {
                     fail(testCase.name + ": " + result.message);
                 }
@@ -573,6 +693,16 @@ public class XSLTConformanceTest {
                 ((GonzalezTransformer) transformer).setInitialTemplate(testCase.initialTemplate);
             }
 
+            // Set initial mode if specified
+            if (testCase.initialMode != null && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setInitialMode(testCase.initialMode);
+            }
+
+            // Set initial context select if specified
+            if (testCase.sourceSelect != null && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setInitialContextSelect(testCase.sourceSelect);
+            }
+
             // Prepare source - use FileChannel for NIO-native input
             StreamSource source;
             if (testCase.sourceFile != null && testCase.sourceFile.exists()) {
@@ -583,6 +713,8 @@ public class XSLTConformanceTest {
                 // Use ByteArrayInputStream for inline content (byte stream, not Reader)
                 byte[] contentBytes = testCase.sourceContent.getBytes(StandardCharsets.UTF_8);
                 source = new StreamSource(new ByteArrayInputStream(contentBytes));
+                // Set systemId so relative entity references can resolve
+                source.setSystemId(testCase.testDir.toURI().toString());
             } else {
                 // Some tests may not need a source document
                 byte[] dummyBytes = "<dummy/>".getBytes(StandardCharsets.UTF_8);
@@ -596,19 +728,46 @@ public class XSLTConformanceTest {
             try {
                 transformer.transform(source, streamResult);
 
-                String actualOutput = outputStream.toString(StandardCharsets.UTF_8.name());
+                String encoding = detectXmlEncoding(outputStream.toByteArray());
+                String actualOutput = outputStream.toString(encoding);
                 result.actualResult = actualOutput;
 
                 if (testCase.expectsError) {
-                    // Test expects an error, but transformation succeeded.
-                    // However, if expectedXml is also set (any-of case), check if output matches.
                     if (testCase.expectedXml != null && xmlEquals(actualOutput, testCase.expectedXml)) {
-                        // Recovery output matches - this is also acceptable
                         result.passed = true;
                     } else {
                         result.passed = false;
                         result.actualResult = "No error (expected error)";
                         result.message = "Expected error but transformation succeeded";
+                    }
+                } else if (testCase.expectedResultDocuments != null
+                        && !testCase.expectedResultDocuments.isEmpty()) {
+                    result.passed = true;
+                    for (Map.Entry<String, String> entry : testCase.expectedResultDocuments.entrySet()) {
+                        String rdUri = entry.getKey();
+                        String rdExpected = entry.getValue();
+                        File rdFile = new File(rdUri);
+                        if (!rdFile.exists()) {
+                            result.passed = false;
+                            result.message = "Result document not found: " + rdUri;
+                            break;
+                        }
+                        String rdActual = new String(
+                            java.nio.file.Files.readAllBytes(rdFile.toPath()),
+                            StandardCharsets.UTF_8);
+                        if (!xmlEquals(rdActual, rdExpected)) {
+                            result.passed = false;
+                            String diff = getXmlDifference(rdExpected, rdActual);
+                            result.message = "Result document " + rdUri + " mismatch: " + diff;
+                            break;
+                        }
+                    }
+                    if (testCase.expectedXml != null && result.passed) {
+                        if (!xmlEquals(actualOutput, testCase.expectedXml)) {
+                            result.passed = false;
+                            String diff = getXmlDifference(testCase.expectedXml, actualOutput);
+                            result.message = "Primary output mismatch: " + diff;
+                        }
                     }
                 } else {
                     if (testCase.expectedXml != null) {
@@ -620,7 +779,6 @@ public class XSLTConformanceTest {
                             result.message = "Output mismatch: " + diff;
                         }
                     } else {
-                        // No expected output specified, just check it completed
                         result.passed = true;
                     }
                 }
@@ -650,10 +808,56 @@ public class XSLTConformanceTest {
         }
 
         results.add(result);
+        writeResult(result);
 
         if (!result.passed) {
             fail(testCase.name + ": " + result.message);
         }
+    }
+
+    private static void writeResult(TestResult result) {
+        if (reportWriter == null) {
+            return;
+        }
+        if (result.passed) {
+            reportWriter.printf("[PASS] %s%n", result.name);
+        } else {
+            reportWriter.printf("[FAIL] %s%n", result.name);
+            reportWriter.printf("       File: %s%n", result.stylesheetFile);
+            reportWriter.printf("       Result: %s%n", result.actualResult);
+            if (result.message != null) {
+                reportWriter.printf("       Message: %s%n", result.message);
+            }
+            reportWriter.println();
+        }
+        reportWriter.flush();
+    }
+
+    /**
+     * Detects the XML encoding from the XML declaration in the raw bytes.
+     * Falls back to UTF-8 if no encoding is specified.
+     */
+    private static String detectXmlEncoding(byte[] bytes) {
+        // Look for encoding="..." in the first 200 bytes (ASCII-safe for XML decl)
+        int limit = Math.min(bytes.length, 200);
+        String header = new String(bytes, 0, limit, StandardCharsets.US_ASCII);
+        int encIdx = header.indexOf("encoding=");
+        if (encIdx < 0) {
+            return StandardCharsets.UTF_8.name();
+        }
+        encIdx += 9; // skip "encoding="
+        if (encIdx >= header.length()) {
+            return StandardCharsets.UTF_8.name();
+        }
+        char quote = header.charAt(encIdx);
+        if (quote != '"' && quote != '\'') {
+            return StandardCharsets.UTF_8.name();
+        }
+        int end = header.indexOf(quote, encIdx + 1);
+        if (end < 0) {
+            return StandardCharsets.UTF_8.name();
+        }
+        return header.substring(encIdx + 1, end);
     }
 
     /** XML comparator instance for test assertions. */
@@ -696,6 +900,9 @@ public class XSLTConformanceTest {
 
         if (results.isEmpty()) {
             System.out.println("No tests were run.");
+            if (reportWriter != null) {
+                reportWriter.close();
+            }
             return;
         }
 
@@ -703,31 +910,15 @@ public class XSLTConformanceTest {
         System.out.printf("Passed: %d / %d (%.1f%%)%n", passed, results.size(), passRate);
         System.out.printf("Failed: %d%n", failed);
 
-        // Write detailed report - use FileChannel for NIO-native output
-        try (FileChannel reportChannel = FileChannel.open(REPORT_FILE.toPath(), 
-                StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
-             PrintWriter out = new PrintWriter(Channels.newOutputStream(reportChannel))) {
-            out.println("XSLT Conformance Test Report");
-            out.println("=============================");
-            out.println();
-            out.printf("Total tests: %d%n", results.size());
-            out.printf("Passed: %d (%.1f%%)%n", passed, passRate);
-            out.printf("Failed: %d (%.1f%%)%n", failed, 100.0 * failed / results.size());
-            out.println();
-
-            out.println("Failed Tests:");
-            out.println("-------------");
-            for (TestResult r : results) {
-                if (!r.passed) {
-                    out.printf("[FAIL] %s%n", r.name);
-                    out.printf("       File: %s%n", r.stylesheetFile);
-                    out.printf("       Result: %s%n", r.actualResult);
-                    if (r.message != null) {
-                        out.printf("       Message: %s%n", r.message);
-                    }
-                    out.println();
-                }
-            }
+        // Append summary to the streaming report
+        if (reportWriter != null) {
+            reportWriter.println();
+            reportWriter.println("Summary:");
+            reportWriter.println("--------");
+            reportWriter.printf("Total tests: %d%n", results.size());
+            reportWriter.printf("Passed: %d (%.1f%%)%n", passed, passRate);
+            reportWriter.printf("Failed: %d (%.1f%%)%n", failed, 100.0 * failed / results.size());
+            reportWriter.close();
         }
 
         // Write statistics - use FileChannel for NIO-native output
@@ -750,6 +941,8 @@ public class XSLTConformanceTest {
     static class Environment {
         File sourceFile;
         String sourceContent;
+        String sourceSelect;
+        File stylesheetFile;
     }
 
     /**
@@ -761,10 +954,13 @@ public class XSLTConformanceTest {
         File stylesheetFile;
         File sourceFile;
         String sourceContent;
+        String sourceSelect;
         String initialTemplate;
+        String initialMode;
         String expectedXml;
         boolean expectsError;
         String expectedError;
+        Map<String, String> expectedResultDocuments;
 
         @Override
         public String toString() {

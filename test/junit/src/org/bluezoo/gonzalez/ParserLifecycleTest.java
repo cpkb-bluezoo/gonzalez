@@ -131,10 +131,10 @@ public class ParserLifecycleTest {
         assertTrue("validation should be true after setting", validation);
 
         boolean externalGeneral = parser.getFeature("http://xml.org/sax/features/external-general-entities");
-        assertTrue("external-general-entities should default to true", externalGeneral);
+        assertFalse("external-general-entities should default to false (secure)", externalGeneral);
 
         boolean externalParameter = parser.getFeature("http://xml.org/sax/features/external-parameter-entities");
-        assertTrue("external-parameter-entities should default to true", externalParameter);
+        assertFalse("external-parameter-entities should default to false (secure)", externalParameter);
 
         boolean resolveDTDURIs = parser.getFeature("http://xml.org/sax/features/resolve-dtd-uris");
         assertTrue("resolve-dtd-uris should default to true", resolveDTDURIs);

@@ -173,17 +173,14 @@
  *
  * <h2>XML Serialization (XMLWriter)</h2>
  *
- * <p>The {@link org.bluezoo.gonzalez.XMLWriter} implements the SAX2
- * {@link org.xml.sax.ContentHandler}, {@link org.xml.sax.ext.LexicalHandler},
- * {@link org.xml.sax.DTDHandler}, and {@link org.xml.sax.ext.DeclHandler}
- * interfaces directly, allowing it to be wired into a SAX pipeline as an
- * event sink. It writes received events as XML to a
- * {@link java.nio.channels.WritableByteChannel}.
+ * <p>The {@link org.bluezoo.gonzalez.XMLWriter} provides a streaming XML
+ * serializer that writes XML to a {@link java.nio.channels.WritableByteChannel}.
+ * It uses a {@code write*}-prefixed API (e.g. {@code writeStartElement},
+ * {@code writeCharacters}) where all methods throw {@link java.io.IOException}
+ * directly.
  *
  * <p>Key features:
  * <ul>
- *   <li><b>SAX2 native:</b> Implements ContentHandler, LexicalHandler, DTDHandler,
- *       DeclHandler for direct pipeline wiring</li>
  *   <li><b>NIO-first:</b> Writes to WritableByteChannel with automatic buffering</li>
  *   <li><b>Namespace-aware:</b> Full support for prefixed and default namespaces</li>
  *   <li><b>DOCTYPE output:</b> Supports inline DTD declarations with standalone
@@ -196,17 +193,18 @@
  * </ul>
  *
  * <pre>{@code
- * import org.bluezoo.gonzalez.Parser;
  * import org.bluezoo.gonzalez.XMLWriter;
  *
- * // Wire parser directly to writer for parse-and-serialize
- * Parser parser = new Parser();
  * FileChannel channel = FileChannel.open(path, WRITE, CREATE);
  * XMLWriter writer = new XMLWriter(channel);
  *
- * parser.setContentHandler(writer);
- * parser.setProperty("http://xml.org/sax/properties/lexical-handler", writer);
- * parser.parse(inputSource);
+ * writer.writeStartElement("root");
+ * writer.writeStartElement("ns", "child", "http://example.com/ns");
+ * writer.writeNamespace("ns", "http://example.com/ns");
+ * writer.writeAttribute("id", "1");
+ * writer.writeCharacters("Hello World");
+ * writer.writeEndElement();
+ * writer.writeEndElement();
  * writer.close();
  * }</pre>
  *

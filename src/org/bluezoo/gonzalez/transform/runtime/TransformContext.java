@@ -26,6 +26,8 @@ import java.util.regex.Matcher;
 
 import javax.xml.transform.ErrorListener;
 
+import org.xml.sax.SAXException;
+
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
@@ -250,6 +252,15 @@ public interface TransformContext extends XPathContext, SchemaContext {
      * @param output the principal output handler
      */
     void setPrincipalOutput(OutputHandler output);
+
+    /**
+     * Registers a result document URI as having been written.
+     * Throws XTDE1490 if the URI has already been used.
+     *
+     * @param uri the result document URI (empty string for principal output)
+     * @throws SAXException if the URI has already been used (XTDE1490)
+     */
+    void claimResultDocumentUri(String uri) throws SAXException;
 
     /**
      * Returns the error handling mode for this transformation.

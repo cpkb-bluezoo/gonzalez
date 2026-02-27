@@ -66,7 +66,11 @@ import org.xml.sax.SAXNotSupportedException;
  */
 public class GonzalezSAXParserFactory extends SAXParserFactory {
 
+    private static final String FEATURE_SECURE_PROCESSING =
+        "http://javax.xml.XMLConstants/feature/secure-processing";
+
     private boolean xincludeAware = false;
+    private boolean secureProcessing = true;
 
     /**
      * Creates a new GonzalezSAXParserFactory.
@@ -90,7 +94,9 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
         if (xincludeAware) {
             throw new ParserConfigurationException("XInclude is not supported");
         }
-        return new GonzalezSAXParser(isNamespaceAware(), isValidating());
+        GonzalezSAXParser parser = new GonzalezSAXParser(isNamespaceAware(), isValidating());
+        parser.getXMLReader().setFeature(FEATURE_SECURE_PROCESSING, secureProcessing);
+        return parser;
     }
 
     /**
@@ -119,6 +125,8 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
             setNamespaceAware(value);
         } else if ("http://xml.org/sax/features/validation".equals(name)) {
             setValidating(value);
+        } else if (FEATURE_SECURE_PROCESSING.equals(name)) {
+            this.secureProcessing = value;
         } else {
             // Validate feature by trying it on a temporary parser
             Parser testParser = new Parser();
@@ -142,6 +150,8 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
             return isNamespaceAware();
         } else if ("http://xml.org/sax/features/validation".equals(name)) {
             return isValidating();
+        } else if (FEATURE_SECURE_PROCESSING.equals(name)) {
+            return secureProcessing;
         } else {
             // Query a temporary parser for other features
             Parser testParser = new Parser();

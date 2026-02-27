@@ -74,6 +74,8 @@ public final class EvaluateNode implements XSLTNode {
     private final XPathExpression namespaceContextExpr; // Expression for namespace-context
     private final String asType;                    // Expected return type
     private final List<WithParamNode> params;       // xsl:with-param children
+    private String lastXPathString;                  // Single-entry compile cache
+    private XPathExpression lastCompiledExpr;
 
     /**
      * Represents an xsl:with-param child of xsl:evaluate.
@@ -131,13 +133,19 @@ public final class EvaluateNode implements XSLTNode {
                 return;
             }
             
-            // Compile the dynamic expression
+            // Compile the dynamic expression (cached for repeated calls)
             XPathExpression dynamicExpr;
-            try {
-                dynamicExpr = XPathExpression.compile(xpathString, null);
-            } catch (Exception e) {
-                throw new SAXException("XPST0003: Invalid XPath in xsl:evaluate: " + 
-                    e.getMessage(), e);
+            if (xpathString.equals(lastXPathString)) {
+                dynamicExpr = lastCompiledExpr;
+            } else {
+                try {
+                    dynamicExpr = XPathExpression.compile(xpathString, null);
+                    lastXPathString = xpathString;
+                    lastCompiledExpr = dynamicExpr;
+                } catch (Exception e) {
+                    throw new SAXException("XPST0003: Invalid XPath in xsl:evaluate: " + 
+                        e.getMessage(), e);
+                }
             }
             
             // Determine the evaluation context

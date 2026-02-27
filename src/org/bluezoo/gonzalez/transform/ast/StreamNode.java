@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.StreamingContext;
 import org.bluezoo.gonzalez.transform.runtime.StreamingTransformHandler;
@@ -110,6 +111,14 @@ public final class StreamNode implements XSLTNode {
                 context.getVariableScope(),
                 context
             );
+
+            // Wire accumulators for streaming
+            if (context.getStylesheet() != null
+                    && !context.getStylesheet().getAccumulators().isEmpty()) {
+                AccumulatorManager mgr = new AccumulatorManager(
+                    context.getStylesheet(), context);
+                streamCtx.setAccumulatorManager(mgr);
+            }
 
             // Create streaming handler that executes the body
             StreamingTransformHandler handler = new StreamingTransformHandler(

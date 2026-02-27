@@ -73,6 +73,14 @@ public final class XMLComparator {
             return Result.equal();
         }
 
+        // Normalize character references so &#xNN; and &#DDD; are equivalent
+        expected = normalizeCharacterReferences(expected);
+        actual = normalizeCharacterReferences(actual);
+
+        if (expected.equals(actual)) {
+            return Result.equal();
+        }
+
         // Normalize and compare
         String normExpected = normalize(expected);
         String normActual = normalize(actual);
@@ -107,6 +115,47 @@ public final class XMLComparator {
         }
         
         return Result.different("Content differs");
+    }
+
+    /**
+     * Normalizes all numeric character references to decimal form.
+     * Converts &#xNN; (hex) to &#DDD; (decimal) so both formats compare equal.
+     */
+    private String normalizeCharacterReferences(String xml) {
+        StringBuilder sb = new StringBuilder(xml.length());
+        int i = 0;
+        while (i < xml.length()) {
+            if (i + 3 < xml.length() && xml.charAt(i) == '&' && xml.charAt(i + 1) == '#') {
+                int semiPos = xml.indexOf(';', i + 2);
+                if (semiPos > 0 && semiPos - i < 12) {
+                    String ref = xml.substring(i + 2, semiPos);
+                    int codePoint = -1;
+                    if (ref.length() > 0 && (ref.charAt(0) == 'x' || ref.charAt(0) == 'X')) {
+                        try {
+                            codePoint = Integer.parseInt(ref.substring(1), 16);
+                        } catch (NumberFormatException e) {
+                            // not a valid hex ref
+                        }
+                    } else {
+                        try {
+                            codePoint = Integer.parseInt(ref);
+                        } catch (NumberFormatException e) {
+                            // not a valid decimal ref
+                        }
+                    }
+                    if (codePoint >= 0) {
+                        sb.append("&#");
+                        sb.append(codePoint);
+                        sb.append(';');
+                        i = semiPos + 1;
+                        continue;
+                    }
+                }
+            }
+            sb.append(xml.charAt(i));
+            i++;
+        }
+        return sb.toString();
     }
 
     /**

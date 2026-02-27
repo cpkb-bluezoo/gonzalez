@@ -25,11 +25,15 @@
   <property name='dist' location='dist'/>
   <property name='test' location='test'/>
   <property name='doc' location='doc'/>
+  <property name='lib' location='lib'/>
   <property name='gumdrop.home' location='../gumdrop'/>
   <property name='gumdrop.jar' location='${gumdrop.home}/dist/server.jar'/>
   
+  <!-- External parsing library dependency (downloaded by resolve-deps target) -->
+  <property name='jsonparser.jar' value='jsonparser-1.2.jar'/>
+  
   <!-- Gonzalez version -->
-  <property name='version' value='2.0'/>
+  <property name='version' value='1.1'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
 
   <!-- Minimum Java version for runtime (APIs used require Java 8) -->
@@ -56,18 +60,31 @@
     <delete dir='${test}/output'/>
   </target>
 
+  <!-- Download external parsing library dependencies from GitHub Releases -->
+  <target name='resolve-deps' description='Download external dependencies'>
+    <mkdir dir='${lib}'/>
+    <get src='https://github.com/cpkb-bluezoo/jsonparser/releases/download/v1.2/jsonparser-1.2.jar'
+         dest='${lib}/${jsonparser.jar}' skipexisting='true'/>
+  </target>
+
   <!-- Compile -->
-  <target name='build'>
+  <target name='build' depends='resolve-deps'>
     <mkdir dir='${build}'/>
     <!-- Compile main sources with Java 8 compatibility -->
     <javac srcdir='${src}' destdir='${build}' debug='true' includeantruntime='false'
            release='${java.release.version}'
            source='${java.source.version}' target='${java.target.version}'>
+      <classpath>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
+      </classpath>
       <exclude name='module-info.java'/>
     </javac>
     <!-- Compile module-info.java separately with Java 9 (for JPMS support) -->
     <javac srcdir='${src}' destdir='${build}' debug='true' includeantruntime='false'
            release='9'>
+      <modulepath>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
+      </modulepath>
       <include name='module-info.java'/>
     </javac>
     <!-- Copy resource files (properties, etc.) -->
@@ -139,6 +156,7 @@
            failureproperty='unit.tests.failed'>
       <classpath>
         <pathelement location='${build}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/junit/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
@@ -166,6 +184,7 @@
            failureproperty='conformance.tests.failed'>
       <classpath>
         <pathelement location='${build}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
@@ -209,8 +228,10 @@
     <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
            dir='${test}/output/xslt-temp'>
       <sysproperty key="project.basedir" value="${basedir}"/>
+      <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
         <pathelement location='${build}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
@@ -246,8 +267,10 @@
            dir='${test}/output/xslt-temp'>
       <sysproperty key="xslt.version" value="1.0"/>
       <sysproperty key="project.basedir" value="${basedir}"/>
+      <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
         <pathelement location='${build}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
@@ -271,8 +294,10 @@
            dir='${test}/output/xslt-temp'>
       <sysproperty key="xslt.version" value="2.0"/>
       <sysproperty key="project.basedir" value="${basedir}"/>
+      <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
         <pathelement location='${build}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
@@ -296,8 +321,10 @@
            dir='${test}/output/xslt-temp'>
       <sysproperty key="xslt.version" value="3.0"/>
       <sysproperty key="project.basedir" value="${basedir}"/>
+      <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
         <pathelement location='${build}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
@@ -323,9 +350,11 @@
       <sysproperty key="xslt.filter" value="${xslt.filter}"/>
       <sysproperty key="xslt.version" value="${xslt.version}"/>
       <sysproperty key="xslt.category" value="${xslt.category}"/>
+      <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <sysproperty key="project.basedir" value="${basedir}"/>
       <classpath>
         <pathelement location='${build}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>

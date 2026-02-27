@@ -1019,6 +1019,21 @@ public final class SequenceFunctions {
             }
             
             XPathNode node = nodeSet.first();
+            // If document node, use the document element
+            if (node.getNodeType() == NodeType.ROOT) {
+                Iterator<XPathNode> children = node.getChildren();
+                XPathNode docElement = null;
+                while (children.hasNext()) {
+                    XPathNode child = children.next();
+                    if (child.getNodeType() == NodeType.ELEMENT) {
+                        docElement = child;
+                        break;
+                    }
+                }
+                if (docElement != null) {
+                    node = docElement;
+                }
+            }
             if (node.getNodeType() != NodeType.ELEMENT) {
                 throw new XPathException("XPTY0004: in-scope-prefixes requires an element argument");
             }
@@ -1300,7 +1315,7 @@ public final class SequenceFunctions {
         @Override public boolean asBoolean() { return true; }
         @Override public double asNumber() { 
             try { return Double.parseDouble(node.getStringValue()); }
-            catch (Exception e) { return Double.NaN; }
+            catch (NumberFormatException e) { return Double.NaN; }
         }
         @Override public String asString() { return node.getStringValue(); }
         @Override public XPathNodeSet asNodeSet() { 

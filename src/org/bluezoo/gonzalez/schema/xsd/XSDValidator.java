@@ -72,6 +72,7 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
     private Attributes currentAttributes;
     private XSDAttribute[] currentAttributeDecls;
     private TypedValue[] currentAttributeValues;
+    private int currentAttrArrayCapacity;
     private Boolean currentNil;
     
     // Text content accumulator
@@ -94,7 +95,7 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
         final XSDElement declaration;
         final XSDType type;
         final StringBuilder content = new StringBuilder();
-        final List<String> childElements = new ArrayList<>();
+        boolean hasChildElements = false;
         boolean hasCharData = false;
         
         ElementContext(XSDElement decl, XSDType type) {
@@ -180,7 +181,7 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
         if (textContent != null && !elementStack.isEmpty()) {
             ElementContext parent = elementStack.peek();
             parent.content.append(textContent);
-            if (textContent.toString().trim().length() > 0) {
+            if (hasNonWhitespace(textContent)) {
                 parent.hasCharData = true;
             }
         }
@@ -222,7 +223,7 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
         // Validate element in current context
         if (!elementStack.isEmpty()) {
             ElementContext parent = elementStack.peek();
-            parent.childElements.add(localName);
+            parent.hasChildElements = true;
             
             // Check if element is allowed
             if (parent.type instanceof XSDComplexType) {
@@ -251,10 +252,17 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
             }
         }
         
-        // Process attributes
+        // Process attributes (reuse arrays when capacity sufficient)
         currentAttributes = atts;
-        currentAttributeDecls = new XSDAttribute[atts.getLength()];
-        currentAttributeValues = new TypedValue[atts.getLength()];
+        int attrLen = atts.getLength();
+        if (attrLen > currentAttrArrayCapacity) {
+            currentAttributeDecls = new XSDAttribute[attrLen];
+            currentAttributeValues = new TypedValue[attrLen];
+            currentAttrArrayCapacity = attrLen;
+        } else {
+            java.util.Arrays.fill(currentAttributeDecls, 0, attrLen, null);
+            java.util.Arrays.fill(currentAttributeValues, 0, attrLen, null);
+        }
         
         validateAttributes(atts);
         
@@ -270,7 +278,7 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
         if (textContent != null && !elementStack.isEmpty()) {
             ElementContext ctx = elementStack.peek();
             ctx.content.append(textContent);
-            if (textContent.toString().trim().length() > 0) {
+            if (hasNonWhitespace(textContent)) {
                 ctx.hasCharData = true;
             }
         }
@@ -282,7 +290,7 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
             
             // Validate content if nilled
             if (Boolean.TRUE.equals(currentNil)) {
-                if (ctx.hasCharData || !ctx.childElements.isEmpty()) {
+                if (ctx.hasCharData || ctx.hasChildElements) {
                     reportError("Nilled element " + qName + " must be empty");
                 }
             }
@@ -340,6 +348,16 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
         return "{" + namespaceURI + "}" + localName;
     }
     
+    private static boolean hasNonWhitespace(CharSequence cs) {
+        for (int i = 0; i < cs.length(); i++) {
+            char c = cs.charAt(i);
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                return true;
+            }
+        }
+        return false;
+    }
+    
     private XSDType resolveXsiType(String typeName) {
         String localName = XSDUtils.extractLocalName(typeName);
         return schema.getType(localName);
@@ -393,7 +411,8 @@ public class XSDValidator extends XMLFilterImpl implements PSVIProvider {
                         pendingIdrefs.add(attrValue);
                     }
                     if ("IDREFS".equals(attrDecl.getType().getName())) {
-                        for (String ref : attrValue.split("\\s+")) {
+                        String[] refs = XSDUtils.splitWhitespace(attrValue);
+                        for (String ref : refs) {
                             pendingIdrefs.add(ref);
                         }
                     }

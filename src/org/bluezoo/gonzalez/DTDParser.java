@@ -363,6 +363,7 @@ class DTDParser implements TokenConsumer {
         // Initialize entity stack (includes document entity by default)
         // Use a locator accessor method from ContentParser
         this.entityStack = new EntityStack(this, xmlParser.getLocator());
+        this.entityStack.setExpansionLimit(xmlParser.getEntityExpansionLimit());
         // Inherit the document's XML version from the ContentParser
         if (!entityStack.isEmpty()) {
             entityStack.peek().xml11 = xmlParser.isXml11();

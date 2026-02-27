@@ -312,6 +312,11 @@ public final class IterateNode implements XSLTNode {
 
     /**
      * Executes the body and collects next-iteration parameters.
+     *
+     * <p>The body may contain xsl:next-iteration or xsl:break instructions,
+     * which communicate back to this method via signal exceptions. A
+     * NextIterationSignal carries updated parameter values for the next
+     * iteration, while a BreakSignal indicates early termination.
      */
     private IterationResult executeBody(TransformContext context, OutputHandler output) 
             throws SAXException {
@@ -319,10 +324,13 @@ public final class IterateNode implements XSLTNode {
             return IterationResult.continueWith(new HashMap<>());
         }
         
-        // Execute body - it may contain xsl:next-iteration or xsl:break
-        // For now, execute body and return continue
-        // TODO: Implement break/next-iteration detection via special exceptions or markers
-        body.execute(context, output);
+        try {
+            body.execute(context, output);
+        } catch (NextIterationNode.NextIterationSignal signal) {
+            return IterationResult.continueWith(signal.getParams());
+        } catch (BreakNode.BreakSignal signal) {
+            return IterationResult.breakIteration();
+        }
         
         return IterationResult.continueWith(new HashMap<>());
     }

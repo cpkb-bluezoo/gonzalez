@@ -166,7 +166,9 @@ public class TypeExpr implements Expr {
             String stringValue = value.asString();
             castToType(stringValue, targetType, context);
             return XPathBoolean.TRUE;
-        } catch (Exception e) {
+        } catch (XPathException e) {
+            return XPathBoolean.FALSE;
+        } catch (NumberFormatException e) {
             return XPathBoolean.FALSE;
         }
     }

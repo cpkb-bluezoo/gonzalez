@@ -60,6 +60,9 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     private final List<StreamingNode> children;
     private StreamingNode followingSibling;
     private StreamingNode precedingSibling;
+    private List<XPathNode> cachedNamespaceNodes;
+    private String cachedStringValue;
+    private int namespaceNodeCount;
 
     /**
      * Creates a root node.
@@ -119,7 +122,23 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         StreamingNode element = new StreamingNode(NodeType.ELEMENT, namespaceURI, localName,
             prefix, null, parent, namespaceBindings, documentOrder);
         
-        // Create attribute nodes - capture type information for ID lookup and XPath typing
+        // Count non-empty namespace bindings for document order offset
+        // Namespace nodes use orders [elementOrder+1 .. elementOrder+nsCount]
+        // Attribute nodes use orders [elementOrder+nsCount+1 .. ]
+        int nsCount = 0;
+        for (Map.Entry<String, String> entry : namespaceBindings.entrySet()) {
+            String nsUri = entry.getValue();
+            if (nsUri != null && !nsUri.isEmpty()) {
+                nsCount++;
+            }
+        }
+        // Include the implicit xml namespace
+        if (!namespaceBindings.containsKey("xml")) {
+            nsCount++;
+        }
+        element.namespaceNodeCount = nsCount;
+        
+        // Create attribute nodes - offset past namespace nodes
         if (atts != null) {
             for (int i = 0; i < atts.getLength(); i++) {
                 // Get type info from PSVIProvider if available, otherwise from SAX Attributes
@@ -141,7 +160,7 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
                     atts.getValue(i),
                     element,
                     Collections.emptyMap(),
-                    documentOrder + i + 1,
+                    documentOrder + nsCount + i + 1,
                     attrType,
                     attrTypedValue
                 );
@@ -321,11 +340,15 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         if (stringValue != null) {
             return stringValue;
         }
-        // For element/root, concatenate descendant text
+        // For element/root, concatenate descendant text (cached)
         if (nodeType == NodeType.ELEMENT || nodeType == NodeType.ROOT) {
+            if (cachedStringValue != null) {
+                return cachedStringValue;
+            }
             StringBuilder sb = new StringBuilder();
             appendDescendantText(sb);
-            return sb.toString();
+            cachedStringValue = sb.toString();
+            return cachedStringValue;
         }
         return "";
     }
@@ -375,29 +398,60 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
 
     @Override
     public Iterator<XPathNode> getChildren() {
-        return new ArrayList<XPathNode>(children).iterator();
+        final Iterator<StreamingNode> it = children.iterator();
+        return new Iterator<XPathNode>() {
+            @Override
+            public boolean hasNext() {
+                return it.hasNext();
+            }
+            @Override
+            public XPathNode next() {
+                return it.next();
+            }
+            @Override
+            public void remove() {
+                throw new UnsupportedOperationException();
+            }
+        };
     }
 
     @Override
     public Iterator<XPathNode> getAttributes() {
-        return new ArrayList<XPathNode>(attributes).iterator();
+        final Iterator<StreamingNode> it = attributes.iterator();
+        return new Iterator<XPathNode>() {
+            @Override
+            public boolean hasNext() {
+                return it.hasNext();
+            }
+            @Override
+            public XPathNode next() {
+                return it.next();
+            }
+            @Override
+            public void remove() {
+                throw new UnsupportedOperationException();
+            }
+        };
     }
 
     @Override
     public Iterator<XPathNode> getNamespaces() {
+        if (cachedNamespaceNodes != null) {
+            return cachedNamespaceNodes.iterator();
+        }
         List<XPathNode> nsNodes = new ArrayList<>();
+        int index = 0;
         for (Map.Entry<String, String> entry : namespaceBindings.entrySet()) {
-            // Per XPath data model, namespace undeclarations (empty URI) are not namespace nodes
-            // They simply "undeclare" a previously declared prefix
             String uri = entry.getValue();
             if (uri != null && !uri.isEmpty()) {
-                nsNodes.add(new NamespaceNode(entry.getKey(), uri, this));
+                nsNodes.add(new NamespaceNode(entry.getKey(), uri, this, index));
+                index++;
             }
         }
-        // Always include the implicit xml namespace (per XPath data model)
         if (!namespaceBindings.containsKey("xml")) {
-            nsNodes.add(new NamespaceNode("xml", "http://www.w3.org/XML/1998/namespace", this));
+            nsNodes.add(new NamespaceNode("xml", "http://www.w3.org/XML/1998/namespace", this, index));
         }
+        cachedNamespaceNodes = nsNodes;
         return nsNodes.iterator();
     }
 
@@ -532,9 +586,18 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         if (!children.isEmpty()) {
             StreamingNode prevSibling = children.get(children.size() - 1);
             prevSibling.followingSibling = child;
-            // Note: child.precedingSibling is set in constructor
         }
         children.add(child);
+        cachedStringValue = null;
+    }
+
+    /**
+     * Returns the number of namespace nodes on this element.
+     *
+     * @return the namespace node count
+     */
+    public int getNamespaceNodeCount() {
+        return namespaceNodeCount;
     }
 
     /**
@@ -545,6 +608,7 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
      */
     public void addNamespaceMapping(String prefix, String uri) {
         namespaceBindings.put(prefix != null ? prefix : "", uri);
+        cachedNamespaceNodes = null;
     }
 
     /**
@@ -558,6 +622,7 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         if (text == null || text.isEmpty()) {
             return;
         }
+        cachedStringValue = null;
         // Check if last child is a text node that we can append to
         if (!children.isEmpty()) {
             StreamingNode lastChild = children.get(children.size() - 1);
@@ -584,11 +649,13 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         private final String prefix;
         private final String uri;
         private final StreamingNode parent;
+        private final int index;
 
-        NamespaceNode(String prefix, String uri, StreamingNode parent) {
+        NamespaceNode(String prefix, String uri, StreamingNode parent, int index) {
             this.prefix = prefix;
             this.uri = uri;
             this.parent = parent;
+            this.index = index;
         }
 
         @Override public NodeType getNodeType() { return NodeType.NAMESPACE; }
@@ -603,11 +670,8 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         @Override public XPathNode getFollowingSibling() { return null; }
         @Override public XPathNode getPrecedingSibling() { return null; }
         @Override public long getDocumentOrder() { 
-            // Generate unique order by combining parent order with prefix hash
-            // Shift parent order left and add prefix hash to create unique IDs
-            // for namespace nodes while maintaining document order relationship
-            long prefixHash = (prefix != null ? prefix.hashCode() : 0) & 0xFFFFL;
-            return (parent.getDocumentOrder() << 16) | prefixHash;
+            // Namespace nodes sort after the parent element but before attributes
+            return parent.getDocumentOrder() + index + 1;
         }
         @Override public boolean isSameNode(XPathNode other) { 
             return other instanceof NamespaceNode && 

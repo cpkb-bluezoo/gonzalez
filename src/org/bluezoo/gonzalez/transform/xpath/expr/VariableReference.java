@@ -37,6 +37,7 @@ public final class VariableReference implements Expr {
 
     private final String prefix;
     private final String localName;
+    private final String resolvedNamespaceURI;
 
     /**
      * Creates a variable reference with no namespace prefix.
@@ -44,7 +45,7 @@ public final class VariableReference implements Expr {
      * @param localName the variable name
      */
     public VariableReference(String localName) {
-        this(null, localName);
+        this(null, localName, null);
     }
 
     /**
@@ -54,17 +55,29 @@ public final class VariableReference implements Expr {
      * @param localName the variable local name
      */
     public VariableReference(String prefix, String localName) {
+        this(prefix, localName, null);
+    }
+
+    /**
+     * Creates a variable reference with a pre-resolved namespace URI.
+     *
+     * @param prefix the namespace prefix (may be null)
+     * @param localName the variable local name
+     * @param resolvedNamespaceURI the pre-resolved namespace URI (may be null)
+     */
+    public VariableReference(String prefix, String localName, String resolvedNamespaceURI) {
         if (localName == null || localName.isEmpty()) {
             throw new IllegalArgumentException("Variable name cannot be null or empty");
         }
         this.prefix = prefix;
         this.localName = localName;
+        this.resolvedNamespaceURI = resolvedNamespaceURI;
     }
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
-        String namespaceURI = null;
-        if (prefix != null && !prefix.isEmpty()) {
+        String namespaceURI = resolvedNamespaceURI;
+        if (namespaceURI == null && prefix != null && !prefix.isEmpty()) {
             namespaceURI = context.resolveNamespacePrefix(prefix);
             if (namespaceURI == null) {
                 throw new XPathException("Unknown namespace prefix: " + prefix);

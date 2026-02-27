@@ -533,6 +533,11 @@ public class Parser implements XMLReader, PSVIProvider {
             case "http://xml.org/sax/features/xml-1.1":
                 return true; // XML 1.1 is supported
                 
+            // JAXP secure processing
+            case "http://javax.xml.XMLConstants/feature/secure-processing":
+                return !xmlParser.getExternalGeneralEntitiesEnabled()
+                    && !xmlParser.getExternalParameterEntitiesEnabled();
+                
             // Unsupported features
             case "http://xml.org/sax/features/unicode-normalization-checking":
                 return false; // Not supported
@@ -606,6 +611,19 @@ public class Parser implements XMLReader, PSVIProvider {
                 throw new SAXNotSupportedException(
                     "Feature is read-only: " + name + " (current value: " + getFeature(name) + ")");
                 
+            // JAXP secure processing
+            case "http://javax.xml.XMLConstants/feature/secure-processing":
+                if (value) {
+                    xmlParser.setExternalGeneralEntitiesEnabled(false);
+                    xmlParser.setExternalParameterEntitiesEnabled(false);
+                    xmlParser.setAccessExternalDTD("");
+                } else {
+                    xmlParser.setExternalGeneralEntitiesEnabled(true);
+                    xmlParser.setExternalParameterEntitiesEnabled(true);
+                    xmlParser.setAccessExternalDTD("all");
+                }
+                break;
+                
             // Unsupported features
             case "http://xml.org/sax/features/unicode-normalization-checking":
                 if (value) {
@@ -660,6 +678,14 @@ public class Parser implements XMLReader, PSVIProvider {
         if ("http://www.nongnu.org/gonzalez/properties/dtd-parser".equals(name)) {
             return xmlParser.getDTDParser();
         }
+        // JAXP security properties
+        if ("http://javax.xml.XMLConstants/property/accessExternalDTD".equals(name)) {
+            return xmlParser.getAccessExternalDTD();
+        }
+        // Entity expansion limit
+        if ("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit".equals(name)) {
+            return xmlParser.getEntityExpansionLimit();
+        }
         throw new SAXNotRecognizedException("Property not recognized: " + name);
     }
 
@@ -688,6 +714,18 @@ public class Parser implements XMLReader, PSVIProvider {
                 xmlParser.setDeclHandler((DeclHandler) value);
             } else {
                 throw new SAXNotSupportedException("Value must be a DeclHandler");
+            }
+        } else if ("http://javax.xml.XMLConstants/property/accessExternalDTD".equals(name)) {
+            if (value instanceof String) {
+                xmlParser.setAccessExternalDTD((String) value);
+            } else {
+                throw new SAXNotSupportedException("Value must be a String");
+            }
+        } else if ("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit".equals(name)) {
+            if (value instanceof Integer) {
+                xmlParser.setEntityExpansionLimit((Integer) value);
+            } else {
+                throw new SAXNotSupportedException("Value must be an Integer");
             }
         } else {
             throw new SAXNotRecognizedException("Property not recognized: " + name);
@@ -1002,10 +1040,11 @@ public class Parser implements XMLReader, PSVIProvider {
             WritableByteChannel out = Channels.newChannel(System.out);
             XMLWriter writer = new XMLWriter(out);
             writer.setIndentConfig(IndentConfig.spaces2());
-            parser.setContentHandler(writer);
-            parser.setProperty("http://xml.org/sax/properties/lexical-handler", writer);
-            parser.setProperty("http://xml.org/sax/properties/declaration-handler", writer);
-            parser.setDTDHandler(writer);
+            XMLWriterSAXAdapter adapter = new XMLWriterSAXAdapter(writer);
+            parser.setContentHandler(adapter);
+            parser.setProperty("http://xml.org/sax/properties/lexical-handler", adapter);
+            parser.setProperty("http://xml.org/sax/properties/declaration-handler", adapter);
+            parser.setDTDHandler(adapter);
         }
         for (int i = fileStart; i < args.length; i++) {
             File file = new File(args[i]);
@@ -1135,6 +1174,252 @@ public class Parser implements XMLReader, PSVIProvider {
             }
             System.out.println(location + eventName + ": " + details);
             System.out.flush();
+        }
+    }
+
+    /**
+     * SAX adapter that delegates SAX events to XMLWriter's write* API.
+     * Used by the CLI tool for pretty-printing XML files.
+     */
+    static class XMLWriterSAXAdapter extends org.xml.sax.helpers.DefaultHandler
+            implements org.xml.sax.ext.LexicalHandler, DTDHandler,
+                       org.xml.sax.ext.DeclHandler {
+
+        private final XMLWriter writer;
+        private final java.util.List<String[]> pendingPrefixMappings =
+            new java.util.ArrayList<String[]>();
+
+        XMLWriterSAXAdapter(XMLWriter writer) {
+            this.writer = writer;
+        }
+
+        @Override
+        public void setDocumentLocator(Locator locator) {
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            try {
+                writer.close();
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri) {
+            pendingPrefixMappings.add(new String[] { prefix, uri });
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                Attributes atts) throws SAXException {
+            try {
+                String prefix = extractPrefix(qName);
+                if (prefix != null && !prefix.isEmpty()) {
+                    writer.writeStartElement(prefix, localName,
+                        uri != null ? uri : "");
+                } else if (uri != null && !uri.isEmpty()) {
+                    writer.writeStartElement("", localName, uri);
+                } else {
+                    writer.writeStartElement(localName);
+                }
+                for (int i = 0; i < pendingPrefixMappings.size(); i++) {
+                    String[] pm = pendingPrefixMappings.get(i);
+                    if (pm[0].isEmpty()) {
+                        writer.writeDefaultNamespace(pm[1]);
+                    } else {
+                        writer.writeNamespace(pm[0], pm[1]);
+                    }
+                }
+                pendingPrefixMappings.clear();
+                int len = atts.getLength();
+                for (int i = 0; i < len; i++) {
+                    String attrQName = atts.getQName(i);
+                    if (attrQName != null && !attrQName.isEmpty()) {
+                        writer.writeAttribute(attrQName, atts.getValue(i));
+                    } else {
+                        writer.writeAttribute(atts.getLocalName(i), atts.getValue(i));
+                    }
+                }
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            try {
+                writer.writeEndElement();
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            try {
+                writer.writeCharacters(ch, start, length);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void processingInstruction(String target, String data)
+                throws SAXException {
+            try {
+                writer.writeProcessingInstruction(target, data);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void skippedEntity(String name) throws SAXException {
+            try {
+                writer.writeEntityRef(name);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        // LexicalHandler
+
+        @Override
+        public void comment(char[] ch, int start, int length) throws SAXException {
+            try {
+                writer.writeComment(new String(ch, start, length));
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void startCDATA() throws SAXException {
+            try {
+                writer.writeStartCDATA();
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void endCDATA() throws SAXException {
+            try {
+                writer.writeEndCDATA();
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void startDTD(String name, String publicId, String systemId)
+                throws SAXException {
+            try {
+                writer.writeStartDTD(name, publicId, systemId);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void endDTD() throws SAXException {
+            try {
+                writer.writeEndDTD();
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void startEntity(String name) {
+            if ("[dtd]".equals(name)) {
+                writer.startExternalSubset();
+            }
+        }
+
+        @Override
+        public void endEntity(String name) {
+            if ("[dtd]".equals(name)) {
+                writer.endExternalSubset();
+            }
+        }
+
+        // DTDHandler
+
+        @Override
+        public void notationDecl(String name, String publicId, String systemId)
+                throws SAXException {
+            try {
+                writer.writeNotationDecl(name, publicId, systemId);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void unparsedEntityDecl(String name, String publicId,
+                String systemId, String notationName) throws SAXException {
+            try {
+                writer.writeUnparsedEntityDecl(name, publicId, systemId, notationName);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        // DeclHandler
+
+        @Override
+        public void elementDecl(String name, String model) throws SAXException {
+            try {
+                writer.writeElementDecl(name, model);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void attributeDecl(String eName, String aName, String type,
+                String mode, String value) throws SAXException {
+            try {
+                writer.writeAttributeDecl(eName, aName, type, mode, value);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void internalEntityDecl(String name, String value)
+                throws SAXException {
+            try {
+                writer.writeInternalEntityDecl(name, value);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        @Override
+        public void externalEntityDecl(String name, String publicId,
+                String systemId) throws SAXException {
+            try {
+                writer.writeExternalEntityDecl(name, publicId, systemId);
+            } catch (IOException e) {
+                throw new SAXException(e);
+            }
+        }
+
+        private static String extractPrefix(String qName) {
+            if (qName == null) {
+                return null;
+            }
+            int colon = qName.indexOf(':');
+            if (colon > 0) {
+                return qName.substring(0, colon);
+            }
+            return null;
         }
     }
 

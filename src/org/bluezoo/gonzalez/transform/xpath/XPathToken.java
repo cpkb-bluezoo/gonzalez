@@ -44,6 +44,9 @@ public enum XPathToken {
     
     /** A QName prefix (NCName followed by colon). */
     PREFIX,
+
+    /** XPath 3.0 URIQualifiedName: Q{uri}local. Value is "{uri}local" (Clark notation). */
+    URIQNAME,
     
     /** The wildcard '*' used in name tests. */
     STAR,
@@ -183,6 +186,8 @@ public enum XPathToken {
     SCHEMA_ATTRIBUTE,
     /** The 'document-node' keyword. */
     DOCUMENT_NODE,
+    /** The 'namespace-node' keyword. */
+    NAMESPACE_NODE,
     
     // XPath 2.0 occurrence indicators
     /** The '?' occurrence indicator (zero-or-one). */
@@ -195,6 +200,8 @@ public enum XPathToken {
     BANG,
     /** The '=>' arrow operator. */
     ARROW,
+    /** The '#' named function reference operator (XPath 3.0). */
+    HASH,
     
     /** The '=' operator. */
     EQUALS,
@@ -247,6 +254,10 @@ public enum XPathToken {
     RBRACKET,
     /** The ',' comma (function argument separator). */
     COMMA,
+    /** The '{' left brace (XPath 3.1 map/array constructor). */
+    LBRACE,
+    /** The '}' right brace (XPath 3.1 map/array constructor). */
+    RBRACE,
 
     // Variable reference
     /** The '$' variable prefix. */
@@ -340,6 +351,7 @@ public enum XPathToken {
     public boolean canStartStep() {
         switch (this) {
             case NCNAME:
+            case URIQNAME:
             case STAR:
             case AT:
             case DOT:
@@ -352,6 +364,7 @@ public enum XPathToken {
             case ELEMENT:
             case ATTRIBUTE:
             case DOCUMENT_NODE:
+            case NAMESPACE_NODE:
             case SCHEMA_ELEMENT:
             case SCHEMA_ATTRIBUTE:
                 return true;

@@ -46,11 +46,20 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
     
     private static final long serialVersionUID = 1L;
     
+    /** Default entity expansion limit, matching the JDK default. */
+    static final int DEFAULT_EXPANSION_LIMIT = 64000;
+    
     /** DTD parser for entity lookups */
     private final DTDParser dtdParser;
     
     /** Locator for error reporting */
     private final Locator locator;
+    
+    /** Total number of entity expansions performed during this parse. */
+    private int expansionCount;
+    
+    /** Maximum allowed entity expansions (protection against entity bombs). */
+    private int expansionLimit = DEFAULT_EXPANSION_LIMIT;
     
     /**
      * Creates an entity stack.
@@ -62,8 +71,27 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
         super();
         this.dtdParser = dtdParser;
         this.locator = locator;
+        this.expansionCount = 0;
         // Initialize with document entity (XML 1.0 by default)
         push(new EntityStackEntry(false));
+    }
+    
+    /**
+     * Sets the maximum number of entity expansions allowed.
+     * 
+     * @param limit the maximum expansion count, or 0 for unlimited
+     */
+    void setExpansionLimit(int limit) {
+        this.expansionLimit = limit;
+    }
+    
+    /**
+     * Gets the maximum number of entity expansions allowed.
+     * 
+     * @return the expansion limit
+     */
+    int getExpansionLimit() {
+        return expansionLimit;
     }
     
     /**
@@ -94,7 +122,25 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
      */
     void reset() {
         clear();
+        expansionCount = 0;
         push(new EntityStackEntry(false));
+    }
+    
+    /**
+     * Checks that the entity expansion limit has not been exceeded.
+     * Called before each entity expansion to protect against entity bombs.
+     * 
+     * @throws SAXException if the expansion limit has been reached
+     */
+    private void checkExpansionLimit() throws SAXException {
+        expansionCount++;
+        if (expansionLimit > 0 && expansionCount > expansionLimit) {
+            throw new SAXParseException(
+                "Entity expansion limit (" + expansionLimit + ") exceeded. " +
+                "This may indicate an entity expansion attack. " +
+                "Use the entity-expansion-limit property to increase if needed.",
+                locator);
+        }
     }
     
     /**
@@ -145,6 +191,8 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
      */
     String expandGeneralEntity(String entityName, EntityExpansionContext context) 
             throws SAXException {
+        checkExpansionLimit();
+        
         // Check if we have a DTD
         if (dtdParser == null) {
             // This should never happen as EntityStack is always created with a dtdParser
@@ -275,6 +323,8 @@ class EntityStack extends ArrayDeque<EntityStackEntry> {
      */
     String expandParameterEntity(String entityName, EntityExpansionContext context)
             throws SAXException {
+        checkExpansionLimit();
+        
         // Check for DTD
         if (dtdParser == null) {
             // This should never happen as EntityStack is always created with a dtdParser

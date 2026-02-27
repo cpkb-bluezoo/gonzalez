@@ -2,30 +2,30 @@
 
 All notable changes to Gonzalez will be documented in this file.
 
-## [2.0] - XXXX-XX-XX
-
-### Changed
-
-- **Breaking: XMLWriter redesigned to implement SAX2 interfaces.** XMLWriter now
-  directly implements `ContentHandler`, `LexicalHandler`, `DTDHandler`, and
-  `DeclHandler`. The previous custom `write*`-prefixed API has been replaced with
-  standard SAX event methods, allowing XMLWriter to be wired directly into a SAX
-  pipeline as an event sink with no adapter layer.
-
-- **XMLWriter configuration via setters.** `IndentConfig`, `Charset`, XML 1.1 mode,
-  and standalone mode are now configured via setter methods (`setIndentConfig`,
-  `setCharset`, `setXml11`, `setStandalone`) instead of constructor parameters.
+## [1.1] - XXXX-XX-XX
 
 ### Added
 
 - **XMLWriter DOCTYPE output.** XMLWriter can now serialize complete DOCTYPE
-  declarations including element, attribute, entity, and notation declarations
-  received via DeclHandler and DTDHandler events.
+  declarations via new `writeStartDTD`, `writeEndDTD`, `writeElementDecl`,
+  `writeAttributeDecl`, `writeInternalEntityDecl`, `writeExternalEntityDecl`,
+  `writeNotationDecl`, and `writeUnparsedEntityDecl` methods.
 
 - **XMLWriter standalone conversion mode.** When `setStandalone(true)` is called,
   the writer omits external DOCTYPE identifiers and inlines all DTD declarations
   (both internal and external subset) into the internal subset, producing a
   self-contained document.
+
+- **XMLWriter CDATA streaming.** New `writeStartCDATA`/`writeEndCDATA` methods
+  for streaming CDATA content, alongside the existing `writeCData` convenience
+  method for writing complete CDATA sections.
+
+- **XMLWriter configuration setters.** `IndentConfig`, `Charset`, XML 1.1 mode,
+  and standalone mode can now also be configured via setter methods
+  (`setIndentConfig`, `setCharset`, `setXml11`, `setStandalone`).
+
+- **XMLWriter raw output.** New `writeRaw` method for writing unescaped content,
+  supporting XSLT's disable-output-escaping feature.
 
 - **Parser DeclHandler support.** The parser now fires `DeclHandler` events
   (`elementDecl`, `attributeDecl`, `internalEntityDecl`, `externalEntityDecl`)

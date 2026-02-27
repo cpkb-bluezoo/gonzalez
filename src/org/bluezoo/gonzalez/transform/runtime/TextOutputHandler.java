@@ -80,6 +80,8 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
     // XSLT 2.0 atomic value spacing state
     private boolean atomicValuePending = false;
     private boolean inAttributeContent = false;
+    private boolean contentReceived = false;
+    private boolean claimedByResultDocument = false;
 
     /**
      * Creates a text output handler writing to a byte channel.
@@ -171,7 +173,7 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
 
     @Override
     public void startElement(String namespaceURI, String localName, String qName) throws SAXException {
-        // Text method: no markup output
+        contentReceived = true;
     }
 
     @Override
@@ -192,7 +194,11 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
 
     @Override
     public void characters(String text) throws SAXException {
-        // Text method: output text without escaping
+        if (claimedByResultDocument) {
+            throw new SAXException("XTDE1490: Cannot write to the principal output URI " +
+                "because it has been claimed by xsl:result-document");
+        }
+        contentReceived = true;
         write(text);
     }
 
@@ -292,6 +298,21 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
             characters(value.asString());
             atomicValuePending = true;
         }
+    }
+
+    @Override
+    public boolean hasReceivedContent() {
+        return contentReceived;
+    }
+
+    @Override
+    public void markClaimedByResultDocument() {
+        claimedByResultDocument = true;
+    }
+
+    @Override
+    public boolean isClaimedByResultDocument() {
+        return claimedByResultDocument;
     }
 
 }

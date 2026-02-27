@@ -25,8 +25,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
@@ -64,16 +66,42 @@ public final class TemplateMatcher {
 
     private Map<String, List<TemplateRule>> indexRulesByMode() {
         Map<String, List<TemplateRule>> map = new HashMap<>();
+        List<TemplateRule> allModeRules = new ArrayList<>();
         
+        // First pass: collect all named mode keys and #all rules
+        Set<String> allModeKeys = new HashSet<>();
+        allModeKeys.add("");
         for (TemplateRule rule : stylesheet.getTemplateRules()) {
             if (rule.getMatchPattern() != null) {
-                String mode = rule.getMode() != null ? rule.getMode() : "";
-                List<TemplateRule> modeRules = map.get(mode);
+                String mode = rule.getMode();
+                if ("#all".equals(mode)) {
+                    allModeRules.add(rule);
+                } else {
+                    String key = mode != null ? mode : "";
+                    // #default and #unnamed are aliases for the unnamed mode
+                    if ("#default".equals(key) || "#unnamed".equals(key)) {
+                        key = "";
+                    }
+                    allModeKeys.add(key);
+                    List<TemplateRule> modeRules = map.get(key);
+                    if (modeRules == null) {
+                        modeRules = new ArrayList<>();
+                        map.put(key, modeRules);
+                    }
+                    modeRules.add(rule);
+                }
+            }
+        }
+        
+        // Second pass: add #all rules to every mode bucket
+        if (!allModeRules.isEmpty()) {
+            for (String key : allModeKeys) {
+                List<TemplateRule> modeRules = map.get(key);
                 if (modeRules == null) {
                     modeRules = new ArrayList<>();
-                    map.put(mode, modeRules);
+                    map.put(key, modeRules);
                 }
-                modeRules.add(rule);
+                modeRules.addAll(allModeRules);
             }
         }
         
@@ -151,10 +179,7 @@ public final class TemplateMatcher {
                     if (rule.getImportPrecedence() == firstMatch.getImportPrecedence() &&
                         rule.getPriority() == firstMatch.getPriority()) {
                         matchCount++;
-                        System.err.println("DEBUG: Multiple match! count=" + matchCount);
                     } else {
-                        // Lower precedence/priority - we're done checking
-                        System.err.println("DEBUG: Different priority, stopping. matchCount=" + matchCount);
                         break;
                     }
                 }
@@ -375,7 +400,7 @@ public final class TemplateMatcher {
                 if (rule.getMatchPattern().matches(node, context)) {
                     return rule;
                 }
-            } else if (rule == currentRule) {
+            } else if (rule == currentRule || isSameRule(rule, currentRule)) {
                 foundCurrent = true;
             }
         }
@@ -387,6 +412,26 @@ public final class TemplateMatcher {
         }
         
         return null;
+    }
+
+    /**
+     * Checks whether two template rules represent the same template by comparing
+     * their match pattern string, priority, import precedence, and declaration index.
+     */
+    private boolean isSameRule(TemplateRule a, TemplateRule b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        if (a.getImportPrecedence() != b.getImportPrecedence()) {
+            return false;
+        }
+        if (a.getPriority() != b.getPriority()) {
+            return false;
+        }
+        if (a.getDeclarationIndex() != b.getDeclarationIndex()) {
+            return false;
+        }
+        return true;
     }
 
     /**

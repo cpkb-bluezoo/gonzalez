@@ -22,7 +22,7 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.ValidationMode;
-import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
@@ -127,8 +127,8 @@ public final class DocumentConstructorNode implements XSLTNode {
         // If the output is a SequenceBuilderOutputHandler, add the document directly
         // as an item. This preserves the document node structure for as="document-node()"
         // variables. Otherwise, replay the events to the output handler.
-        if (output instanceof StylesheetCompiler.SequenceBuilderOutputHandler) {
-            ((StylesheetCompiler.SequenceBuilderOutputHandler) output).addItem(rtf);
+        if (output instanceof SequenceBuilderOutputHandler) {
+            ((SequenceBuilderOutputHandler) output).addItem(rtf);
         } else {
             rtf.replayToOutput(output, true);
         }

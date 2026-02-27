@@ -290,4 +290,28 @@ public interface OutputHandler {
         }
     }
 
+    /**
+     * Returns true if this handler has received any content (elements, text, etc.).
+     * Used by xsl:result-document to detect XTDE1490 conflicts with implicit output.
+     *
+     * @return true if content has been written to this handler
+     */
+    default boolean hasReceivedContent() {
+        return false;
+    }
+
+    /**
+     * Marks this handler's URI as claimed by xsl:result-document.
+     * Subsequent implicit writes should raise XTDE1490.
+     */
+    default void markClaimedByResultDocument() {
+    }
+
+    /**
+     * Returns true if this handler has been claimed by xsl:result-document.
+     */
+    default boolean isClaimedByResultDocument() {
+        return false;
+    }
+
 }

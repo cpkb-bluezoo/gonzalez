@@ -192,6 +192,9 @@ public class XMLConformanceTest {
         List<TestCase> tests = new ArrayList<>();
         
         Parser parser = new Parser();
+        parser.setFeature("http://xml.org/sax/features/external-general-entities", true);
+        parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+        parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
         
         // Entity resolver that resolves relative to the index file directory
         // This is needed because index files use external entity references
@@ -375,6 +378,9 @@ public class XMLConformanceTest {
             SAXParseException capturedException = null;
             
             Parser parser = new Parser();
+            parser.setFeature("http://xml.org/sax/features/external-general-entities", true);
+            parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
+            parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
             parser.setContentHandler(new DefaultHandler()); // Simple handler that discards content
             
             // Entity resolver for test files - use FileChannel for NIO-native input

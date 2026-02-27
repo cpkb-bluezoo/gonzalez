@@ -313,12 +313,6 @@ public class XPathParserTest {
         parser.parse();
     }
 
-    @Test(expected = XPathSyntaxException.class)
-    public void testMalformedLeadingOperator() throws XPathSyntaxException {
-        XPathParser parser = new XPathParser("+ 1");
-        parser.parse();
-    }
-
     // --- Static helper ---
 
     @Test

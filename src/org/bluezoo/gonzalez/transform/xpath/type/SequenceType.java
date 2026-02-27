@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
+import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 
 /**
  * Represents an XPath 2.0 sequence type.
@@ -83,6 +85,8 @@ public class SequenceType {
         PROCESSING_INSTRUCTION,
         /** Document node: document-node() */
         DOCUMENT_NODE,
+        /** Namespace node: namespace-node() */
+        NAMESPACE_NODE,
         /** Schema element: schema-element(name) */
         SCHEMA_ELEMENT,
         /** Schema attribute: schema-attribute(name) */
@@ -90,13 +94,17 @@ public class SequenceType {
         /** Atomic type (xs:integer, xs:string, etc.) */
         ATOMIC,
         /** Empty sequence */
-        EMPTY
+        EMPTY,
+        /** XPath 3.1 map type: map(*) or map(K, V) */
+        MAP,
+        /** XPath 3.1 array type: array(*) or array(T) */
+        ARRAY
     }
     
     private final ItemKind itemKind;
     private final String namespaceURI;  // For atomic types or named element/attribute
     private final String localName;      // For atomic types or named element/attribute
-    private final String typeName;       // For element(*, type) or attribute(*, type)
+    private final QName typeName;        // Resolved type for element(*, type) or attribute(*, type)
     private final Occurrence occurrence;
     
     // Common predefined types
@@ -121,11 +129,11 @@ public class SequenceType {
      * @param itemKind the kind of item (ITEM, NODE, ELEMENT, ATOMIC, etc.)
      * @param namespaceURI the namespace URI for atomic types or named element/attribute (may be null)
      * @param localName the local name for atomic types or named element/attribute (may be null)
-     * @param typeName the type name for element(*, type) or attribute(*, type) (may be null)
+     * @param typeName the resolved type for element(*, type) or attribute(*, type) (may be null)
      * @param occurrence the occurrence indicator (ONE, ZERO_OR_ONE, ZERO_OR_MORE, ONE_OR_MORE)
      */
     public SequenceType(ItemKind itemKind, String namespaceURI, String localName, 
-                        String typeName, Occurrence occurrence) {
+                        QName typeName, Occurrence occurrence) {
         this.itemKind = itemKind;
         this.namespaceURI = namespaceURI;
         this.localName = localName;
@@ -276,11 +284,11 @@ public class SequenceType {
     }
     
     /**
-     * Returns the type name for element(*, type) or attribute(*, type).
+     * Returns the resolved type for element(*, type) or attribute(*, type).
      *
-     * @return the type name, or null if not applicable
+     * @return the type as a QName, or null if not applicable
      */
-    public String getTypeName() {
+    public QName getTypeName() {
         return typeName;
     }
     
@@ -401,7 +409,13 @@ public class SequenceType {
             case PROCESSING_INSTRUCTION:
             case DOCUMENT_NODE:
                 return value instanceof XPathNodeSet;  // Simplified
-                
+
+            case MAP:
+                return value instanceof XPathMap;
+
+            case ARRAY:
+                return value instanceof XPathSequence;
+
             default:
                 return true;
         }
@@ -491,7 +505,13 @@ public class SequenceType {
             case PROCESSING_INSTRUCTION:
             case DOCUMENT_NODE:
                 return value instanceof XPathNodeSet;
-                
+
+            case MAP:
+                return value instanceof XPathMap;
+
+            case ARRAY:
+                return value instanceof XPathSequence;
+
             default:
                 return true;
         }
@@ -861,66 +881,39 @@ public class SequenceType {
     
     /**
      * Checks if a node's type annotation matches the expected type.
-     * The type name can be prefixed (e.g., "xs:string") or in Clark notation.
      * Supports XSD type hierarchy: xs:ID matches xs:NCName, xs:Name, xs:token, xs:string.
+     *
+     * @param node the node to check
+     * @param expectedType the resolved type as a QName
      */
-    private boolean matchesTypeAnnotation(XPathNode node, String expectedType) {
-        String nodeTypeNs = node.getTypeNamespaceURI();
-        String nodeTypeLocal = node.getTypeLocalName();
-        
-        // Parse the expected type (may be prefixed or Clark notation)
-        String expectedNs = null;
-        String expectedLocal = expectedType;
-        
-        if (expectedType.startsWith("{")) {
-            // Clark notation: {uri}localName
-            int closeIndex = expectedType.indexOf('}');
-            if (closeIndex > 0) {
-                expectedNs = expectedType.substring(1, closeIndex);
-                expectedLocal = expectedType.substring(closeIndex + 1);
-            }
-        } else if (expectedType.contains(":")) {
-            // Prefixed: prefix:localName - we stored the resolved namespace in namespaceURI
-            int colonIndex = expectedType.indexOf(':');
-            String prefix = expectedType.substring(0, colonIndex);
-            expectedLocal = expectedType.substring(colonIndex + 1);
-            // Assume XS namespace for xs: prefix
-            if ("xs".equals(prefix) || "xsd".equals(prefix)) {
-                expectedNs = XS_NAMESPACE;
-            }
-        } else {
-            // Unprefixed - assume XS namespace
-            expectedNs = XS_NAMESPACE;
-        }
-        
-        // If the expected type is xs:untyped or xs:untyped? then nodes WITHOUT
-        // type annotations match (this is the default for non-schema-validated XML)
-        boolean expectsUntyped = XS_NAMESPACE.equals(expectedNs) && 
+    private boolean matchesTypeAnnotation(XPathNode node, QName expectedType) {
+        String expectedNs = expectedType.getURI();
+        String expectedLocal = expectedType.getLocalName();
+
+        // xs:untyped / xs:untypedAtomic match nodes WITHOUT type annotations
+        boolean expectsUntyped = XS_NAMESPACE.equals(expectedNs) &&
             ("untyped".equals(expectedLocal) || "untypedAtomic".equals(expectedLocal));
-        
+
+        String nodeTypeLocal = node.getTypeLocalName();
         if (nodeTypeLocal == null) {
-            // Node has no type annotation - matches xs:untyped
             return expectsUntyped;
         }
-        
-        // Normalize namespaces
+
+        String nodeTypeNs = node.getTypeNamespaceURI();
         if (nodeTypeNs == null) {
             nodeTypeNs = "";
         }
-        if (expectedNs == null) {
-            expectedNs = "";
-        }
-        
+
         // Exact match
         if (expectedNs.equals(nodeTypeNs) && expectedLocal.equals(nodeTypeLocal)) {
             return true;
         }
-        
+
         // Check type hierarchy for XSD built-in types
         if (XS_NAMESPACE.equals(nodeTypeNs) && XS_NAMESPACE.equals(expectedNs)) {
             return isTypeSubtypeOf(nodeTypeLocal, expectedLocal);
         }
-        
+
         return false;
     }
     
@@ -937,17 +930,11 @@ public class SequenceType {
         }
         
         // Try using XSDSimpleType for comprehensive hierarchy checking
-        try {
-            org.bluezoo.gonzalez.schema.xsd.XSDSimpleType actual = 
-                org.bluezoo.gonzalez.schema.xsd.XSDSimpleType.getBuiltInType(actualType);
-            org.bluezoo.gonzalez.schema.xsd.XSDSimpleType expected = 
-                org.bluezoo.gonzalez.schema.xsd.XSDSimpleType.getBuiltInType(expectedType);
-            
-            if (actual != null && expected != null) {
-                return actual.isSubtypeOf(expected);
-            }
-        } catch (Exception e) {
-            // Fall through to hardcoded checks if XSDSimpleType lookup fails
+        XSDSimpleType actual = XSDSimpleType.getBuiltInType(actualType);
+        XSDSimpleType expected = XSDSimpleType.getBuiltInType(expectedType);
+        
+        if (actual != null && expected != null) {
+            return actual.isSubtypeOf(expected);
         }
         
         // Fallback: hardcoded type hierarchy checks
@@ -1185,7 +1172,8 @@ public class SequenceType {
                 
             case "QName":
             case "NOTATION":
-                return value instanceof XPathString || value instanceof XPathAtomicValue;
+                return value instanceof XPathQName ||
+                       value instanceof XPathString || value instanceof XPathAtomicValue;
                 
             case "untypedAtomic":
             case "anyAtomicType":
@@ -1295,40 +1283,24 @@ public class SequenceType {
         if (type.equals("element()") || type.startsWith("element(")) {
             String localName = null;
             String nsUri = null;
-            String typeName = null;
+            QName typeName = null;
             if (type.startsWith("element(") && type.endsWith(")")) {
                 String inner = type.substring("element(".length(), type.length() - 1).trim();
                 if (!inner.isEmpty() && !inner.equals("*")) {
-                    // Parse element(name) or element(name, type) or element(*, type)
                     int commaIdx = inner.indexOf(',');
                     if (commaIdx >= 0) {
                         String namePart = inner.substring(0, commaIdx).trim();
-                        typeName = inner.substring(commaIdx + 1).trim();
+                        String typeStr = inner.substring(commaIdx + 1).trim();
+                        typeName = resolveQName(typeStr, namespaceResolver);
                         if (!namePart.equals("*")) {
-                            // Handle prefixed name: prefix:localName
-                            int colonIdx = namePart.indexOf(':');
-                            if (colonIdx >= 0) {
-                                String prefix = namePart.substring(0, colonIdx);
-                                localName = namePart.substring(colonIdx + 1);
-                                if (namespaceResolver != null) {
-                                    nsUri = namespaceResolver.apply(prefix);
-                                }
-                            } else {
-                                localName = namePart;
-                            }
+                            String[] resolved = resolvePrefixedName(namePart, namespaceResolver);
+                            nsUri = resolved[0];
+                            localName = resolved[1];
                         }
                     } else {
-                        // Handle prefixed name: prefix:localName
-                        int colonIdx = inner.indexOf(':');
-                        if (colonIdx >= 0) {
-                            String prefix = inner.substring(0, colonIdx);
-                            localName = inner.substring(colonIdx + 1);
-                            if (namespaceResolver != null) {
-                                nsUri = namespaceResolver.apply(prefix);
-                            }
-                        } else {
-                            localName = inner;
-                        }
+                        String[] resolved = resolvePrefixedName(inner, namespaceResolver);
+                        nsUri = resolved[0];
+                        localName = resolved[1];
                     }
                 }
             }
@@ -1339,39 +1311,24 @@ public class SequenceType {
         if (type.equals("attribute()") || type.startsWith("attribute(")) {
             String localName = null;
             String nsUri = null;
-            String typeName = null;
+            QName typeName = null;
             if (type.startsWith("attribute(") && type.endsWith(")")) {
                 String inner = type.substring("attribute(".length(), type.length() - 1).trim();
                 if (!inner.isEmpty() && !inner.equals("*")) {
                     int commaIdx = inner.indexOf(',');
                     if (commaIdx >= 0) {
                         String namePart = inner.substring(0, commaIdx).trim();
-                        typeName = inner.substring(commaIdx + 1).trim();
+                        String typeStr = inner.substring(commaIdx + 1).trim();
+                        typeName = resolveQName(typeStr, namespaceResolver);
                         if (!namePart.equals("*")) {
-                            // Handle prefixed name: prefix:localName
-                            int colonIdx = namePart.indexOf(':');
-                            if (colonIdx >= 0) {
-                                String prefix = namePart.substring(0, colonIdx);
-                                localName = namePart.substring(colonIdx + 1);
-                                if (namespaceResolver != null) {
-                                    nsUri = namespaceResolver.apply(prefix);
-                                }
-                            } else {
-                                localName = namePart;
-                            }
+                            String[] resolved = resolvePrefixedName(namePart, namespaceResolver);
+                            nsUri = resolved[0];
+                            localName = resolved[1];
                         }
                     } else {
-                        // Handle prefixed name: prefix:localName
-                        int colonIdx = inner.indexOf(':');
-                        if (colonIdx >= 0) {
-                            String prefix = inner.substring(0, colonIdx);
-                            localName = inner.substring(colonIdx + 1);
-                            if (namespaceResolver != null) {
-                                nsUri = namespaceResolver.apply(prefix);
-                            }
-                        } else {
-                            localName = inner;
-                        }
+                        String[] resolved = resolvePrefixedName(inner, namespaceResolver);
+                        nsUri = resolved[0];
+                        localName = resolved[1];
                     }
                 }
             }
@@ -1389,32 +1346,66 @@ public class SequenceType {
             String name = type.substring("schema-attribute(".length(), type.length() - 1).trim();
             return new SequenceType(ItemKind.SCHEMA_ATTRIBUTE, null, name, null, occ);
         }
+
+        // Parse map(*) or map(K, V)
+        if (type.equals("map(*)") || type.startsWith("map(")) {
+            return new SequenceType(ItemKind.MAP, null, null, null, occ);
+        }
+
+        // Parse array(*) or array(T)
+        if (type.equals("array(*)") || type.startsWith("array(")) {
+            return new SequenceType(ItemKind.ARRAY, null, null, null, occ);
+        }
         
         // Parse atomic type (e.g., xs:integer, xs:string)
-        String nsUri = null;
-        String localName = type;
-        
-        int colonIdx = type.indexOf(':');
-        if (colonIdx > 0) {
-            String prefix = type.substring(0, colonIdx);
-            localName = type.substring(colonIdx + 1);
-            
-            // Resolve namespace prefix
-            if ("xs".equals(prefix) || "xsd".equals(prefix)) {
-                nsUri = XS_NAMESPACE;
-            } else if (namespaceResolver != null) {
-                nsUri = namespaceResolver.apply(prefix);
-            }
-        } else {
+        String[] resolved = resolvePrefixedName(type, namespaceResolver);
+        String nsUri = resolved[0];
+        String localName = resolved[1];
+
+        if (nsUri == null && !type.contains(":")) {
             // No prefix - assume xs: namespace for common types
             if (isBuiltInAtomicType(type)) {
                 nsUri = XS_NAMESPACE;
             }
         }
-        
+
         return new SequenceType(ItemKind.ATOMIC, nsUri, localName, null, occ);
     }
     
+    /**
+     * Resolves a prefixed name (prefix:local) to [namespaceURI, localName]
+     * using the provided namespace resolver.
+     */
+    private static String[] resolvePrefixedName(String name,
+            java.util.function.Function<String, String> namespaceResolver) {
+        int colonIdx = name.indexOf(':');
+        if (colonIdx <= 0) {
+            return new String[] { null, name };
+        }
+        String prefix = name.substring(0, colonIdx);
+        String local = name.substring(colonIdx + 1);
+        String uri = null;
+        if (namespaceResolver != null) {
+            uri = namespaceResolver.apply(prefix);
+        }
+        if (uri == null) {
+            if ("xs".equals(prefix) || "xsd".equals(prefix)) {
+                uri = XS_NAMESPACE;
+            }
+        }
+        return new String[] { uri, local };
+    }
+
+    /**
+     * Resolves a prefixed type name to a QName with namespace URI and local name.
+     */
+    private static QName resolveQName(String name,
+            java.util.function.Function<String, String> namespaceResolver) {
+        String[] resolved = resolvePrefixedName(name, namespaceResolver);
+        String uri = resolved[0] != null ? resolved[0] : "";
+        return new QName(uri, resolved[1], name);
+    }
+
     /**
      * Checks if a type name is a built-in XSD atomic type.
      */

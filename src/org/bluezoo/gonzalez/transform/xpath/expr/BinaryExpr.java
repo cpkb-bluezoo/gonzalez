@@ -29,6 +29,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathAtomicValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -288,7 +289,7 @@ public final class BinaryExpr implements Expr {
         @Override public String asString() { return node.getStringValue(); }
         @Override public double asNumber() { 
             try { return Double.parseDouble(node.getStringValue()); } 
-            catch (Exception e) { return Double.NaN; } 
+            catch (NumberFormatException e) { return Double.NaN; } 
         }
         @Override public boolean asBoolean() { return !node.getStringValue().isEmpty(); }
         @Override public XPathNodeSet asNodeSet() { return new XPathNodeSet(java.util.Collections.singletonList(node)); }
@@ -656,20 +657,43 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
 
-        // Handle null values as empty node-sets
-        if (leftVal == null) {
-            leftVal = XPathNodeSet.empty();
-        }
-        if (rightVal == null) {
-            rightVal = XPathNodeSet.empty();
-        }
+        XPathNodeSet leftSet = toNodeSet(leftVal, "union");
+        XPathNodeSet rightSet = toNodeSet(rightVal, "union");
 
-        if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
-            throw new XPathException("XPTY0004: Union operator requires node-set operands, got " +
-                leftVal.getType() + " and " + rightVal.getType());
-        }
+        return leftSet.union(rightSet);
+    }
 
-        return leftVal.asNodeSet().union(rightVal.asNodeSet());
+    /**
+     * Converts an XPathValue to an XPathNodeSet, extracting nodes from sequences.
+     * XPath 2.0+ allows sequences of nodes as operands for set operations.
+     */
+    private static XPathNodeSet toNodeSet(XPathValue val, String opName) throws XPathException {
+        if (val == null) {
+            return XPathNodeSet.empty();
+        }
+        if (val.isNodeSet()) {
+            return val.asNodeSet();
+        }
+        if (val.isSequence()) {
+            List<XPathNode> nodes = new ArrayList<>();
+            Iterator<XPathValue> it = val.sequenceIterator();
+            while (it.hasNext()) {
+                XPathValue item = it.next();
+                if (item instanceof XPathNode) {
+                    nodes.add((XPathNode) item);
+                } else if (item.isNodeSet()) {
+                    for (XPathNode n : item.asNodeSet()) {
+                        nodes.add(n);
+                    }
+                } else {
+                    throw new XPathException("XPTY0004: " + opName +
+                        " operator requires node operands, got " + item.getType());
+                }
+            }
+            return new XPathNodeSet(nodes);
+        }
+        throw new XPathException("XPTY0004: " + opName +
+            " operator requires node-set operands, got " + val.getType());
     }
 
     /**
@@ -705,6 +729,18 @@ public final class BinaryExpr implements Expr {
         // If both operands are strings, use string comparison
         if (leftType == XPathValue.Type.STRING && rightType == XPathValue.Type.STRING) {
             return XPathBoolean.of(compareValuesString(leftVal.asString(), rightVal.asString()));
+        }
+        
+        // QName comparison: equality/inequality only (no ordering)
+        if (leftVal instanceof XPathQName && rightVal instanceof XPathQName) {
+            boolean equal = leftVal.equals(rightVal);
+            if (operator == Operator.VALUE_EQUALS) {
+                return XPathBoolean.of(equal);
+            }
+            if (operator == Operator.VALUE_NOT_EQUALS) {
+                return XPathBoolean.of(!equal);
+            }
+            throw new XPathException("XPTY0004: QName values do not support ordering comparisons");
         }
         
         // Mixed types or other types: try numeric first, fall back to string
@@ -841,19 +877,8 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
         
-        if (leftVal == null) {
-            leftVal = XPathNodeSet.empty();
-        }
-        if (rightVal == null) {
-            rightVal = XPathNodeSet.empty();
-        }
-        
-        if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
-            throw new XPathException("XPTY0004: intersect operator requires node-set operands");
-        }
-        
-        XPathNodeSet leftSet = leftVal.asNodeSet();
-        XPathNodeSet rightSet = rightVal.asNodeSet();
+        XPathNodeSet leftSet = toNodeSet(leftVal, "intersect");
+        XPathNodeSet rightSet = toNodeSet(rightVal, "intersect");
         
         // Build set of right nodes for efficient lookup
         Set<XPathNode> rightNodes = new HashSet<>();
@@ -880,19 +905,8 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
         
-        if (leftVal == null) {
-            leftVal = XPathNodeSet.empty();
-        }
-        if (rightVal == null) {
-            rightVal = XPathNodeSet.empty();
-        }
-        
-        if (!leftVal.isNodeSet() || !rightVal.isNodeSet()) {
-            throw new XPathException("XPTY0004: except operator requires node-set operands");
-        }
-        
-        XPathNodeSet leftSet = leftVal.asNodeSet();
-        XPathNodeSet rightSet = rightVal.asNodeSet();
+        XPathNodeSet leftSet = toNodeSet(leftVal, "except");
+        XPathNodeSet rightSet = toNodeSet(rightVal, "except");
         
         // Build set of right nodes for efficient lookup
         Set<XPathNode> rightNodes = new HashSet<>();
@@ -994,6 +1008,9 @@ public final class BinaryExpr implements Expr {
             // Create new argument list with left value prepended
             List<XPathValue> args = new ArrayList<>();
             args.add(leftVal);
+            for (Expr argExpr : func.getArguments()) {
+                args.add(argExpr.evaluate(context));
+            }
             
             // Invoke the function with left value as first argument
             return context.getFunctionLibrary()

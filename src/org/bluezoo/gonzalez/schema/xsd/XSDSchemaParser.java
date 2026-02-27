@@ -60,6 +60,10 @@ public class XSDSchemaParser extends DefaultHandler {
     
     // For resolving type references after parsing
     private final List<Runnable> pendingTypeResolutions = new ArrayList<>();
+    // Base URI for resolving relative imports/includes
+    private String baseURI;
+    // Track already-imported schemas to avoid circular imports
+    private final Set<String> importedSchemas = new HashSet<>();
     
     /**
      * Parses an XSD schema from a URI.
@@ -124,6 +128,8 @@ public class XSDSchemaParser extends DefaultHandler {
      */
     public XSDSchema parse(InputSource source) throws SAXException, IOException {
         try {
+            baseURI = source.getSystemId();
+            
             // Use Gonzalez parser if available
             XMLReader reader;
             try {
@@ -214,6 +220,12 @@ public class XSDSchemaParser extends DefaultHandler {
             case "extension":
                 handleExtension(atts);
                 break;
+            case "list":
+                handleList(atts);
+                break;
+            case "union":
+                handleUnion(atts);
+                break;
             case "simpleContent":
             case "complexContent":
                 // Just markers - push them on stack
@@ -234,6 +246,12 @@ public class XSDSchemaParser extends DefaultHandler {
             case "fractionDigits":
             case "whiteSpace":
                 handleFacet(localName, atts);
+                break;
+            case "import":
+                handleImport(atts);
+                break;
+            case "include":
+                handleInclude(atts);
                 break;
             case "annotation":
             case "documentation":
@@ -363,6 +381,11 @@ public class XSDSchemaParser extends DefaultHandler {
         String form = atts.getValue("form");
         if (form != null) {
             element.setForm(form);
+        }
+        
+        String subGroup = atts.getValue("substitutionGroup");
+        if (subGroup != null) {
+            element.setSubstitutionGroup(subGroup);
         }
         
         stack.push(element);
@@ -544,6 +567,163 @@ public class XSDSchemaParser extends DefaultHandler {
                 ((XSDComplexType) parent).setSimpleContentType(type);
             }
         }
+    }
+    
+    private void handleImport(Attributes atts) {
+        String schemaLocation = atts.getValue("schemaLocation");
+        if (schemaLocation == null) {
+            return;
+        }
+        String resolvedURI = resolveURI(schemaLocation);
+        if (resolvedURI == null) {
+            return;
+        }
+        if (importedSchemas.contains(resolvedURI)) {
+            return;
+        }
+        importedSchemas.add(resolvedURI);
+        try {
+            XSDSchema imported = XSDSchemaParser.parse(resolvedURI);
+            mergeSchema(imported);
+        } catch (Exception e) {
+            // Import failures are non-fatal
+        }
+    }
+    
+    private void handleInclude(Attributes atts) {
+        String schemaLocation = atts.getValue("schemaLocation");
+        if (schemaLocation == null) {
+            return;
+        }
+        String resolvedURI = resolveURI(schemaLocation);
+        if (resolvedURI == null) {
+            return;
+        }
+        if (importedSchemas.contains(resolvedURI)) {
+            return;
+        }
+        importedSchemas.add(resolvedURI);
+        try {
+            XSDSchema included = XSDSchemaParser.parse(resolvedURI);
+            mergeSchema(included);
+        } catch (Exception e) {
+            // Include failures are non-fatal
+        }
+    }
+    
+    private String resolveURI(String location) {
+        if (location.contains("://")) {
+            return location;
+        }
+        if (baseURI != null) {
+            int lastSlash = baseURI.lastIndexOf('/');
+            if (lastSlash >= 0) {
+                return baseURI.substring(0, lastSlash + 1) + location;
+            }
+        }
+        return location;
+    }
+    
+    private void mergeSchema(XSDSchema imported) {
+        if (imported == null) {
+            return;
+        }
+        for (Map.Entry<String, XSDElement> entry : imported.getElements().entrySet()) {
+            schema.addElement(entry.getValue());
+        }
+        for (Map.Entry<String, XSDAttribute> entry : imported.getAttributes().entrySet()) {
+            schema.addAttribute(entry.getValue());
+        }
+        for (Map.Entry<String, XSDType> entry : imported.getTypes().entrySet()) {
+            String typeName = entry.getKey();
+            XSDType type = entry.getValue();
+            if (schema.getType(typeName) == null) {
+                schema.addType(typeName, type);
+            }
+        }
+    }
+    
+    private void handleList(Attributes atts) {
+        // xs:list within xs:simpleType - replace the current simpleType on the stack
+        // with a list variant
+        if (stack.isEmpty()) {
+            return;
+        }
+        Object top = stack.peek();
+        if (!(top instanceof XSDSimpleType)) {
+            return;
+        }
+        XSDSimpleType parent = (XSDSimpleType) top;
+        String itemTypeName = atts.getValue("itemType");
+        if (itemTypeName != null) {
+            // Deferred resolution: replace the parent type with a list type
+            // once the item type is resolved
+            final String name = parent.getName();
+            final String ns = parent.getNamespaceURI();
+            scheduleListTypeResolution(name, ns, itemTypeName);
+        }
+        // If itemType is absent, there should be an inline simpleType child
+        // which will be handled by the normal simpleType processing
+    }
+    
+    private void scheduleListTypeResolution(
+            final String name, final String ns, final String itemTypeName) {
+        pendingTypeResolutions.add(new Runnable() {
+            @Override
+            public void run() {
+                XSDType itemType = resolveType(itemTypeName);
+                if (itemType instanceof XSDSimpleType) {
+                    XSDSimpleType listType = XSDSimpleType.createList(
+                        name, ns, (XSDSimpleType) itemType);
+                    // Copy facets from placeholder if any
+                    // Replace in schema if it's a named type
+                    if (name != null) {
+                        schema.addType(name, listType);
+                    }
+                }
+            }
+        });
+    }
+    
+    private void handleUnion(Attributes atts) {
+        // xs:union within xs:simpleType
+        if (stack.isEmpty()) {
+            return;
+        }
+        Object top = stack.peek();
+        if (!(top instanceof XSDSimpleType)) {
+            return;
+        }
+        XSDSimpleType parent = (XSDSimpleType) top;
+        String memberTypesAttr = atts.getValue("memberTypes");
+        if (memberTypesAttr != null && !memberTypesAttr.trim().isEmpty()) {
+            final String name = parent.getName();
+            final String ns = parent.getNamespaceURI();
+            scheduleUnionTypeResolution(name, ns, memberTypesAttr.trim());
+        }
+    }
+    
+    private void scheduleUnionTypeResolution(
+            final String name, final String ns, final String memberTypesStr) {
+        pendingTypeResolutions.add(new Runnable() {
+            @Override
+            public void run() {
+                List<XSDSimpleType> memberTypes = new ArrayList<>();
+                for (String memberName : memberTypesStr.split("\\s+")) {
+                    XSDType memberType = resolveType(memberName.trim());
+                    if (memberType instanceof XSDSimpleType) {
+                        memberTypes.add((XSDSimpleType) memberType);
+                    }
+                }
+                if (!memberTypes.isEmpty()) {
+                    XSDSimpleType unionType = XSDSimpleType.createUnion(
+                        name, ns, memberTypes);
+                    if (name != null) {
+                        schema.addType(name, unionType);
+                    }
+                }
+            }
+        });
     }
     
     private void handleSequence(Attributes atts) {

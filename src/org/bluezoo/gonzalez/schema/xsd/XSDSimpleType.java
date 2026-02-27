@@ -859,12 +859,7 @@ public class XSDSimpleType extends XSDType {
      */
     private String validateList(String value) {
         // Split by whitespace - empty string means empty list
-        String[] items;
-        if (value.isEmpty()) {
-            items = new String[0];
-        } else {
-            items = value.split("\\s+");
-        }
+        String[] items = XSDUtils.splitWhitespace(value);
         int itemCount = items.length;
         
         // Check length facets on item count

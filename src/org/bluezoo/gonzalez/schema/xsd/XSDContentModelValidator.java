@@ -680,41 +680,10 @@ public class XSDContentModelValidator {
     
     /**
      * Checks if a namespace matches a wildcard constraint.
+     * Delegates to XSDParticle which uses pre-parsed namespace sets.
      */
     private boolean matchesWildcard(XSDParticle particle, String namespaceURI) {
-        String constraint = particle.getNamespaceConstraint();
-        
-        if ("##any".equals(constraint)) {
-            return true;
-        }
-        if ("##other".equals(constraint)) {
-            return namespaceURI != null && !namespaceURI.isEmpty();
-        }
-        if ("##local".equals(constraint)) {
-            return namespaceURI == null || namespaceURI.isEmpty();
-        }
-        if ("##targetNamespace".equals(constraint)) {
-            return true; // Simplified
-        }
-        
-        // Space-separated list of URIs
-        if (namespaceURI == null) {
-            namespaceURI = "";
-        }
-        int start = 0;
-        int len = constraint.length();
-        while (start < len) {
-            int end = constraint.indexOf(' ', start);
-            if (end == -1) {
-                end = len;
-            }
-            String ns = constraint.substring(start, end);
-            if (ns.equals(namespaceURI)) {
-                return true;
-            }
-            start = end + 1;
-        }
-        return false;
+        return particle.matchesWildcard(namespaceURI);
     }
     
     /**

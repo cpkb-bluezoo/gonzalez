@@ -26,6 +26,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
+import org.xml.sax.ext.LexicalHandler;
 import org.xml.sax.helpers.DefaultHandler;
 
 import javax.xml.parsers.SAXParser;
@@ -70,6 +71,8 @@ public final class DocumentLoader {
     // Cache for loaded documents - keyed by absolute URI + strip-space rules
     private static final Map<String, XPathNode> documentCache = new ConcurrentHashMap<>();
 
+    private static final int MAX_CACHE_SIZE = 1000;
+
     private DocumentLoader() {
         // Utility class - no instantiation
     }
@@ -86,6 +89,23 @@ public final class DocumentLoader {
      */
     public static XPathNode loadDocument(String uri, String baseUri,
             List<String> stripSpace, List<String> preserveSpace) {
+        return loadDocument(uri, baseUri, stripSpace, preserveSpace, "all");
+    }
+
+    /**
+     * Loads an XML document from a URI and returns its document node.
+     * Results are cached so the same URI always returns the same document.
+     *
+     * @param uri the document URI (may be relative)
+     * @param baseUri the base URI for resolving relative URIs (may be null)
+     * @param stripSpace element patterns for strip-space (or null)
+     * @param preserveSpace element patterns for preserve-space (or null)
+     * @param allowedProtocols comma-separated allowed protocols, "all", or ""
+     * @return the document node, or null if loading fails
+     */
+    public static XPathNode loadDocument(String uri, String baseUri,
+            List<String> stripSpace, List<String> preserveSpace,
+            String allowedProtocols) {
         try {
             // Resolve the URI against the base URI
             URI resolved;
@@ -98,6 +118,14 @@ public final class DocumentLoader {
             
             String absoluteUri = resolved.toString();
             
+            // Check protocol restriction
+            String scheme = resolved.getScheme();
+            if (scheme != null && allowedProtocols != null) {
+                if (!isProtocolAllowed(scheme, allowedProtocols)) {
+                    return null;
+                }
+            }
+            
             // Build cache key including strip-space rules
             String cacheKey = buildCacheKey(absoluteUri, stripSpace, preserveSpace);
             
@@ -107,13 +135,31 @@ public final class DocumentLoader {
                 return cached;
             }
             
-            // Parse the document
+            // Parse the document with secure defaults
             URL url = resolved.toURL();
             SAXParserFactory factory = SAXParserFactory.newInstance();
             factory.setNamespaceAware(true);
+            try {
+                factory.setFeature("http://javax.xml.XMLConstants/feature/secure-processing", true);
+            } catch (Exception e) {
+                // Platform parser may not support this feature
+            }
+            try {
+                factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+                factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            } catch (Exception e) {
+                // Platform parser may not support these features
+            }
             SAXParser parser = factory.newSAXParser();
             
             DocumentTreeBuilder builder = new DocumentTreeBuilder(absoluteUri, stripSpace, preserveSpace);
+            // Register LexicalHandler so comments are captured
+            try {
+                parser.getXMLReader().setProperty(
+                    "http://xml.org/sax/properties/lexical-handler", builder);
+            } catch (Exception e) {
+                // Parser may not support LexicalHandler
+            }
             try (InputStream in = url.openStream()) {
                 InputSource source = new InputSource(in);
                 source.setSystemId(absoluteUri);
@@ -122,8 +168,11 @@ public final class DocumentLoader {
             
             XPathNode root = builder.getRoot();
             
-            // Cache the result
+            // Cache the result (with size limit to prevent memory exhaustion)
             if (root != null) {
+                if (documentCache.size() >= MAX_CACHE_SIZE) {
+                    documentCache.clear();
+                }
                 documentCache.put(cacheKey, root);
             }
             
@@ -132,6 +181,29 @@ public final class DocumentLoader {
             // Return null on any error (caller decides whether to throw)
             return null;
         }
+    }
+
+    private static boolean isProtocolAllowed(String protocol, String allowedProtocols) {
+        if (allowedProtocols == null || allowedProtocols.isEmpty()) {
+            return false;
+        }
+        if ("all".equals(allowedProtocols)) {
+            return true;
+        }
+        int start = 0;
+        int len = allowedProtocols.length();
+        while (start < len) {
+            int comma = allowedProtocols.indexOf(',', start);
+            if (comma < 0) {
+                comma = len;
+            }
+            String allowed = allowedProtocols.substring(start, comma).trim();
+            if (protocol.equalsIgnoreCase(allowed)) {
+                return true;
+            }
+            start = comma + 1;
+        }
+        return false;
     }
 
     /**
@@ -151,6 +223,38 @@ public final class DocumentLoader {
             throw new SAXException("FODC0002: Cannot retrieve document at " + uri);
         }
         return doc;
+    }
+
+    /**
+     * Loads a document from a string of XML content.
+     *
+     * @param xml the XML string to parse
+     * @param stripSpace element patterns for strip-space (or null)
+     * @param preserveSpace element patterns for preserve-space (or null)
+     * @param baseUri the base URI (or null)
+     * @return the document node
+     * @throws SAXException if parsing fails
+     */
+    public static XPathNode loadDocumentFromString(String xml, String baseUri,
+            List<String> stripSpace, List<String> preserveSpace) throws SAXException {
+        try {
+            SAXParserFactory factory = SAXParserFactory.newInstance();
+            factory.setNamespaceAware(true);
+            SAXParser parser = factory.newSAXParser();
+            
+            DocumentTreeBuilder builder = new DocumentTreeBuilder(baseUri, stripSpace, preserveSpace);
+            InputSource source = new InputSource(new java.io.StringReader(xml));
+            if (baseUri != null) {
+                source.setSystemId(baseUri);
+            }
+            parser.parse(source, builder);
+            
+            return builder.getRoot();
+        } catch (SAXException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new SAXException("FODC0006: Error parsing XML string: " + e.getMessage(), e);
+        }
     }
 
     /**
@@ -195,7 +299,7 @@ public final class DocumentLoader {
     /**
      * SAX handler that builds a navigable node tree from a parsed XML document.
      */
-    private static class DocumentTreeBuilder extends DefaultHandler {
+    private static class DocumentTreeBuilder extends DefaultHandler implements LexicalHandler {
         private final String baseUri;
         private final List<String> stripSpace;
         private final List<String> preserveSpace;
@@ -291,8 +395,8 @@ public final class DocumentLoader {
             }
         }
         
-        // Note: comment() is not from DefaultHandler - it's from LexicalHandler
-        // This is called manually if LexicalHandler is implemented
+        // LexicalHandler methods
+        @Override
         public void comment(char[] ch, int start, int length) {
             flushText();
             DocumentNode comment = new DocumentNode(NodeType.COMMENT, null, null, null, baseUri);
@@ -303,6 +407,24 @@ public final class DocumentLoader {
                 current.addChild(comment);
             }
         }
+
+        @Override
+        public void startDTD(String name, String publicId, String systemId) {}
+
+        @Override
+        public void endDTD() {}
+
+        @Override
+        public void startEntity(String name) {}
+
+        @Override
+        public void endEntity(String name) {}
+
+        @Override
+        public void startCDATA() {}
+
+        @Override
+        public void endCDATA() {}
         
         private void flushText() {
             if (textBuffer.length() > 0) {

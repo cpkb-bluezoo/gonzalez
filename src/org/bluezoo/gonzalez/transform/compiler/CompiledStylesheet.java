@@ -104,6 +104,7 @@ public final class CompiledStylesheet {
     private final String baseURI;  // static base URI of the stylesheet
     private final double version;  // XSLT version (1.0, 2.0, 3.0)
     private final String defaultCollation;  // default collation URI (XSLT 2.0+)
+    private final String defaultMode;  // XSLT 3.0 default-mode from stylesheet element
     
     // XSLT 3.0 global context item declaration
     private String globalContextItemType;  // as attribute
@@ -112,6 +113,9 @@ public final class CompiledStylesheet {
     // XSLT 3.0 package information
     private final String packageName;  // package name URI
     private final String packageVersion;  // package version string
+    
+    // Streamability analysis (set after build)
+    private volatile StreamabilityAnalyzer.StylesheetStreamability streamabilityAnalysis;
 
     /**
      * Stores decimal format configuration for format-number().
@@ -306,6 +310,7 @@ public final class CompiledStylesheet {
         private String globalContextItemUse;   // XSLT 3.0
         private String packageName;  // XSLT 3.0 package name
         private String packageVersion;  // XSLT 3.0 package version
+        private String defaultMode;  // XSLT 3.0 default-mode from stylesheet element
 
         /**
          * Sets the base URI of the stylesheet.
@@ -381,6 +386,17 @@ public final class CompiledStylesheet {
          */
         public Builder setPackageVersion(String version) {
             this.packageVersion = version;
+            return this;
+        }
+
+        /**
+         * Sets the default-mode from the stylesheet element (XSLT 3.0).
+         *
+         * @param mode the default mode name
+         * @return this builder
+         */
+        public Builder setDefaultMode(String mode) {
+            this.defaultMode = mode;
             return this;
         }
 
@@ -564,9 +580,18 @@ public final class CompiledStylesheet {
          * @param function the user-defined function
          * @return this builder
          */
-        public Builder addUserFunction(UserFunction function) {
-            // Key by namespace + localname + arity for overloading support
-            userFunctions.put(function.getKey(), function);
+        public Builder addUserFunction(UserFunction function)
+                throws javax.xml.transform.TransformerConfigurationException {
+            String key = function.getKey();
+            UserFunction existing = userFunctions.get(key);
+            if (existing != null
+                    && existing.getImportPrecedence() == function.getImportPrecedence()) {
+                throw new javax.xml.transform.TransformerConfigurationException(
+                    "XTSE0770: Duplicate function '" + function.getLocalName() +
+                    "' with arity " + function.getArity() +
+                    " at the same import precedence");
+            }
+            userFunctions.put(key, function);
             return this;
         }
         
@@ -823,19 +848,22 @@ public final class CompiledStylesheet {
          * @param isImport true for xsl:import, false for xsl:include
          */
         private void mergeNonTemplates(CompiledStylesheet imported, boolean isImport) {
-            // Add global variables - first definition wins
+            // Add global variables - higher import precedence wins
             for (GlobalVariable var : imported.getGlobalVariables()) {
-                boolean exists = false;
-                for (GlobalVariable existing : globalVariables) {
-                    // Compare by namespace URI and local name
+                boolean found = false;
+                for (int i = 0; i < globalVariables.size(); i++) {
+                    GlobalVariable existing = globalVariables.get(i);
                     boolean sameNs = (existing.getNamespaceURI() == null && var.getNamespaceURI() == null) ||
                                     (existing.getNamespaceURI() != null && existing.getNamespaceURI().equals(var.getNamespaceURI()));
                     if (sameNs && existing.getLocalName().equals(var.getLocalName())) {
-                        exists = true;
+                        found = true;
+                        if (var.getImportPrecedence() > existing.getImportPrecedence()) {
+                            globalVariables.set(i, var);
+                        }
                         break;
                     }
                 }
-                if (!exists) {
+                if (!found) {
                     globalVariables.add(var);
                 }
             }
@@ -984,51 +1012,65 @@ public final class CompiledStylesheet {
          * @throws javax.xml.transform.TransformerConfigurationException if validation fails
          */
         public CompiledStylesheet build() throws javax.xml.transform.TransformerConfigurationException {
-            // Validate attribute-set references (XTSE0710)
-            // Check references from attribute-set declarations
-            for (AttributeSet attrSet : attributeSets.values()) {
-                if (attrSet.getUseAttributeSets() != null) {
-                    for (String refName : attrSet.getUseAttributeSets()) {
-                        if (!attributeSets.containsKey(refName)) {
-                            throw new javax.xml.transform.TransformerConfigurationException(
-                                "XTSE0710: Attribute-set '" + attrSet.getName() + 
-                                "' references undefined attribute-set '" + refName + "'");
+            return build(true);
+        }
+
+        /**
+         * Builds the compiled stylesheet, optionally skipping cross-reference validation.
+         * Sub-stylesheets (imported/included) skip validation since references may
+         * target definitions in sibling or parent stylesheets.
+         *
+         * @param validateReferences true to validate attribute-set and character-map references
+         * @return the compiled stylesheet
+         * @throws javax.xml.transform.TransformerConfigurationException if validation fails
+         */
+        public CompiledStylesheet build(boolean validateReferences) throws javax.xml.transform.TransformerConfigurationException {
+            if (validateReferences) {
+                // Validate attribute-set references (XTSE0710)
+                // Check references from attribute-set declarations
+                for (AttributeSet attrSet : attributeSets.values()) {
+                    if (attrSet.getUseAttributeSets() != null) {
+                        for (String refName : attrSet.getUseAttributeSets()) {
+                            if (!attributeSets.containsKey(refName)) {
+                                throw new javax.xml.transform.TransformerConfigurationException(
+                                    "XTSE0710: Attribute-set '" + attrSet.getName() + 
+                                    "' references undefined attribute-set '" + refName + "'");
+                            }
                         }
                     }
                 }
-            }
-            // Check references from instructions (xsl:copy, xsl:element, literal result elements)
-            for (String refName : attributeSetReferences) {
-                if (!attributeSets.containsKey(refName)) {
-                    throw new javax.xml.transform.TransformerConfigurationException(
-                        "XTSE0710: use-attribute-sets references undefined attribute-set '" + refName + "'");
-                }
-            }
-            
-            // Validate character-map references (XTSE1590)
-            // Also check in xsl:output use-character-maps
-            for (String mapName : outputProperties.getUseCharacterMaps()) {
-                if (!characterMaps.containsKey(mapName)) {
-                    throw new javax.xml.transform.TransformerConfigurationException(
-                        "XTSE1590: use-character-maps in xsl:output references undefined character-map '" + mapName + "'");
-                }
-            }
-            for (CharacterMap charMap : characterMaps.values()) {
-                for (String refName : charMap.getUseCharacterMaps()) {
-                    if (!characterMaps.containsKey(refName)) {
+                // Check references from instructions (xsl:copy, xsl:element, literal result elements)
+                for (String refName : attributeSetReferences) {
+                    if (!attributeSets.containsKey(refName)) {
                         throw new javax.xml.transform.TransformerConfigurationException(
-                            "XTSE1590: character-map '" + charMap.getName() + 
-                            "' references undefined character-map '" + refName + "'");
+                            "XTSE0710: use-attribute-sets references undefined attribute-set '" + refName + "'");
                     }
                 }
-            }
             
-            // Validate character-map circular references (XTSE1600)
-            for (CharacterMap charMap : characterMaps.values()) {
-                Set<String> visited = new HashSet<>();
-                if (hasCircularReference(charMap.getName(), visited)) {
-                    throw new javax.xml.transform.TransformerConfigurationException(
-                        "XTSE1600: Circular reference in character-map '" + charMap.getName() + "'");
+                // Validate character-map references (XTSE1590)
+                for (String mapName : outputProperties.getUseCharacterMaps()) {
+                    if (!characterMaps.containsKey(mapName)) {
+                        throw new javax.xml.transform.TransformerConfigurationException(
+                            "XTSE1590: use-character-maps in xsl:output references undefined character-map '" + mapName + "'");
+                    }
+                }
+                for (CharacterMap charMap : characterMaps.values()) {
+                    for (String refName : charMap.getUseCharacterMaps()) {
+                        if (!characterMaps.containsKey(refName)) {
+                            throw new javax.xml.transform.TransformerConfigurationException(
+                                "XTSE1590: character-map '" + charMap.getName() + 
+                                "' references undefined character-map '" + refName + "'");
+                        }
+                    }
+                }
+            
+                // Validate character-map circular references (XTSE1600)
+                for (CharacterMap charMap : characterMaps.values()) {
+                    Set<String> visited = new HashSet<>();
+                    if (hasCircularReference(charMap.getName(), visited)) {
+                        throw new javax.xml.transform.TransformerConfigurationException(
+                            "XTSE1600: Circular reference in character-map '" + charMap.getName() + "'");
+                    }
                 }
             }
             
@@ -1128,6 +1170,7 @@ public final class CompiledStylesheet {
         this.globalContextItemUse = builder.globalContextItemUse;
         this.packageName = builder.packageName;
         this.packageVersion = builder.packageVersion;
+        this.defaultMode = builder.defaultMode;
         this.streamingCapability = computeStreamingCapability();
     }
 
@@ -1244,6 +1287,15 @@ public final class CompiledStylesheet {
      */
     public double getVersion() {
         return version;
+    }
+
+    /**
+     * Returns the stylesheet-level default-mode (XSLT 3.0).
+     *
+     * @return the default mode name, or null for unnamed mode
+     */
+    public String getDefaultMode() {
+        return defaultMode;
     }
 
     /**
@@ -1395,6 +1447,24 @@ public final class CompiledStylesheet {
      */
     public StreamingCapability getStreamingCapability() {
         return streamingCapability;
+    }
+
+    /**
+     * Sets the streamability analysis results.
+     *
+     * @param analysis the analysis results
+     */
+    public void setStreamabilityAnalysis(StreamabilityAnalyzer.StylesheetStreamability analysis) {
+        this.streamabilityAnalysis = analysis;
+    }
+
+    /**
+     * Returns the streamability analysis results.
+     *
+     * @return the analysis results, or null if not yet analyzed
+     */
+    public StreamabilityAnalyzer.StylesheetStreamability getStreamabilityAnalysis() {
+        return streamabilityAnalysis;
     }
 
     /**

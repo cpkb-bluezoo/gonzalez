@@ -22,8 +22,14 @@
 package org.bluezoo.gonzalez.transform.runtime;
 
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Executor for grounded (subtree-buffered) transformations.
@@ -93,13 +99,16 @@ public final class GroundedExecutor {
             return;
         }
         
-        // For now, use the original context node
-        // A full implementation would build a navigable tree from the buffer
-        TransformContext groundedCtx = parentContext.withContextNode(contextNode);
-        template.execute(groundedCtx, output);
-        
-        // TODO: Build a fully navigable BufferedNode tree from SAXEventBuffer
-        // This would allow reverse axis navigation within the buffered subtree
+        // Build a fully navigable tree from the buffer
+        XPathNode bufferedRoot = buildTreeFromBuffer(buffer);
+        XPathNode targetNode = bufferedRoot;
+        if (targetNode != null) {
+            TransformContext groundedCtx = parentContext.withContextNode(targetNode);
+            template.execute(groundedCtx, output);
+        } else {
+            TransformContext groundedCtx = parentContext.withContextNode(contextNode);
+            template.execute(groundedCtx, output);
+        }
     }
 
     /**
@@ -206,4 +215,130 @@ public final class GroundedExecutor {
                ", depth=" + bufferDepth + "]";
     }
 
+    /**
+     * Builds a fully navigable tree from a SAX event buffer.
+     *
+     * @param buffer the buffer containing SAX events
+     * @return the root node of the built tree, or null if buffer is empty
+     * @throws SAXException if replay fails
+     */
+    public static XPathNode buildTreeFromBuffer(SAXEventBuffer buffer) throws SAXException {
+        if (buffer == null || buffer.isEmpty()) {
+            return null;
+        }
+        BufferedTreeBuilder builder = new BufferedTreeBuilder();
+        buffer.replay(builder);
+        return builder.getRoot();
+    }
+
+    /**
+     * SAX handler that builds a navigable DocumentNode tree from SAX events.
+     */
+    private static class BufferedTreeBuilder extends DefaultHandler {
+        private DocumentLoader.DocumentNode root;
+        private DocumentLoader.DocumentNode current;
+        private StringBuilder textBuffer = new StringBuilder();
+        private int documentOrder = 0;
+        private List<String[]> pendingNamespaces = new ArrayList<String[]>();
+
+        XPathNode getRoot() {
+            return root;
+        }
+
+        @Override
+        public void startDocument() {
+            root = new DocumentLoader.DocumentNode(NodeType.ROOT, null, null, null, null);
+            root.documentOrder = documentOrder++;
+            current = root;
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri) {
+            pendingNamespaces.add(new String[]{prefix, uri});
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) {
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName, Attributes attrs) {
+            flushText();
+            String prefix = null;
+            if (qName != null) {
+                int colonIdx = qName.indexOf(':');
+                if (colonIdx > 0) {
+                    prefix = qName.substring(0, colonIdx);
+                }
+            }
+            DocumentLoader.DocumentNode element = new DocumentLoader.DocumentNode(
+                NodeType.ELEMENT, uri, localName, prefix, null);
+            element.documentOrder = documentOrder++;
+            element.parent = current;
+            if (current != null) {
+                current.addChild(element);
+            }
+
+            for (String[] ns : pendingNamespaces) {
+                DocumentLoader.DocumentNode nsNode = new DocumentLoader.DocumentNode(
+                    NodeType.NAMESPACE, null, ns[0], null, null);
+                nsNode.documentOrder = documentOrder++;
+                nsNode.value = ns[1];
+                nsNode.parent = element;
+                element.addNamespace(nsNode);
+            }
+            pendingNamespaces.clear();
+
+            for (int i = 0; i < attrs.getLength(); i++) {
+                DocumentLoader.DocumentNode attr = new DocumentLoader.DocumentNode(
+                    NodeType.ATTRIBUTE, attrs.getURI(i), attrs.getLocalName(i), null, null);
+                attr.documentOrder = documentOrder++;
+                attr.value = attrs.getValue(i);
+                attr.parent = element;
+                element.addAttribute(attr);
+            }
+
+            current = element;
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            flushText();
+            if (current != null && current.parent != null) {
+                current = current.parent;
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            textBuffer.append(ch, start, length);
+        }
+
+        @Override
+        public void processingInstruction(String target, String data) {
+            flushText();
+            DocumentLoader.DocumentNode pi = new DocumentLoader.DocumentNode(
+                NodeType.PROCESSING_INSTRUCTION, null, target, null, null);
+            pi.documentOrder = documentOrder++;
+            pi.value = data;
+            pi.parent = current;
+            if (current != null) {
+                current.addChild(pi);
+            }
+        }
+
+        private void flushText() {
+            if (textBuffer.length() > 0) {
+                DocumentLoader.DocumentNode text = new DocumentLoader.DocumentNode(
+                    NodeType.TEXT, null, null, null, null);
+                text.documentOrder = documentOrder++;
+                text.value = textBuffer.toString();
+                text.parent = current;
+                if (current != null) {
+                    current.addChild(text);
+                }
+                textBuffer.setLength(0);
+            }
+        }
+    }
 }
