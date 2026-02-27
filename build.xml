@@ -121,8 +121,17 @@
   <!-- Distribution target -->
   <target name='dist' depends='jar'/>
   
+  <!-- Download JUnit test framework dependencies from Maven Central -->
+  <target name='resolve-test-deps' description='Download JUnit test dependencies'>
+    <mkdir dir='${test}/junit/lib'/>
+    <get src='https://repo1.maven.org/maven2/junit/junit/4.13.1/junit-4.13.1.jar'
+         dest='${test}/junit/lib/${junit.jar}' skipexisting='true'/>
+    <get src='https://repo1.maven.org/maven2/org/hamcrest/hamcrest/3.0/hamcrest-3.0.jar'
+         dest='${test}/junit/lib/${hamcrest.jar}' skipexisting='true'/>
+  </target>
+
   <!-- Unit test compilation -->
-  <target name='junit-build' depends='build'>
+  <target name='junit-build' depends='build,resolve-test-deps'>
     <mkdir dir='${test}/junit/classes'/>
     <javac srcdir='${test}/junit/src' destdir='${test}/junit/classes' debug='true' includeantruntime='false'
            release='${java.release.version}'
@@ -136,7 +145,7 @@
   </target>
   
   <!-- Conformance test compilation -->
-  <target name='conformance-build' depends='build'>
+  <target name='conformance-build' depends='build,resolve-test-deps'>
     <mkdir dir='${test}/conformance/classes'/>
     <javac srcdir='${test}/conformance/src' destdir='${test}/conformance/classes' debug='true' includeantruntime='false'
            release='${java.release.version}'
