@@ -336,6 +336,19 @@ public class GonzalezTransformer extends Transformer {
         return Channels.newInputStream(openChannel(uri));
     }
 
+    /**
+     * Creates an OutputHandler for the given result.
+     * Package-private so GonzalezTransformerHandler can reuse the same logic.
+     */
+    OutputHandler createOutputHandler(Result result)
+            throws javax.xml.transform.TransformerException, java.io.IOException {
+        if (result instanceof SAXResult) {
+            ContentHandler ch = ((SAXResult) result).getHandler();
+            return new GonzalezTransformHandler.ContentHandlerOutputAdapter(ch);
+        }
+        return getStreamOutputHandler(result);
+    }
+
     private OutputHandler getStreamOutputHandler(Result result) throws TransformerException, IOException {
         if (result instanceof StreamResult) {
             StreamResult sr = (StreamResult) result;

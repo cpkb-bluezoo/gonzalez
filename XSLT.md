@@ -268,18 +268,33 @@ transformer.transform(
 
 ### SAX Pipeline Integration
 
-For streaming transformations:
+The `TransformerHandler` accepts SAX events on its input side (implementing
+`ContentHandler`) and sends transformed events to a `Result` on the output
+side. For a true SAX pipeline where the next stage is another
+`ContentHandler`, use a `SAXResult`:
 
 ```java
-// Create SAX transformer handler
-TransformerHandler handler = factory.newTransformerHandler(templates);
-handler.setResult(new StreamResult(outputStream));
+// SAX pipeline: parser -> XSLT transform -> downstream handler
+SAXTransformerFactory stf = (SAXTransformerFactory) factory;
+TransformerHandler handler = stf.newTransformerHandler(templates);
+handler.setResult(new SAXResult(downstreamHandler));
 
-// Feed SAX events from Gonzalez parser - non-blocking, as data arrives
+// Feed SAX events from Gonzalez parser (non-blocking, as data arrives)
 parser.setContentHandler(handler);
 parser.receive(buffer1);
 parser.receive(buffer2);
-parser.close());
+parser.close();
+```
+
+When the transformer is the final stage, a `StreamResult` serializes to
+an output stream:
+
+```java
+TransformerHandler handler = stf.newTransformerHandler(templates);
+handler.setResult(new StreamResult(outputStream));
+
+parser.setContentHandler(handler);
+parser.parse(inputSource);
 ```
 
 ## Features

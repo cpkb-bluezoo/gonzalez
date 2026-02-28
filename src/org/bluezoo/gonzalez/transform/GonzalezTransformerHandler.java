@@ -21,18 +21,30 @@
 
 package org.bluezoo.gonzalez.transform;
 
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.xml.sax.*;
 import org.xml.sax.ext.LexicalHandler;
 
 import javax.xml.transform.Result;
 import javax.xml.transform.Transformer;
+import javax.xml.transform.sax.SAXResult;
 import javax.xml.transform.sax.TransformerHandler;
+import javax.xml.transform.stream.StreamResult;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
- * SAX TransformerHandler implementation.
+ * SAX TransformerHandler implementation for push-based XSLT pipelines.
  *
- * <p>This handler receives SAX events from a source document and transforms
- * them through an XSLT stylesheet to a result.
+ * <p>This handler receives SAX events from a source (such as the Gonzalez
+ * parser) and transforms them through an XSLT stylesheet, sending the
+ * result to a {@link SAXResult} or {@link StreamResult}.
+ *
+ * <p>The delegate {@link GonzalezTransformHandler} is created lazily in
+ * {@link #startDocument()} once both the templates and result are
+ * available.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -40,15 +52,21 @@ public class GonzalezTransformerHandler implements TransformerHandler, LexicalHa
 
     /** The compiled templates, or null for identity transform. */
     private final GonzalezTemplates templates;
-    
-    /** The transformer instance. */
+
+    /** The transformer instance, exposes parameters and output properties. */
     private final GonzalezTransformer transformer;
-    
+
     /** The result target for transformation output. */
     private Result result;
-    
+
     /** The system identifier for the source document. */
     private String systemId;
+
+    /**
+     * The delegate that performs the actual transformation.
+     * Created in startDocument() once the result is available.
+     */
+    private GonzalezTransformHandler delegate;
 
     /**
      * Creates a transformer handler.
@@ -57,268 +75,208 @@ public class GonzalezTransformerHandler implements TransformerHandler, LexicalHa
      */
     public GonzalezTransformerHandler(GonzalezTemplates templates) {
         this.templates = templates;
-        this.transformer = new GonzalezTransformer(
-            templates != null ? templates.getStylesheet() : null);
+        CompiledStylesheet stylesheet =
+            templates != null ? templates.getStylesheet() : null;
+        this.transformer = new GonzalezTransformer(stylesheet);
     }
 
     /**
      * Sets the result target for the transformation output.
      *
      * @param result the result target
-     * @throws IllegalArgumentException if the result is invalid
+     * @throws IllegalArgumentException if the result is null
      */
     @Override
     public void setResult(Result result) throws IllegalArgumentException {
+        if (result == null) {
+            throw new IllegalArgumentException("Result must not be null");
+        }
         this.result = result;
     }
 
-    /**
-     * Sets the system identifier for the source document.
-     *
-     * @param systemID the system identifier (URI)
-     */
     @Override
     public void setSystemId(String systemID) {
         this.systemId = systemID;
     }
 
-    /**
-     * Gets the system identifier for the source document.
-     *
-     * @return the system identifier, or null if not set
-     */
     @Override
     public String getSystemId() {
         return systemId;
     }
 
-    /**
-     * Gets the Transformer instance associated with this handler.
-     *
-     * @return the Transformer instance
-     */
     @Override
     public Transformer getTransformer() {
         return transformer;
     }
 
-    // ContentHandler implementation (delegates to internal handler)
+    // -- ContentHandler --
 
-    /**
-     * Sets the document locator for error reporting.
-     *
-     * @param locator the document locator
-     */
     @Override
     public void setDocumentLocator(Locator locator) {
-        // Store locator for error reporting
+        ensureDelegate();
+        delegate.setDocumentLocator(locator);
     }
 
-    /**
-     * Receives notification of the beginning of a document.
-     *
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void startDocument() throws SAXException {
-        // Begin transformation
+        ensureDelegate();
+        delegate.startDocument();
     }
 
-    /**
-     * Receives notification of the end of a document.
-     *
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void endDocument() throws SAXException {
-        // Complete transformation
+        delegate.endDocument();
     }
 
-    /**
-     * Receives notification of the start of a namespace prefix mapping.
-     *
-     * @param prefix the namespace prefix, or empty string for default namespace
-     * @param uri the namespace URI
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
-    public void startPrefixMapping(String prefix, String uri) throws SAXException {
-        // Track namespace
+    public void startPrefixMapping(String prefix, String uri)
+            throws SAXException {
+        delegate.startPrefixMapping(prefix, uri);
     }
 
-    /**
-     * Receives notification of the end of a namespace prefix mapping.
-     *
-     * @param prefix the namespace prefix, or empty string for default namespace
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void endPrefixMapping(String prefix) throws SAXException {
-        // Namespace out of scope
+        delegate.endPrefixMapping(prefix);
     }
 
-    /**
-     * Receives notification of the start of an element.
-     *
-     * @param uri the element namespace URI, or empty string if none
-     * @param localName the element local name
-     * @param qName the element qualified name (prefix:local)
-     * @param atts the element attributes
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
-    public void startElement(String uri, String localName, String qName, Attributes atts) 
+    public void startElement(String uri, String localName, String qName,
+                             Attributes atts) throws SAXException {
+        delegate.startElement(uri, localName, qName, atts);
+    }
+
+    @Override
+    public void endElement(String uri, String localName, String qName)
             throws SAXException {
-        // Process element start
+        delegate.endElement(uri, localName, qName);
     }
 
-    /**
-     * Receives notification of the end of an element.
-     *
-     * @param uri the element namespace URI, or empty string if none
-     * @param localName the element local name
-     * @param qName the element qualified name (prefix:local)
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
-    public void endElement(String uri, String localName, String qName) throws SAXException {
-        // Process element end
+    public void characters(char[] ch, int start, int length)
+            throws SAXException {
+        delegate.characters(ch, start, length);
     }
 
-    /**
-     * Receives notification of character data.
-     *
-     * @param ch the characters
-     * @param start the start position in the array
-     * @param length the number of characters to use
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
-    public void characters(char[] ch, int start, int length) throws SAXException {
-        // Process text
+    public void ignorableWhitespace(char[] ch, int start, int length)
+            throws SAXException {
+        delegate.ignorableWhitespace(ch, start, length);
     }
 
-    /**
-     * Receives notification of ignorable whitespace in element content.
-     *
-     * @param ch the whitespace characters
-     * @param start the start position in the array
-     * @param length the number of characters to use
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
-    public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
-        // Process whitespace
+    public void processingInstruction(String target, String data)
+            throws SAXException {
+        delegate.processingInstruction(target, data);
     }
 
-    /**
-     * Receives notification of a processing instruction.
-     *
-     * @param target the processing instruction target
-     * @param data the processing instruction data
-     * @throws SAXException if a SAX error occurs
-     */
-    @Override
-    public void processingInstruction(String target, String data) throws SAXException {
-        // Process PI
-    }
-
-    /**
-     * Receives notification of a skipped entity.
-     *
-     * @param name the entity name
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void skippedEntity(String name) throws SAXException {
-        // Entity skipped
+        // Not relevant for XSLT processing
     }
 
-    // DTDHandler implementation
+    // -- DTDHandler --
 
     @Override
-    public void notationDecl(String name, String publicId, String systemId) throws SAXException {
-        // Notation declaration - typically not needed for XSLT
+    public void notationDecl(String name, String publicId, String systemId)
+            throws SAXException {
+        // Not relevant for XSLT processing
     }
 
     @Override
-    public void unparsedEntityDecl(String name, String publicId, String systemId, 
-                                   String notationName) throws SAXException {
-        // Unparsed entity declaration - typically not needed for XSLT
+    public void unparsedEntityDecl(String name, String publicId,
+                                   String systemId, String notationName)
+            throws SAXException {
+        // Not relevant for XSLT processing
     }
 
-    // LexicalHandler implementation
+    // -- LexicalHandler --
 
-    /**
-     * Receives notification of the start of a DTD declaration.
-     *
-     * @param name the document type name
-     * @param publicId the public identifier, or null
-     * @param systemId the system identifier
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
-    public void startDTD(String name, String publicId, String systemId) throws SAXException {
+    public void startDTD(String name, String publicId, String systemId)
+            throws SAXException {
+        delegate.startDTD(name, publicId, systemId);
     }
 
-    /**
-     * Receives notification of the end of a DTD declaration.
-     *
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void endDTD() throws SAXException {
+        delegate.endDTD();
     }
 
-    /**
-     * Receives notification of the start of an entity.
-     *
-     * @param name the entity name
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void startEntity(String name) throws SAXException {
+        delegate.startEntity(name);
     }
 
-    /**
-     * Receives notification of the end of an entity.
-     *
-     * @param name the entity name
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void endEntity(String name) throws SAXException {
+        delegate.endEntity(name);
     }
 
-    /**
-     * Receives notification of the start of a CDATA section.
-     *
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void startCDATA() throws SAXException {
+        delegate.startCDATA();
     }
 
-    /**
-     * Receives notification of the end of a CDATA section.
-     *
-     * @throws SAXException if a SAX error occurs
-     */
     @Override
     public void endCDATA() throws SAXException {
+        delegate.endCDATA();
+    }
+
+    @Override
+    public void comment(char[] ch, int start, int length)
+            throws SAXException {
+        delegate.comment(ch, start, length);
+    }
+
+    // -- Internal --
+
+    /**
+     * Creates the delegate transform handler if it has not been created yet.
+     * Requires that {@link #setResult(Result)} has been called.
+     *
+     * @throws SAXException if the result has not been set or is unsupported
+     */
+    private void ensureDelegate() {
+        if (delegate != null) {
+            return;
+        }
+
+        if (result == null) {
+            throw new IllegalStateException(
+                "setResult() must be called before SAX events are sent");
+        }
+
+        OutputHandler outputHandler;
+        try {
+            outputHandler = createOutputHandler(result);
+        } catch (Exception e) {
+            throw new IllegalStateException(
+                "Failed to create output handler: " + e.getMessage(), e);
+        }
+
+        CompiledStylesheet stylesheet =
+            templates != null ? templates.getStylesheet() : null;
+
+        Map<String, Object> parameters = new HashMap<String, Object>();
+        delegate = new GonzalezTransformHandler(
+            stylesheet, parameters, outputHandler);
     }
 
     /**
-     * Receives notification of a comment.
-     *
-     * @param ch the comment characters
-     * @param start the start position in the array
-     * @param length the number of characters to use
-     * @throws SAXException if a SAX error occurs
+     * Creates an appropriate OutputHandler for the given result target.
+     * Supports SAXResult (event forwarding) and StreamResult (serialization).
      */
-    @Override
-    public void comment(char[] ch, int start, int length) throws SAXException {
-        // Process comment
+    private OutputHandler createOutputHandler(Result target)
+            throws Exception {
+        if (target instanceof SAXResult) {
+            ContentHandler ch = ((SAXResult) target).getHandler();
+            return new GonzalezTransformHandler.ContentHandlerOutputAdapter(ch);
+        }
+        if (target instanceof StreamResult) {
+            return transformer.createOutputHandler(target);
+        }
+        throw new IllegalArgumentException(
+            "Unsupported result type: " + target.getClass().getName());
     }
 
 }
