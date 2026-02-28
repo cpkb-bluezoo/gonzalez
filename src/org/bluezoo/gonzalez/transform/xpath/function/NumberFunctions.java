@@ -503,20 +503,7 @@ public final class NumberFunctions {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue arg = args.get(0);
             
-            // Collect items from sequence
-            List<XPathValue> items = new ArrayList<XPathValue>();
-            if (arg.isSequence()) {
-                java.util.Iterator<XPathValue> iter = arg.sequenceIterator();
-                while (iter.hasNext()) {
-                    items.add(iter.next());
-                }
-            } else if (arg.isNodeSet()) {
-                for (XPathNode node : arg.asNodeSet()) {
-                    items.add((XPathValue) node);
-                }
-            } else {
-                items.add(arg);
-            }
+            List<XPathValue> items = getValues(arg);
             
             if (items.isEmpty()) {
                 return XPathSequence.EMPTY;
@@ -843,9 +830,18 @@ public final class NumberFunctions {
                 result.add(item);
             }
         } else if (value instanceof XPathNodeSet) {
+            // Untyped atomic values from nodes are cast to xs:double
+            // per the XPath spec for fn:max, fn:min, fn:avg, fn:sum
             XPathNodeSet nodeSet = (XPathNodeSet) value;
             for (XPathNode node : nodeSet) {
-                result.add(XPathString.of(node.getStringValue()));
+                String sv = node.getStringValue();
+                double d;
+                try {
+                    d = Double.parseDouble(sv.trim());
+                } catch (NumberFormatException e) {
+                    d = Double.NaN;
+                }
+                result.add(XPathNumber.of(d));
             }
         } else {
             result.add(value);

@@ -55,6 +55,7 @@ public final class StreamingTransformHandler implements ContentHandler {
     private final OutputHandler output;
     
     private StreamingNode currentNode;
+    private StreamingNode documentElement;
     private long documentOrder;
     private boolean documentStarted;
     private final Map<String, String> reusableNsBindings = new HashMap<String, String>();
@@ -84,6 +85,11 @@ public final class StreamingTransformHandler implements ContentHandler {
     public void startDocument() throws SAXException {
         documentStarted = true;
         documentOrder = 0;
+        
+        // Create root node so that document element becomes its child,
+        // matching the non-streaming tree where / is the document root
+        currentNode = StreamingNode.createRoot();
+        streamingContext.setCurrentNode(currentNode);
         
         // Initialize accumulators if configured
         AccumulatorManager mgr = streamingContext.getAccumulatorManager();
@@ -148,11 +154,9 @@ public final class StreamingTransformHandler implements ContentHandler {
             mgr.notifyStartElement(node);
         }
         
-        // Execute body if at document element (depth 1)
-        if (streamingContext.getDepth() == 1 && body != null) {
-            // Create a transform context for body execution
-            TransformContext bodyContext = createBodyContext(node);
-            body.execute(bodyContext, output);
+        // Remember document element for deferred body execution
+        if (streamingContext.getDepth() == 1) {
+            documentElement = node;
         }
     }
 
@@ -162,6 +166,16 @@ public final class StreamingTransformHandler implements ContentHandler {
         AccumulatorManager mgr = streamingContext.getAccumulatorManager();
         if (mgr != null && currentNode != null) {
             mgr.notifyEndElement(currentNode);
+        }
+        
+        // Execute body at end of document element, when all descendants are available.
+        // Use the root node as context, matching non-streaming behaviour where the
+        // document root (/) is the context for xsl:source-document body.
+        if (streamingContext.getDepth() == 1 && body != null && documentElement != null) {
+            XPathNode root = documentElement.getRoot();
+            TransformContext bodyContext = createBodyContext(root);
+            body.execute(bodyContext, output);
+            documentElement = null;
         }
         
         // Move back to parent
