@@ -462,6 +462,15 @@ public class XSLTConformanceTest {
                 if (file != null && !"secondary".equals(role)) {
                     currentEnv.stylesheetFile = new File(testDir, file);
                 }
+            } else if ("param".equals(localName) && inTest) {
+                String paramName = attrs.getValue("name");
+                String paramSelect = attrs.getValue("select");
+                if (paramName != null && paramSelect != null && currentTest != null) {
+                    if (currentTest.stylesheetParams == null) {
+                        currentTest.stylesheetParams = new LinkedHashMap<>();
+                    }
+                    currentTest.stylesheetParams.put(paramName, paramSelect);
+                }
             } else if ("initial-template".equals(localName) && inTest) {
                 initialTemplate = attrs.getValue("name");
             } else if ("initial-mode".equals(localName) && inTest) {
@@ -701,6 +710,20 @@ public class XSLTConformanceTest {
             // Set initial context select if specified
             if (testCase.sourceSelect != null && transformer instanceof GonzalezTransformer) {
                 ((GonzalezTransformer) transformer).setInitialContextSelect(testCase.sourceSelect);
+            }
+
+            // Set stylesheet parameters from test definition
+            if (testCase.stylesheetParams != null) {
+                for (Map.Entry<String, String> entry : testCase.stylesheetParams.entrySet()) {
+                    String paramValue = entry.getValue();
+                    // Extract string literal value from XPath select expression
+                    if (paramValue.length() >= 2
+                            && ((paramValue.charAt(0) == '\'' && paramValue.charAt(paramValue.length() - 1) == '\'')
+                             || (paramValue.charAt(0) == '"' && paramValue.charAt(paramValue.length() - 1) == '"'))) {
+                        paramValue = paramValue.substring(1, paramValue.length() - 1);
+                    }
+                    transformer.setParameter(entry.getKey(), paramValue);
+                }
             }
 
             // Prepare source - use FileChannel for NIO-native input
@@ -961,6 +984,7 @@ public class XSLTConformanceTest {
         boolean expectsError;
         String expectedError;
         Map<String, String> expectedResultDocuments;
+        Map<String, String> stylesheetParams;
 
         @Override
         public String toString() {

@@ -741,7 +741,7 @@ public final class XPathLexer {
             case LBRACKET:
             case RPAREN:    // For 'then' after 'if (condition)'
             case RBRACKET:  // For 'else' after predicate like 'then foo[1]'
-            // NOT DOT or DOUBLE_DOT - after '.' or '..', next is typically step, not keyword
+            case DOT:       // For 'return' after context item in 'let $p := . return'
             case COMMA:
             case PLUS:
             case MINUS:

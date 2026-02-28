@@ -2874,15 +2874,24 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             // Parse the asType string into a SequenceType
             SequenceType expectedType = parseAsType(asType);
             
+            // Get schema context if available
+            SchemaContext schemaContext = (context instanceof SchemaContext) ? 
+                (SchemaContext) context : SchemaContext.NONE;
+            
+            // If the result already matches the expected type, return as-is.
+            // This avoids destructive coercion (e.g. collapsing a sequence of
+            // QNames into a single concatenated string).
+            if (expectedType.matches(result, schemaContext)) {
+                return result;
+            }
+            
             // If the expected type is atomic, try to convert from text/string
             if (expectedType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
                 String typeLocalName = expectedType.getLocalName();
                 String typeNsUri = expectedType.getNamespaceURI();
                 
                 if (typeNsUri != null && typeNsUri.equals(SequenceType.XS_NAMESPACE)) {
-                    // Try to atomize and convert the result
-                    // This handles: XPathString, SequenceTextItem, XPathSequence with single string item
-                    String stringValue = result.asString();  // Get string value
+                    String stringValue = result.asString();
                     XPathValue converted = convertStringToAtomicType(stringValue, typeLocalName);
                     if (converted != null) {
                         return converted;
@@ -2890,12 +2899,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             }
             
-            // Check if the result (after any conversion) matches the expected type
-            // Get schema context if available
-            SchemaContext schemaContext = (context instanceof SchemaContext) ? 
-                (SchemaContext) context : SchemaContext.NONE;
-            
-            // If it matches, return it; otherwise throw an error
+            // After conversion attempt, check again
             if (expectedType.matches(result, schemaContext)) {
                 return result;
             } else {

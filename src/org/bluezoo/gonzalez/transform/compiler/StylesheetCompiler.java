@@ -1265,8 +1265,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // Check if we should preserve whitespace
             if (!isWhitespace(text) || shouldPreserveWhitespace()) {
                 // Parse Text Value Templates if expand-text is enabled
-                // Only apply TVTs to literal result elements, not XSLT instruction elements
-                if (ctx.expandText && !XSLT_NS.equals(ctx.namespaceURI)) {
+                // XSLT 3.0: TVTs apply to all text in sequence constructors
+                if (ctx.expandText) {
                     // Parse TVT: text with {xpath-expr} embedded
                     try {
                         XSLTNode tvtNode = parseTextValueTemplate(text, ctx);
@@ -4686,19 +4686,33 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     private XSLTNode compileText(ElementContext ctx) throws SAXException {
         boolean disableEscaping = "yes".equals(ctx.attributes.get("disable-output-escaping"));
+
+        // XSLT 3.0: when expand-text is active, xsl:text content may contain
+        // TVT nodes (ValueOfNode, SequenceNode) alongside LiteralText
+        boolean hasTVT = false;
+        for (XSLTNode child : ctx.children) {
+            if (!(child instanceof LiteralText)) {
+                hasTVT = true;
+                break;
+            }
+        }
+
+        if (hasTVT) {
+            // Return the TVT-expanded content as a sequence
+            if (ctx.children.size() == 1) {
+                return ctx.children.get(0);
+            }
+            return new SequenceNode(new ArrayList<>(ctx.children));
+        }
+
         StringBuilder text = new StringBuilder();
         for (XSLTNode child : ctx.children) {
-            if (child instanceof LiteralText) {
-                LiteralText lt = (LiteralText) child;
-                // XTSE0010: Nested xsl:text is not allowed in XSLT 2.0+
-                if (lt.isFromXslText() && stylesheetVersion >= 2.0) {
-                    throw new SAXException("XTSE0010: Nested xsl:text elements are not allowed");
-                }
-                text.append(lt.getText());
-            } else {
-                // XTSE0010: xsl:text can only contain text content, no child elements
-                throw new SAXException("XTSE0010: xsl:text cannot contain child elements");
+            LiteralText lt = (LiteralText) child;
+            // XTSE0010: Nested xsl:text is not allowed in XSLT 2.0+
+            if (lt.isFromXslText() && stylesheetVersion >= 2.0) {
+                throw new SAXException("XTSE0010: Nested xsl:text elements are not allowed");
             }
+            text.append(lt.getText());
         }
         // Mark as fromXslText=true so whitespace-only content is never stripped
         return new LiteralText(text.toString(), disableEscaping, true);

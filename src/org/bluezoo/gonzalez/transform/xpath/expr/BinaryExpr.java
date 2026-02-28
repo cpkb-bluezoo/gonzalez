@@ -966,8 +966,12 @@ public final class BinaryExpr implements Expr {
                 } else {
                     itemContext = context.withPositionAndSize(position, size);
                 }
+            } else if (item instanceof XPathNode) {
+                itemContext = context.withContextNode((XPathNode) item)
+                    .withPositionAndSize(position, size);
             } else {
-                itemContext = context.withPositionAndSize(position, size);
+                itemContext = context.withContextItem(item)
+                    .withPositionAndSize(position, size);
             }
             
             // Evaluate right expression
