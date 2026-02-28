@@ -844,6 +844,16 @@ public final class XPathParser {
         Expr body;
         if (lexer.current() != XPathToken.RBRACE) {
             body = parseSubExpression();
+            // Handle comma-separated sequence inside array{}: array{1,2,3}
+            if (lexer.current() == XPathToken.COMMA) {
+                List<Expr> items = new ArrayList<>();
+                items.add(body);
+                while (lexer.current() == XPathToken.COMMA) {
+                    lexer.advance();
+                    items.add(parseSubExpression());
+                }
+                body = new SequenceExpr(items);
+            }
         } else {
             body = null;
         }
@@ -1126,7 +1136,10 @@ public final class XPathParser {
         if (lexer.current() == XPathToken.COLON) {
             prefix = localName;
             lexer.advance();
-            if (lexer.current() != XPathToken.NCNAME) {
+            // The local name can be an NCNAME or a node-type keyword like
+            // "node", "text", etc. — these are valid function names when prefixed.
+            if (lexer.current() != XPathToken.NCNAME && !lexer.current().isNodeType()
+                && lexer.current() != XPathToken.ELEMENT && lexer.current() != XPathToken.ATTRIBUTE) {
                 throw new XPathSyntaxException("Expected function name after prefix",
                     lexer.getExpression(), lexer.tokenStart());
             }
@@ -1535,9 +1548,19 @@ public final class XPathParser {
             if (lexer.current() != XPathToken.COLON) {
                 return false;
             }
+            // QNames have no whitespace around the colon (prefix:local).
+            // If whitespace precedes the colon, this is NOT a QName — it could
+            // be a map entry separator (key : value).
+            if (lexer.hadWhitespaceBefore()) {
+                return false;
+            }
             lexer.advance();
             
-            if (lexer.current() != XPathToken.NCNAME) {
+            // The local name could be NCNAME or a node-type keyword like "node",
+            // "text", "comment" — the lexer tokenizes these as node type tokens
+            // even after a prefix colon, but they're valid function local names.
+            if (lexer.current() != XPathToken.NCNAME && !lexer.current().isNodeType()
+                && lexer.current() != XPathToken.ELEMENT && lexer.current() != XPathToken.ATTRIBUTE) {
                 return false;
             }
             lexer.advance();
@@ -1566,6 +1589,9 @@ public final class XPathParser {
             lexer.advance();
             
             if (lexer.current() != XPathToken.COLON) {
+                return false;
+            }
+            if (lexer.hadWhitespaceBefore()) {
                 return false;
             }
             lexer.advance();
@@ -1618,6 +1644,16 @@ public final class XPathParser {
     private Expr parseVariableReference() throws XPathSyntaxException {
         lexer.expect(XPathToken.DOLLAR);
 
+        // XPath 3.0: $Q{uri}local — URIQualifiedName variable
+        if (lexer.current() == XPathToken.URIQNAME) {
+            String clark = lexer.value();
+            lexer.advance();
+            int closeBrace = clark.indexOf('}');
+            String nsUri = clark.substring(1, closeBrace);
+            String localName = clark.substring(closeBrace + 1);
+            return new VariableReference(null, localName, nsUri);
+        }
+
         // Variable names can be any NCName, including keywords like 'in', 'and', 'or', etc.
         if (!isNCNameOrKeyword()) {
             throw new XPathSyntaxException("Expected variable name",
@@ -1627,10 +1663,9 @@ public final class XPathParser {
         String name = lexer.value();
         lexer.advance();
 
-        // Check for prefix:localname - only consume colon if followed by an NCNAME.
-        // Do not accept keyword tokens (IF, FOR, etc.) as the local part,
-        // since colon can be a map key-value separator: map { $k : if ... }
-        if (lexer.current() == XPathToken.COLON) {
+        // Check for prefix:localname — only when the colon is directly adjacent
+        // (no whitespace). Whitespace before colon means map separator: $k : value
+        if (lexer.current() == XPathToken.COLON && !lexer.hadWhitespaceBefore()) {
             XPathToken afterColon = lexer.peek();
             if (afterColon == XPathToken.NCNAME) {
                 lexer.advance();
@@ -1820,13 +1855,38 @@ public final class XPathParser {
             return parseStepPredicates(step);
         }
 
+        // XPath 2.0+: Variable reference as a step (e.g., $tree/id('A004')/$data)
+        if (lexer.current() == XPathToken.DOLLAR) {
+            Expr varRef = parseVariableReference();
+            Step step = Step.expression(varRef);
+            return parseStepPredicates(step);
+        }
+
         // XPath 3.0: Parenthesized expression as a step (simple mapping operator)
         // e.g., /(if (...) then . else foo) or /(1 to 10)
+        // The parenthesized expression can contain commas for sequences:
+        // e.g., /( //a, //b )
         if (lexer.current() == XPathToken.LPAREN) {
             lexer.advance();
             Expr expr = parseSubExpression();
+            if (lexer.current() == XPathToken.COMMA) {
+                List<Expr> items = new ArrayList<>();
+                items.add(expr);
+                while (lexer.current() == XPathToken.COMMA) {
+                    lexer.advance();
+                    items.add(parseSubExpression());
+                }
+                expr = new SequenceExpr(items);
+            }
             lexer.expect(XPathToken.RPAREN);
             Step step = Step.expression(expr);
+            return parseStepPredicates(step);
+        }
+
+        // Named function reference as a step (e.g., ../accumulator-before#1)
+        if (lexer.current() == XPathToken.NCNAME && lexer.peek() == XPathToken.HASH) {
+            Expr funcRef = parseNamedFunctionRef();
+            Step step = Step.expression(funcRef);
             return parseStepPredicates(step);
         }
 
@@ -2084,18 +2144,22 @@ public final class XPathParser {
             lexer.advance();
             lexer.expect(XPathToken.LPAREN);
 
-            // processing-instruction() can have an optional literal argument
+            // processing-instruction() can have an optional target argument.
+            // XPath 2.0+: the argument can be a string literal OR an NCName.
             String piTarget = null;
-            if (nodeTestType == Step.NodeTestType.PROCESSING_INSTRUCTION &&
-                lexer.current() == XPathToken.STRING_LITERAL) {
-                piTarget = lexer.value();
-                // XTSE0340: PI names cannot contain colons (Namespaces REC section 6)
+            if (nodeTestType == Step.NodeTestType.PROCESSING_INSTRUCTION) {
+                if (lexer.current() == XPathToken.STRING_LITERAL) {
+                    piTarget = lexer.value();
+                    lexer.advance();
+                } else if (lexer.current() == XPathToken.NCNAME) {
+                    piTarget = lexer.value();
+                    lexer.advance();
+                }
                 if (piTarget != null && piTarget.contains(":")) {
                     throw new XPathSyntaxException(
                         "XTSE0340: Processing instruction name cannot contain a colon: " + piTarget,
                         lexer.getExpression(), lexer.tokenStart());
                 }
-                lexer.advance();
             }
 
             lexer.expect(XPathToken.RPAREN);
@@ -2138,6 +2202,52 @@ public final class XPathParser {
             lexer.advance();
             lexer.expect(XPathToken.LPAREN);
             
+            // document-node() can contain element() or schema-element() as argument
+            if (nodeTestType == Step.NodeTestType.DOCUMENT_NODE &&
+                (lexer.current() == XPathToken.ELEMENT || lexer.current() == XPathToken.SCHEMA_ELEMENT)) {
+                lexer.advance();
+                lexer.expect(XPathToken.LPAREN);
+                String innerElemName = null;
+                String innerTypeNsURI = null;
+                String innerTypeLocal = null;
+                if (lexer.current() == XPathToken.NCNAME || lexer.current() == XPathToken.STAR) {
+                    innerElemName = lexer.current() == XPathToken.STAR ? "*" : lexer.value();
+                    lexer.advance();
+                    if (lexer.current() == XPathToken.COLON) {
+                        lexer.advance();
+                        if (lexer.current() == XPathToken.NCNAME) {
+                            innerElemName = innerElemName + ":" + lexer.value();
+                            lexer.advance();
+                        }
+                    }
+                    if (lexer.current() == XPathToken.COMMA) {
+                        lexer.advance();
+                        if (lexer.current() == XPathToken.NCNAME) {
+                            String tp = lexer.value();
+                            lexer.advance();
+                            if (lexer.current() == XPathToken.COLON) {
+                                lexer.advance();
+                                if (lexer.current() == XPathToken.NCNAME) {
+                                    innerTypeNsURI = resolvePrefix(tp);
+                                    innerTypeLocal = lexer.value();
+                                    lexer.advance();
+                                }
+                            } else {
+                                innerTypeNsURI = "http://www.w3.org/2001/XMLSchema";
+                                innerTypeLocal = tp;
+                            }
+                        }
+                    }
+                    // Skip optional '?' after type name
+                    if (lexer.current() == XPathToken.QUESTION) {
+                        lexer.advance();
+                    }
+                }
+                lexer.expect(XPathToken.RPAREN);
+                lexer.expect(XPathToken.RPAREN);
+                return new Step(axis, nodeTestType, innerElemName, innerTypeNsURI, innerTypeLocal);
+            }
+
             // Check for optional name argument: element(name) or element(name, type)
             String elemName = null;
             String typeNamespaceURI = null;
@@ -2199,7 +2309,9 @@ public final class XPathParser {
             lexer.advance();
 
             // Check for prefix:localname or prefix:*
-            if (lexer.current() == XPathToken.COLON) {
+            // QNames have no whitespace around the colon — whitespace before
+            // the colon means this is not a QName (e.g., map key separator).
+            if (lexer.current() == XPathToken.COLON && !lexer.hadWhitespaceBefore()) {
                 lexer.advance();
 
                 if (lexer.current() == XPathToken.STAR) {
@@ -2232,6 +2344,19 @@ public final class XPathParser {
                 }
             }
             return new Step(axis, name);
+        }
+
+        // URIQualifiedName as a name test: Q{uri}local
+        if (token == XPathToken.URIQNAME) {
+            String clark = lexer.value();
+            lexer.advance();
+            int closeBrace = clark.indexOf('}');
+            String nsUri = clark.substring(1, closeBrace);
+            String localName = clark.substring(closeBrace + 1);
+            if (localName.isEmpty() || "*".equals(localName)) {
+                return Step.namespaceWildcard(axis, nsUri);
+            }
+            return new Step(axis, nsUri, localName);
         }
 
         throw new XPathSyntaxException("Expected node test, found: " + token,
@@ -2492,7 +2617,28 @@ public final class XPathParser {
                 itemKind = SequenceType.ItemKind.DOCUMENT_NODE;
                 lexer.advance();
                 expectToken(XPathToken.LPAREN, "(");
-                // Could have element() inside, but we simplify
+                // document-node() can contain element() or schema-element()
+                if (lexer.current() == XPathToken.ELEMENT || lexer.current() == XPathToken.SCHEMA_ELEMENT) {
+                    lexer.advance();
+                    expectToken(XPathToken.LPAREN, "(");
+                    if (lexer.current() != XPathToken.RPAREN) {
+                        if (lexer.current() == XPathToken.STAR) {
+                            lexer.advance();
+                        } else {
+                            String[] innerQName = parseAtomicTypeName();
+                            namespaceURI = innerQName[0];
+                            localName = innerQName[1];
+                        }
+                        if (lexer.current() == XPathToken.COMMA) {
+                            lexer.advance();
+                            parseAtomicTypeName(); // type name (consumed but not stored)
+                            if (lexer.current() == XPathToken.QUESTION) {
+                                lexer.advance();
+                            }
+                        }
+                    }
+                    expectToken(XPathToken.RPAREN, ")");
+                }
                 expectToken(XPathToken.RPAREN, ")");
                 break;
                 

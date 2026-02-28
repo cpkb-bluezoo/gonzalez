@@ -367,6 +367,9 @@ public enum XPathToken {
             case NAMESPACE_NODE:
             case SCHEMA_ELEMENT:
             case SCHEMA_ATTRIBUTE:
+            // XPath 2.0+: variable reference or parenthesized expression as step
+            case DOLLAR:
+            case LPAREN:
                 return true;
             default:
                 return isAxis();

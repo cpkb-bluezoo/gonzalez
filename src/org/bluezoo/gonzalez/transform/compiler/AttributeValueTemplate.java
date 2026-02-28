@@ -155,16 +155,36 @@ public final class AttributeValueTemplate {
                         literal.setLength(0);
                     }
 
-                    // Find matching close accolade
+                    // Find matching close accolade, skipping string literals
+                    // and XPath comments (: ... :)
                     int start = i + 1;
                     int depth = 1;
                     i = start;
                     while (i < len && depth > 0) {
                         char ec = value.charAt(i);
-                        if (ec == '{') {
+                        if (ec == '(' && i + 1 < len && value.charAt(i + 1) == ':') {
+                            // XPath comment — skip to matching :)
+                            int commentDepth = 1;
+                            i += 2;
+                            while (i < len - 1 && commentDepth > 0) {
+                                if (value.charAt(i) == '(' && value.charAt(i + 1) == ':') {
+                                    commentDepth++;
+                                    i += 2;
+                                } else if (value.charAt(i) == ':' && value.charAt(i + 1) == ')') {
+                                    commentDepth--;
+                                    i += 2;
+                                } else {
+                                    i++;
+                                }
+                            }
+                        } else if (ec == '{') {
                             depth++;
+                            i++;
                         } else if (ec == '}') {
                             depth--;
+                            if (depth > 0) {
+                                i++;
+                            }
                         } else if (ec == '\'' || ec == '"') {
                             // Skip string literals
                             char quote = ec;
@@ -172,8 +192,8 @@ public final class AttributeValueTemplate {
                             while (i < len && value.charAt(i) != quote) {
                                 i++;
                             }
-                        }
-                        if (depth > 0) {
+                            i++;
+                        } else {
                             i++;
                         }
                     }
@@ -183,8 +203,12 @@ public final class AttributeValueTemplate {
                     }
 
                     String exprStr = value.substring(start, i);
-                    XPathExpression expr = XPathExpression.compile(exprStr, namespaceResolver);
-                    parts.add(new ExpressionPart(expr));
+                    if (isEmptyExpression(exprStr)) {
+                        parts.add(new LiteralPart(""));
+                    } else {
+                        XPathExpression expr = XPathExpression.compile(exprStr, namespaceResolver);
+                        parts.add(new ExpressionPart(expr));
+                    }
                     i++; // Skip closing accolade
                 }
             } else if (c == '}') {
@@ -211,6 +235,43 @@ public final class AttributeValueTemplate {
         }
 
         return new AttributeValueTemplate(value, parts);
+    }
+
+    /**
+     * Checks if an AVT expression string contains only whitespace and/or
+     * XPath comments, making it effectively empty. Such expressions evaluate
+     * to the empty string.
+     */
+    static boolean isEmptyExpression(String expr) {
+        int pos = 0;
+        int len = expr.length();
+        while (pos < len) {
+            char c = expr.charAt(pos);
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') {
+                pos++;
+            } else if (c == '(' && pos + 1 < len && expr.charAt(pos + 1) == ':') {
+                // Skip XPath comment
+                int depth = 1;
+                pos += 2;
+                while (pos < len - 1 && depth > 0) {
+                    if (expr.charAt(pos) == '(' && expr.charAt(pos + 1) == ':') {
+                        depth++;
+                        pos += 2;
+                    } else if (expr.charAt(pos) == ':' && expr.charAt(pos + 1) == ')') {
+                        depth--;
+                        pos += 2;
+                    } else {
+                        pos++;
+                    }
+                }
+                if (depth > 0) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

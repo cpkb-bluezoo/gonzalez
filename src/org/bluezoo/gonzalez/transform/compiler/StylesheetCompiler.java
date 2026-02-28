@@ -2210,9 +2210,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     
                     // Extract and compile the XPath expression
                     String xpathExpr = text.substring(start, i - 1).trim();
-                    if (xpathExpr.isEmpty()) {
-                        // Empty TVT expression {} is allowed and produces empty text
-                        // Just skip it (don't add any node)
+                    if (xpathExpr.isEmpty() || AttributeValueTemplate.isEmptyExpression(xpathExpr)) {
+                        // Empty TVT expression {} or comment-only is allowed
                         continue;
                     }
                     

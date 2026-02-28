@@ -57,6 +57,9 @@ public final class XPathLexer {
     // Context tracking for disambiguation
     private XPathToken previousToken;
 
+    // Tracks whether whitespace/comments were skipped before the current token
+    private boolean whitespaceBeforeToken;
+
     /**
      * Creates a new lexer for the given XPath expression.
      *
@@ -121,7 +124,9 @@ public final class XPathLexer {
      */
     public XPathToken advance() {
         previousToken = currentToken;
+        int posBeforeSkip = position;
         skipWhitespaceAndComments();
+        whitespaceBeforeToken = (position != posBeforeSkip);
         tokenStart = position;
 
         if (position >= length) {
@@ -367,6 +372,18 @@ public final class XPathLexer {
      *
      * @return the next token type
      */
+    /**
+     * Returns true if whitespace or comments were skipped before the current
+     * token. Useful for distinguishing QNames ({@code prefix:local}) from
+     * map entries ({@code key : value}) where whitespace separates the name
+     * from the colon.
+     *
+     * @return true if whitespace preceded the current token
+     */
+    public boolean hadWhitespaceBefore() {
+        return whitespaceBeforeToken;
+    }
+
     public XPathToken peek() {
         // Save state
         int savedPos = position;
@@ -374,6 +391,7 @@ public final class XPathLexer {
         String savedValue = currentValue;
         int savedStart = tokenStart;
         XPathToken savedPrevious = previousToken;
+        boolean savedWs = whitespaceBeforeToken;
 
         // Advance
         advance();
@@ -385,6 +403,7 @@ public final class XPathLexer {
         currentValue = savedValue;
         tokenStart = savedStart;
         previousToken = savedPrevious;
+        whitespaceBeforeToken = savedWs;
 
         return next;
     }
@@ -641,6 +660,11 @@ public final class XPathLexer {
             return scanURIQualifiedName();
         }
         
+        // Save the position immediately after scanning the name (before any
+        // whitespace skipping). Used to correctly restore position and to
+        // track the raw end of the name characters.
+        int nameEnd = position;
+
         // Check for axis specifier (name followed by ::)
         skipWhitespace();
         if (position + 1 < length && expression.charAt(position) == ':' && 
@@ -655,7 +679,8 @@ public final class XPathLexer {
         }
         
         // Check for node type test (name followed by '(')
-        int savedPos = position;
+        // Note: re-skip whitespace from nameEnd to be safe
+        position = nameEnd;
         skipWhitespace();
         if (position < length && expression.charAt(position) == '(') {
             XPathToken nodeTypeToken = getNodeTypeToken(name);
@@ -665,7 +690,7 @@ public final class XPathLexer {
                 return currentToken;
             }
         }
-        position = savedPos; // restore position if not a node type
+        position = nameEnd; // restore to right after name chars
         
         // Check for operators that look like names
         XPathToken operatorToken = getOperatorToken(name);
