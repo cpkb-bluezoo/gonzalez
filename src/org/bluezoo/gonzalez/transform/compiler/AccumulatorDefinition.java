@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 
 import java.util.ArrayList;
@@ -73,9 +74,10 @@ public final class AccumulatorDefinition {
         private final Pattern matchPattern;
         private final Phase phase;
         private final XPathExpression newValue;
+        private final XSLTNode body;
 
         /**
-         * Creates a new accumulator rule.
+         * Creates a new accumulator rule with a select expression.
          *
          * @param matchPattern pattern determining which nodes trigger this rule
          * @param phase when the rule fires (pre-descent or post-descent)
@@ -85,6 +87,23 @@ public final class AccumulatorDefinition {
             this.matchPattern = matchPattern;
             this.phase = phase;
             this.newValue = newValue;
+            this.body = null;
+        }
+
+        /**
+         * Creates a new accumulator rule with a sequence constructor body.
+         *
+         * @param matchPattern pattern determining which nodes trigger this rule
+         * @param phase when the rule fires (pre-descent or post-descent)
+         * @param newValue optional select expression (null if body is used)
+         * @param body the sequence constructor body
+         */
+        public AccumulatorRule(Pattern matchPattern, Phase phase,
+                               XPathExpression newValue, XSLTNode body) {
+            this.matchPattern = matchPattern;
+            this.phase = phase;
+            this.newValue = newValue;
+            this.body = body;
         }
 
         /**
@@ -107,12 +126,20 @@ public final class AccumulatorDefinition {
 
         /**
          * Returns the expression computing the new value.
-         * The variable $value refers to the current accumulator value.
          *
-         * @return the new value expression
+         * @return the new value expression, or null if body is used
          */
         public XPathExpression getNewValue() {
             return newValue;
+        }
+
+        /**
+         * Returns the sequence constructor body, if any.
+         *
+         * @return the body, or null if select expression is used
+         */
+        public XSLTNode getBody() {
+            return body;
         }
 
         @Override

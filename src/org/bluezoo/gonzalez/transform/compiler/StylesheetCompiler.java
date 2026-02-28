@@ -2400,19 +2400,19 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * </pre>
      */
     private void processAccumulator(ElementContext ctx) throws SAXException {
-        String name = ctx.attributes.get("name");
+        String name = resolveStaticShadowAttribute(ctx, "name");
         if (name == null || name.isEmpty()) {
             throw new SAXException("xsl:accumulator requires name attribute");
         }
         
-        String initialValueStr = ctx.attributes.get("initial-value");
+        String initialValueStr = resolveStaticShadowAttribute(ctx, "initial-value");
         if (initialValueStr == null) {
             throw new SAXException("xsl:accumulator requires initial-value attribute");
         }
         
         XPathExpression initialValue = compileExpression(initialValueStr);
         String asType = ctx.attributes.get("as");
-        String streamableAttr = ctx.attributes.get("streamable");
+        String streamableAttr = resolveStaticShadowAttribute(ctx, "streamable");
         boolean streamable = !"no".equals(streamableAttr);  // Default is yes
         
         AccumulatorDefinition.Builder accBuilder = new AccumulatorDefinition.Builder()
@@ -2567,11 +2567,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         Pattern pattern = compilePattern(matchStr);
         XPathExpression newValue = selectStr != null ? compileExpression(selectStr) : null;
         
-        // If no select, content provides the new value (wrapped as sequence)
         if (newValue == null && !ctx.children.isEmpty()) {
-            // Content-based new value - for now just use string content
-            // Full implementation would execute children as sequence constructor
-            newValue = compileExpression("$value");  // Placeholder - keeps current value
+            XSLTNode body = new SequenceNode(ctx.children);
+            return new AccumulatorRuleNode(pattern, phase, body);
         }
         
         if (newValue == null) {
@@ -4598,6 +4596,49 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * @param varName the variable name (for error messages)
      * @param baseURI the base URI for static-base-uri() (from element's xml:base)
      */
+    /**
+     * Resolves a shadow attribute value at compile time using static parameters.
+     * Shadow attributes use AVT syntax like {@code _name="{$param}"} where
+     * {@code $param} is a static parameter. Falls back to the regular attribute
+     * if no shadow attribute is present.
+     *
+     * @param ctx the element context
+     * @param attrName the attribute name (without _ prefix)
+     * @return the resolved value, or the regular attribute value, or null
+     */
+    private String resolveStaticShadowAttribute(ElementContext ctx, String attrName) 
+            throws SAXException {
+        String shadowValue = ctx.shadowAttributes.get(attrName);
+        if (shadowValue == null) {
+            return ctx.attributes.get(attrName);
+        }
+        StringBuilder result = new StringBuilder();
+        int len = shadowValue.length();
+        int i = 0;
+        while (i < len) {
+            int braceStart = shadowValue.indexOf('{', i);
+            if (braceStart < 0) {
+                result.append(shadowValue.substring(i));
+                break;
+            }
+            if (braceStart + 1 < len && shadowValue.charAt(braceStart + 1) == '{') {
+                result.append(shadowValue.substring(i, braceStart + 1));
+                i = braceStart + 2;
+                continue;
+            }
+            result.append(shadowValue.substring(i, braceStart));
+            int braceEnd = shadowValue.indexOf('}', braceStart + 1);
+            if (braceEnd < 0) {
+                throw new SAXException("Unterminated AVT in shadow attribute _" + attrName);
+            }
+            String expr = shadowValue.substring(braceStart + 1, braceEnd);
+            XPathValue val = evaluateStaticExpression(expr, attrName, null);
+            result.append(val.asString());
+            i = braceEnd + 1;
+        }
+        return result.toString();
+    }
+
     private XPathValue evaluateStaticExpression(String select, String varName, String baseURI) 
             throws SAXException {
         if (select == null) {

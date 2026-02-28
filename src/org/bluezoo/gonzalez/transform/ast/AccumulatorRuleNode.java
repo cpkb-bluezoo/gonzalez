@@ -38,15 +38,28 @@ public class AccumulatorRuleNode implements XSLTNode {
     private final Pattern pattern;
     private final AccumulatorDefinition.Phase phase;
     private final XPathExpression newValue;
+    private final XSLTNode body;
     
     public AccumulatorRuleNode(Pattern pattern, AccumulatorDefinition.Phase phase, 
                        XPathExpression newValue) {
         this.pattern = pattern;
         this.phase = phase;
         this.newValue = newValue;
+        this.body = null;
+    }
+    
+    public AccumulatorRuleNode(Pattern pattern, AccumulatorDefinition.Phase phase,
+                       XSLTNode body) {
+        this.pattern = pattern;
+        this.phase = phase;
+        this.newValue = null;
+        this.body = body;
     }
     
     public AccumulatorDefinition.AccumulatorRule toRule() {
+        if (body != null) {
+            return new AccumulatorDefinition.AccumulatorRule(pattern, phase, null, body);
+        }
         return new AccumulatorDefinition.AccumulatorRule(pattern, phase, newValue);
     }
     

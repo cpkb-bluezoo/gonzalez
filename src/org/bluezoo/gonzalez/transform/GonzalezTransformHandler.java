@@ -447,15 +447,23 @@ public class GonzalezTransformHandler extends DefaultHandler
         BasicTransformContext context = new BasicTransformContext(
             stylesheet, contextNode, matcher, output, errorListener);
         
-        // Wire accumulators for the main document
+        // Wire accumulators for the main document (manager created now,
+        // but initialization deferred until globals are available)
+        AccumulatorManager accMgr = null;
         if (!stylesheet.getAccumulators().isEmpty()) {
-            AccumulatorManager mgr = new AccumulatorManager(stylesheet, context);
-            context.setAccumulatorManager(mgr);
-            mgr.initialize();
+            accMgr = new AccumulatorManager(stylesheet, context);
+            context.setAccumulatorManager(accMgr);
         }
         
         // Initialize global variables and parameters
         initializeGlobals(context);
+        
+        // Initialize and pre-traverse accumulators after globals are available,
+        // since initial-value expressions and rules may reference global variables
+        if (accMgr != null) {
+            accMgr.initialize();
+            accMgr.preTraverseDocument(contextNode);
+        }
         
         // Start output document
         output.startDocument();

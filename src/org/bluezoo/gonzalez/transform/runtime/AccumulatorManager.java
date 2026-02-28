@@ -21,51 +21,37 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
+import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.compiler.AccumulatorDefinition;
 import org.bluezoo.gonzalez.transform.compiler.AccumulatorDefinition.AccumulatorRule;
-import org.bluezoo.gonzalez.transform.compiler.AccumulatorDefinition.Phase;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.xml.sax.SAXException;
 
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Manages accumulator state during streaming transformation.
+ * Manages accumulator state during transformation.
  *
- * <p>The AccumulatorManager is the central component for accumulator evaluation.
- * It maintains the state for all accumulators defined in the stylesheet and
- * coordinates rule firing at the appropriate times during document traversal.
+ * <p>For tree-based (non-streaming) transforms, accumulators are computed by
+ * performing a depth-first traversal of each document before template values
+ * are accessed. Each document (main input, doc() results, temporary trees)
+ * gets its own independent traversal starting from the initial accumulator
+ * values, per XSLT 3.0 Section 6.1.
  *
- * <p>Usage pattern:
- * <pre>
- * AccumulatorManager mgr = new AccumulatorManager(stylesheet, context);
- * mgr.initialize();
- * 
- * // On startElement:
- * mgr.notifyStartElement(node);
- * 
- * // During processing, access values:
- * XPathValue before = mgr.getAccumulatorBefore("my-acc");
- * XPathValue after = mgr.getAccumulatorAfter("my-acc");
- * 
- * // On endElement:
- * mgr.notifyEndElement(node);
- * 
- * // After document:
- * mgr.reset();
- * </pre>
- *
- * <p>The manager fires accumulator rules in the following order:
- * <ul>
- *   <li>On startElement: pre-descent rules for matching accumulators</li>
- *   <li>On endElement: post-descent rules for matching accumulators</li>
- * </ul>
+ * <p>For streaming transforms, accumulator rules fire on SAX events
+ * via {@link #notifyStartElement} and {@link #notifyEndElement}.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -75,6 +61,16 @@ public final class AccumulatorManager {
     private final TransformContext transformContext;
     private final Map<String, AccumulatorState> accumulators;
     private boolean initialized;
+
+    /**
+     * Pre-computed before/after values keyed by accumulator name then node
+     * identity. Populated lazily as documents are encountered.
+     */
+    private final Map<String, Map<XPathNode, XPathValue>> beforeValues;
+    private final Map<String, Map<XPathNode, XPathValue>> afterValues;
+
+    /** Document roots that have been fully traversed (by identity). */
+    private final Set<XPathNode> traversedDocuments;
 
     /**
      * Creates a new AccumulatorManager.
@@ -87,12 +83,14 @@ public final class AccumulatorManager {
         this.transformContext = transformContext;
         this.accumulators = new HashMap<>();
         this.initialized = false;
+        this.beforeValues = new HashMap<>();
+        this.afterValues = new HashMap<>();
+        this.traversedDocuments = new HashSet<XPathNode>();
     }
 
     /**
      * Creates a copy of an existing AccumulatorManager with independent state.
      * Used for xsl:fork to give each branch its own accumulator state.
-     * The accumulator states are deep-copied so modifications don't affect the original.
      *
      * @param other the manager to copy
      * @param newContext the transformation context for the new manager
@@ -102,8 +100,10 @@ public final class AccumulatorManager {
         this.transformContext = newContext;
         this.accumulators = new HashMap<>();
         this.initialized = other.initialized;
-        
-        // Deep copy all accumulator states
+        this.beforeValues = other.beforeValues;
+        this.afterValues = other.afterValues;
+        this.traversedDocuments = other.traversedDocuments;
+
         for (Map.Entry<String, AccumulatorState> entry : other.accumulators.entrySet()) {
             this.accumulators.put(entry.getKey(), new AccumulatorState(entry.getValue()));
         }
@@ -117,27 +117,137 @@ public final class AccumulatorManager {
      */
     public void initialize() throws SAXException {
         accumulators.clear();
-        
+
         for (Map.Entry<String, AccumulatorDefinition> entry : stylesheet.getAccumulators().entrySet()) {
             AccumulatorDefinition def = entry.getValue();
-            
-            // Evaluate initial value
             XPathValue initialValue = evaluateInitialValue(def);
-            
             AccumulatorState state = new AccumulatorState(def, initialValue);
             accumulators.put(entry.getKey(), state);
         }
-        
+
+        for (String accName : accumulators.keySet()) {
+            if (!beforeValues.containsKey(accName)) {
+                beforeValues.put(accName, new IdentityHashMap<XPathNode, XPathValue>());
+            }
+            if (!afterValues.containsKey(accName)) {
+                afterValues.put(accName, new IdentityHashMap<XPathNode, XPathValue>());
+            }
+        }
+
         initialized = true;
     }
 
     /**
-     * Evaluates the initial value expression for an accumulator.
+     * Pre-traverses a grounded (tree-based) document to compute all accumulator
+     * values. Each document starts from initial accumulator values per the spec.
      *
-     * @param def the accumulator definition
-     * @return the initial value, or empty string if no initial value expression
-     * @throws SAXException if evaluation fails
+     * @param documentRoot the root node of the document to traverse
+     * @throws SAXException if rule evaluation fails
      */
+    public void preTraverseDocument(XPathNode documentRoot) throws SAXException {
+        if (!initialized) {
+            initialize();
+        }
+
+        if (traversedDocuments.contains(documentRoot)) {
+            return;
+        }
+
+        // Mark before traversal to prevent reentrant calls when rules
+        // reference accumulator-before/after during evaluation
+        traversedDocuments.add(documentRoot);
+
+        Map<String, XPathValue> savedValues = new HashMap<>();
+        for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
+            savedValues.put(entry.getKey(), entry.getValue().getCurrentValue());
+        }
+
+        for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
+            AccumulatorDefinition def = entry.getValue().getDefinition();
+            XPathValue initialValue = evaluateInitialValue(def);
+            entry.getValue().setCurrentValue(initialValue);
+        }
+
+        traverseNode(documentRoot);
+
+        for (Map.Entry<String, XPathValue> entry : savedValues.entrySet()) {
+            AccumulatorState state = accumulators.get(entry.getKey());
+            if (state != null) {
+                state.setCurrentValue(entry.getValue());
+            }
+        }
+    }
+
+    /**
+     * Recursive depth-first traversal that fires accumulator rules on each node
+     * and records the before/after values.
+     */
+    private void traverseNode(XPathNode node) throws SAXException {
+        for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
+            String accName = entry.getKey();
+            AccumulatorState state = entry.getValue();
+            AccumulatorDefinition def = state.getDefinition();
+
+            for (AccumulatorRule rule : def.getPreDescentRules()) {
+                if (matchesPattern(rule.getMatchPattern(), node)) {
+                    XPathValue newValue = evaluateRule(state, rule, node);
+                    state.setCurrentValue(newValue);
+                }
+            }
+
+            beforeValues.get(accName).put(node, state.getCurrentValue());
+        }
+
+        Iterator<XPathNode> children = node.getChildren();
+        while (children.hasNext()) {
+            traverseNode(children.next());
+        }
+
+        for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
+            String accName = entry.getKey();
+            AccumulatorState state = entry.getValue();
+            AccumulatorDefinition def = state.getDefinition();
+
+            for (AccumulatorRule rule : def.getPostDescentRules()) {
+                if (matchesPattern(rule.getMatchPattern(), node)) {
+                    XPathValue newValue = evaluateRule(state, rule, node);
+                    state.setCurrentValue(newValue);
+                }
+            }
+
+            afterValues.get(accName).put(node, state.getCurrentValue());
+        }
+    }
+
+    /**
+     * Finds the document root of a node by walking up the parent chain.
+     */
+    private XPathNode getDocumentRoot(XPathNode node) {
+        XPathNode current = node;
+        while (current.getParent() != null) {
+            current = current.getParent();
+        }
+        return current;
+    }
+
+    /**
+     * Ensures the document containing the given node has been traversed.
+     * If not yet traversed, performs a lazy traversal.
+     */
+    private void ensureDocumentTraversed(XPathNode node) {
+        if (node == null) {
+            return;
+        }
+        XPathNode root = getDocumentRoot(node);
+        if (!traversedDocuments.contains(root)) {
+            try {
+                preTraverseDocument(root);
+            } catch (SAXException e) {
+                // Traversal failed - already marked as traversed to prevent retries
+            }
+        }
+    }
+
     private XPathValue evaluateInitialValue(AccumulatorDefinition def) throws SAXException {
         try {
             XPathExpression initialExpr = def.getInitialValue();
@@ -145,16 +255,15 @@ public final class AccumulatorManager {
                 return initialExpr.evaluate(transformContext);
             }
         } catch (Exception e) {
-            throw new SAXException("Error evaluating initial value for accumulator " + 
+            throw new SAXException("Error evaluating initial value for accumulator " +
                                    def.getName() + ": " + e.getMessage(), e);
         }
-        // Default to empty string if no initial value
         return XPathString.of("");
     }
 
     /**
-     * Notifies the manager of a startElement event.
-     * Fires pre-descent rules for matching accumulators and pushes state.
+     * Notifies the manager of a startElement event (streaming mode).
+     * In tree mode, this is a no-op since values are pre-computed.
      *
      * @param node the node being entered
      * @throws SAXException if rule evaluation fails
@@ -163,14 +272,11 @@ public final class AccumulatorManager {
         if (!initialized) {
             initialize();
         }
-        
+
         for (AccumulatorState state : accumulators.values()) {
             AccumulatorDefinition def = state.getDefinition();
-            
-            // Push current value before processing
             state.push();
-            
-            // Fire pre-descent rules
+
             for (AccumulatorRule rule : def.getPreDescentRules()) {
                 if (matchesPattern(rule.getMatchPattern(), node)) {
                     XPathValue newValue = evaluateRule(state, rule, node);
@@ -181,8 +287,7 @@ public final class AccumulatorManager {
     }
 
     /**
-     * Notifies the manager of an endElement event.
-     * Fires post-descent rules for matching accumulators and pops state.
+     * Notifies the manager of an endElement event (streaming mode).
      *
      * @param node the node being exited
      * @throws SAXException if rule evaluation fails
@@ -191,30 +296,21 @@ public final class AccumulatorManager {
         if (!initialized) {
             return;
         }
-        
+
         for (AccumulatorState state : accumulators.values()) {
             AccumulatorDefinition def = state.getDefinition();
-            
-            // Fire post-descent rules
+
             for (AccumulatorRule rule : def.getPostDescentRules()) {
                 if (matchesPattern(rule.getMatchPattern(), node)) {
                     XPathValue newValue = evaluateRule(state, rule, node);
                     state.setCurrentValue(newValue);
                 }
             }
-            
-            // Pop state (but keep the updated current value)
+
             state.pop();
         }
     }
 
-    /**
-     * Tests if a pattern matches a node.
-     *
-     * @param pattern the pattern to test
-     * @param node the node to match
-     * @return true if the pattern matches the node
-     */
     private boolean matchesPattern(Pattern pattern, XPathNode node) {
         if (pattern == null) {
             return false;
@@ -222,43 +318,65 @@ public final class AccumulatorManager {
         return pattern.matches(node, transformContext);
     }
 
-    /**
-     * Evaluates an accumulator rule to compute the new value.
-     *
-     * @param state the accumulator state
-     * @param rule the rule to evaluate
-     * @param node the node triggering the rule
-     * @return the new accumulator value
-     * @throws SAXException if evaluation fails
-     */
     private XPathValue evaluateRule(AccumulatorState state, AccumulatorRule rule,
                                      XPathNode node) throws SAXException {
         try {
-            // Create a context with $value bound to current accumulator value
             TransformContext ruleContext = transformContext.withContextNode(node);
             ruleContext.getVariableScope().bind("value", state.getCurrentValue());
-            
+
             XPathExpression newValueExpr = rule.getNewValue();
             if (newValueExpr != null) {
                 return newValueExpr.evaluate(ruleContext);
             }
-            
-            // No new value expression - keep current value
+
+            XSLTNode body = rule.getBody();
+            if (body != null) {
+                return executeSequenceConstructor(body, ruleContext);
+            }
+
             return state.getCurrentValue();
         } catch (Exception e) {
-            throw new SAXException("Error evaluating accumulator rule for " + 
+            throw new SAXException("Error evaluating accumulator rule for " +
                                    state.getDefinition().getName() + ": " + e.getMessage(), e);
         }
     }
 
     /**
+     * Executes a sequence constructor body and returns its result as an XPathValue.
+     */
+    private XPathValue executeSequenceConstructor(XSLTNode body, TransformContext context)
+            throws SAXException {
+        SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
+        body.execute(context, seqBuilder);
+        XPathValue result = seqBuilder.getSequence();
+        if (result instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) result;
+            if (seq.size() == 1) {
+                return seq.iterator().next();
+            }
+        }
+        return result;
+    }
+
+    /**
      * Returns the accumulator-before value for the named accumulator.
-     * This is the value before processing the current node.
+     * Lazily traverses the node's document if not yet traversed.
      *
      * @param name the accumulator name
+     * @param node the context node
      * @return the before value, or null if accumulator not found
      */
-    public XPathValue getAccumulatorBefore(String name) {
+    public XPathValue getAccumulatorBefore(String name, XPathNode node) {
+        if (node != null) {
+            ensureDocumentTraversed(node);
+            Map<XPathNode, XPathValue> nodeMap = beforeValues.get(name);
+            if (nodeMap != null) {
+                XPathValue val = nodeMap.get(node);
+                if (val != null) {
+                    return val;
+                }
+            }
+        }
         AccumulatorState state = accumulators.get(name);
         if (state != null) {
             return state.getBeforeValue();
@@ -268,17 +386,48 @@ public final class AccumulatorManager {
 
     /**
      * Returns the accumulator-after value for the named accumulator.
-     * This is the value after processing the current node.
+     * Lazily traverses the node's document if not yet traversed.
      *
      * @param name the accumulator name
+     * @param node the context node
      * @return the after value, or null if accumulator not found
      */
-    public XPathValue getAccumulatorAfter(String name) {
+    public XPathValue getAccumulatorAfter(String name, XPathNode node) {
+        if (node != null) {
+            ensureDocumentTraversed(node);
+            Map<XPathNode, XPathValue> nodeMap = afterValues.get(name);
+            if (nodeMap != null) {
+                XPathValue val = nodeMap.get(node);
+                if (val != null) {
+                    return val;
+                }
+            }
+        }
         AccumulatorState state = accumulators.get(name);
         if (state != null) {
             return state.getAfterValue();
         }
         return null;
+    }
+
+    /**
+     * Returns the accumulator-before value (no node context, for streaming).
+     *
+     * @param name the accumulator name
+     * @return the before value, or null if accumulator not found
+     */
+    public XPathValue getAccumulatorBefore(String name) {
+        return getAccumulatorBefore(name, null);
+    }
+
+    /**
+     * Returns the accumulator-after value (no node context, for streaming).
+     *
+     * @param name the accumulator name
+     * @return the after value, or null if accumulator not found
+     */
+    public XPathValue getAccumulatorAfter(String name) {
+        return getAccumulatorAfter(name, null);
     }
 
     /**
@@ -303,6 +452,21 @@ public final class AccumulatorManager {
      */
     public boolean hasAccumulator(String name) {
         return accumulators.containsKey(name);
+    }
+
+    /**
+     * Returns true if the document containing the given node has been
+     * pre-traversed for accumulator values.
+     *
+     * @param node a node in the document
+     * @return true if pre-traversed
+     */
+    public boolean isPreTraversed(XPathNode node) {
+        if (node == null) {
+            return false;
+        }
+        XPathNode root = getDocumentRoot(node);
+        return traversedDocuments.contains(root);
     }
 
     /**
@@ -339,8 +503,9 @@ public final class AccumulatorManager {
 
     @Override
     public String toString() {
-        return "AccumulatorManager[accumulators=" + accumulators.size() + 
-               ", initialized=" + initialized + "]";
+        return "AccumulatorManager[accumulators=" + accumulators.size() +
+               ", initialized=" + initialized +
+               ", documents=" + traversedDocuments.size() + "]";
     }
 
 }

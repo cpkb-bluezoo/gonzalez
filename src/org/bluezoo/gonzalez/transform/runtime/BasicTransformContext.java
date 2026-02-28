@@ -732,7 +732,7 @@ public class BasicTransformContext implements TransformContext {
     @Override
     public XPathValue getAccumulatorBefore(String name) {
         if (accumulatorManager != null) {
-            return accumulatorManager.getAccumulatorBefore(name);
+            return accumulatorManager.getAccumulatorBefore(name, contextNode);
         }
         return null;
     }
@@ -746,7 +746,7 @@ public class BasicTransformContext implements TransformContext {
     @Override
     public XPathValue getAccumulatorAfter(String name) {
         if (accumulatorManager != null) {
-            return accumulatorManager.getAccumulatorAfter(name);
+            return accumulatorManager.getAccumulatorAfter(name, contextNode);
         }
         return null;
     }
