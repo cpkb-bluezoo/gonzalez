@@ -4653,6 +4653,14 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Use getEffectiveVersion() to respect xsl:version on ancestor LREs
         boolean xslt2Plus = getEffectiveVersion() >= 2.0;
         
+        // XSLT 3.0: shadow attribute _select takes precedence
+        if (ctx.hasShadowAttribute("select")) {
+            String shadowSelect = ctx.shadowAttributes.get("select");
+            AttributeValueTemplate selectAvt = parseAvt(shadowSelect);
+            return new org.bluezoo.gonzalez.transform.ast.DynamicValueOfNode(
+                selectAvt, disableEscaping, separator);
+        }
+        
         if (select != null) {
             if (!ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
                 throw new SAXException("XTSE0870: xsl:value-of must not have both " +

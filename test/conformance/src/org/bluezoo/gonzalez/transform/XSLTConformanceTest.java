@@ -490,6 +490,9 @@ public class XSLTConformanceTest {
                         String fileContent = new String(
                             java.nio.file.Files.readAllBytes(expectedFile.toPath()),
                             java.nio.charset.StandardCharsets.UTF_8);
+                        if (fileContent.length() > 0 && fileContent.charAt(0) == '\uFEFF') {
+                            fileContent = fileContent.substring(1);
+                        }
                         if (currentResultDocumentUri != null) {
                             resultDocAssertXml = fileContent;
                         } else {

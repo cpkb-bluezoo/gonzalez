@@ -148,8 +148,8 @@ public class TypeExpr implements Expr {
         // Get the atomic value to cast
         String stringValue = value.asString();
         
-        // Cast to target type
-        return castToType(stringValue, targetType, context);
+        // Cast to target type, passing original value for typed casts
+        return castToType(stringValue, targetType, context, value);
     }
     
     /**
@@ -164,7 +164,7 @@ public class TypeExpr implements Expr {
             
             // Try the cast
             String stringValue = value.asString();
-            castToType(stringValue, targetType, context);
+            castToType(stringValue, targetType, context, value);
             return XPathBoolean.TRUE;
         } catch (XPathException e) {
             return XPathBoolean.FALSE;
@@ -236,7 +236,8 @@ public class TypeExpr implements Expr {
     /**
      * Casts a string value to the target type.
      */
-    private XPathValue castToType(String value, SequenceType type, XPathContext context) throws XPathException {
+    private XPathValue castToType(String value, SequenceType type, XPathContext context, 
+                                    XPathValue sourceValue) throws XPathException {
         if (type.getItemKind() != SequenceType.ItemKind.ATOMIC) {
             throw new XPathException("Cannot cast to non-atomic type: " + type);
         }
@@ -317,17 +318,55 @@ public class TypeExpr implements Expr {
                     }
                     return new XPathNumber(Double.parseDouble(value.trim()));
                     
-                case "date":
                 case "dateTime":
+                    if (sourceValue instanceof XPathDateTime) {
+                        XPathDateTime srcDt = (XPathDateTime) sourceValue;
+                        if (srcDt.getDateTimeType() == XPathDateTime.DateTimeType.DATE) {
+                            return XPathDateTime.castDateToDateTime(srcDt);
+                        }
+                        if (srcDt.getDateTimeType() == XPathDateTime.DateTimeType.DATE_TIME) {
+                            return srcDt;
+                        }
+                    }
+                    return XPathDateTime.parseDateTime(value);
+                case "date":
+                    if (sourceValue instanceof XPathDateTime) {
+                        XPathDateTime srcDt = (XPathDateTime) sourceValue;
+                        if (srcDt.getDateTimeType() == XPathDateTime.DateTimeType.DATE_TIME) {
+                            return XPathDateTime.castDateTimeToDate(srcDt);
+                        }
+                        if (srcDt.getDateTimeType() == XPathDateTime.DateTimeType.DATE) {
+                            return srcDt;
+                        }
+                    }
+                    return XPathDateTime.parseDate(value);
                 case "time":
+                    if (sourceValue instanceof XPathDateTime) {
+                        XPathDateTime srcDt = (XPathDateTime) sourceValue;
+                        if (srcDt.getDateTimeType() == XPathDateTime.DateTimeType.DATE_TIME) {
+                            return XPathDateTime.castDateTimeToTime(srcDt);
+                        }
+                        if (srcDt.getDateTimeType() == XPathDateTime.DateTimeType.TIME) {
+                            return srcDt;
+                        }
+                    }
+                    return XPathDateTime.parseTime(value);
                 case "duration":
+                    return XPathDateTime.parseDuration(value);
+                case "yearMonthDuration":
+                    return XPathDateTime.parseYearMonthDuration(value);
+                case "dayTimeDuration":
+                    return XPathDateTime.parseDayTimeDuration(value);
                 case "gYear":
+                    return castToGType(sourceValue, value, "gYear");
                 case "gYearMonth":
+                    return castToGType(sourceValue, value, "gYearMonth");
                 case "gMonth":
+                    return castToGType(sourceValue, value, "gMonth");
                 case "gMonthDay":
+                    return castToGType(sourceValue, value, "gMonthDay");
                 case "gDay":
-                    // Return as string for now - proper date handling would need more work
-                    return new XPathString(value);
+                    return castToGType(sourceValue, value, "gDay");
                     
                 case "anyURI":
                 case "QName":
@@ -341,6 +380,33 @@ public class TypeExpr implements Expr {
         } catch (NumberFormatException e) {
             throw new XPathException("Cannot cast '" + value + "' to xs:" + typeName + 
                 ": " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Casts a source value to a g* type (gYear, gMonth, gDay, gYearMonth, gMonthDay).
+     * If source is already an XPathDateTime (date or dateTime), extracts components.
+     * Otherwise parses the string representation.
+     */
+    private XPathValue castToGType(XPathValue sourceValue, String stringValue, 
+                                    String targetType) throws XPathException {
+        if (sourceValue instanceof XPathDateTime) {
+            XPathDateTime src = (XPathDateTime) sourceValue;
+            XPathDateTime.DateTimeType srcType = src.getDateTimeType();
+            if (srcType == XPathDateTime.DateTimeType.DATE || 
+                srcType == XPathDateTime.DateTimeType.DATE_TIME) {
+                return XPathDateTime.castToGType(src, targetType);
+            }
+        }
+        // Parse from string
+        switch (targetType) {
+            case "gYear":       return XPathDateTime.parseGYear(stringValue);
+            case "gYearMonth":  return XPathDateTime.parseGYearMonth(stringValue);
+            case "gMonth":      return XPathDateTime.parseGMonth(stringValue);
+            case "gMonthDay":   return XPathDateTime.parseGMonthDay(stringValue);
+            case "gDay":        return XPathDateTime.parseGDay(stringValue);
+            default:
+                throw new XPathException("Unknown g* type: " + targetType);
         }
     }
     

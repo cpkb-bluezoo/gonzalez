@@ -142,13 +142,13 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
      */
     public static XPathDateTime parseDateTime(String value) throws XPathException {
         if (value == null || value.isEmpty()) {
-            throw new XPathException("Invalid xs:dateTime: empty value");
+            throw new XPathException("FORG0001: Invalid xs:dateTime: empty value");
         }
         value = value.trim();
         
         Matcher m = DATE_TIME_PATTERN.matcher(value);
         if (!m.matches()) {
-            throw new XPathException("Invalid xs:dateTime: " + value);
+            throw new XPathException("FORG0001: Invalid xs:dateTime: " + value);
         }
         
         try {
@@ -162,11 +162,21 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
             
             validateDateTime(year, month, day, hour, minute, second);
             
+            // XSD: 24:00:00 means 00:00:00 of the next day
+            if (hour == 24) {
+                hour = 0;
+                LocalDate nextDay = LocalDate.of(year, month, day).plusDays(1);
+                year = nextDay.getYear();
+                month = nextDay.getMonthValue();
+                day = nextDay.getDayOfMonth();
+                second = BigDecimal.ZERO;
+            }
+            
             return new XPathDateTime(DateTimeType.DATE_TIME, year, month, day,
                                      hour, minute, second, tz,
                                      false, null, null, null, null, null, null, value);
         } catch (NumberFormatException e) {
-            throw new XPathException("Invalid xs:dateTime: " + value, e);
+            throw new XPathException("FORG0001: Invalid xs:dateTime: " + value, e);
         }
     }
     
@@ -179,13 +189,13 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
      */
     public static XPathDateTime parseDate(String value) throws XPathException {
         if (value == null || value.isEmpty()) {
-            throw new XPathException("Invalid xs:date: empty value");
+            throw new XPathException("FORG0001: Invalid xs:date: empty value");
         }
         value = value.trim();
         
         Matcher m = DATE_PATTERN.matcher(value);
         if (!m.matches()) {
-            throw new XPathException("Invalid xs:date: " + value);
+            throw new XPathException("FORG0001: Invalid xs:date: " + value);
         }
         
         try {
@@ -200,7 +210,7 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
                                      null, null, null, tz,
                                      false, null, null, null, null, null, null, value);
         } catch (NumberFormatException e) {
-            throw new XPathException("Invalid xs:date: " + value, e);
+            throw new XPathException("FORG0001: Invalid xs:date: " + value, e);
         }
     }
     
@@ -213,13 +223,13 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
      */
     public static XPathDateTime parseTime(String value) throws XPathException {
         if (value == null || value.isEmpty()) {
-            throw new XPathException("Invalid xs:time: empty value");
+            throw new XPathException("FORG0001: Invalid xs:time: empty value");
         }
         value = value.trim();
         
         Matcher m = TIME_PATTERN.matcher(value);
         if (!m.matches()) {
-            throw new XPathException("Invalid xs:time: " + value);
+            throw new XPathException("FORG0001: Invalid xs:time: " + value);
         }
         
         try {
@@ -230,11 +240,17 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
             
             validateTime(hour, minute, second);
             
+            // XSD: 24:00:00 normalizes to 00:00:00
+            if (hour == 24) {
+                hour = 0;
+                second = BigDecimal.ZERO;
+            }
+            
             return new XPathDateTime(DateTimeType.TIME, null, null, null,
                                      hour, minute, second, tz,
                                      false, null, null, null, null, null, null, value);
         } catch (NumberFormatException e) {
-            throw new XPathException("Invalid xs:time: " + value, e);
+            throw new XPathException("FORG0001: Invalid xs:time: " + value, e);
         }
     }
     
@@ -564,6 +580,74 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
                                  false, null, null, null, null, null, null, lexical);
     }
     
+    // ========== Cast methods ==========
+    
+    /**
+     * Casts a date to dateTime by adding T00:00:00, preserving timezone.
+     */
+    public static XPathDateTime castDateToDateTime(XPathDateTime src) throws XPathException {
+        return new XPathDateTime(DateTimeType.DATE_TIME, src.year, src.month, src.day,
+                                 0, 0, BigDecimal.ZERO, src.timezone,
+                                 false, null, null, null, null, null, null,
+                                 formatDateTime(src.year, src.month, src.day, 0, 0, BigDecimal.ZERO, src.timezone));
+    }
+    
+    /**
+     * Casts a dateTime to date, preserving timezone.
+     */
+    public static XPathDateTime castDateTimeToDate(XPathDateTime src) throws XPathException {
+        return new XPathDateTime(DateTimeType.DATE, src.year, src.month, src.day,
+                                 null, null, null, src.timezone,
+                                 false, null, null, null, null, null, null,
+                                 formatDate(src.year, src.month, src.day, src.timezone));
+    }
+    
+    /**
+     * Casts a dateTime to time, preserving timezone.
+     */
+    public static XPathDateTime castDateTimeToTime(XPathDateTime src) throws XPathException {
+        return new XPathDateTime(DateTimeType.TIME, null, null, null,
+                                 src.hour, src.minute, src.second, src.timezone,
+                                 false, null, null, null, null, null, null,
+                                 formatTime(src.hour, src.minute, src.second, src.timezone));
+    }
+    
+    /**
+     * Casts a date or dateTime to a g* type, extracting relevant components.
+     */
+    public static XPathDateTime castToGType(XPathDateTime src, String targetType) throws XPathException {
+        ZoneOffset tz = src.timezone;
+        switch (targetType) {
+            case "gYear":
+                return new XPathDateTime(DateTimeType.G_YEAR, src.year, null, null,
+                                         null, null, null, tz,
+                                         false, null, null, null, null, null, null,
+                                         formatGYear(src.year, tz));
+            case "gYearMonth":
+                return new XPathDateTime(DateTimeType.G_YEAR_MONTH, src.year, src.month, null,
+                                         null, null, null, tz,
+                                         false, null, null, null, null, null, null,
+                                         formatGYearMonth(src.year, src.month, tz));
+            case "gMonth":
+                return new XPathDateTime(DateTimeType.G_MONTH, null, src.month, null,
+                                         null, null, null, tz,
+                                         false, null, null, null, null, null, null,
+                                         formatGMonth(src.month, tz));
+            case "gMonthDay":
+                return new XPathDateTime(DateTimeType.G_MONTH_DAY, null, src.month, src.day,
+                                         null, null, null, tz,
+                                         false, null, null, null, null, null, null,
+                                         formatGMonthDay(src.month, src.day, tz));
+            case "gDay":
+                return new XPathDateTime(DateTimeType.G_DAY, null, null, src.day,
+                                         null, null, null, tz,
+                                         false, null, null, null, null, null, null,
+                                         formatGDay(src.day, tz));
+            default:
+                throw new XPathException("Unknown g* target type: " + targetType);
+        }
+    }
+    
     // ========== Accessor methods ==========
     
     /**
@@ -771,15 +855,35 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
             return getCanonicalDayTimeDuration();
         }
         if (type == DateTimeType.YEAR_MONTH_DURATION) {
-            return formatYearMonthDuration(negative, 
-                durationYears != null ? durationYears : 0,
-                durationMonths != null ? durationMonths : 0);
+            int totalMo = (durationYears != null ? durationYears : 0) * 12 +
+                          (durationMonths != null ? durationMonths : 0);
+            return formatYearMonthDuration(negative, totalMo / 12, totalMo % 12);
         }
         if (type == DateTimeType.DURATION) {
-            // Full duration - normalize both year-month and day-time parts
             return getCanonicalDuration();
         }
-        return lexicalValue;
+        // For date/time types, compute canonical form from components
+        // (lexicalValue preserves original input which may have e.g. trailing fractional zeros)
+        switch (type) {
+            case DATE_TIME:
+                return formatDateTime(year, month, day, hour, minute, second, timezone);
+            case DATE:
+                return formatDate(year, month, day, timezone);
+            case TIME:
+                return formatTime(hour, minute, second, timezone);
+            case G_YEAR:
+                return formatGYear(year, timezone);
+            case G_YEAR_MONTH:
+                return formatGYearMonth(year, month, timezone);
+            case G_MONTH:
+                return formatGMonth(month, timezone);
+            case G_MONTH_DAY:
+                return formatGMonthDay(month, day, timezone);
+            case G_DAY:
+                return formatGDay(day, timezone);
+            default:
+                return lexicalValue;
+        }
     }
     
     /**
@@ -813,9 +917,11 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         }
         sb.append("P");
         
-        // Year-month part
-        int years = durationYears != null ? durationYears : 0;
-        int months = durationMonths != null ? durationMonths : 0;
+        // Year-month part: normalize months into years
+        int totalMonths = (durationYears != null ? durationYears : 0) * 12 +
+                          (durationMonths != null ? durationMonths : 0);
+        int years = totalMonths / 12;
+        int months = totalMonths % 12;
         if (years > 0) {
             sb.append(years).append("Y");
         }
@@ -1157,17 +1263,28 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     }
     
     /**
+     * Creates a LocalDateTime, handling XSD 24:00:00 (end-of-day = next day 00:00:00).
+     */
+    private java.time.LocalDateTime toLocalDateTime() {
+        int h = hour != null ? hour : 0;
+        int mi = minute != null ? minute : 0;
+        int s = second != null ? second.intValue() : 0;
+        int y = year != null ? year : 1970;
+        int mo = month != null ? month : 1;
+        int d = day != null ? day : 1;
+        java.time.LocalDateTime ldt = java.time.LocalDateTime.of(y, mo, d, 
+            h == 24 ? 0 : h, mi, s);
+        if (h == 24) {
+            ldt = ldt.plusDays(1);
+        }
+        return ldt;
+    }
+
+    /**
      * Converts this dateTime to epoch seconds using the specified timezone.
      */
     private long toEpochSecondsWithZone(ZoneOffset zone) {
-        java.time.LocalDateTime ldt = java.time.LocalDateTime.of(
-            year != null ? year : 1970,
-            month != null ? month : 1,
-            day != null ? day : 1,
-            hour != null ? hour : 0,
-            minute != null ? minute : 0,
-            second != null ? second.intValue() : 0
-        );
+        java.time.LocalDateTime ldt = toLocalDateTime();
         java.time.ZonedDateTime zdt = ldt.atZone(java.time.ZoneId.of(zone.getId()));
         return zdt.toEpochSecond();
     }
@@ -1177,15 +1294,7 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
      * Used for timezone-aware comparison.
      */
     private long toEpochSeconds() {
-        // Build a LocalDateTime and apply timezone offset
-        java.time.LocalDateTime ldt = java.time.LocalDateTime.of(
-            year != null ? year : 1970,
-            month != null ? month : 1,
-            day != null ? day : 1,
-            hour != null ? hour : 0,
-            minute != null ? minute : 0,
-            second != null ? second.intValue() : 0
-        );
+        java.time.LocalDateTime ldt = toLocalDateTime();
         java.time.ZonedDateTime zdt = ldt.atZone(java.time.ZoneId.of(timezone.getId()));
         return zdt.toEpochSecond();
     }
@@ -1299,6 +1408,12 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         BigDecimal thisSeconds = getTotalSeconds();
         BigDecimal otherSeconds = other.getTotalSeconds();
         return thisSeconds.compareTo(otherSeconds);
+    }
+    
+    private long getTotalMonths() {
+        long months = (durationYears != null ? durationYears : 0) * 12L +
+                      (durationMonths != null ? durationMonths : 0);
+        return negative ? -months : months;
     }
     
     private BigDecimal getTotalSeconds() {
@@ -1561,6 +1676,17 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
             throw new XPathException("Can only divide durations by durations");
         }
         
+        // For yearMonthDuration, use total months
+        if (type == DateTimeType.YEAR_MONTH_DURATION || other.type == DateTimeType.YEAR_MONTH_DURATION) {
+            long thisMonths = getTotalMonths();
+            long otherMonths = other.getTotalMonths();
+            if (otherMonths == 0) {
+                throw new XPathException("Cannot divide by zero duration");
+            }
+            return BigDecimal.valueOf(thisMonths).divide(
+                BigDecimal.valueOf(otherMonths), 10, RoundingMode.HALF_UP);
+        }
+        
         BigDecimal thisSeconds = getTotalSeconds();
         BigDecimal otherSeconds = other.getTotalSeconds();
         
@@ -1767,14 +1893,16 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     }
     
     private XPathDateTime subtractDateTimes(XPathDateTime other) throws XPathException {
-        // Convert both to seconds since epoch and subtract
-        LocalDateTime dt1 = LocalDateTime.of(year, month, day, hour, minute, second.intValue());
-        LocalDateTime dt2 = LocalDateTime.of(other.year, other.month, other.day, 
-                                             other.hour, other.minute, other.second.intValue());
+        LocalDateTime dt1 = toLocalDateTime();
+        LocalDateTime dt2 = other.toLocalDateTime();
         
         Duration diff = Duration.between(dt2, dt1);
         
-        // Add fractional seconds
+        // Normalize to UTC by adjusting for timezone offsets
+        long offset1 = timezone != null ? timezone.getTotalSeconds() : 0;
+        long offset2 = other.timezone != null ? other.timezone.getTotalSeconds() : 0;
+        diff = diff.plusSeconds(offset2 - offset1);
+        
         BigDecimal fracDiff = second.remainder(BigDecimal.ONE)
                                     .subtract(other.second.remainder(BigDecimal.ONE));
         
@@ -1788,16 +1916,26 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         LocalDate d2 = LocalDate.of(other.year, other.month, other.day);
         
         long days = ChronoUnit.DAYS.between(d2, d1);
-        BigDecimal totalSeconds = BigDecimal.valueOf(days * 86400L);
+        long totalSeconds = days * 86400L;
         
-        return durationFromSeconds(totalSeconds, DateTimeType.DAY_TIME_DURATION);
+        // Normalize to UTC by adjusting for timezone offsets
+        long offset1 = timezone != null ? timezone.getTotalSeconds() : 0;
+        long offset2 = other.timezone != null ? other.timezone.getTotalSeconds() : 0;
+        totalSeconds += (offset2 - offset1);
+        
+        return durationFromSeconds(BigDecimal.valueOf(totalSeconds), DateTimeType.DAY_TIME_DURATION);
     }
     
     private XPathDateTime subtractTimes(XPathDateTime other) throws XPathException {
         BigDecimal secs1 = BigDecimal.valueOf(hour * 3600L + minute * 60L).add(second);
         BigDecimal secs2 = BigDecimal.valueOf(other.hour * 3600L + other.minute * 60L).add(other.second);
         
-        return durationFromSeconds(secs1.subtract(secs2), DateTimeType.DAY_TIME_DURATION);
+        // Normalize to UTC by adjusting for timezone offsets
+        long offset1 = timezone != null ? timezone.getTotalSeconds() : 0;
+        long offset2 = other.timezone != null ? other.timezone.getTotalSeconds() : 0;
+        BigDecimal tzAdj = BigDecimal.valueOf(offset2 - offset1);
+        
+        return durationFromSeconds(secs1.subtract(secs2).add(tzAdj), DateTimeType.DAY_TIME_DURATION);
     }
     
     private XPathDateTime negate() throws XPathException {
@@ -1849,7 +1987,8 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     
     private static String formatDateTime(int y, int mo, int d, int h, int mi, BigDecimal s, ZoneOffset tz) {
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%04d-%02d-%02dT%02d:%02d:", y, mo, d, h, mi));
+        sb.append(formatYearComponent(y));
+        sb.append(String.format("-%02d-%02dT%02d:%02d:", mo, d, h, mi));
         if (s.scale() == 0 || s.remainder(BigDecimal.ONE).compareTo(BigDecimal.ZERO) == 0) {
             sb.append(String.format("%02d", s.intValue()));
         } else {
@@ -1864,7 +2003,8 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
     
     private static String formatDate(int y, int mo, int d, ZoneOffset tz) {
         StringBuilder sb = new StringBuilder();
-        sb.append(String.format("%04d-%02d-%02d", y, mo, d));
+        sb.append(formatYearComponent(y));
+        sb.append(String.format("-%02d-%02d", mo, d));
         if (tz != null) {
             sb.append(tz.getId().equals("Z") ? "Z" : tz.getId());
         }
@@ -1883,6 +2023,57 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         if (tz != null) {
             sb.append(tz.getId().equals("Z") ? "Z" : tz.getId());
         }
+        return sb.toString();
+    }
+    
+    private static String formatTimezone(ZoneOffset tz) {
+        if (tz == null) {
+            return "";
+        }
+        String id = tz.getId();
+        return id.equals("Z") ? "Z" : id;
+    }
+    
+    private static String formatYearComponent(int y) {
+        if (y < 0) {
+            return "-" + String.format("%04d", -y);
+        }
+        return String.format("%04d", y);
+    }
+    
+    private static String formatGYear(int y, ZoneOffset tz) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(formatYearComponent(y));
+        sb.append(formatTimezone(tz));
+        return sb.toString();
+    }
+    
+    private static String formatGYearMonth(int y, int mo, ZoneOffset tz) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(formatYearComponent(y));
+        sb.append(String.format("-%02d", mo));
+        sb.append(formatTimezone(tz));
+        return sb.toString();
+    }
+    
+    private static String formatGMonth(int mo, ZoneOffset tz) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("--%02d", mo));
+        sb.append(formatTimezone(tz));
+        return sb.toString();
+    }
+    
+    private static String formatGMonthDay(int mo, int d, ZoneOffset tz) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("--%02d-%02d", mo, d));
+        sb.append(formatTimezone(tz));
+        return sb.toString();
+    }
+    
+    private static String formatGDay(int d, ZoneOffset tz) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.format("---%02d", d));
+        sb.append(formatTimezone(tz));
         return sb.toString();
     }
     

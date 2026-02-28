@@ -37,6 +37,7 @@ import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -119,7 +120,13 @@ public class ForEachNode extends XSLTInstruction {
     
     private void executeSequence(XPathSequence sequence, TransformContext context,
                                 OutputHandler output) throws SAXException, XPathException {
-        List<XPathValue> items = sequence.getItems();
+        List<XPathValue> items = new ArrayList<>(sequence.getItems());
+        
+        // Apply sorting if specified
+        if (sorts != null && !sorts.isEmpty()) {
+            sortSequence(items, sorts, context);
+        }
+        
         int size = items.size();
         int position = 1;
         boolean first = true;
@@ -228,8 +235,16 @@ public class ForEachNode extends XSLTInstruction {
             for (int j = 0; j < sortCount; j++) {
                 SortSpec spec = sorts.get(j);
                 XPathValue val = spec.getSelectExpr().evaluate(nodeCtx);
+                // XTDE1030: xs:duration is not orderable (mixed months/seconds)
+                // xs:yearMonthDuration and xs:dayTimeDuration ARE orderable
+                if (val instanceof XPathDateTime && ((XPathDateTime) val).getDateTimeType() == XPathDateTime.DateTimeType.DURATION) {
+                    throw new XPathException(
+                        "XTDE1030: Cannot sort by xs:duration values (durations have no total order)");
+                }
                 if ("number".equals(dataTypes[j])) {
                     sortKeys[i][j] = Double.valueOf(val.asNumber());
+                } else if (val instanceof XPathDateTime) {
+                    sortKeys[i][j] = val;
                 } else {
                     sortKeys[i][j] = val.asString();
                 }
@@ -255,12 +270,14 @@ public class ForEachNode extends XSLTInstruction {
                         if (Double.isNaN(da) && Double.isNaN(db)) {
                             cmp = 0;
                         } else if (Double.isNaN(da)) {
-                            cmp = -1; // NaN sorts first (before all numbers) per XSLT 1.0 spec
+                            cmp = -1;
                         } else if (Double.isNaN(db)) {
                             cmp = 1;
                         } else {
                             cmp = Double.compare(da, db);
                         }
+                    } else if (keyA instanceof XPathDateTime) {
+                        cmp = ((XPathDateTime) keyA).compareTo((XPathDateTime) keyB);
                     } else {
                         String sa = (String) keyA;
                         String sb = (String) keyB;
@@ -320,5 +337,125 @@ public class ForEachNode extends XSLTInstruction {
         }
         nodes.clear();
         nodes.addAll(sorted);
+    }
+    
+    /**
+     * Sorts a list of atomic values (XPathValue) according to sort specifications.
+     * Similar to sortNodesStatic but handles sequences of non-node values.
+     */
+    private static void sortSequence(List<XPathValue> items, List<SortSpec> sorts,
+                                     TransformContext context) throws XPathException {
+        final int itemCount = items.size();
+        if (itemCount <= 1) {
+            return;
+        }
+        final int sortCount = sorts.size();
+        final String[] dataTypes = new String[sortCount];
+        final String[] orders = new String[sortCount];
+        final String[] caseOrders = new String[sortCount];
+        final Collation[] collations = new Collation[sortCount];
+        
+        for (int j = 0; j < sortCount; j++) {
+            SortSpec spec = sorts.get(j);
+            dataTypes[j] = spec.getDataType(context);
+            orders[j] = spec.getOrder(context);
+            caseOrders[j] = spec.getCaseOrder(context);
+            String collationUri = spec.getCollation(context);
+            if (collationUri == null) {
+                collationUri = context.getDefaultCollation();
+            }
+            collations[j] = Collation.forUri(collationUri);
+        }
+        
+        final Object[][] sortKeys = new Object[itemCount][sortCount];
+        
+        for (int i = 0; i < itemCount; i++) {
+            XPathValue item = items.get(i);
+            TransformContext iterCtx;
+            if (item instanceof XPathNode) {
+                XPathNode node = (XPathNode) item;
+                if (context instanceof BasicTransformContext) {
+                    iterCtx = ((BasicTransformContext) context)
+                        .withXsltCurrentNode(node).withPositionAndSize(i + 1, itemCount);
+                } else {
+                    iterCtx = context.withContextNode(node)
+                        .withPositionAndSize(i + 1, itemCount);
+                }
+            } else {
+                if (context instanceof BasicTransformContext) {
+                    iterCtx = ((BasicTransformContext) context)
+                        .withContextItem(item).withPositionAndSize(i + 1, itemCount);
+                } else {
+                    iterCtx = context.withPositionAndSize(i + 1, itemCount);
+                }
+            }
+            for (int j = 0; j < sortCount; j++) {
+                SortSpec spec = sorts.get(j);
+                XPathValue val = spec.getSelectExpr().evaluate(iterCtx);
+                if (val instanceof XPathDateTime && ((XPathDateTime) val).getDateTimeType() == XPathDateTime.DateTimeType.DURATION) {
+                    throw new XPathException(
+                        "XTDE1030: Cannot sort by xs:duration values (durations have no total order)");
+                }
+                if ("number".equals(dataTypes[j])) {
+                    sortKeys[i][j] = Double.valueOf(val.asNumber());
+                } else if (val instanceof XPathDateTime) {
+                    sortKeys[i][j] = val;
+                } else {
+                    sortKeys[i][j] = val.asString();
+                }
+            }
+        }
+        
+        Integer[] indices = new Integer[itemCount];
+        for (int i = 0; i < itemCount; i++) {
+            indices[i] = Integer.valueOf(i);
+        }
+        
+        Arrays.sort(indices, new Comparator<Integer>() {
+            public int compare(Integer a, Integer b) {
+                for (int j = 0; j < sortCount; j++) {
+                    Object keyA = sortKeys[a.intValue()][j];
+                    Object keyB = sortKeys[b.intValue()][j];
+                    
+                    int cmp;
+                    if (keyA instanceof Double) {
+                        double da = ((Double) keyA).doubleValue();
+                        double db = ((Double) keyB).doubleValue();
+                        if (Double.isNaN(da) && Double.isNaN(db)) {
+                            cmp = 0;
+                        } else if (Double.isNaN(da)) {
+                            cmp = -1;
+                        } else if (Double.isNaN(db)) {
+                            cmp = 1;
+                        } else {
+                            cmp = Double.compare(da, db);
+                        }
+                    } else if (keyA instanceof XPathDateTime) {
+                        cmp = ((XPathDateTime) keyA).compareTo((XPathDateTime) keyB);
+                    } else {
+                        String sa = (String) keyA;
+                        String sb = (String) keyB;
+                        Collation collation = collations[j];
+                        cmp = collation.compare(sa, sb);
+                    }
+                    
+                    if ("descending".equals(orders[j])) {
+                        cmp = -cmp;
+                    }
+                    
+                    if (cmp != 0) {
+                        return cmp;
+                    }
+                }
+                return 0;
+            }
+        });
+        
+        List<XPathValue> sorted = new ArrayList<>(itemCount);
+        for (int i = 0; i < itemCount; i++) {
+            sorted.add(items.get(indices[i].intValue()));
+        }
+        items.clear();
+        items.addAll(sorted);
     }
 }

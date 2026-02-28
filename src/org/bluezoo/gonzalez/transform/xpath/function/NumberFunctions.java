@@ -98,16 +98,16 @@ public final class NumberFunctions {
             XPathValue arg = args.get(0);
             
             // XPath 2.0: second argument is the zero value (default 0)
-            double zeroValue = 0;
-            if (args.size() > 1) {
-                zeroValue = args.get(1).asNumber();
-            }
+            XPathValue zeroArg = args.size() > 1 ? args.get(1) : null;
             
             // Handle node-set (XPath 1.0 style)
             if (arg.isNodeSet()) {
                 XPathNodeSet nodeSet = arg.asNodeSet();
                 if (nodeSet.isEmpty()) {
-                    return XPathNumber.of(zeroValue);
+                    if (zeroArg != null) {
+                        return zeroArg;
+                    }
+                    return XPathNumber.of(0);
                 }
                 double sum = 0;
                 for (XPathNode node : nodeSet) {
@@ -125,9 +125,32 @@ public final class NumberFunctions {
             if (arg.isSequence()) {
                 java.util.Iterator<XPathValue> iter = arg.sequenceIterator();
                 if (!iter.hasNext()) {
-                    return XPathNumber.of(zeroValue);
+                    if (zeroArg != null) {
+                        return zeroArg;
+                    }
+                    return XPathNumber.of(0);
                 }
-                double sum = 0;
+                
+                // Peek at first item to detect duration sequences
+                XPathValue first = iter.next();
+                if (first instanceof XPathDateTime && ((XPathDateTime) first).isDuration()) {
+                    XPathDateTime durationSum = (XPathDateTime) first;
+                    while (iter.hasNext()) {
+                        XPathValue item = iter.next();
+                        if (item instanceof XPathDateTime && ((XPathDateTime) item).isDuration()) {
+                            durationSum = durationSum.add((XPathDateTime) item);
+                        } else {
+                            throw new XPathException("FORG0006: Mixed types in sum()");
+                        }
+                    }
+                    return durationSum;
+                }
+                
+                // Numeric sum
+                double sum = first.asNumber();
+                if (Double.isNaN(sum)) {
+                    return XPathNumber.NaN;
+                }
                 while (iter.hasNext()) {
                     XPathValue item = iter.next();
                     double num = item.asNumber();
@@ -474,19 +497,52 @@ public final class NumberFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            List<Double> values = getNumericValues(args.get(0));
-            if (values.isEmpty()) {
+            XPathValue arg = args.get(0);
+            
+            // Collect items from sequence
+            List<XPathValue> items = new ArrayList<XPathValue>();
+            if (arg.isSequence()) {
+                java.util.Iterator<XPathValue> iter = arg.sequenceIterator();
+                while (iter.hasNext()) {
+                    items.add(iter.next());
+                }
+            } else if (arg.isNodeSet()) {
+                for (XPathNode node : arg.asNodeSet()) {
+                    items.add((XPathValue) node);
+                }
+            } else {
+                items.add(arg);
+            }
+            
+            if (items.isEmpty()) {
                 return XPathSequence.EMPTY;
             }
             
+            // Check if first item is a duration
+            XPathValue first = items.get(0);
+            if (first instanceof XPathDateTime && ((XPathDateTime) first).isDuration()) {
+                XPathDateTime durationSum = (XPathDateTime) first;
+                for (int i = 1; i < items.size(); i++) {
+                    XPathValue item = items.get(i);
+                    if (item instanceof XPathDateTime && ((XPathDateTime) item).isDuration()) {
+                        durationSum = durationSum.add((XPathDateTime) item);
+                    } else {
+                        throw new XPathException("FORG0006: Mixed types in avg()");
+                    }
+                }
+                return durationSum.divide(items.size());
+            }
+            
+            // Numeric average
             double sum = 0;
-            for (Double v : values) {
+            for (XPathValue item : items) {
+                double v = item.asNumber();
                 if (Double.isNaN(v)) {
                     return XPathNumber.NaN;
                 }
                 sum += v;
             }
-            return XPathNumber.of(sum / values.size());
+            return XPathNumber.of(sum / items.size());
         }
     };
     

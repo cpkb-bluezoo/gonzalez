@@ -612,8 +612,12 @@ public final class BinaryExpr implements Expr {
         
         switch (operator) {
             case PLUS:
-                // date/time + duration or duration + duration
+                // date/time + duration, duration + date/time, or duration + duration
                 if (left != null && right != null) {
+                    // XPath addition is commutative: duration + date = date + duration
+                    if (left.isDuration() && !right.isDuration()) {
+                        return right.add(left);
+                    }
                     return left.add(right);
                 }
                 throw new XPathException("Cannot add number to date/time");

@@ -589,7 +589,7 @@ public final class DateTimeFunctions {
             String calendar = args.size() > 3 && !isEmpty(args.get(3)) ? args.get(3).asString() : null;
             String place = args.size() > 4 && !isEmpty(args.get(4)) ? args.get(4).asString() : null;
             Locale locale = parseLocale(language, place);
-            return XPathString.of(formatDateTime(dt, picture, true, true, locale, calendar));
+            return XPathString.of(formatDateTime(dt, picture, true, true, locale, calendar, language));
         }
     };
     
@@ -617,7 +617,7 @@ public final class DateTimeFunctions {
             String calendar = args.size() > 3 && !isEmpty(args.get(3)) ? args.get(3).asString() : null;
             String place = args.size() > 4 && !isEmpty(args.get(4)) ? args.get(4).asString() : null;
             Locale locale = parseLocale(language, place);
-            return XPathString.of(formatDateTime(dt, picture, true, false, locale, calendar));
+            return XPathString.of(formatDateTime(dt, picture, true, false, locale, calendar, language));
         }
     };
     
@@ -645,7 +645,7 @@ public final class DateTimeFunctions {
             String calendar = args.size() > 3 && !isEmpty(args.get(3)) ? args.get(3).asString() : null;
             String place = args.size() > 4 && !isEmpty(args.get(4)) ? args.get(4).asString() : null;
             Locale locale = parseLocale(language, place);
-            return XPathString.of(formatDateTime(dt, picture, false, true, locale, calendar));
+            return XPathString.of(formatDateTime(dt, picture, false, true, locale, calendar, language));
         }
     };
     
@@ -827,13 +827,19 @@ public final class DateTimeFunctions {
         }
         // Handle language tags like "en-GB" or "en_GB"
         String[] parts = language.split("[-_]");
-        if (parts.length >= 2) {
-            return new Locale(parts[0], parts[1].toUpperCase());
+        String lang = parts[0];
+        String country = parts.length >= 2 ? parts[1].toUpperCase() : null;
+        if (country == null && place != null && !place.isEmpty()) {
+            country = place.toUpperCase();
         }
-        if (place != null && !place.isEmpty()) {
-            return new Locale(language, place.toUpperCase());
+        // Only English is supported; fall back for unknown languages
+        if (!"en".equalsIgnoreCase(lang)) {
+            lang = "en";
         }
-        return new Locale(language);
+        if (country != null) {
+            return new Locale(lang, country);
+        }
+        return new Locale(lang);
     }
     
     /**
@@ -852,9 +858,37 @@ public final class DateTimeFunctions {
     private static String formatDateTime(XPathDateTime dt, String picture, 
                                          boolean hasDate, boolean hasTime, Locale locale,
                                          String calendar) throws XPathException {
+        return formatDateTime(dt, picture, hasDate, hasTime, locale, calendar, null);
+    }
+    
+    private static String formatDateTime(XPathDateTime dt, String picture, 
+                                         boolean hasDate, boolean hasTime, Locale locale,
+                                         String calendar, String requestedLanguage) throws XPathException {
         DateTimeLocale dtLocale = DateTimeLocale.forLocale(locale);
         boolean useIsoCalendar = "ISO".equalsIgnoreCase(calendar);
+        
+        // Language/calendar fallback annotations per spec section 9.8.4.7
+        StringBuilder prefix = new StringBuilder();
+        if (requestedLanguage != null) {
+            String actualLang = locale.getLanguage();
+            if (!requestedLanguage.equalsIgnoreCase(actualLang)) {
+                prefix.append("[Language: ").append(actualLang).append("]");
+            }
+        }
+        if (calendar != null && !calendar.isEmpty()) {
+            String calNorm = calendar;
+            // Strip namespace prefix if present
+            int calColon = calNorm.indexOf(':');
+            if (calColon >= 0) {
+                calNorm = calNorm.substring(calColon + 1);
+            }
+            if (!"AD".equalsIgnoreCase(calNorm) && !"ISO".equalsIgnoreCase(calNorm)) {
+                prefix.append("[Calendar: AD]");
+            }
+        }
+        
         StringBuilder result = new StringBuilder();
+        result.append(prefix);
         int i = 0;
         while (i < picture.length()) {
             char c = picture.charAt(i);
@@ -929,6 +963,7 @@ public final class DateTimeFunctions {
         String presentation = "1";  // Default: decimal
         boolean explicitWidth = false;  // Track if width was explicitly specified
         boolean ordinal = false;  // Track if ordinal suffix is requested
+        String rawPresentation = "";  // Unprocessed presentation text for components like [z]
         
         if (!modifier.isEmpty()) {
             int commaPos = modifier.indexOf(',');
@@ -951,19 +986,10 @@ public final class DateTimeFunctions {
                 }
             }
             
-            // Determine presentation type and width from presentation format
-            // "01" means decimal with min width 2
-            // "0001" means decimal with min width 4
-            // "1" means decimal with min width 1 (default)
-            // "1o" means decimal with ordinal suffix (1st, 2nd, 3rd, etc.)
-            // "I" means Roman numerals
-            // "i" means lowercase Roman
-            // "Nn" means name with initial cap
-            // "N" means uppercase name
-            // "n" means lowercase name
-            // "W" or "w" means words
+            rawPresentation = presentationPart;
             
             if (presentationPart.length() > 0) {
+                int firstCp = presentationPart.codePointAt(0);
                 char firstChar = presentationPart.charAt(0);
                 
                 if (firstChar == '0' || firstChar == '#') {
@@ -972,10 +998,14 @@ public final class DateTimeFunctions {
                     minWidth = presentationPart.length();
                     presentation = "1";
                     explicitWidth = true;
+                } else if (Character.isDigit(firstCp) && firstCp > '9') {
+                    // Non-ASCII digit (BMP or supplementary): use digit family
+                    presentation = presentationPart;
+                    minWidth = presentationPart.codePointCount(0, presentationPart.length());
+                    explicitWidth = true;
                 } else if (Character.isDigit(firstChar)) {
-                    // "1" means default decimal, width 1
+                    // ASCII digit: "1" means default decimal, width 1
                     presentation = "1";
-                    // Could have trailing digits indicating width
                     minWidth = presentationPart.length();
                 } else if (firstChar == 'I') {
                     presentation = "I";  // Roman numerals uppercase
@@ -1122,9 +1152,14 @@ public final class DateTimeFunctions {
                 }
                 Integer h = dt.getHour();
                 if (h != null) {
-                    // Default is lowercase; uppercase requires N presentation
-                    boolean uppercase = presentation.equals("N");
-                    strValue = dtLocale.getAmPm(h, uppercase);
+                    boolean isAm = h < 12;
+                    String ampmStr = isAm ? "am" : "pm";
+                    if ("N".equals(presentation)) {
+                        ampmStr = ampmStr.toUpperCase(Locale.ENGLISH);
+                    } else if ("Nn".equals(presentation)) {
+                        ampmStr = ampmStr.substring(0, 1).toUpperCase(Locale.ENGLISH) + ampmStr.substring(1);
+                    }
+                    strValue = ampmStr;
                 }
                 break;
             case 'm':  // Minute
@@ -1182,8 +1217,7 @@ public final class DateTimeFunctions {
                     }
                 }
                 break;
-            case 'Z':  // Timezone
-            case 'z':
+            case 'Z':  // Timezone as UTC offset
                 if (dt.getTimezone() != null) {
                     strValue = dt.getTimezone().getId();
                     if (strValue.equals("Z")) {
@@ -1193,6 +1227,11 @@ public final class DateTimeFunctions {
                     strValue = "";
                 }
                 break;
+            case 'z':  // Timezone as "GMT+hh:mm" style name
+                if (dt.getTimezone() != null) {
+                    return formatGmtTimezone(dt.getTimezone(), rawPresentation, minWidth, maxWidth);
+                }
+                return "";
             case 'E':  // Era
                 // XTDE1350: Era requires date component (specifically year)
                 if (!hasDate) {
@@ -1234,6 +1273,45 @@ public final class DateTimeFunctions {
      * @param maxWidth maximum width (truncate if longer)
      * @return the constrained string
      */
+    /**
+     * Formats timezone in GMT+hh:mm style for the [z] component.
+     *
+     * Per F&amp;O 3.1 section 9.8.4.6:
+     * - maxWidth &gt;= 6 (or default): always show hours and minutes (GMT+05:00)
+     * - maxWidth &lt; 6: omit :mm when minutes are zero (GMT+05)
+     * - presentation "0": hours not zero-padded (GMT+5)
+     * - default: hours zero-padded to 2 digits (GMT+05)
+     */
+    private static String formatGmtTimezone(java.time.ZoneOffset tz, String rawPresentation,
+                                             int minWidth, int maxWidth) {
+        int totalSeconds = tz.getTotalSeconds();
+        boolean neg = totalSeconds < 0;
+        if (neg) {
+            totalSeconds = -totalSeconds;
+        }
+        int hours = totalSeconds / 3600;
+        int minutes = (totalSeconds % 3600) / 60;
+        
+        boolean noLeadingZero = "0".equals(rawPresentation);
+        boolean alwaysShowMinutes = !noLeadingZero && (maxWidth >= 6);
+        
+        StringBuilder sb = new StringBuilder();
+        sb.append("GMT");
+        sb.append(neg ? '-' : '+');
+        if (!noLeadingZero && hours < 10) {
+            sb.append('0');
+        }
+        sb.append(hours);
+        if (alwaysShowMinutes || minutes != 0) {
+            sb.append(':');
+            if (minutes < 10) {
+                sb.append('0');
+            }
+            sb.append(minutes);
+        }
+        return sb.toString();
+    }
+    
     private static String applyWidth(String value, int minWidth, int maxWidth) {
         if (value == null) {
             return "";
@@ -1242,11 +1320,6 @@ public final class DateTimeFunctions {
         // Truncate to max width if necessary
         if (maxWidth < Integer.MAX_VALUE && value.length() > maxWidth) {
             value = value.substring(0, maxWidth);
-        }
-        
-        // Pad to min width if necessary
-        while (value.length() < minWidth) {
-            value = value + " ";
         }
         
         return value;
@@ -1290,11 +1363,38 @@ public final class DateTimeFunctions {
         }
         
         // Default: decimal format
+        // Check for digit family: if presentation starts with a non-ASCII digit, 
+        // use that digit family (the zero digit of the same Unicode block)
+        int digitZero = '0';
+        if (presentation != null && presentation.length() > 0) {
+            int firstCp = presentation.codePointAt(0);
+            int numericValue = Character.getNumericValue(firstCp);
+            if (numericValue >= 0 && numericValue <= 9 && firstCp != '0' + numericValue) {
+                digitZero = firstCp - numericValue;
+            }
+        }
+        
         String str = Integer.toString(Math.abs(value));
         // Pad with leading zeros
         while (str.length() < minWidth) {
             str = "0" + str;
         }
+        
+        // Apply digit family substitution if non-ASCII
+        if (digitZero != '0') {
+            StringBuilder sb = new StringBuilder();
+            for (int ci = 0; ci < str.length(); ci++) {
+                char ch = str.charAt(ci);
+                if (ch >= '0' && ch <= '9') {
+                    int cp = digitZero + (ch - '0');
+                    sb.appendCodePoint(cp);
+                } else {
+                    sb.append(ch);
+                }
+            }
+            str = sb.toString();
+        }
+        
         // Handle negative
         if (value < 0) {
             str = "-" + str;

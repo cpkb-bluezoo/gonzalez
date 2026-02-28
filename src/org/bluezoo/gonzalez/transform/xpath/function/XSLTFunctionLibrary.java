@@ -300,10 +300,37 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         switch (localName) {
             case "dateTime":
+                if (arg instanceof XPathDateTime) {
+                    XPathDateTime src = (XPathDateTime) arg;
+                    if (src.getDateTimeType() == XPathDateTime.DateTimeType.DATE) {
+                        return XPathDateTime.castDateToDateTime(src);
+                    }
+                    if (src.getDateTimeType() == XPathDateTime.DateTimeType.DATE_TIME) {
+                        return src;
+                    }
+                }
                 return XPathDateTime.parseDateTime(value);
             case "date":
+                if (arg instanceof XPathDateTime) {
+                    XPathDateTime src = (XPathDateTime) arg;
+                    if (src.getDateTimeType() == XPathDateTime.DateTimeType.DATE_TIME) {
+                        return XPathDateTime.castDateTimeToDate(src);
+                    }
+                    if (src.getDateTimeType() == XPathDateTime.DateTimeType.DATE) {
+                        return src;
+                    }
+                }
                 return XPathDateTime.parseDate(value);
             case "time":
+                if (arg instanceof XPathDateTime) {
+                    XPathDateTime src = (XPathDateTime) arg;
+                    if (src.getDateTimeType() == XPathDateTime.DateTimeType.DATE_TIME) {
+                        return XPathDateTime.castDateTimeToTime(src);
+                    }
+                    if (src.getDateTimeType() == XPathDateTime.DateTimeType.TIME) {
+                        return src;
+                    }
+                }
                 return XPathDateTime.parseTime(value);
             case "duration":
                 return XPathDateTime.parseDuration(value);
@@ -312,15 +339,28 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             case "dayTimeDuration":
                 return XPathDateTime.parseDayTimeDuration(value);
             case "gYearMonth":
-                return XPathDateTime.parseGYearMonth(value);
             case "gYear":
-                return XPathDateTime.parseGYear(value);
             case "gMonthDay":
-                return XPathDateTime.parseGMonthDay(value);
             case "gDay":
-                return XPathDateTime.parseGDay(value);
             case "gMonth":
-                return XPathDateTime.parseGMonth(value);
+                // For g* types: cast from date/dateTime by extracting components
+                if (arg instanceof XPathDateTime) {
+                    XPathDateTime src = (XPathDateTime) arg;
+                    XPathDateTime.DateTimeType srcType = src.getDateTimeType();
+                    if (srcType == XPathDateTime.DateTimeType.DATE || 
+                        srcType == XPathDateTime.DateTimeType.DATE_TIME) {
+                        return XPathDateTime.castToGType(src, localName);
+                    }
+                }
+                // Fall through to string parsing
+                switch (localName) {
+                    case "gYearMonth": return XPathDateTime.parseGYearMonth(value);
+                    case "gYear": return XPathDateTime.parseGYear(value);
+                    case "gMonthDay": return XPathDateTime.parseGMonthDay(value);
+                    case "gDay": return XPathDateTime.parseGDay(value);
+                    case "gMonth": return XPathDateTime.parseGMonth(value);
+                    default: throw new XPathException("Unknown g* type: " + localName);
+                }
             case "string":
                 return XPathString.of(value);
             case "integer":
