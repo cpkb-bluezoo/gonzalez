@@ -74,7 +74,9 @@ import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Comparator;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.xml.parsers.SAXParser;
@@ -1390,38 +1392,23 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         public int getMinArgs() { return 2; }
         
         @Override
-        public int getMaxArgs() { return 3; }  // XSLT 2.0 adds collation parameter
+        public int getMaxArgs() { return 3; }  // XSLT 2.0+: third arg is target document node
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String keyName = args.get(0).asString();
             XPathValue keyValue = args.get(1);
             
-            // Get the stylesheet from context (must be TransformContext)
             if (!(context instanceof TransformContext)) {
                 return XPathNodeSet.empty();
             }
             TransformContext txContext = (TransformContext) context;
             CompiledStylesheet stylesheet = txContext.getStylesheet();
             
-            // Get collation from 3rd argument or use default
-            Collation collation;
-            if (args.size() > 2) {
-                String collUri = args.get(2).asString();
-                collation = Collation.forUri(collUri);
-            } else {
-                String defaultUri = txContext.getDefaultCollation();
-                collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
-            }
-            
-            // Validate key name is a valid QName (XTDE1260)
             if (!isValidQName(keyName)) {
                 throw new XPathException("XTDE1260: key name is not a valid QName: '" + keyName + "'");
             }
             
-            // Expand key name to Clark notation (resolve prefix to URI)
-            // This ensures key('bar:foo', ...) finds key defined as baz:foo 
-            // when both prefixes map to the same namespace URI
             String expandedName = expandKeyName(keyName, context);
             
             KeyDefinition keyDef = stylesheet.getKeyDefinition(expandedName);
@@ -1429,151 +1416,178 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 throw new XPathException("XTDE1260: No xsl:key declaration with name '" + keyName + "'");
             }
             
-            // Check for circular reference in key evaluation
-            if (txContext instanceof BasicTransformContext) {
-                BasicTransformContext btx = (BasicTransformContext) txContext;
-                if (btx.isKeyBeingEvaluated(expandedName)) {
-                    throw new XPathException("XTDE0640: Circular reference in key: " + keyName);
+            // Determine the target document root.
+            // Third argument (XSLT 2.0+) specifies a node whose containing
+            // document is searched; defaults to the context node's document.
+            XPathNode root;
+            if (args.size() > 2) {
+                XPathValue topArg = args.get(2);
+                XPathNode topNode = null;
+                if (topArg instanceof XPathNode) {
+                    topNode = (XPathNode) topArg;
+                } else if (topArg instanceof XPathNodeSet) {
+                    List<XPathNode> nodes = ((XPathNodeSet) topArg).getNodes();
+                    if (!nodes.isEmpty()) {
+                        topNode = nodes.get(0);
+                    }
                 }
-                btx.startKeyEvaluation(expandedName);
-            }
-            
-            try {
-                // Get the document root
+                if (topNode == null) {
+                    return XPathNodeSet.empty();
+                }
+                root = topNode.getRoot();
+            } else {
                 XPathNode contextNode = context.getContextNode();
                 if (contextNode == null) {
                     return XPathNodeSet.empty();
                 }
-                XPathNode root = contextNode.getRoot();
-                if (root == null) {
-                    return XPathNodeSet.empty();
-                }
-                
-                // Build key index and look up nodes
-                // For node-set key values, check each node's string value
-                List<String> searchValues = new ArrayList<>();
-                if (keyValue instanceof XPathNodeSet) {
-                    for (XPathNode node : ((XPathNodeSet) keyValue).getNodes()) {
-                        searchValues.add(node.getStringValue());
-                    }
-                } else {
-                    searchValues.add(keyValue.asString());
-                }
-                
-                // Find all matching nodes
-                List<XPathNode> result = new ArrayList<>();
-                Pattern matchPattern = keyDef.getMatchPattern();
-                XPathExpression useExpr = keyDef.getUseExpr();
-                
-                // Walk the document tree and find matches
-                collectKeyMatches(root, matchPattern, useExpr, searchValues, result, txContext, collation);
-                
-                return new XPathNodeSet(result);
-            } finally {
-                // Clear the key from being evaluated
-                if (txContext instanceof BasicTransformContext) {
-                    ((BasicTransformContext) txContext).endKeyEvaluation(expandedName);
-                }
+                root = contextNode.getRoot();
             }
-        }
-        
-        /**
-         * Recursively collects nodes that match the key definition and have
-         * matching key values (using collation for comparison).
-         */
-        private void collectKeyMatches(XPathNode node, Pattern matchPattern, 
-                                       XPathExpression useExpr, List<String> searchValues,
-                                       List<XPathNode> result, TransformContext context,
-                                       Collation collation) 
-                                       throws XPathException {
-            BasicTransformContext btx = (BasicTransformContext) context;
-            // Check if this node matches the key pattern
-            if (matchPattern.matches(node, context)) {
-                // Evaluate the use expression with current()=matched node (XSLT 2.0 spec)
-                XPathContext nodeContext = btx.withXsltCurrentNode(node);
-                XPathValue useValue = useExpr.evaluate(nodeContext);
-                
-                // Get the key value(s) for this node
-                List<String> nodeKeyValues = new ArrayList<>();
-                if (useValue instanceof XPathNodeSet) {
-                    for (XPathNode n : ((XPathNodeSet) useValue).getNodes()) {
-                        nodeKeyValues.add(n.getStringValue());
-                    }
-                } else {
-                    nodeKeyValues.add(useValue.asString());
+            if (root == null) {
+                return XPathNodeSet.empty();
+            }
+            
+            // Collect search values from the second argument
+            List<String> searchValues = new ArrayList<String>();
+            if (keyValue instanceof XPathNodeSet) {
+                for (XPathNode node : ((XPathNodeSet) keyValue).getNodes()) {
+                    searchValues.add(node.getStringValue());
                 }
+            } else {
+                searchValues.add(keyValue.asString());
+            }
+            
+            // Resolve the collation for key comparison
+            String defaultCollUri = txContext.getDefaultCollation();
+            final Collation collation = Collation.forUri(
+                    defaultCollUri != null ? defaultCollUri : Collation.CODEPOINT_URI);
+            
+            // Look up (or build) the cached key index for this key + document
+            Map<String, List<XPathNode>> index = null;
+            String cacheKey = expandedName + "\0" + System.identityHashCode(root);
+            
+            if (txContext instanceof BasicTransformContext) {
+                BasicTransformContext btx = (BasicTransformContext) txContext;
+                index = btx.getKeyIndex(cacheKey);
                 
-                // Check if any of this node's key values match our search values (using collation)
-                outer:
-                for (String nodeKey : nodeKeyValues) {
-                    for (String searchKey : searchValues) {
-                        if (collation.equals(nodeKey, searchKey)) {
-                            // Avoid duplicates
-                            boolean found = false;
-                            for (XPathNode existing : result) {
-                                if (existing.isSameNode(node)) {
-                                    found = true;
-                                    break;
-                                }
+                if (index == null) {
+                    if (btx.isKeyBeingEvaluated(expandedName)) {
+                        throw new XPathException("XTDE0640: Circular reference in key: " + keyName);
+                    }
+                    btx.startKeyEvaluation(expandedName);
+                    try {
+                        index = buildKeyIndex(root, keyDef, collation, btx);
+                    } finally {
+                        btx.endKeyEvaluation(expandedName);
+                    }
+                    btx.putKeyIndex(cacheKey, index);
+                }
+            } else {
+                index = buildKeyIndex(root, keyDef, collation, txContext);
+            }
+            
+            // Look up matching nodes from the index
+            List<XPathNode> result = new ArrayList<XPathNode>();
+            for (int i = 0; i < searchValues.size(); i++) {
+                String sv = searchValues.get(i);
+                List<XPathNode> matches = index.get(sv);
+                if (matches != null) {
+                    for (int j = 0; j < matches.size(); j++) {
+                        XPathNode matched = matches.get(j);
+                        boolean dup = false;
+                        for (int k = 0; k < result.size(); k++) {
+                            if (result.get(k).isSameNode(matched)) {
+                                dup = true;
+                                break;
                             }
-                            if (!found) {
-                                result.add(node);
-                            }
-                            break outer;
+                        }
+                        if (!dup) {
+                            result.add(matched);
                         }
                     }
                 }
             }
             
-            // Check attributes if this is an element (for keys matching @*)
+            return new XPathNodeSet(result);
+        }
+        
+        /**
+         * Builds a complete key index for the given key definition and document.
+         * Walks the entire document tree once, evaluating the match pattern and
+         * use expression, and returns a map from key value strings to matching nodes.
+         * The map uses the collation for key comparison so that lookups respect
+         * the stylesheet's default collation (e.g. case-insensitive).
+         */
+        private Map<String, List<XPathNode>> buildKeyIndex(XPathNode root, 
+                KeyDefinition keyDef, final Collation collation, 
+                TransformContext context) throws XPathException {
+            Comparator<String> comparator = new Comparator<String>() {
+                @Override
+                public int compare(String a, String b) {
+                    return collation.compare(a, b);
+                }
+            };
+            Map<String, List<XPathNode>> index = new TreeMap<String, List<XPathNode>>(comparator);
+            Pattern matchPattern = keyDef.getMatchPattern();
+            XPathExpression useExpr = keyDef.getUseExpr();
+            indexNode(root, matchPattern, useExpr, index, context);
+            return index;
+        }
+        
+        /**
+         * Recursively indexes a node and its descendants for the key definition.
+         */
+        private void indexNode(XPathNode node, Pattern matchPattern, 
+                XPathExpression useExpr, Map<String, List<XPathNode>> index,
+                TransformContext context) throws XPathException {
+            BasicTransformContext btx = (BasicTransformContext) context;
+            
+            if (matchPattern.matches(node, context)) {
+                addToIndex(node, useExpr, index, btx);
+            }
+            
             if (node.isElement()) {
                 Iterator<XPathNode> attrs = node.getAttributes();
                 while (attrs.hasNext()) {
                     XPathNode attr = attrs.next();
                     if (matchPattern.matches(attr, context)) {
-                        // Evaluate the use expression with current()=matched attr (XSLT 2.0 spec)
-                        XPathContext attrContext = btx.withXsltCurrentNode(attr);
-                        XPathValue useValue = useExpr.evaluate(attrContext);
-                        
-                        // Get the key value(s) for this attribute
-                        List<String> attrKeyValues = new ArrayList<>();
-                        if (useValue instanceof XPathNodeSet) {
-                            for (XPathNode n : ((XPathNodeSet) useValue).getNodes()) {
-                                attrKeyValues.add(n.getStringValue());
-                            }
-                        } else {
-                            attrKeyValues.add(useValue.asString());
-                        }
-                        
-                        // Check if any of this attribute's key values match our search values (using collation)
-                        outer:
-                        for (String attrKey : attrKeyValues) {
-                            for (String searchKey : searchValues) {
-                                if (collation.equals(attrKey, searchKey)) {
-                                    // Avoid duplicates
-                                    boolean found = false;
-                                    for (XPathNode existing : result) {
-                                        if (existing.isSameNode(attr)) {
-                                            found = true;
-                                            break;
-                                        }
-                                    }
-                                    if (!found) {
-                                        result.add(attr);
-                                    }
-                                    break outer;
-                                }
-                            }
-                        }
+                        addToIndex(attr, useExpr, index, btx);
                     }
                 }
             }
             
-            // Recurse into children
             Iterator<XPathNode> children = node.getChildren();
             while (children.hasNext()) {
-                collectKeyMatches(children.next(), matchPattern, useExpr, 
-                                  searchValues, result, context, collation);
+                indexNode(children.next(), matchPattern, useExpr, index, context);
+            }
+        }
+        
+        /**
+         * Evaluates the use expression for a matched node and adds entries to the index.
+         */
+        private void addToIndex(XPathNode node, XPathExpression useExpr,
+                Map<String, List<XPathNode>> index, BasicTransformContext btx) 
+                throws XPathException {
+            XPathContext nodeContext = btx.withXsltCurrentNode(node);
+            XPathValue useValue = useExpr.evaluate(nodeContext);
+            
+            if (useValue instanceof XPathNodeSet) {
+                for (XPathNode n : ((XPathNodeSet) useValue).getNodes()) {
+                    String keyVal = n.getStringValue();
+                    List<XPathNode> list = index.get(keyVal);
+                    if (list == null) {
+                        list = new ArrayList<XPathNode>();
+                        index.put(keyVal, list);
+                    }
+                    list.add(node);
+                }
+            } else {
+                String keyVal = useValue.asString();
+                List<XPathNode> list = index.get(keyVal);
+                if (list == null) {
+                    list = new ArrayList<XPathNode>();
+                    index.put(keyVal, list);
+                }
+                list.add(node);
             }
         }
         

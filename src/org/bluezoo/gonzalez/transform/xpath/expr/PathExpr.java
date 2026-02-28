@@ -28,7 +28,10 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A path expression (filter expression followed by relative location path).
@@ -101,8 +104,10 @@ public final class PathExpr implements Expr {
         }
 
         // Evaluate the path for each context node
-        List<XPathNode> nodeResults = new ArrayList<>();
-        List<XPathValue> atomicResults = new ArrayList<>();
+        List<XPathNode> nodeResults = new ArrayList<XPathNode>();
+        Set<XPathNode> seenNodes = Collections.newSetFromMap(
+                new IdentityHashMap<XPathNode, Boolean>());
+        List<XPathValue> atomicResults = new ArrayList<XPathValue>();
         boolean hasAtomicResults = false;
 
         for (XPathNode node : contextNodes) {
@@ -111,14 +116,7 @@ public final class PathExpr implements Expr {
 
             if (pathResult.isNodeSet()) {
                 for (XPathNode resultNode : pathResult.asNodeSet()) {
-                    boolean found = false;
-                    for (XPathNode existing : nodeResults) {
-                        if (existing.isSameNode(resultNode)) {
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found) {
+                    if (seenNodes.add(resultNode)) {
                         nodeResults.add(resultNode);
                     }
                 }

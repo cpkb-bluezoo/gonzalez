@@ -260,10 +260,10 @@ Templates templates = factory.newTemplates(new StreamSource("style.xsl"));
 // Create transformer instance
 Transformer transformer = templates.newTransformer();
 
-// Transform
+// Transform (blocks reading from input)
 transformer.transform(
-    new StreamSource("input.xml"),
-    new StreamResult("output.xml"));
+    new StreamSource(inputStream),
+    new StreamResult(outputStream));
 ```
 
 ### SAX Pipeline Integration
@@ -275,9 +275,11 @@ For streaming transformations:
 TransformerHandler handler = factory.newTransformerHandler(templates);
 handler.setResult(new StreamResult(outputStream));
 
-// Feed SAX events (e.g., from Gonzalez parser)
+// Feed SAX events from Gonzalez parser - non-blocking, as data arrives
 parser.setContentHandler(handler);
-parser.parse(inputSource);
+parser.receive(buffer1);
+parser.receive(buffer2);
+parser.close());
 ```
 
 ## Features

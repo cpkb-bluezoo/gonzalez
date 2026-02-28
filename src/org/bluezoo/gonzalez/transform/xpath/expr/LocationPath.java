@@ -23,8 +23,10 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 import org.bluezoo.gonzalez.schema.xsd.XSDAttribute;
 import org.bluezoo.gonzalez.schema.xsd.XSDElement;
@@ -646,16 +648,12 @@ public final class LocationPath implements Expr {
         if (nodes.size() <= 1) {
             return nodes;
         }
-        List<XPathNode> result = new ArrayList<>(nodes.size());
-        for (XPathNode node : nodes) {
-            boolean found = false;
-            for (XPathNode existing : result) {
-                if (existing.isSameNode(node)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
+        Set<XPathNode> seen = Collections.newSetFromMap(
+                new IdentityHashMap<XPathNode, Boolean>(nodes.size()));
+        List<XPathNode> result = new ArrayList<XPathNode>(nodes.size());
+        for (int i = 0; i < nodes.size(); i++) {
+            XPathNode node = nodes.get(i);
+            if (seen.add(node)) {
                 result.add(node);
             }
         }
