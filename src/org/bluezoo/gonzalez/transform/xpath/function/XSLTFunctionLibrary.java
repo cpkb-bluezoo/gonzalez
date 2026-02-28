@@ -2709,12 +2709,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            // Look for current group in variable scope
             XPathValue group = context.getVariable(null, "__current_group__");
-            if (group != null && group.isNodeSet()) {
-                return group;
+            if (group != null) {
+                if (group.isNodeSet() || group.isSequence()) {
+                    return group;
+                }
             }
-            // Return empty sequence if not in grouping context
             return XPathNodeSet.empty();
         }
     }

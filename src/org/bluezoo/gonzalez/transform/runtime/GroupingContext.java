@@ -21,7 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
-import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.Collections;
 import java.util.List;
@@ -36,8 +36,8 @@ import java.util.List;
  */
 public final class GroupingContext {
 
-    private final String groupingKey;
-    private final List<XPathNode> currentGroup;
+    private final XPathValue groupingKey;
+    private final List<XPathValue> currentGroup;
 
     /**
      * Creates a new grouping context.
@@ -45,28 +45,26 @@ public final class GroupingContext {
      * @param groupingKey the grouping key value
      * @param currentGroup the items in the current group
      */
-    public GroupingContext(String groupingKey, List<XPathNode> currentGroup) {
+    public GroupingContext(XPathValue groupingKey, List<XPathValue> currentGroup) {
         this.groupingKey = groupingKey;
         this.currentGroup = currentGroup != null ? currentGroup : Collections.emptyList();
     }
 
     /**
      * Returns the current grouping key.
-     * This is the value returned by current-grouping-key().
      *
      * @return the grouping key
      */
-    public String getGroupingKey() {
+    public XPathValue getGroupingKey() {
         return groupingKey;
     }
 
     /**
      * Returns the items in the current group.
-     * This is the value returned by current-group().
      *
      * @return the group items
      */
-    public List<XPathNode> getCurrentGroup() {
+    public List<XPathValue> getCurrentGroup() {
         return currentGroup;
     }
 

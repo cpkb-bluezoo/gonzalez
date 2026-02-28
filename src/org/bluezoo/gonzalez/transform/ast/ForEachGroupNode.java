@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.GroupingContext;
@@ -39,40 +40,19 @@ import org.xml.sax.SAXException;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * XSLT 2.0 xsl:for-each-group instruction.
+ * XSLT 2.0/3.0 xsl:for-each-group instruction.
  *
- * <p>The xsl:for-each-group instruction groups items and processes each group.
- * Grouping methods:
- * <ul>
- *   <li><b>group-by</b> - Groups items by a computed key</li>
- *   <li><b>group-adjacent</b> - Groups adjacent items with same key</li>
- *   <li><b>group-starting-with</b> - Groups starting at pattern match</li>
- *   <li><b>group-ending-with</b> - Groups ending at pattern match</li>
- * </ul>
+ * <p>Groups items from the select expression and processes each group.
+ * Supports all four grouping methods: group-by, group-adjacent,
+ * group-starting-with, and group-ending-with.
  *
- * <p>Example:
- * <pre>
- * &lt;xsl:for-each-group select="item" group-by="@category"&gt;
- *   &lt;category name="{current-grouping-key()}"&gt;
- *     &lt;xsl:for-each select="current-group()"&gt;
- *       &lt;item&gt;&lt;xsl:value-of select="."/&gt;&lt;/item&gt;
- *     &lt;/xsl:for-each&gt;
- *   &lt;/category&gt;
- * &lt;/xsl:for-each-group&gt;
- * </pre>
- *
- * <p>Within the body:
- * <ul>
- *   <li><b>current-group()</b> - Returns the items in the current group</li>
- *   <li><b>current-grouping-key()</b> - Returns the grouping key value</li>
- *   <li>Context item is the first item of each group</li>
- * </ul>
+ * <p>Items can be nodes or atomic values. Composite keys (XSLT 3.0)
+ * are supported when {@code composite="yes"}.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -82,16 +62,9 @@ public final class ForEachGroupNode implements XSLTNode {
      * Grouping method for xsl:for-each-group.
      */
     public enum GroupingMethod {
-        /** Groups items by a computed key value. */
         GROUP_BY,
-        
-        /** Groups adjacent items that have the same key value. */
         GROUP_ADJACENT,
-        
-        /** Groups items starting with each item that matches a pattern. */
         GROUP_STARTING_WITH,
-        
-        /** Groups items ending with each item that matches a pattern. */
         GROUP_ENDING_WITH
     }
 
@@ -104,178 +77,87 @@ public final class ForEachGroupNode implements XSLTNode {
     private final XSLTNode body;
     private final AttributeValueTemplate collationAvt;
     private final List<SortSpec> sorts;
+    private final boolean composite;
 
-    /**
-     * Creates a group-by grouping node.
-     *
-     * <p>Groups items by evaluating the group-by expression for each item
-     * and collecting items with the same key value.
-     *
-     * @param select the expression selecting items to group
-     * @param groupByExpr the expression computing the grouping key
-     * @param body the body to execute for each group
-     * @return a new ForEachGroupNode configured for group-by grouping
-     */
     public static ForEachGroupNode groupBy(XPathExpression select, XPathExpression groupByExpr,
                                             XSLTNode body) {
-        return groupBy(select, groupByExpr, body, null, Collections.emptyList());
+        return groupBy(select, groupByExpr, body, null, Collections.emptyList(), false);
     }
 
-    /**
-     * Creates a group-by grouping node with collation support.
-     *
-     * @param select the expression selecting items to group
-     * @param groupByExpr the expression computing the grouping key
-     * @param body the body to execute for each group
-     * @param collationAvt the collation AVT (can be null for default)
-     * @return a new ForEachGroupNode configured for group-by grouping
-     */
     public static ForEachGroupNode groupBy(XPathExpression select, XPathExpression groupByExpr,
                                             XSLTNode body, AttributeValueTemplate collationAvt) {
-        return groupBy(select, groupByExpr, body, collationAvt, Collections.emptyList());
+        return groupBy(select, groupByExpr, body, collationAvt, Collections.emptyList(), false);
     }
 
-    /**
-     * Creates a group-by grouping node with collation and sort support.
-     *
-     * @param select the expression selecting items to group
-     * @param groupByExpr the expression computing the grouping key
-     * @param body the body to execute for each group
-     * @param collationAvt the collation AVT (can be null for default)
-     * @param sorts the sort specifications for ordering groups
-     * @return a new ForEachGroupNode configured for group-by grouping
-     */
     public static ForEachGroupNode groupBy(XPathExpression select, XPathExpression groupByExpr,
                                             XSLTNode body, AttributeValueTemplate collationAvt,
                                             List<SortSpec> sorts) {
-        return new ForEachGroupNode(select, groupByExpr, null, null, null, 
-                                    GroupingMethod.GROUP_BY, body, collationAvt, sorts);
+        return groupBy(select, groupByExpr, body, collationAvt, sorts, false);
     }
 
-    /**
-     * Creates a group-adjacent grouping node.
-     *
-     * <p>Groups consecutive items that have the same key value. Unlike
-     * group-by, this preserves the order of items and only groups adjacent
-     * items with matching keys.
-     *
-     * @param select the expression selecting items to group
-     * @param groupAdjacentExpr the expression computing the grouping key
-     * @param body the body to execute for each group
-     * @return a new ForEachGroupNode configured for group-adjacent grouping
-     */
-    public static ForEachGroupNode groupAdjacent(XPathExpression select, 
+    public static ForEachGroupNode groupBy(XPathExpression select, XPathExpression groupByExpr,
+                                            XSLTNode body, AttributeValueTemplate collationAvt,
+                                            List<SortSpec> sorts, boolean composite) {
+        return new ForEachGroupNode(select, groupByExpr, null, null, null,
+                                    GroupingMethod.GROUP_BY, body, collationAvt, sorts, composite);
+    }
+
+    public static ForEachGroupNode groupAdjacent(XPathExpression select,
                                                   XPathExpression groupAdjacentExpr,
                                                   XSLTNode body) {
-        return groupAdjacent(select, groupAdjacentExpr, body, null, Collections.emptyList());
+        return groupAdjacent(select, groupAdjacentExpr, body, null, Collections.emptyList(), false);
     }
 
-    /**
-     * Creates a group-adjacent grouping node with collation support.
-     *
-     * @param select the expression selecting items to group
-     * @param groupAdjacentExpr the expression computing the grouping key
-     * @param body the body to execute for each group
-     * @param collationAvt the collation AVT (can be null for default)
-     * @return a new ForEachGroupNode configured for group-adjacent grouping
-     */
-    public static ForEachGroupNode groupAdjacent(XPathExpression select, 
+    public static ForEachGroupNode groupAdjacent(XPathExpression select,
                                                   XPathExpression groupAdjacentExpr,
                                                   XSLTNode body, AttributeValueTemplate collationAvt) {
-        return groupAdjacent(select, groupAdjacentExpr, body, collationAvt, Collections.emptyList());
+        return groupAdjacent(select, groupAdjacentExpr, body, collationAvt, Collections.emptyList(), false);
     }
 
-    /**
-     * Creates a group-adjacent grouping node with collation and sort support.
-     *
-     * @param select the expression selecting items to group
-     * @param groupAdjacentExpr the expression computing the grouping key
-     * @param body the body to execute for each group
-     * @param collationAvt the collation AVT (can be null for default)
-     * @param sorts the sort specifications for ordering groups
-     * @return a new ForEachGroupNode configured for group-adjacent grouping
-     */
-    public static ForEachGroupNode groupAdjacent(XPathExpression select, 
+    public static ForEachGroupNode groupAdjacent(XPathExpression select,
                                                   XPathExpression groupAdjacentExpr,
                                                   XSLTNode body, AttributeValueTemplate collationAvt,
                                                   List<SortSpec> sorts) {
-        return new ForEachGroupNode(select, null, groupAdjacentExpr, null, null, 
-                                    GroupingMethod.GROUP_ADJACENT, body, collationAvt, sorts);
+        return groupAdjacent(select, groupAdjacentExpr, body, collationAvt, sorts, false);
     }
 
-    /**
-     * Creates a group-starting-with grouping node.
-     *
-     * <p>Groups items starting with each item that matches the pattern.
-     * Each group begins at a matching item and continues until the next match
-     * (or end of sequence).
-     *
-     * @param select the expression selecting items to group
-     * @param pattern the pattern that identifies group start items
-     * @param body the body to execute for each group
-     * @return a new ForEachGroupNode configured for group-starting-with grouping
-     */
-    public static ForEachGroupNode groupStartingWith(XPathExpression select, 
-                                                      Pattern pattern,
-                                                      XSLTNode body) {
+    public static ForEachGroupNode groupAdjacent(XPathExpression select,
+                                                  XPathExpression groupAdjacentExpr,
+                                                  XSLTNode body, AttributeValueTemplate collationAvt,
+                                                  List<SortSpec> sorts, boolean composite) {
+        return new ForEachGroupNode(select, null, groupAdjacentExpr, null, null,
+                                    GroupingMethod.GROUP_ADJACENT, body, collationAvt, sorts, composite);
+    }
+
+    public static ForEachGroupNode groupStartingWith(XPathExpression select,
+                                                      Pattern pattern, XSLTNode body) {
         return groupStartingWith(select, pattern, body, Collections.emptyList());
     }
 
-    /**
-     * Creates a group-starting-with grouping node with sort support.
-     *
-     * @param select the expression selecting items to group
-     * @param pattern the pattern that identifies group start items
-     * @param body the body to execute for each group
-     * @param sorts the sort specifications for ordering groups
-     * @return a new ForEachGroupNode configured for group-starting-with grouping
-     */
-    public static ForEachGroupNode groupStartingWith(XPathExpression select, 
-                                                      Pattern pattern,
-                                                      XSLTNode body, List<SortSpec> sorts) {
-        return new ForEachGroupNode(select, null, null, pattern, null, 
-                                    GroupingMethod.GROUP_STARTING_WITH, body, null, sorts);
+    public static ForEachGroupNode groupStartingWith(XPathExpression select,
+                                                      Pattern pattern, XSLTNode body,
+                                                      List<SortSpec> sorts) {
+        return new ForEachGroupNode(select, null, null, pattern, null,
+                                    GroupingMethod.GROUP_STARTING_WITH, body, null, sorts, false);
     }
 
-    /**
-     * Creates a group-ending-with grouping node.
-     *
-     * <p>Groups items ending with each item that matches the pattern.
-     * Each group ends at a matching item and begins after the previous match
-     * (or start of sequence).
-     *
-     * @param select the expression selecting items to group
-     * @param pattern the pattern that identifies group end items
-     * @param body the body to execute for each group
-     * @return a new ForEachGroupNode configured for group-ending-with grouping
-     */
-    public static ForEachGroupNode groupEndingWith(XPathExpression select, 
-                                                    Pattern pattern,
-                                                    XSLTNode body) {
+    public static ForEachGroupNode groupEndingWith(XPathExpression select,
+                                                    Pattern pattern, XSLTNode body) {
         return groupEndingWith(select, pattern, body, Collections.emptyList());
     }
 
-    /**
-     * Creates a group-ending-with grouping node with sort support.
-     *
-     * @param select the expression selecting items to group
-     * @param pattern the pattern that identifies group end items
-     * @param body the body to execute for each group
-     * @param sorts the sort specifications for ordering groups
-     * @return a new ForEachGroupNode configured for group-ending-with grouping
-     */
-    public static ForEachGroupNode groupEndingWith(XPathExpression select, 
-                                                    Pattern pattern,
-                                                    XSLTNode body, List<SortSpec> sorts) {
-        return new ForEachGroupNode(select, null, null, null, pattern, 
-                                    GroupingMethod.GROUP_ENDING_WITH, body, null, sorts);
+    public static ForEachGroupNode groupEndingWith(XPathExpression select,
+                                                    Pattern pattern, XSLTNode body,
+                                                    List<SortSpec> sorts) {
+        return new ForEachGroupNode(select, null, null, null, pattern,
+                                    GroupingMethod.GROUP_ENDING_WITH, body, null, sorts, false);
     }
 
     private ForEachGroupNode(XPathExpression select, XPathExpression groupByExpr,
                               XPathExpression groupAdjacentExpr, Pattern startingPattern,
                               Pattern endingPattern, GroupingMethod method,
                               XSLTNode body, AttributeValueTemplate collationAvt,
-                              List<SortSpec> sorts) {
+                              List<SortSpec> sorts, boolean composite) {
         this.select = select;
         this.groupByExpr = groupByExpr;
         this.groupAdjacentExpr = groupAdjacentExpr;
@@ -285,87 +167,58 @@ public final class ForEachGroupNode implements XSLTNode {
         this.body = body;
         this.collationAvt = collationAvt;
         this.sorts = sorts != null ? sorts : Collections.emptyList();
+        this.composite = composite;
     }
 
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         try {
-            // Evaluate select expression
             XPathValue selectResult = select.evaluate(context);
-            
-            // Get items as a list - handle both node-sets and sequences
-            List<XPathNode> items = new ArrayList<>();
-            if (selectResult.isNodeSet()) {
-                XPathNodeSet ns = selectResult.asNodeSet();
-                for (XPathNode node : ns) {
-                    items.add(node);
-                }
-            } else if (selectResult.isSequence()) {
-                // XPath 2.0+ sequence - extract nodes
-                XPathSequence sequence = (XPathSequence) selectResult;
-                for (XPathValue item : sequence.getItems()) {
-                    if (item instanceof XPathNode) {
-                        items.add((XPathNode) item);
-                    } else if (item instanceof XPathNodeSet) {
-                        for (XPathNode node : (XPathNodeSet) item) {
-                            items.add(node);
-                        }
-                    } else if (item.isNodeSet()) {
-                        // Handle wrappers
-                        XPathNodeSet ns = item.asNodeSet();
-                        if (ns != null) {
-                            for (XPathNode node : ns) {
-                                items.add(node);
-                            }
-                        }
-                    }
-                }
-            }
-            
+
+            List<XPathValue> items = extractItems(selectResult);
             if (items.isEmpty()) {
                 return;
             }
-            
-            // Group items based on method
-            Map<String, List<XPathNode>> groups = groupItems(items, context);
-            
-            // Convert to list of group entries for sorting
-            List<GroupEntry> groupEntries = new ArrayList<>();
-            for (Map.Entry<String, List<XPathNode>> entry : groups.entrySet()) {
-                if (!entry.getValue().isEmpty()) {
-                    groupEntries.add(new GroupEntry(entry.getKey(), entry.getValue()));
-                }
-            }
-            
-            // Apply sorting if specified
+
+            List<GroupEntry> groupEntries = groupItems(items, context);
+
             if (!sorts.isEmpty() && !groupEntries.isEmpty()) {
                 sortGroups(groupEntries, context);
             }
-            
-            // Process each group
+
             int position = 0;
             int size = groupEntries.size();
-            
+
             for (GroupEntry entry : groupEntries) {
                 position++;
-                String groupingKey = entry.key;
-                List<XPathNode> groupItems = entry.items;
-                
-                // Create grouping context
-                GroupingContext groupCtx = new GroupingContext(groupingKey, groupItems);
-                
-                // Context item is first item of group
-                XPathNode firstItem = groupItems.get(0);
-                TransformContext groupContext = context.withContextNode(firstItem)
-                    .withPositionAndSize(position, size);
-                
-                // Store grouping context for current-group() and current-grouping-key()
-                groupContext.getVariableScope().bind("__current_group__", 
-                    new XPathNodeSet(new ArrayList<>(groupItems)));
-                groupContext.getVariableScope().bind("__current_grouping_key__",
-                    XPathString.of(groupingKey));
-                
-                // Execute body
+                List<XPathValue> groupItems = entry.items;
+                XPathValue firstItem = groupItems.get(0);
+                XPathNode firstNode = asNode(firstItem);
+
+                TransformContext groupContext;
+                if (firstNode != null) {
+                    if (context instanceof BasicTransformContext) {
+                        groupContext = ((BasicTransformContext) context)
+                            .withContextAndCurrentNodes(firstNode, firstNode)
+                            .withPositionAndSize(position, size);
+                    } else {
+                        groupContext = context.withContextNode(firstNode)
+                            .withPositionAndSize(position, size);
+                    }
+                } else {
+                    if (context instanceof BasicTransformContext) {
+                        groupContext = ((BasicTransformContext) context)
+                            .withContextItem(firstItem)
+                            .withPositionAndSize(position, size);
+                    } else {
+                        groupContext = context.withPositionAndSize(position, size);
+                    }
+                }
+
+                XPathValue currentGroupValue = buildCurrentGroup(groupItems);
+                groupContext.getVariableScope().bind("__current_group__", currentGroupValue);
+                groupContext.getVariableScope().bind("__current_grouping_key__", entry.keyValue);
+
                 if (body != null) {
                     body.execute(groupContext, output);
                 }
@@ -374,34 +227,396 @@ public final class ForEachGroupNode implements XSLTNode {
             throw new SAXException("Error in xsl:for-each-group: " + e.getMessage(), e);
         }
     }
-    
+
     /**
-     * Helper class to hold a group entry (key + items) for sorting.
+     * Wraps an XPathNode as an XPathValue (single-item XPathNodeSet).
+     * XPathNode does not extend XPathValue, so this bridge is needed
+     * when storing mixed nodes and atomics in List&lt;XPathValue&gt;.
      */
+    private XPathValue wrapNode(XPathNode node) {
+        if (node instanceof XPathValue) {
+            return (XPathValue) node;
+        }
+        List<XPathNode> single = new ArrayList<>(1);
+        single.add(node);
+        return new XPathNodeSet(single);
+    }
+
+    /**
+     * Extracts items from a select expression result, including both nodes
+     * and atomic values.
+     */
+    private List<XPathValue> extractItems(XPathValue selectResult) {
+        List<XPathValue> items = new ArrayList<>();
+        if (selectResult.isNodeSet()) {
+            XPathNodeSet ns = selectResult.asNodeSet();
+            for (XPathNode node : ns) {
+                items.add(wrapNode(node));
+            }
+        } else if (selectResult.isSequence()) {
+            XPathSequence sequence = (XPathSequence) selectResult;
+            for (XPathValue item : sequence.getItems()) {
+                if (item instanceof XPathNode) {
+                    items.add(item);
+                } else if (item instanceof XPathNodeSet) {
+                    for (XPathNode node : (XPathNodeSet) item) {
+                        items.add(wrapNode(node));
+                    }
+                } else if (item.isNodeSet()) {
+                    XPathNodeSet ns = item.asNodeSet();
+                    if (ns != null) {
+                        for (XPathNode node : ns) {
+                            items.add(wrapNode(node));
+                        }
+                    }
+                } else {
+                    items.add(item);
+                }
+            }
+        } else if (selectResult instanceof XPathNode) {
+            items.add(selectResult);
+        } else {
+            items.add(selectResult);
+        }
+        return items;
+    }
+
+    /**
+     * Builds the value for current-group(). Returns XPathNodeSet if all items
+     * are nodes, otherwise XPathSequence.
+     */
+    private XPathValue buildCurrentGroup(List<XPathValue> groupItems) {
+        List<XPathNode> nodes = new ArrayList<>(groupItems.size());
+        for (XPathValue item : groupItems) {
+            XPathNode node = asNode(item);
+            if (node == null) {
+                return new XPathSequence(groupItems);
+            }
+            nodes.add(node);
+        }
+        return new XPathNodeSet(nodes);
+    }
+
+    /**
+     * Tries to extract a single XPathNode from a value. Returns null for
+     * atomic values.
+     */
+    private XPathNode asNode(XPathValue item) {
+        if (item instanceof XPathNode) {
+            return (XPathNode) item;
+        }
+        if (item instanceof XPathNodeSet) {
+            XPathNodeSet ns = (XPathNodeSet) item;
+            if (!ns.isEmpty()) {
+                return ns.iterator().next();
+            }
+        }
+        if (item != null && item.isNodeSet()) {
+            XPathNodeSet ns = item.asNodeSet();
+            if (ns != null && !ns.isEmpty()) {
+                return ns.iterator().next();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Evaluates the context for a single item with position information.
+     */
+    private TransformContext itemContext(TransformContext context, XPathValue item,
+                                         int position, int size) {
+        XPathNode node = asNode(item);
+        if (node != null) {
+            return context.withContextNode(node)
+                .withPositionAndSize(position, size);
+        }
+        if (context instanceof BasicTransformContext) {
+            return ((BasicTransformContext) context)
+                .withContextItem(item)
+                .withPositionAndSize(position, size);
+        }
+        return context.withPositionAndSize(position, size);
+    }
+
     private static class GroupEntry {
         final String key;
-        final List<XPathNode> items;
-        
-        GroupEntry(String key, List<XPathNode> items) {
+        final XPathValue keyValue;
+        final List<XPathValue> items;
+
+        GroupEntry(String key, XPathValue keyValue, List<XPathValue> items) {
             this.key = key;
+            this.keyValue = keyValue;
             this.items = items;
         }
     }
-    
+
+    /**
+     * Groups items based on the grouping method.
+     */
+    private List<GroupEntry> groupItems(List<XPathValue> items, TransformContext context)
+            throws XPathException {
+
+        Collation collation;
+        if (collationAvt != null) {
+            String collUri = collationAvt.evaluate(context);
+            collation = Collation.forUri(collUri);
+        } else {
+            String defaultUri = context.getDefaultCollation();
+            collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+        }
+
+        switch (method) {
+            case GROUP_BY:
+                return groupByKey(items, groupByExpr, context, collation);
+            case GROUP_ADJACENT:
+                return groupAdjacent(items, groupAdjacentExpr, context, collation);
+            case GROUP_STARTING_WITH:
+                return groupStartingWith(items, groupStartingPattern, context);
+            case GROUP_ENDING_WITH:
+                return groupEndingWith(items, groupEndingPattern, context);
+            default:
+                return groupByKey(items, groupByExpr, context, collation);
+        }
+    }
+
+    /**
+     * Groups items by computed key. With composite="yes", each key component
+     * is compared separately; otherwise the key is stringified.
+     */
+    private List<GroupEntry> groupByKey(List<XPathValue> items, XPathExpression keyExpr,
+                                         TransformContext context, Collation collation)
+            throws XPathException {
+
+        List<String> groupKeyStrings = new ArrayList<>();
+        List<XPathValue> groupKeyValues = new ArrayList<>();
+        List<List<XPathValue>> groupItemLists = new ArrayList<>();
+
+        int itemCount = items.size();
+        for (int i = 0; i < itemCount; i++) {
+            XPathValue item = items.get(i);
+            TransformContext itemCtx = itemContext(context, item, i + 1, itemCount);
+            XPathValue keyResult = keyExpr.evaluate(itemCtx);
+
+            if (composite) {
+                String compositeKey = compositeKeyString(keyResult);
+                addToGroup(groupKeyStrings, groupKeyValues, groupItemLists,
+                           compositeKey, keyResult, item, collation);
+            } else {
+                List<XPathValue> keyValues = flattenToAtomics(keyResult);
+                if (keyValues.isEmpty()) {
+                    keyValues.add(XPathString.of(""));
+                }
+                for (XPathValue kv : keyValues) {
+                    String key = kv.asString();
+                    addToGroup(groupKeyStrings, groupKeyValues, groupItemLists,
+                               key, kv, item, collation);
+                }
+            }
+        }
+
+        List<GroupEntry> entries = new ArrayList<>();
+        for (int i = 0; i < groupKeyStrings.size(); i++) {
+            List<XPathValue> gItems = groupItemLists.get(i);
+            if (!gItems.isEmpty()) {
+                entries.add(new GroupEntry(groupKeyStrings.get(i),
+                                          groupKeyValues.get(i), gItems));
+            }
+        }
+        return entries;
+    }
+
+    private void addToGroup(List<String> keyStrings, List<XPathValue> keyValues,
+                            List<List<XPathValue>> itemLists,
+                            String key, XPathValue keyValue, XPathValue item,
+                            Collation collation) {
+        for (int j = 0; j < keyStrings.size(); j++) {
+            if (collation.equals(key, keyStrings.get(j))) {
+                itemLists.get(j).add(item);
+                return;
+            }
+        }
+        keyStrings.add(key);
+        keyValues.add(keyValue);
+        List<XPathValue> newGroup = new ArrayList<>();
+        newGroup.add(item);
+        itemLists.add(newGroup);
+    }
+
+    /**
+     * Flattens a value to a list of atomic values. A sequence becomes its
+     * individual items; a node-set atomizes each node to its string value.
+     */
+    private List<XPathValue> flattenToAtomics(XPathValue value) {
+        List<XPathValue> result = new ArrayList<>();
+        if (value instanceof XPathSequence) {
+            for (XPathValue item : ((XPathSequence) value).getItems()) {
+                result.add(item);
+            }
+        } else if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            for (XPathNode node : ns) {
+                result.add(XPathString.of(node.getStringValue()));
+            }
+        } else {
+            result.add(value);
+        }
+        return result;
+    }
+
+    /**
+     * Builds a canonical string representation of a composite key for
+     * comparison purposes.
+     */
+    private String compositeKeyString(XPathValue keyResult) {
+        List<XPathValue> components = flattenToAtomics(keyResult);
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < components.size(); i++) {
+            if (i > 0) {
+                sb.append('\u0000');
+            }
+            sb.append(components.get(i).asString());
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Groups adjacent items with same key.
+     */
+    private List<GroupEntry> groupAdjacent(List<XPathValue> items, XPathExpression keyExpr,
+                                            TransformContext context, Collation collation)
+            throws XPathException {
+
+        List<GroupEntry> entries = new ArrayList<>();
+        String currentKey = null;
+        XPathValue currentKeyValue = null;
+        List<XPathValue> currentGroup = null;
+
+        int itemCount = items.size();
+        for (int i = 0; i < itemCount; i++) {
+            XPathValue item = items.get(i);
+            TransformContext itemCtx = itemContext(context, item, i + 1, itemCount);
+            XPathValue keyResult = keyExpr.evaluate(itemCtx);
+
+            String key;
+            if (composite) {
+                key = compositeKeyString(keyResult);
+            } else {
+                key = keyResult.asString();
+            }
+
+            boolean keyChanged = (currentKey == null) || !collation.equals(key, currentKey);
+            if (keyChanged) {
+                if (currentGroup != null && !currentGroup.isEmpty()) {
+                    entries.add(new GroupEntry(currentKey, currentKeyValue, currentGroup));
+                }
+                currentKey = key;
+                currentKeyValue = composite ? keyResult : keyResult;
+                currentGroup = new ArrayList<>();
+            }
+
+            currentGroup.add(item);
+        }
+
+        if (currentGroup != null && !currentGroup.isEmpty()) {
+            entries.add(new GroupEntry(currentKey, currentKeyValue, currentGroup));
+        }
+
+        return entries;
+    }
+
+    /**
+     * Groups items starting with each item that matches the pattern.
+     */
+    private List<GroupEntry> groupStartingWith(List<XPathValue> items, Pattern pattern,
+                                                TransformContext context)
+            throws XPathException {
+
+        List<GroupEntry> entries = new ArrayList<>();
+        List<XPathValue> currentGroup = null;
+        int groupIndex = 0;
+
+        for (XPathValue item : items) {
+            boolean matches = matchesItem(pattern, item, context);
+
+            if (matches || currentGroup == null) {
+                if (currentGroup != null && !currentGroup.isEmpty()) {
+                    groupIndex++;
+                    entries.add(new GroupEntry("group_" + groupIndex,
+                                              XPathString.of("group_" + groupIndex), currentGroup));
+                }
+                currentGroup = new ArrayList<>();
+            }
+
+            currentGroup.add(item);
+        }
+
+        if (currentGroup != null && !currentGroup.isEmpty()) {
+            groupIndex++;
+            entries.add(new GroupEntry("group_" + groupIndex,
+                                      XPathString.of("group_" + groupIndex), currentGroup));
+        }
+
+        return entries;
+    }
+
+    /**
+     * Groups items ending with each item that matches the pattern.
+     */
+    private List<GroupEntry> groupEndingWith(List<XPathValue> items, Pattern pattern,
+                                              TransformContext context)
+            throws XPathException {
+
+        List<GroupEntry> entries = new ArrayList<>();
+        List<XPathValue> currentGroup = new ArrayList<>();
+        int groupIndex = 0;
+
+        for (XPathValue item : items) {
+            currentGroup.add(item);
+
+            boolean matches = matchesItem(pattern, item, context);
+
+            if (matches) {
+                groupIndex++;
+                entries.add(new GroupEntry("group_" + groupIndex,
+                                          XPathString.of("group_" + groupIndex), currentGroup));
+                currentGroup = new ArrayList<>();
+            }
+        }
+
+        if (!currentGroup.isEmpty()) {
+            groupIndex++;
+            entries.add(new GroupEntry("group_" + groupIndex,
+                                      XPathString.of("group_" + groupIndex), currentGroup));
+        }
+
+        return entries;
+    }
+
+    /**
+     * Tests whether a pattern matches an item, handling both nodes and atomic
+     * values (XSLT 3.0 patterns like ".[. instance of xs:string]").
+     */
+    private boolean matchesItem(Pattern pattern, XPathValue item, TransformContext context)
+            throws XPathException {
+        XPathNode node = asNode(item);
+        if (node != null) {
+            return pattern.matches(node, context);
+        }
+        return pattern.matchesAtomicValue(item, context);
+    }
+
     /**
      * Sorts groups according to the sort specifications.
-     * The sort key is evaluated with the first item of each group as the context.
      */
     private void sortGroups(List<GroupEntry> groups, TransformContext context) throws XPathException {
         final int groupCount = groups.size();
         final int sortCount = sorts.size();
-        
-        // Pre-evaluate sort spec AVTs
+
         final String[] dataTypes = new String[sortCount];
         final String[] orders = new String[sortCount];
         final String[] caseOrders = new String[sortCount];
         final Collation[] collations = new Collation[sortCount];
-        
+
         for (int j = 0; j < sortCount; j++) {
             SortSpec spec = sorts.get(j);
             dataTypes[j] = spec.getDataType(context);
@@ -413,27 +628,23 @@ public final class ForEachGroupNode implements XSLTNode {
             }
             collations[j] = Collation.forUri(collationUri);
         }
-        
-        // Pre-compute sort keys for all groups (using first item of each group)
+
         final Object[][] sortKeys = new Object[groupCount][sortCount];
-        
+
         for (int i = 0; i < groupCount; i++) {
             GroupEntry group = groups.get(i);
-            XPathNode firstItem = group.items.get(0);
-            TransformContext itemCtx = context.withContextNode(firstItem)
-                .withPositionAndSize(i + 1, groupCount);
-            
-            // Set up current-group() and current-grouping-key() for sort key evaluation
-            itemCtx.getVariableScope().bind("__current_group__", 
-                new XPathNodeSet(new ArrayList<>(group.items)));
-            itemCtx.getVariableScope().bind("__current_grouping_key__",
-                XPathString.of(group.key));
-            
+            XPathValue firstItem = group.items.get(0);
+            TransformContext itemCtx = itemContext(context, firstItem, i + 1, groupCount);
+
+            XPathValue currentGroupValue = buildCurrentGroup(group.items);
+            itemCtx.getVariableScope().bind("__current_group__", currentGroupValue);
+            itemCtx.getVariableScope().bind("__current_grouping_key__", group.keyValue);
+
             for (int j = 0; j < sortCount; j++) {
                 SortSpec spec = sorts.get(j);
                 XPathValue keyValue = spec.getSelectExpr().evaluate(itemCtx);
                 String dataType = dataTypes[j];
-                
+
                 if ("number".equals(dataType)) {
                     sortKeys[i][j] = keyValue.asNumber();
                 } else {
@@ -441,14 +652,12 @@ public final class ForEachGroupNode implements XSLTNode {
                 }
             }
         }
-        
-        // Create sort indexes
+
         Integer[] indexes = new Integer[groupCount];
         for (int i = 0; i < groupCount; i++) {
             indexes[i] = i;
         }
-        
-        // Sort indexes based on keys
+
         final Object[][] finalSortKeys = sortKeys;
         final String[] finalDataTypes = dataTypes;
         final String[] finalOrders = orders;
@@ -461,7 +670,7 @@ public final class ForEachGroupNode implements XSLTNode {
                 for (int j = 0; j < finalSortCount; j++) {
                     Object keyA = finalSortKeys[a][j];
                     Object keyB = finalSortKeys[b][j];
-                    int cmp = compareKeys(keyA, keyB, finalDataTypes[j], finalOrders[j], 
+                    int cmp = compareKeys(keyA, keyB, finalDataTypes[j], finalOrders[j],
                                          finalCaseOrders[j], finalCollations[j]);
                     if (cmp != 0) {
                         return cmp;
@@ -470,8 +679,7 @@ public final class ForEachGroupNode implements XSLTNode {
                 return 0;
             }
         });
-        
-        // Reorder groups according to sorted indexes
+
         List<GroupEntry> sorted = new ArrayList<>(groupCount);
         for (int i = 0; i < groupCount; i++) {
             sorted.add(groups.get(indexes[i]));
@@ -479,255 +687,53 @@ public final class ForEachGroupNode implements XSLTNode {
         groups.clear();
         groups.addAll(sorted);
     }
-    
-    /**
-     * Compares two sort keys.
-     */
-    private int compareKeys(Object keyA, Object keyB, String dataType, 
+
+    private int compareKeys(Object keyA, Object keyB, String dataType,
                            String order, String caseOrder, Collation collation) {
         int cmp;
-        
+
         if ("number".equals(dataType)) {
             Double numA = keyA instanceof Double ? (Double) keyA : Double.NaN;
             Double numB = keyB instanceof Double ? (Double) keyB : Double.NaN;
-            
-            // NaN handling: NaN comes last in ascending, first in descending
             boolean aIsNaN = numA.isNaN();
             boolean bIsNaN = numB.isNaN();
             if (aIsNaN && bIsNaN) {
                 cmp = 0;
             } else if (aIsNaN) {
-                cmp = 1;  // NaN after numbers
+                cmp = 1;
             } else if (bIsNaN) {
-                cmp = -1;  // numbers before NaN
+                cmp = -1;
             } else {
                 cmp = numA.compareTo(numB);
             }
         } else {
             String strA = keyA != null ? keyA.toString() : "";
             String strB = keyB != null ? keyB.toString() : "";
-            
-            // Use collation for comparison
             cmp = collation.compare(strA, strB);
-            
-            // Apply case-order if needed
             if (cmp == 0 && caseOrder != null) {
                 if ("upper-first".equals(caseOrder)) {
-                    // Upper case letters should sort before lower case
-                    cmp = strA.compareTo(strB);  // Natural Java comparison
+                    cmp = strA.compareTo(strB);
                 } else if ("lower-first".equals(caseOrder)) {
-                    // Lower case letters should sort before upper case
                     cmp = -strA.compareTo(strB);
                 }
             }
         }
-        
-        // Apply descending order if specified
+
         if ("descending".equals(order)) {
             cmp = -cmp;
         }
-        
+
         return cmp;
-    }
-
-    /**
-     * Groups items based on the grouping method.
-     */
-    private Map<String, List<XPathNode>> groupItems(List<XPathNode> items, 
-                                                      TransformContext context)
-            throws XPathException {
-        
-        // Get collation for key comparison (used by group-by and group-adjacent)
-        Collation collation;
-        if (collationAvt != null) {
-            String collUri = collationAvt.evaluate(context);
-            collation = Collation.forUri(collUri);
-        } else {
-            String defaultUri = context.getDefaultCollation();
-            collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
-        }
-        
-        switch (method) {
-            case GROUP_BY:
-                return groupByKey(items, groupByExpr, context, collation);
-                
-            case GROUP_ADJACENT:
-                return groupAdjacent(items, groupAdjacentExpr, context, collation);
-                
-            case GROUP_STARTING_WITH:
-                return groupStartingWith(items, groupStartingPattern, context);
-                
-            case GROUP_ENDING_WITH:
-                return groupEndingWith(items, groupEndingPattern, context);
-                
-            default:
-                return groupByKey(items, groupByExpr, context, collation);
-        }
-    }
-
-    /**
-     * Groups items by computed key, using collation for key comparison.
-     */
-    private Map<String, List<XPathNode>> groupByKey(List<XPathNode> items,
-                                                      XPathExpression keyExpr,
-                                                      TransformContext context,
-                                                      Collation collation)
-            throws XPathException {
-        
-        // Use LinkedHashMap to maintain insertion order of groups
-        // We need to track both the canonical key and the original key for each group
-        Map<String, List<XPathNode>> groups = new LinkedHashMap<>();
-        List<String> groupKeys = new ArrayList<>();  // Track original keys for collation comparison
-        
-        for (XPathNode item : items) {
-            // Evaluate key expression with item as context
-            TransformContext itemCtx = context.withContextNode(item);
-            XPathValue keyValue = keyExpr.evaluate(itemCtx);
-            String key = keyValue.asString();
-            
-            // Find if there's an existing group with a collation-equal key
-            String matchingKey = null;
-            for (String existingKey : groupKeys) {
-                if (collation.equals(key, existingKey)) {
-                    matchingKey = existingKey;
-                    break;
-                }
-            }
-            
-            if (matchingKey != null) {
-                // Add to existing group
-                groups.get(matchingKey).add(item);
-            } else {
-                // Start new group
-                groupKeys.add(key);
-                List<XPathNode> group = new ArrayList<>();
-                group.add(item);
-                groups.put(key, group);
-            }
-        }
-        
-        return groups;
-    }
-
-    /**
-     * Groups adjacent items with same key, using collation for key comparison.
-     */
-    private Map<String, List<XPathNode>> groupAdjacent(List<XPathNode> items,
-                                                         XPathExpression keyExpr,
-                                                         TransformContext context,
-                                                         Collation collation)
-            throws XPathException {
-        
-        // Use LinkedHashMap to maintain insertion order
-        Map<String, List<XPathNode>> groups = new LinkedHashMap<>();
-        
-        String currentKey = null;
-        String groupKey = null;
-        int groupIndex = 0;
-        
-        for (XPathNode item : items) {
-            // Evaluate key expression
-            TransformContext itemCtx = context.withContextNode(item);
-            XPathValue keyValue = keyExpr.evaluate(itemCtx);
-            String key = keyValue.asString();
-            
-            // If key changes (using collation for comparison), start new group
-            boolean keyChanged = (currentKey == null) || !collation.equals(key, currentKey);
-            if (keyChanged) {
-                groupIndex++;
-                groupKey = key + "_" + groupIndex;  // Make unique for adjacent groups
-                currentKey = key;
-            }
-            
-            // Add to current group
-            List<XPathNode> group = groups.get(groupKey);
-            if (group == null) {
-                group = new ArrayList<>();
-                groups.put(groupKey, group);
-            }
-            group.add(item);
-        }
-        
-        return groups;
-    }
-
-    /**
-     * Groups items starting with each item that matches the pattern.
-     * Each group starts at a matching item and continues until the next match.
-     */
-    private Map<String, List<XPathNode>> groupStartingWith(List<XPathNode> items,
-                                                            Pattern pattern,
-                                                            TransformContext context)
-            throws XPathException {
-        
-        Map<String, List<XPathNode>> groups = new LinkedHashMap<>();
-        List<XPathNode> currentGroup = null;
-        int groupIndex = 0;
-        
-        for (XPathNode item : items) {
-            // Check if this item matches the pattern
-            boolean matches = pattern.matches(item, context);
-            
-            if (matches || currentGroup == null) {
-                // Start a new group
-                groupIndex++;
-                currentGroup = new ArrayList<>();
-                groups.put("group_" + groupIndex, currentGroup);
-            }
-            
-            // Add item to current group
-            currentGroup.add(item);
-        }
-        
-        return groups;
-    }
-
-    /**
-     * Groups items ending with each item that matches the pattern.
-     * Each group ends at a matching item.
-     */
-    private Map<String, List<XPathNode>> groupEndingWith(List<XPathNode> items,
-                                                          Pattern pattern,
-                                                          TransformContext context)
-            throws XPathException {
-        
-        Map<String, List<XPathNode>> groups = new LinkedHashMap<>();
-        List<XPathNode> currentGroup = new ArrayList<>();
-        int groupIndex = 0;
-        
-        for (XPathNode item : items) {
-            // Add item to current group
-            currentGroup.add(item);
-            
-            // Check if this item matches the pattern (ends the group)
-            boolean matches = pattern.matches(item, context);
-            
-            if (matches) {
-                // End the group
-                groupIndex++;
-                groups.put("group_" + groupIndex, currentGroup);
-                currentGroup = new ArrayList<>();
-            }
-        }
-        
-        // Add any remaining items as a final group
-        if (!currentGroup.isEmpty()) {
-            groupIndex++;
-            groups.put("group_" + groupIndex, currentGroup);
-        }
-        
-        return groups;
     }
 
     @Override
     public StreamingCapability getStreamingCapability() {
-        // Grouping requires collecting items - grounded mode
         return StreamingCapability.GROUNDED;
     }
 
     @Override
     public String toString() {
-        return "ForEachGroupNode[method=" + method + "]";
+        return "ForEachGroupNode[method=" + method + ", composite=" + composite + "]";
     }
 
 }

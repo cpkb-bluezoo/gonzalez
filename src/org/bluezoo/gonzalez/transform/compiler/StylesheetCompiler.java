@@ -5836,12 +5836,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             collationAvt = parseAvt(collationStr);
         }
         
+        String compositeStr = ctx.attributes.get("composite");
+        boolean isComposite = "yes".equals(compositeStr) || "1".equals(compositeStr) || "true".equals(compositeStr);
+
         if (groupBy != null && !groupBy.isEmpty()) {
             XPathExpression groupByExpr = compileExpression(groupBy);
-            return ForEachGroupNode.groupBy(select, groupByExpr, body, collationAvt, sorts);
+            return ForEachGroupNode.groupBy(select, groupByExpr, body, collationAvt, sorts, isComposite);
         } else if (groupAdjacent != null && !groupAdjacent.isEmpty()) {
             XPathExpression groupAdjacentExpr = compileExpression(groupAdjacent);
-            return ForEachGroupNode.groupAdjacent(select, groupAdjacentExpr, body, collationAvt, sorts);
+            return ForEachGroupNode.groupAdjacent(select, groupAdjacentExpr, body, collationAvt, sorts, isComposite);
         } else if (groupStartingWith != null && !groupStartingWith.isEmpty()) {
             Pattern pattern = compilePattern(groupStartingWith);
             return ForEachGroupNode.groupStartingWith(select, pattern, body, sorts);
