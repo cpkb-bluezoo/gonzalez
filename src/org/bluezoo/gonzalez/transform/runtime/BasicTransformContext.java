@@ -263,10 +263,10 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext pushVariableScope() {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope.push(), functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     /**
@@ -277,10 +277,10 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext withGlobalVariablesOnly() {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope.globalOnly(), functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     /**
@@ -291,10 +291,10 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext withMode(String mode) {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             mode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     /**
@@ -307,10 +307,10 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext withContextNode(XPathNode node) {
-        return new BasicTransformContext(stylesheet, node, xsltCurrentNode, null, position, size,
+        return inherit(new BasicTransformContext(stylesheet, node, xsltCurrentNode, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
     
     /**
@@ -321,10 +321,10 @@ public class BasicTransformContext implements TransformContext {
      * @return a new context with the specified current node
      */
     public TransformContext withXsltCurrentNode(XPathNode node) {
-        return new BasicTransformContext(stylesheet, node, node, null, position, size,
+        return inherit(new BasicTransformContext(stylesheet, node, node, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
     
     /**
@@ -338,10 +338,10 @@ public class BasicTransformContext implements TransformContext {
      * @return a new context with the specified nodes
      */
     public BasicTransformContext withContextAndCurrentNodes(XPathNode contextNode, XPathNode xsltCurrent) {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrent, null, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrent, null, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
     
     /**
@@ -354,10 +354,10 @@ public class BasicTransformContext implements TransformContext {
     public BasicTransformContext withContextItem(XPathValue item) {
         // If item is a node, also set it as context node
         XPathNode node = (item instanceof XPathNode) ? (XPathNode) item : contextNode;
-        return new BasicTransformContext(stylesheet, node, xsltCurrentNode, item, position, size,
+        return inherit(new BasicTransformContext(stylesheet, node, xsltCurrentNode, item, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
     
     /**
@@ -379,10 +379,10 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext withPositionAndSize(int position, int size) {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     /**
@@ -397,10 +397,10 @@ public class BasicTransformContext implements TransformContext {
     public TransformContext withVariable(String namespaceURI, String localName, XPathValue value) {
         VariableScope newScope = variableScope.push();
         newScope.bind(localName, value);
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, newScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     @Override
@@ -416,10 +416,10 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext withCurrentTemplateRule(TemplateRule rule) {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, rule, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     /**
@@ -430,10 +430,10 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public TransformContext withStaticBaseURI(String baseURI) {
-        BasicTransformContext ctx = new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        BasicTransformContext ctx = inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, baseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
         ctx.throwOnUndefinedVariable = this.throwOnUndefinedVariable;
         return ctx;
     }
@@ -455,10 +455,10 @@ public class BasicTransformContext implements TransformContext {
 
     @Override
     public TransformContext withRegexMatcher(Matcher matcher) {
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, matcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, matcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     @Override
@@ -479,10 +479,10 @@ public class BasicTransformContext implements TransformContext {
         // Merge new params with existing ones
         Map<String, XPathValue> merged = new HashMap<>(tunnelParameters);
         merged.putAll(params);
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, merged, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, merged, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     @Override
@@ -490,10 +490,10 @@ public class BasicTransformContext implements TransformContext {
         if (tunnelParameters.isEmpty()) {
             return this;
         }
-        return new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
-            runtimeValidator, regexMatcher, Collections.emptyMap(), keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput);
+            runtimeValidator, regexMatcher, Collections.emptyMap(), keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
     /**
@@ -847,9 +847,32 @@ public class BasicTransformContext implements TransformContext {
         return true;
     }
 
+    private String defaultCollationOverride;
+
+    /**
+     * Copies mutable state (like collation override) from this context to the given one.
+     * Must be called on any newly-created derived context.
+     */
+    private BasicTransformContext inherit(BasicTransformContext derived) {
+        derived.defaultCollationOverride = this.defaultCollationOverride;
+        return derived;
+    }
+
+    /**
+     * Sets the default collation for this context, overriding the stylesheet-level setting.
+     * Used for element-level default-collation attributes.
+     *
+     * @param collationUri the collation URI, or null to clear the override
+     */
+    public void setDefaultCollation(String collationUri) {
+        this.defaultCollationOverride = collationUri;
+    }
+
     @Override
     public String getDefaultCollation() {
-        // Return the stylesheet's default collation if set, otherwise null (use codepoint)
+        if (defaultCollationOverride != null) {
+            return defaultCollationOverride;
+        }
         if (stylesheet != null) {
             return stylesheet.getDefaultCollation();
         }

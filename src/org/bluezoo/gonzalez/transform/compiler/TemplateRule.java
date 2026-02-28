@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
+import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
 
 import java.util.ArrayList;
@@ -52,7 +53,7 @@ public final class TemplateRule {
     private final int importPrecedence;
     private final int declarationIndex;
     private final List<TemplateParameter> parameters;
-    private final SequenceNode body;
+    private final XSLTNode body;
     private final String asType;  // XSLT 2.0+ return type declaration
     private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
 
@@ -69,7 +70,7 @@ public final class TemplateRule {
      */
     public TemplateRule(Pattern matchPattern, String name, String mode,
                         double priority, int importPrecedence,
-                        List<TemplateParameter> parameters, SequenceNode body) {
+                        List<TemplateParameter> parameters, XSLTNode body) {
         this(matchPattern, name, mode, priority, importPrecedence, 0, parameters, body, null);
     }
 
@@ -87,7 +88,7 @@ public final class TemplateRule {
      */
     public TemplateRule(Pattern matchPattern, String name, String mode,
                         double priority, int importPrecedence, int declarationIndex,
-                        List<TemplateParameter> parameters, SequenceNode body) {
+                        List<TemplateParameter> parameters, XSLTNode body) {
         this(matchPattern, name, mode, priority, importPrecedence, declarationIndex, parameters, body, null);
     }
 
@@ -106,7 +107,7 @@ public final class TemplateRule {
      */
     public TemplateRule(Pattern matchPattern, String name, String mode,
                         double priority, int importPrecedence, int declarationIndex,
-                        List<TemplateParameter> parameters, SequenceNode body, String asType) {
+                        List<TemplateParameter> parameters, XSLTNode body, String asType) {
         this(matchPattern, name, mode, priority, importPrecedence, declarationIndex,
              parameters, body, asType, ComponentVisibility.PUBLIC);
     }
@@ -127,7 +128,7 @@ public final class TemplateRule {
      */
     public TemplateRule(Pattern matchPattern, String name, String mode,
                         double priority, int importPrecedence, int declarationIndex,
-                        List<TemplateParameter> parameters, SequenceNode body, String asType,
+                        List<TemplateParameter> parameters, XSLTNode body, String asType,
                         ComponentVisibility visibility) {
         this.matchPattern = matchPattern;
         this.name = name;
@@ -212,7 +213,7 @@ public final class TemplateRule {
      *
      * @return the body
      */
-    public SequenceNode getBody() {
+    public XSLTNode getBody() {
         return body;
     }
 

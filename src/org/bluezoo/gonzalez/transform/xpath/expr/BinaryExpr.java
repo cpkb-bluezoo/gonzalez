@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
@@ -730,8 +731,14 @@ public final class BinaryExpr implements Expr {
             return XPathBoolean.of(compareValuesNumeric(leftVal.asNumber(), rightVal.asNumber()));
         }
         
-        // If both operands are strings, use string comparison
+        // If both operands are strings, use string comparison with collation
         if (leftType == XPathValue.Type.STRING && rightType == XPathValue.Type.STRING) {
+            String defaultUri = context.getDefaultCollation();
+            if (defaultUri != null) {
+                Collation collation = Collation.forUri(defaultUri);
+                int cmp = collation.compare(leftVal.asString(), rightVal.asString());
+                return XPathBoolean.of(compareResult(cmp));
+            }
             return XPathBoolean.of(compareValuesString(leftVal.asString(), rightVal.asString()));
         }
         
@@ -756,8 +763,26 @@ public final class BinaryExpr implements Expr {
             return XPathBoolean.of(compareValuesNumeric(leftNum, rightNum));
         }
         
-        // String comparison as fallback
+        // String comparison as fallback, with collation support
+        String defaultUri = context.getDefaultCollation();
+        if (defaultUri != null) {
+            Collation collation = Collation.forUri(defaultUri);
+            int cmp = collation.compare(leftVal.asString(), rightVal.asString());
+            return XPathBoolean.of(compareResult(cmp));
+        }
         return XPathBoolean.of(compareValuesString(leftVal.asString(), rightVal.asString()));
+    }
+
+    private boolean compareResult(int cmp) {
+        switch (operator) {
+            case VALUE_EQUALS: return cmp == 0;
+            case VALUE_NOT_EQUALS: return cmp != 0;
+            case VALUE_LESS_THAN: return cmp < 0;
+            case VALUE_LESS_THAN_OR_EQUAL: return cmp <= 0;
+            case VALUE_GREATER_THAN: return cmp > 0;
+            case VALUE_GREATER_THAN_OR_EQUAL: return cmp >= 0;
+            default: return false;
+        }
     }
     
     private boolean compareValuesNumeric(double a, double b) {

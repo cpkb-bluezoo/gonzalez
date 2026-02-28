@@ -288,6 +288,46 @@ public class Collation {
     }
 
     /**
+     * Returns the part of a string before the first occurrence of a substring,
+     * according to this collation.
+     *
+     * @param str the string to search in
+     * @param substr the substring to search for
+     * @return the part before the match, or empty string if not found
+     */
+    public String substringBefore(String str, String substr) {
+        if (substr.isEmpty()) {
+            return "";
+        }
+        for (int i = 0; i <= str.length() - substr.length(); i++) {
+            if (compare(str.substring(i, i + substr.length()), substr) == 0) {
+                return str.substring(0, i);
+            }
+        }
+        return "";
+    }
+
+    /**
+     * Returns the part of a string after the first occurrence of a substring,
+     * according to this collation.
+     *
+     * @param str the string to search in
+     * @param substr the substring to search for
+     * @return the part after the match, or empty string if not found
+     */
+    public String substringAfter(String str, String substr) {
+        if (substr.isEmpty()) {
+            return str;
+        }
+        for (int i = 0; i <= str.length() - substr.length(); i++) {
+            if (compare(str.substring(i, i + substr.length()), substr) == 0) {
+                return str.substring(i + substr.length());
+            }
+        }
+        return "";
+    }
+
+    /**
      * Gets the comparator for this collation.
      */
     public Comparator<String> getComparator() {

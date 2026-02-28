@@ -230,12 +230,25 @@ public final class StringFunctions {
     public static final Function SUBSTRING_BEFORE = new Function() {
         @Override public String getName() { return "substring-before"; }
         @Override public int getMinArgs() { return 2; }
-        @Override public int getMaxArgs() { return 2; }
+        @Override public int getMaxArgs() { return 3; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String str = args.get(0).asString();
             String substr = args.get(1).asString();
+
+            if (args.size() > 2 || context.getDefaultCollation() != null) {
+                Collation collation;
+                if (args.size() > 2) {
+                    String collUri = args.get(2).asString();
+                    collation = Collation.forUri(collUri);
+                } else {
+                    String defaultUri = context.getDefaultCollation();
+                    collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+                }
+                return XPathString.of(collation.substringBefore(str, substr));
+            }
+
             int index = str.indexOf(substr);
             if (index < 0) {
                 return XPathString.EMPTY;
@@ -257,12 +270,25 @@ public final class StringFunctions {
     public static final Function SUBSTRING_AFTER = new Function() {
         @Override public String getName() { return "substring-after"; }
         @Override public int getMinArgs() { return 2; }
-        @Override public int getMaxArgs() { return 2; }
+        @Override public int getMaxArgs() { return 3; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String str = args.get(0).asString();
             String substr = args.get(1).asString();
+
+            if (args.size() > 2 || context.getDefaultCollation() != null) {
+                Collation collation;
+                if (args.size() > 2) {
+                    String collUri = args.get(2).asString();
+                    collation = Collation.forUri(collUri);
+                } else {
+                    String defaultUri = context.getDefaultCollation();
+                    collation = Collation.forUri(defaultUri != null ? defaultUri : Collation.CODEPOINT_URI);
+                }
+                return XPathString.of(collation.substringAfter(str, substr));
+            }
+
             int index = str.indexOf(substr);
             if (index < 0) {
                 return XPathString.EMPTY;

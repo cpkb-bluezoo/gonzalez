@@ -71,6 +71,7 @@ import org.bluezoo.gonzalez.transform.ast.LiteralText;
 import org.bluezoo.gonzalez.transform.ast.MergeNode;
 import org.bluezoo.gonzalez.transform.ast.NextIterationNode;
 import org.bluezoo.gonzalez.transform.ast.ResultDocumentNode;
+import org.bluezoo.gonzalez.transform.ast.CollationScopeNode;
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.ast.SourceDocumentNode;
 import org.bluezoo.gonzalez.transform.ast.StreamNode;
@@ -307,6 +308,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         double effectiveVersion = -1;  // Effective XSLT version for backwards compatibility (-1 = inherit from parent)
         boolean expandText = false;  // XSLT 3.0 Text Value Templates enabled
         String xpathDefaultNamespace = null;  // XSLT 2.0+ xpath-default-namespace for XPath expressions
+        String defaultCollation = null;  // XSLT 2.0+ default-collation for comparisons
         String defaultMode = null;  // XSLT 3.0 default-mode (null = inherit from parent)
         
         ElementContext(String namespaceURI, String localName, String originalPrefix) {
@@ -871,6 +873,27 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         } else if (!elementStack.isEmpty()) {
             // Inherit from parent
             ctx.xpathDefaultNamespace = elementStack.peek().xpathDefaultNamespace;
+        }
+        
+        // Handle default-collation (XSLT 2.0+)
+        // On XSLT elements: default-collation attribute
+        // On LRE elements: xsl:default-collation attribute
+        String defaultCollAttr = null;
+        if (XSLT_NS.equals(uri)) {
+            defaultCollAttr = ctx.attributes.get("default-collation");
+        } else {
+            defaultCollAttr = ctx.attributes.get("xsl:default-collation");
+        }
+        if (defaultCollAttr != null && !defaultCollAttr.isEmpty()) {
+            String[] collUris = defaultCollAttr.trim().split("\\s+");
+            for (String collUri : collUris) {
+                if (Collation.isRecognized(collUri)) {
+                    ctx.defaultCollation = collUri;
+                    break;
+                }
+            }
+        } else if (!elementStack.isEmpty()) {
+            ctx.defaultCollation = elementStack.peek().defaultCollation;
         }
         
         // Handle default-mode (XSLT 3.0)
@@ -1482,6 +1505,21 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Set static base URI on compiled instructions (for static-base-uri() support)
         if (result instanceof XSLTInstruction && ctx.baseURI != null) {
             ((XSLTInstruction) result).setStaticBaseURI(ctx.baseURI);
+        }
+        
+        // Wrap in CollationScopeNode if this element has a different default-collation
+        // than its parent, so it takes effect at runtime
+        if (result != null && ctx.defaultCollation != null) {
+            String parentCollation = null;
+            if (!elementStack.isEmpty()) {
+                parentCollation = elementStack.peek().defaultCollation;
+            }
+            if (parentCollation == null && builder != null) {
+                parentCollation = builder.getDefaultCollation();
+            }
+            if (!ctx.defaultCollation.equals(parentCollation)) {
+                result = new CollationScopeNode(ctx.defaultCollation, result);
+            }
         }
         
         return result;
@@ -3755,7 +3793,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        SequenceNode body = new SequenceNode(bodyNodes);
+        XSLTNode body = new SequenceNode(bodyNodes);
+        
+        // Wrap body in collation scope if template has element-level default-collation
+        if (ctx.defaultCollation != null) {
+            String parentCollation = builder.getDefaultCollation();
+            if (!ctx.defaultCollation.equals(parentCollation)) {
+                body = new CollationScopeNode(ctx.defaultCollation, body);
+            }
+        }
         
         // Create a TemplateRule for each mode in the mode list
         // #all means the template applies to all modes (default + all named)

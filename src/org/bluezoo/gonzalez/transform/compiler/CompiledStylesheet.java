@@ -345,6 +345,10 @@ public final class CompiledStylesheet {
             return this;
         }
 
+        public String getDefaultCollation() {
+            return defaultCollation;
+        }
+
         /**
          * Sets the global context item type (XSLT 3.0).
          *
