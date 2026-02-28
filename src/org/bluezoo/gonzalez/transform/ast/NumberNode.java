@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.ast;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 
 import org.xml.sax.SAXException;
 
@@ -33,9 +34,11 @@ import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.function.locale.DateTimeLocale;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -54,11 +57,12 @@ public class NumberNode extends XSLTInstruction {
     private final int groupingSize;
     private final String lang;
     private final String letterValue;
+    private final String ordinal;
     private final AttributeValueTemplate startAtAVT; // XSLT 3.0
     
     public NumberNode(XPathExpression valueExpr, XPathExpression selectExpr, String level, 
               Pattern countPattern, Pattern fromPattern, AttributeValueTemplate formatAVT, String groupingSeparator,
-              int groupingSize, String lang, String letterValue,
+              int groupingSize, String lang, String letterValue, String ordinal,
               AttributeValueTemplate startAtAVT) {
         this.valueExpr = valueExpr;
         this.selectExpr = selectExpr;
@@ -70,6 +74,7 @@ public class NumberNode extends XSLTInstruction {
         this.groupingSize = groupingSize;
         this.lang = lang;
         this.letterValue = letterValue;
+        this.ordinal = ordinal;
         this.startAtAVT = startAtAVT;
     }
     
@@ -80,18 +85,20 @@ public class NumberNode extends XSLTInstruction {
     
     @Override 
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
-        // Handle special case: if valueExpr produces NaN, output "NaN" directly (XSLT 1.0 behavior)
+        // Handle NaN/Infinity before sequence processing
         if (valueExpr != null) {
             try {
                 XPathValue val = valueExpr.evaluate(context);
-                double d = val.asNumber();
-                if (Double.isNaN(d)) {
-                    output.characters("NaN");
-                    return;
-                }
-                if (Double.isInfinite(d)) {
-                    output.characters(d > 0 ? "Infinity" : "-Infinity");
-                    return;
+                if (!(val instanceof XPathSequence) || ((XPathSequence) val).size() == 1) {
+                    double d = val.asNumber();
+                    if (Double.isNaN(d)) {
+                        output.characters("NaN");
+                        return;
+                    }
+                    if (Double.isInfinite(d)) {
+                        output.characters(d > 0 ? "Infinity" : "-Infinity");
+                        return;
+                    }
                 }
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating xsl:number value: " + e.getMessage(), e);
@@ -99,7 +106,12 @@ public class NumberNode extends XSLTInstruction {
         }
         
         // Get the numbers to format
-        List<Integer> numbers = getNumbers(context);
+        List<Long> numbers = getNumbers(context);
+        
+        // Handle special case: empty result from value expression
+        if (valueExpr != null && numbers.isEmpty()) {
+            return;
+        }
         
         // Apply start-at offset (XSLT 3.0)
         if (startAtAVT != null && !numbers.isEmpty()) {
@@ -130,21 +142,13 @@ public class NumberNode extends XSLTInstruction {
         output.characters(result);
     }
     
-    private List<Integer> getNumbers(TransformContext context) throws SAXException {
-        List<Integer> numbers = new ArrayList<>();
+    private List<Long> getNumbers(TransformContext context) throws SAXException {
+        List<Long> numbers = new ArrayList<>();
         
         if (valueExpr != null) {
-            // Use value expression
             try {
                 XPathValue val = valueExpr.evaluate(context);
-                double d = val.asNumber();
-                if (!Double.isNaN(d) && !Double.isInfinite(d)) {
-                    // XTDE0980: Negative numbers are not allowed in xsl:number value
-                    if (d < 0) {
-                        throw new SAXException("XTDE0980: xsl:number value must not be negative: " + d);
-                    }
-                    numbers.add((int) Math.round(d));
-                }
+                addValueNumbers(val, numbers);
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating xsl:number value: " + e.getMessage(), e);
             }
@@ -152,7 +156,6 @@ public class NumberNode extends XSLTInstruction {
             // Determine which node to number
             XPathNode node;
             if (selectExpr != null) {
-                // XSLT 2.0+ select attribute - number the selected node
                 try {
                     XPathValue selectResult = selectExpr.evaluate(context);
                     if (selectResult instanceof XPathNodeSet) {
@@ -164,14 +167,12 @@ public class NumberNode extends XSLTInstruction {
                     } else if (selectResult instanceof XPathNode) {
                         node = (XPathNode) selectResult;
                     } else {
-                        // Not a node - can't number it
                         return numbers;
                     }
                 } catch (XPathException e) {
                     throw new SAXException("Error evaluating xsl:number select: " + e.getMessage(), e);
                 }
             } else {
-                // Default: number the context node
                 node = context.getContextNode();
             }
             
@@ -182,19 +183,44 @@ public class NumberNode extends XSLTInstruction {
             if ("single".equals(level)) {
                 int count = countSingle(node, context);
                 if (count > 0) {
-                    numbers.add(count);
+                    numbers.add((long) count);
                 }
             } else if ("multiple".equals(level)) {
-                numbers = countMultiple(node, context);
+                List<Integer> counts = countMultiple(node, context);
+                for (int c : counts) {
+                    numbers.add((long) c);
+                }
             } else if ("any".equals(level)) {
                 int count = countAny(node, context);
                 if (count > 0) {
-                    numbers.add(count);
+                    numbers.add((long) count);
                 }
             }
         }
         
         return numbers;
+    }
+    
+    private void addValueNumbers(XPathValue val, List<Long> numbers) throws SAXException {
+        if (val instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) val;
+            if (seq.isEmpty()) {
+                return;
+            }
+            for (XPathValue item : seq) {
+                addValueNumbers(item, numbers);
+            }
+            return;
+        }
+        double d = val.asNumber();
+        if (Double.isNaN(d) || Double.isInfinite(d)) {
+            return;
+        }
+        long rounded = Math.round(d);
+        if (rounded < 0) {
+            throw new SAXException("XTDE0980: xsl:number value must not be negative: " + d);
+        }
+        numbers.add(rounded);
     }
     
     /**
@@ -495,37 +521,30 @@ public class NumberNode extends XSLTInstruction {
         return true;
     }
     
-    private String formatNumbers(List<Integer> numbers, String format) {
-        // Parse format string into components
+    private String formatNumbers(List<Long> numbers, String format) {
         ParsedFormat parsed = parseFormatString(format);
         
-        // When no numbers, just output prefix + suffix (e.g., "[]" for format "[1]")
         if (numbers.isEmpty()) {
             return parsed.prefix + parsed.suffix;
         }
         
         StringBuilder result = new StringBuilder();
-        
-        // Add leading prefix
         result.append(parsed.prefix);
         
         for (int i = 0; i < numbers.size(); i++) {
-            int num = numbers.get(i);
+            long num = numbers.get(i);
             
-            // Add separator before this number (except first)
             if (i > 0) {
-                // Use separator from previous position, or last available
                 int sepIdx = i - 1;
                 if (sepIdx < parsed.separators.size()) {
                     result.append(parsed.separators.get(sepIdx));
                 } else if (!parsed.separators.isEmpty()) {
                     result.append(parsed.separators.get(parsed.separators.size() - 1));
                 } else {
-                    result.append(".");  // Default separator
+                    result.append(".");
                 }
             }
             
-            // Get format specifier for this number (reuse last if not enough)
             String specifier;
             if (i < parsed.specifiers.size()) {
                 specifier = parsed.specifiers.get(i);
@@ -535,10 +554,8 @@ public class NumberNode extends XSLTInstruction {
                 specifier = "1";
             }
             
-            // Format the number
             String formatted = formatSingleNumber(num, specifier);
             
-            // Apply grouping if specified
             if (groupingSeparator != null && groupingSize > 0) {
                 formatted = applyGrouping(formatted, groupingSeparator, groupingSize);
             }
@@ -546,9 +563,7 @@ public class NumberNode extends XSLTInstruction {
             result.append(formatted);
         }
         
-        // Add trailing suffix
         result.append(parsed.suffix);
-        
         return result.toString();
     }
     
@@ -628,33 +643,118 @@ public class NumberNode extends XSLTInstruction {
                (c >= 'A' && c <= 'Z');
     }
     
-    private String formatSingleNumber(int num, String specifier) {
+    private String formatSingleNumber(long num, String specifier) {
         if (specifier.isEmpty()) {
             specifier = "1";
         }
         
+        String result;
         char first = specifier.charAt(0);
         
-        // Determine format type from first character
-        if (first == 'a') {
-            return toAlphabetic(num, false);
+        if (specifier.equals("Ww") || specifier.equals("w") || specifier.equals("W")) {
+            result = toWords(num, specifier);
+        } else if (first == 'a') {
+            result = toAlphabetic(num, false);
         } else if (first == 'A') {
-            return toAlphabetic(num, true);
+            result = toAlphabetic(num, true);
         } else if (first == 'i') {
-            return toRoman(num, false);
+            result = toRoman(num, false);
         } else if (first == 'I') {
-            return toRoman(num, true);
+            result = toRoman(num, true);
         } else if (first >= '0' && first <= '9') {
-            // Numeric format - check for zero padding
             int minWidth = specifier.length();
-            return zeroPad(num, minWidth);
+            result = zeroPad(num, minWidth);
         } else {
-            // Default to decimal
-            return String.valueOf(num);
+            result = String.valueOf(num);
         }
+        
+        if ("yes".equals(ordinal)) {
+            result = appendOrdinal(result, num, specifier);
+        }
+        
+        return result;
     }
     
-    private String zeroPad(int num, int minWidth) {
+    private String appendOrdinal(String formatted, long num, String specifier) {
+        Locale locale = resolveLocale();
+        DateTimeLocale dtl = DateTimeLocale.forLocale(locale);
+        char first = specifier.charAt(0);
+        
+        if (specifier.equals("Ww") || specifier.equals("w") || specifier.equals("W")) {
+            String ordWords = dtl.toOrdinalWords((int) num);
+            return applyWordCase(ordWords, specifier);
+        }
+        
+        if (first >= '0' && first <= '9') {
+            String suffix = dtl.getOrdinalSuffix((int) num);
+            return formatted + suffix;
+        }
+        
+        return formatted;
+    }
+    
+    private Locale resolveLocale() {
+        if (lang != null && !lang.isEmpty()) {
+            int dashIdx = lang.indexOf('-');
+            if (dashIdx > 0) {
+                String language = lang.substring(0, dashIdx);
+                String country = lang.substring(dashIdx + 1);
+                return new Locale(language, country);
+            }
+            return new Locale(lang);
+        }
+        return Locale.ENGLISH;
+    }
+    
+    private String toWords(long num, String format) {
+        Locale locale = resolveLocale();
+        DateTimeLocale dtl = DateTimeLocale.forLocale(locale);
+        
+        if (num == 0) {
+            return applyWordCase("zero", format);
+        }
+        
+        boolean negative = num < 0;
+        long absValue = Math.abs(num);
+        
+        String words;
+        if ("yes".equals(ordinal)) {
+            words = dtl.toOrdinalWords((int) absValue);
+        } else {
+            words = dtl.toWords((int) absValue);
+        }
+        
+        if (negative) {
+            words = "minus " + words;
+        }
+        
+        return applyWordCase(words, format);
+    }
+    
+    private String applyWordCase(String word, String format) {
+        if ("W".equals(format)) {
+            return word.toUpperCase();
+        } else if ("Ww".equals(format)) {
+            StringBuilder sb = new StringBuilder();
+            boolean capitalizeNext = true;
+            for (int i = 0; i < word.length(); i++) {
+                char c = word.charAt(i);
+                if (Character.isWhitespace(c) || c == '-') {
+                    capitalizeNext = true;
+                    sb.append(c);
+                } else if (capitalizeNext) {
+                    sb.append(Character.toUpperCase(c));
+                    capitalizeNext = false;
+                } else {
+                    sb.append(c);
+                }
+            }
+            return sb.toString();
+        }
+        return word;
+    }
+    
+    private String zeroPad(long num, int minWidth) {
         String s = String.valueOf(num);
         if (s.length() >= minWidth) {
             return s;
@@ -668,17 +768,17 @@ public class NumberNode extends XSLTInstruction {
         return sb.toString();
     }
     
-    private String toAlphabetic(int num, boolean uppercase) {
+    private String toAlphabetic(long num, boolean uppercase) {
         if (num <= 0) {
             return String.valueOf(num);
         }
         
         StringBuilder sb = new StringBuilder();
-        int n = num;
+        long n = num;
         
         while (n > 0) {
-            n--; // Adjust for 1-based
-            int remainder = n % 26;
+            n--;
+            int remainder = (int) (n % 26);
             char c;
             if (uppercase) {
                 c = (char) ('A' + remainder);
@@ -694,21 +794,22 @@ public class NumberNode extends XSLTInstruction {
     
     private static final int MAX_ROMAN_NUMERAL = 3999;
 
-    private String toRoman(int num, boolean uppercase) {
+    private String toRoman(long num, boolean uppercase) {
         if (num <= 0 || num > MAX_ROMAN_NUMERAL) {
             return String.valueOf(num);
         }
         
+        int n = (int) num;
         String[] thousands = {"", "M", "MM", "MMM"};
         String[] hundreds = {"", "C", "CC", "CCC", "CD", "D", "DC", "DCC", "DCCC", "CM"};
         String[] tens = {"", "X", "XX", "XXX", "XL", "L", "LX", "LXX", "LXXX", "XC"};
         String[] ones = {"", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX"};
         
         StringBuilder sb = new StringBuilder();
-        sb.append(thousands[num / 1000]);
-        sb.append(hundreds[(num % 1000) / 100]);
-        sb.append(tens[(num % 100) / 10]);
-        sb.append(ones[num % 10]);
+        sb.append(thousands[n / 1000]);
+        sb.append(hundreds[(n % 1000) / 100]);
+        sb.append(tens[(n % 100) / 10]);
+        sb.append(ones[n % 10]);
         
         String result = sb.toString();
         if (!uppercase) {

@@ -2017,28 +2017,39 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 return XPathString.of(infinity);
             }
             
-            // Check for per-mille or percent in pattern (for custom char restoration later)
-            boolean hasPerMille = pattern.indexOf(perMille) >= 0;
-            boolean hasPercent = pattern.indexOf(percent) >= 0;
-            
             // Validate pattern before processing (FODF1310)
             validatePattern(pattern, decimalSep, groupingSep, percent, perMille, patternSep, digit, zeroDigit);
             
-            // NOTE: We do NOT multiply here. Java's DecimalFormat automatically
-            // multiplies by 100 for % and 1000 for ‰ when these symbols appear
-            // in the pattern.
+            // Split into positive and negative sub-patterns.
+            // XSLT spec: the negative sub-pattern completely defines negative formatting,
+            // unlike Java DecimalFormat which only uses it for prefix/suffix.
+            String activePattern;
+            boolean hasExplicitNegativeSubpattern = pattern.indexOf(patternSep) >= 0;
+            if (number < 0 && hasExplicitNegativeSubpattern) {
+                int sepPos = pattern.indexOf(patternSep);
+                activePattern = pattern.substring(sepPos + 1);
+                number = Math.abs(number);
+            } else if (number < 0) {
+                activePattern = pattern;
+            } else {
+                if (hasExplicitNegativeSubpattern) {
+                    int sepPos = pattern.indexOf(patternSep);
+                    activePattern = pattern.substring(0, sepPos);
+                } else {
+                    activePattern = pattern;
+                }
+            }
             
-            // Translate pattern to Java DecimalFormat syntax
-            String javaPattern = translatePattern(pattern, decimalSep, groupingSep, 
+            boolean hasPerMille = activePattern.indexOf(perMille) >= 0;
+            boolean hasPercent = activePattern.indexOf(percent) >= 0;
+            
+            String javaPattern = translatePattern(activePattern, decimalSep, groupingSep, 
                 minusSign, percent, perMille, zeroDigit, digit, patternSep);
             
             try {
                 DecimalFormatSymbols symbols = new DecimalFormatSymbols();
                 symbols.setDecimalSeparator(decimalSep);
                 symbols.setGroupingSeparator(groupingSep);
-                // Don't set custom minus sign in symbols - we'll handle it manually
-                // Java DecimalFormat treats '-' in pattern prefix as "use minus sign symbol"
-                // but XSLT treats '-' in an explicit negative subpattern as literal
                 symbols.setPercent(percent);
                 symbols.setPerMill(perMille);
                 symbols.setZeroDigit(zeroDigit);
@@ -2050,17 +2061,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 DecimalFormat df = new DecimalFormat(javaPattern, symbols);
                 String result = df.format(number);
                 
-                // Apply custom minus sign only when using DEFAULT negative prefix
-                // (i.e., pattern has no explicit negative subpattern)
-                boolean hasExplicitNegativeSubpattern = pattern.indexOf(patternSep) >= 0;
-                if (!hasExplicitNegativeSubpattern && number < 0 && minusSign != '-') {
-                    // Replace the default minus with custom minus sign
-                    if (result.startsWith("-")) {
+                if (!hasExplicitNegativeSubpattern && number < 0) {
+                    if (minusSign != '-' && result.startsWith("-")) {
                         result = minusSign + result.substring(1);
                     }
                 }
                 
-                // Restore custom per-mille/percent characters in output
                 if (hasPerMille && perMille != '\u2030') {
                     result = result.replace('\u2030', perMille);
                 }
@@ -2070,7 +2076,6 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 
                 return XPathString.of(result);
             } catch (IllegalArgumentException e) {
-                // FODF1310: Invalid picture string
                 throw new XPathException("FODF1310: Invalid format-number picture string: " + pattern + 
                     " - " + e.getMessage());
             }

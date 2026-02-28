@@ -2040,17 +2040,6 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         validateSingleChar("digit", digit);
         validateSingleChar("pattern-separator", patternSeparator);
         
-        // XTSE1300: Picture string characters must be distinct
-        // Check: decimal-separator, grouping-separator, percent, per-mille, zero-digit, digit, pattern-separator
-        validateDistinctChars(name,
-            decimalSeparator != null ? decimalSeparator : ".",
-            groupingSeparator != null ? groupingSeparator : ",",
-            percent != null ? percent : "%",
-            perMille != null ? perMille : "\u2030",
-            zeroDigit != null ? zeroDigit : "0",
-            digit != null ? digit : "#",
-            patternSeparator != null ? patternSeparator : ";");
-        
         builder.addDecimalFormat(name, decimalSeparator, groupingSeparator,
             infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator);
     }
@@ -2069,7 +2058,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
     
     private void validateSingleChar(String attrName, String value) throws SAXException {
-        if (value != null && value.length() > 1) {
+        if (value != null && value.codePointCount(0, value.length()) > 1) {
             throw new SAXException("XTSE0020: " + attrName + " must be a single character, got: '" + value + "'");
         }
     }
@@ -6473,6 +6462,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // lang and letter-value for internationalization (optional)
         String lang = ctx.attributes.get("lang");
         String letterValue = ctx.attributes.get("letter-value");
+        String ordinal = ctx.attributes.get("ordinal");
         
         // start-at attribute (XSLT 3.0) - starting number offset, can be AVT
         String startAtAttr = ctx.attributes.get("start-at");
@@ -6487,7 +6477,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         return new NumberNode(valueExpr, selectExpr, level, countPattern, fromPattern, 
                              formatAVT, groupingSeparator, groupingSize, lang, letterValue,
-                             startAtAVT);
+                             ordinal, startAtAVT);
     }
 
     private XSLTNode compileMessage(ElementContext ctx) throws SAXException {

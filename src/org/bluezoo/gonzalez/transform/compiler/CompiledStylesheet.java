@@ -29,6 +29,8 @@ import org.bluezoo.gonzalez.transform.ValidationMode;
 
 import java.util.*;
 
+import org.xml.sax.SAXException;
+
 /**
  * A compiled XSLT stylesheet.
  *
@@ -150,7 +152,14 @@ public final class CompiledStylesheet {
         }
         
         private static char firstChar(String s, char defaultChar) {
-            return (s != null && s.length() > 0) ? s.charAt(0) : defaultChar;
+            if (s == null || s.isEmpty()) {
+                return defaultChar;
+            }
+            int cp = s.codePointAt(0);
+            if (Character.isSupplementaryCodePoint(cp)) {
+                return defaultChar;
+            }
+            return s.charAt(0);
         }
     }
 
@@ -292,6 +301,7 @@ public final class CompiledStylesheet {
         private final List<SpaceDeclaration> preserveSpaceDeclarations = new ArrayList<>();
         private int currentImportPrecedence = 0;  // Tracks current import precedence level
         private final Map<String, DecimalFormatInfo> decimalFormats = new HashMap<>();
+        private final Map<String, String[]> decimalFormatRaw = new HashMap<>();
         private final Map<String, CharacterMap> characterMaps = new HashMap<>();
         private final Map<String, AccumulatorDefinition> accumulators = new HashMap<>();
         private final Map<String, ModeDeclaration> modeDeclarations = new HashMap<>();
@@ -631,11 +641,72 @@ public final class CompiledStylesheet {
          */
         public Builder addDecimalFormat(String name, String decimalSeparator, String groupingSeparator,
                 String infinity, String minusSign, String nan, String percent,
-                String perMille, String zeroDigit, String digit, String patternSeparator) {
+                String perMille, String zeroDigit, String digit, String patternSeparator)
+                throws SAXException {
             String key = name != null ? name : "";
+            String[] existingRaw = decimalFormatRaw.get(key);
+            if (existingRaw != null) {
+                decimalSeparator = mergeRaw(decimalSeparator, existingRaw[0]);
+                groupingSeparator = mergeRaw(groupingSeparator, existingRaw[1]);
+                infinity = mergeRaw(infinity, existingRaw[2]);
+                minusSign = mergeRaw(minusSign, existingRaw[3]);
+                nan = mergeRaw(nan, existingRaw[4]);
+                percent = mergeRaw(percent, existingRaw[5]);
+                perMille = mergeRaw(perMille, existingRaw[6]);
+                zeroDigit = mergeRaw(zeroDigit, existingRaw[7]);
+                digit = mergeRaw(digit, existingRaw[8]);
+                patternSeparator = mergeRaw(patternSeparator, existingRaw[9]);
+            } else {
+                DecimalFormatInfo existingInfo = decimalFormats.get(key);
+                if (existingInfo != null) {
+                    decimalSeparator = mergeRaw(decimalSeparator, charToStr(existingInfo.decimalSeparator));
+                    groupingSeparator = mergeRaw(groupingSeparator, charToStr(existingInfo.groupingSeparator));
+                    infinity = mergeRaw(infinity, existingInfo.infinity);
+                    minusSign = mergeRaw(minusSign, charToStr(existingInfo.minusSign));
+                    nan = mergeRaw(nan, existingInfo.nan);
+                    percent = mergeRaw(percent, charToStr(existingInfo.percent));
+                    perMille = mergeRaw(perMille, charToStr(existingInfo.perMille));
+                    zeroDigit = mergeRaw(zeroDigit, charToStr(existingInfo.zeroDigit));
+                    digit = mergeRaw(digit, charToStr(existingInfo.digit));
+                    patternSeparator = mergeRaw(patternSeparator, charToStr(existingInfo.patternSeparator));
+                }
+            }
+            decimalFormatRaw.put(key, new String[]{
+                decimalSeparator, groupingSeparator, infinity, minusSign, nan,
+                percent, perMille, zeroDigit, digit, patternSeparator
+            });
             decimalFormats.put(key, new DecimalFormatInfo(name, decimalSeparator, groupingSeparator,
                 infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator));
             return this;
+        }
+        
+        private static void validateDistinctChars(String name, DecimalFormatInfo info)
+                throws SAXException {
+            char[] chars = {info.decimalSeparator, info.groupingSeparator, info.percent,
+                           info.perMille, info.zeroDigit, info.digit, info.patternSeparator};
+            String[] names = {"decimal-separator", "grouping-separator", "percent",
+                             "per-mille", "zero-digit", "digit", "pattern-separator"};
+            for (int i = 0; i < chars.length; i++) {
+                for (int j = i + 1; j < chars.length; j++) {
+                    if (chars[i] == chars[j]) {
+                        String formatDesc = name != null ? "'" + name + "'" : "(default)";
+                        throw new SAXException("XTSE1300: In decimal-format " + formatDesc +
+                            ", " + names[i] + " and " + names[j] +
+                            " must have distinct values (both are '" + chars[i] + "')");
+                    }
+                }
+            }
+        }
+        
+        private static String mergeRaw(String newVal, String existingVal) {
+            if (newVal != null) {
+                return newVal;
+            }
+            return existingVal;
+        }
+        
+        private static String charToStr(char c) {
+            return String.valueOf(c);
         }
 
         /**
@@ -940,10 +1011,29 @@ public final class CompiledStylesheet {
                 }
             }
             
-            // Add decimal formats - first definition wins
+            // Merge decimal formats - merge attributes from imports
             for (Map.Entry<String, DecimalFormatInfo> entry : imported.decimalFormats.entrySet()) {
-                if (!decimalFormats.containsKey(entry.getKey())) {
-                    decimalFormats.put(entry.getKey(), entry.getValue());
+                String key = entry.getKey();
+                DecimalFormatInfo importedInfo = entry.getValue();
+                if (!decimalFormats.containsKey(key)) {
+                    decimalFormats.put(key, importedInfo);
+                } else {
+                    // Merge: current stylesheet attributes take precedence
+                    String[] raw = decimalFormatRaw.get(key);
+                    if (raw != null) {
+                        String ds = mergeRaw(raw[0], charToStr(importedInfo.decimalSeparator));
+                        String gs = mergeRaw(raw[1], charToStr(importedInfo.groupingSeparator));
+                        String inf = mergeRaw(raw[2], importedInfo.infinity);
+                        String ms = mergeRaw(raw[3], charToStr(importedInfo.minusSign));
+                        String n = mergeRaw(raw[4], importedInfo.nan);
+                        String pct = mergeRaw(raw[5], charToStr(importedInfo.percent));
+                        String pm = mergeRaw(raw[6], charToStr(importedInfo.perMille));
+                        String zd = mergeRaw(raw[7], charToStr(importedInfo.zeroDigit));
+                        String dg = mergeRaw(raw[8], charToStr(importedInfo.digit));
+                        String ps = mergeRaw(raw[9], charToStr(importedInfo.patternSeparator));
+                        decimalFormats.put(key, new DecimalFormatInfo(
+                            importedInfo.name, ds, gs, inf, ms, n, pct, pm, zd, dg, ps));
+                    }
                 }
             }
             
@@ -1029,6 +1119,15 @@ public final class CompiledStylesheet {
          * @throws javax.xml.transform.TransformerConfigurationException if validation fails
          */
         public CompiledStylesheet build(boolean validateReferences) throws javax.xml.transform.TransformerConfigurationException {
+            // Validate decimal-format distinctness (XTSE1300)
+            for (Map.Entry<String, DecimalFormatInfo> entry : decimalFormats.entrySet()) {
+                try {
+                    validateDistinctChars(entry.getKey().isEmpty() ? null : entry.getKey(), entry.getValue());
+                } catch (SAXException e) {
+                    throw new javax.xml.transform.TransformerConfigurationException(e.getMessage());
+                }
+            }
+            
             if (validateReferences) {
                 // Validate attribute-set references (XTSE0710)
                 // Check references from attribute-set declarations
