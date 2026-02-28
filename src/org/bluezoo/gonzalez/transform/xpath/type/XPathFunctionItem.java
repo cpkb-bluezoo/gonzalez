@@ -83,12 +83,30 @@ public final class XPathFunctionItem implements XPathValue {
     }
 
     /**
+     * Returns the function namespace URI.
+     *
+     * @return the namespace URI, or null
+     */
+    public String getNamespaceURI() {
+        return namespaceURI;
+    }
+
+    /**
      * Returns the arity.
      *
      * @return the number of arguments this function expects
      */
     public int getArity() {
         return arity;
+    }
+
+    /**
+     * Returns the function library used for invocation.
+     *
+     * @return the function library
+     */
+    public XPathFunctionLibrary getLibrary() {
+        return library;
     }
 
     /**
@@ -100,6 +118,10 @@ public final class XPathFunctionItem implements XPathValue {
      * @throws XPathException if invocation fails
      */
     public XPathValue invoke(List<XPathValue> args, XPathContext context) throws XPathException {
+        if (args.size() != arity) {
+            throw new XPathException("XPTY0004: Function " + name + "#" + arity
+                + " expects " + arity + " argument(s), got " + args.size());
+        }
         // Try with namespace URI first if available
         if (namespaceURI != null && !namespaceURI.isEmpty()) {
             // Extract local name from prefixed name

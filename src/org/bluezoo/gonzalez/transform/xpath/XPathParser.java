@@ -681,8 +681,7 @@ public final class XPathParser {
         if (lexer.current() != XPathToken.RPAREN) {
             // Parse first parameter
             lexer.expect(XPathToken.DOLLAR);
-            String paramName = lexer.value();
-            lexer.expect(XPathToken.NCNAME);
+            String paramName = expectNCNameOrKeyword();
             paramNames.add(paramName);
 
             // Skip optional type annotation: "as <SequenceType>"
@@ -691,8 +690,7 @@ public final class XPathParser {
             // Parse additional parameters
             while (lexer.match(XPathToken.COMMA)) {
                 lexer.expect(XPathToken.DOLLAR);
-                paramName = lexer.value();
-                lexer.expect(XPathToken.NCNAME);
+                paramName = expectNCNameOrKeyword();
                 paramNames.add(paramName);
                 skipParamTypeAnnotation();
             }
@@ -701,7 +699,7 @@ public final class XPathParser {
         lexer.expect(XPathToken.RPAREN);
 
         // Skip optional return type annotation: "as <SequenceType>"
-        if (lexer.current() == XPathToken.NCNAME && "as".equals(lexer.value())) {
+        if (lexer.current() == XPathToken.AS) {
             lexer.advance(); // consume 'as'
             skipSequenceType();
         }
@@ -724,7 +722,7 @@ public final class XPathParser {
      * Skips an optional "as SequenceType" annotation on a function parameter.
      */
     private void skipParamTypeAnnotation() throws XPathSyntaxException {
-        if (lexer.current() == XPathToken.NCNAME && "as".equals(lexer.value())) {
+        if (lexer.current() == XPathToken.AS) {
             lexer.advance(); // consume 'as'
             skipSequenceType();
         }
@@ -746,15 +744,15 @@ public final class XPathParser {
         }
 
         // Skip the item type: NCName (possibly prefixed), or node()/item()/element() etc.
-        if (lexer.current() == XPathToken.NCNAME) {
-            lexer.advance(); // consume first name
+        if (isNCNameOrKeyword() || isNodeTypeToken()) {
+            lexer.advance(); // consume first name or node type keyword
             if (lexer.match(XPathToken.COLON)) {
-                // Prefixed type like xs:string
-                if (lexer.current() == XPathToken.NCNAME) {
+                // Prefixed type like xs:string - local name may be keyword token
+                if (isNCNameOrKeyword()) {
                     lexer.advance();
                 }
             }
-            // Handle function type: function(...) as ...
+            // Handle function/node type with parens: function(...) as ..., item(), element(e), etc.
             if (lexer.current() == XPathToken.LPAREN) {
                 int depth = 1;
                 lexer.advance();
@@ -765,6 +763,12 @@ public final class XPathParser {
                         depth--;
                     }
                     lexer.advance();
+                }
+                // Handle 'as ReturnType' after function type params: function(...) as xs:string
+                if (lexer.current() == XPathToken.AS) {
+                    lexer.advance();
+                    skipSequenceType();
+                    return;
                 }
             }
         } else if (lexer.current() == XPathToken.URIQNAME) {
@@ -930,10 +934,13 @@ public final class XPathParser {
                         // These always terminate
                         isTerminator = true;
                     } else if (t == XPathToken.RPAREN || t == XPathToken.RBRACKET || 
-                               t == XPathToken.COMMA) {
+                               t == XPathToken.RBRACE || t == XPathToken.COMMA ||
+                               t == XPathToken.COLON) {
                         // These only terminate at top-level (when context stack is empty)
                         // Inside parenthesized/sequence contexts, these are handled by
                         // processOperatorOrEnd -> completeParenthesized/completeSequenceItem
+                        // RBRACE terminates inline function bodies
+                        // COLON terminates map keys in map { key : value }
                         isTerminator = contextStack.isEmpty();
                     }
                     
@@ -1620,10 +1627,12 @@ public final class XPathParser {
         String name = lexer.value();
         lexer.advance();
 
-        // Check for prefix:localname - only consume colon if followed by a valid local name
+        // Check for prefix:localname - only consume colon if followed by an NCNAME.
+        // Do not accept keyword tokens (IF, FOR, etc.) as the local part,
+        // since colon can be a map key-value separator: map { $k : if ... }
         if (lexer.current() == XPathToken.COLON) {
             XPathToken afterColon = lexer.peek();
-            if (afterColon == XPathToken.NCNAME || isKeywordToken(afterColon)) {
+            if (afterColon == XPathToken.NCNAME) {
                 lexer.advance();
                 String localName = lexer.value();
                 lexer.advance();
@@ -1666,6 +1675,24 @@ public final class XPathParser {
     }
 
     /**
+     * Consumes the current token as a name, accepting both NCNAMEs and keyword tokens.
+     * Used for contexts where keywords are valid names (e.g. variable names after $,
+     * parameter names in inline functions).
+     *
+     * @return the token value
+     * @throws XPathSyntaxException if the current token is not a valid name
+     */
+    private String expectNCNameOrKeyword() throws XPathSyntaxException {
+        if (!isNCNameOrKeyword()) {
+            throw new XPathSyntaxException("Expected name",
+                lexer.getExpression(), lexer.tokenStart());
+        }
+        String name = lexer.value();
+        lexer.advance();
+        return name;
+    }
+
+    /**
      * Checks if the given token type is a keyword that can be used as an NCName.
      */
     private boolean isKeywordToken(XPathToken t) {
@@ -1679,6 +1706,30 @@ public final class XPathParser {
             case INTERSECT: case EXCEPT:
             case TO: case EQ: case NE: case LT: case LE: case GT: case GE:
             case IS: case PRECEDES: case FOLLOWS:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Checks if the current token is a node type keyword (element, attribute, etc.)
+     * that can appear in sequence type declarations.
+     */
+    private boolean isNodeTypeToken() {
+        switch (lexer.current()) {
+            case ELEMENT:
+            case ATTRIBUTE:
+            case NODE_TYPE_NODE:
+            case NODE_TYPE_TEXT:
+            case NODE_TYPE_COMMENT:
+            case NODE_TYPE_PI:
+            case DOCUMENT_NODE:
+            case NAMESPACE_NODE:
+            case SCHEMA_ELEMENT:
+            case SCHEMA_ATTRIBUTE:
+            case ITEM:
+            case EMPTY_SEQUENCE:
                 return true;
             default:
                 return false;
@@ -2477,12 +2528,23 @@ public final class XPathParser {
                 break;
                 
             case NCNAME:
-                // Check for map(...) or array(...) type tests
+                // Check for function(...), map(...), or array(...) type tests
+                if ("function".equals(lexer.value()) && lexer.peek() == XPathToken.LPAREN) {
+                    itemKind = SequenceType.ItemKind.ITEM;
+                    lexer.advance();
+                    expectToken(XPathToken.LPAREN, "(");
+                    skipParenthesizedContent();
+                    // Optional return type: function(...) as ReturnType
+                    if (lexer.current() == XPathToken.AS) {
+                        lexer.advance();
+                        skipSequenceType();
+                    }
+                    break;
+                }
                 if ("map".equals(lexer.value()) && lexer.peek() == XPathToken.LPAREN) {
                     itemKind = SequenceType.ItemKind.MAP;
                     lexer.advance();
                     expectToken(XPathToken.LPAREN, "(");
-                    // Skip contents: map(*) or map(K, V)
                     skipParenthesizedContent();
                     break;
                 }

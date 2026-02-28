@@ -739,9 +739,12 @@ public final class XPathLexer {
         switch (previousToken) {
             case LPAREN:
             case LBRACKET:
+            case LBRACE:    // For keywords inside inline function bodies: function($x) { for ... }
+            case RBRACE:    // For keywords after inline function bodies: function(){ ... } return ...
             case RPAREN:    // For 'then' after 'if (condition)'
             case RBRACKET:  // For 'else' after predicate like 'then foo[1]'
             case DOT:       // For 'return' after context item in 'let $p := . return'
+            case COLON:     // For keywords after map key-value separator: map { $k : if ... }
             case COMMA:
             case PLUS:
             case MINUS:
@@ -774,7 +777,6 @@ public final class XPathLexer {
             case OF:        // For sequence type after 'instance of'
             case AS:        // For sequence type after 'cast as', etc.
             case NCNAME:    // For 'in' after variable name in for/some/every $var in ...
-            case DOLLAR:    // For keywords that can appear after $
             // Keywords can follow complete expressions (for 'return' after sequence in 'for $i in expr return')
             case NUMBER_LITERAL:// For 'return' after 'for $i in 1 to 5 return'
             case STRING_LITERAL:// For 'return' after 'for $i in ("a","b") return'

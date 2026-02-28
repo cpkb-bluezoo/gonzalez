@@ -1291,6 +1291,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             return true;
         }
         
+        // Function types like function(*), function(xs:string) as xs:string
+        if (baseType.startsWith("function(") || baseType.startsWith("(function(")) {
+            return true;
+        }
+        
+        // Map and array types
+        if (baseType.startsWith("map(") || baseType.startsWith("array(")) {
+            return true;
+        }
+        
         // Node types like element(), document-node(), node() should use RTF
         // unless they have occurrence indicators suggesting sequences
         if (asType.endsWith("*") || asType.endsWith("+") || asType.endsWith("?")) {
@@ -3170,6 +3180,19 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         if (baseType.startsWith("xs:") || baseType.startsWith("xsd:")) {
             String localName = baseType.substring(baseType.indexOf(':') + 1);
             return SequenceType.atomic(SequenceType.XS_NAMESPACE, localName, occ);
+        }
+        
+        // Handle function types: function(*), function(xs:string) as xs:string, etc.
+        if (baseType.startsWith("function(") || baseType.startsWith("(function(")) {
+            return new SequenceType(SequenceType.ItemKind.ITEM, null, null, null, occ);
+        }
+        
+        // Handle map and array types
+        if (baseType.startsWith("map(")) {
+            return new SequenceType(SequenceType.ItemKind.MAP, null, null, null, occ);
+        }
+        if (baseType.startsWith("array(")) {
+            return new SequenceType(SequenceType.ItemKind.ARRAY, null, null, null, occ);
         }
         
         // Default: treat as atomic type in XS namespace

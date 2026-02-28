@@ -50,6 +50,10 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathTypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.xpath.Collation;
+import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.expr.PartialFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.expr.DynamicPartialItem;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 
 /**
  * XPath 1.0 string functions.
@@ -57,6 +61,16 @@ import org.bluezoo.gonzalez.transform.xpath.Collation;
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class StringFunctions {
+
+    /**
+     * Checks if a value is a function item (which cannot be atomized).
+     */
+    static boolean isFunctionItem(XPathValue value) {
+        return value instanceof XPathFunctionItem
+            || value instanceof InlineFunctionItem
+            || value instanceof PartialFunctionItem
+            || value instanceof DynamicPartialItem;
+    }
 
     private static final Map<String, Pattern> regexCache = new HashMap<>();
 
@@ -88,12 +102,16 @@ public final class StringFunctions {
         @Override public int getMaxArgs() { return 1; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
             if (args.isEmpty()) {
-                // Convert context node to string
                 return XPathString.of(context.getContextNode().getStringValue());
             }
-            return XPathString.of(args.get(0).asString());
+            XPathValue arg = args.get(0);
+            if (isFunctionItem(arg)) {
+                throw new XPathException("FOTY0014: Cannot apply string() to a function item");
+            }
+            return XPathString.of(arg.asString());
         }
     };
 
@@ -458,15 +476,16 @@ public final class StringFunctions {
         @Override public int getMaxArgs() { return 1; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
             if (args.isEmpty()) {
-                // Atomize context node
                 XPathNode node = context.getContextNode();
                 return atomizeNode(node);
             }
-            // Atomize the argument - returns typed value for typed nodes
-            // For sequences, return sequence of atomized values
             XPathValue arg = args.get(0);
+            if (isFunctionItem(arg)) {
+                throw new XPathException("FOTY0013: Cannot atomize a function item");
+            }
             
             // If it's already a sequence, atomize each item
             if (arg.isSequence()) {

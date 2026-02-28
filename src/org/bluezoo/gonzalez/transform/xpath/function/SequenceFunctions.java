@@ -23,6 +23,8 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 
 import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.expr.PartialFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.*;
 
@@ -105,6 +107,9 @@ public final class SequenceFunctions {
         functions.add(AVAILABLE_ENVIRONMENT_VARIABLES);
         functions.add(ENVIRONMENT_VARIABLE);
         functions.add(SORT);
+        // XPath 3.0 higher-order function introspection
+        functions.add(FUNCTION_NAME);
+        functions.add(FUNCTION_ARITY);
         return functions;
     }
 
@@ -726,9 +731,23 @@ public final class SequenceFunctions {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue seq1 = args.get(0);
             XPathValue seq2 = args.get(1);
-            // Collation argument (optional) is ignored for now
-            
+            checkNoFunctionItems(seq1);
+            checkNoFunctionItems(seq2);
             return XPathBoolean.of(deepEqual(seq1, seq2));
+        }
+
+        private void checkNoFunctionItems(XPathValue value) throws XPathException {
+            if (StringFunctions.isFunctionItem(value)) {
+                throw new XPathException("FOTY0015: Cannot compare function items with deep-equal()");
+            }
+            if (value instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) value;
+                for (XPathValue item : seq) {
+                    if (StringFunctions.isFunctionItem(item)) {
+                        throw new XPathException("FOTY0015: Cannot compare function items with deep-equal()");
+                    }
+                }
+            }
         }
         
         private boolean deepEqual(XPathValue v1, XPathValue v2) {
@@ -2004,6 +2023,73 @@ public final class SequenceFunctions {
             });
             
             return new XPathSequence(items);
+        }
+    };
+
+    /**
+     * XPath 3.0 function-name() function.
+     *
+     * <p>Returns the name of a function item as an xs:QName, or the empty
+     * sequence if the function has no name (inline functions).
+     *
+     * <p>Signature: function-name(function(*)) as xs:QName?
+     */
+    public static final Function FUNCTION_NAME = new Function() {
+        @Override public String getName() { return "function-name"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            XPathValue arg = args.get(0);
+            if (arg instanceof XPathFunctionItem) {
+                XPathFunctionItem funcItem = (XPathFunctionItem) arg;
+                String name = funcItem.getName();
+                int colonIdx = name.indexOf(':');
+                String localName = (colonIdx >= 0) ? name.substring(colonIdx + 1) : name;
+                String nsUri = funcItem.getNamespaceURI();
+                if (nsUri == null) {
+                    nsUri = "";
+                }
+                return XPathQName.of(nsUri, localName);
+            }
+            if (arg instanceof PartialFunctionItem) {
+                return XPathSequence.EMPTY;
+            }
+            if (arg instanceof InlineFunctionItem) {
+                return XPathSequence.EMPTY;
+            }
+            throw new XPathException("XPTY0004: Argument to function-name is not a function item");
+        }
+    };
+
+    /**
+     * XPath 3.0 function-arity() function.
+     *
+     * <p>Returns the arity (number of arguments) of a function item.
+     *
+     * <p>Signature: function-arity(function(*)) as xs:integer
+     */
+    public static final Function FUNCTION_ARITY = new Function() {
+        @Override public String getName() { return "function-arity"; }
+        @Override public int getMinArgs() { return 1; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            XPathValue arg = args.get(0);
+            if (arg instanceof XPathFunctionItem) {
+                return new XPathNumber(((XPathFunctionItem) arg).getArity());
+            }
+            if (arg instanceof PartialFunctionItem) {
+                return new XPathNumber(((PartialFunctionItem) arg).getArity());
+            }
+            if (arg instanceof InlineFunctionItem) {
+                return new XPathNumber(((InlineFunctionItem) arg).getArity());
+            }
+            throw new XPathException("XPTY0004: Argument to function-arity is not a function item");
         }
     };
 }

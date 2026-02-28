@@ -56,7 +56,21 @@ public final class DynamicFunctionCallExpr implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
+        // Check for partial application (any argument is a placeholder '?')
+        boolean hasPlaceholder = false;
+        for (Expr arg : args) {
+            if (arg instanceof ArgumentPlaceholder) {
+                hasPlaceholder = true;
+                break;
+            }
+        }
+
         XPathValue baseValue = base.evaluate(context);
+
+        if (hasPlaceholder) {
+            return createDynamicPartialApplication(baseValue, context);
+        }
+
         if (baseValue instanceof InlineFunctionItem) {
             InlineFunctionItem inline = (InlineFunctionItem) baseValue;
             List<XPathValue> evaluatedArgs = new java.util.ArrayList<XPathValue>();
@@ -72,6 +86,14 @@ public final class DynamicFunctionCallExpr implements Expr {
                 evaluatedArgs.add(arg.evaluate(context));
             }
             return partial.invoke(evaluatedArgs, context);
+        }
+        if (baseValue instanceof DynamicPartialItem) {
+            DynamicPartialItem dynPartial = (DynamicPartialItem) baseValue;
+            List<XPathValue> evaluatedArgs = new java.util.ArrayList<XPathValue>();
+            for (Expr arg : args) {
+                evaluatedArgs.add(arg.evaluate(context));
+            }
+            return dynPartial.invoke(evaluatedArgs, context);
         }
         if (baseValue instanceof XPathFunctionItem) {
             XPathFunctionItem funcItem = (XPathFunctionItem) baseValue;
@@ -107,6 +129,46 @@ public final class DynamicFunctionCallExpr implements Expr {
             return result;
         }
         throw new XPathException("XPTY0004: Dynamic function call on non-function item");
+    }
+
+    /**
+     * Creates a partial application wrapping a dynamic function call.
+     * If the base is a named function item, delegates to PartialFunctionItem.
+     * Otherwise, creates a DynamicPartialItem that wraps any callable value.
+     */
+    private XPathValue createDynamicPartialApplication(XPathValue baseValue, XPathContext context)
+            throws XPathException {
+        XPathValue[] boundArgs = new XPathValue[args.size()];
+        int placeholderCount = 0;
+        int[] placeholderPositions = new int[args.size()];
+
+        for (int i = 0; i < args.size(); i++) {
+            if (args.get(i) instanceof ArgumentPlaceholder) {
+                placeholderPositions[placeholderCount] = i;
+                placeholderCount++;
+            } else {
+                boundArgs[i] = args.get(i).evaluate(context);
+            }
+        }
+
+        int[] positions = new int[placeholderCount];
+        for (int i = 0; i < placeholderCount; i++) {
+            positions[i] = placeholderPositions[i];
+        }
+
+        if (baseValue instanceof XPathFunctionItem) {
+            XPathFunctionItem funcItem = (XPathFunctionItem) baseValue;
+            String name = funcItem.getName();
+            String nsURI = funcItem.getNamespaceURI();
+            int colonIdx = name.indexOf(':');
+            String localName = (colonIdx >= 0) ? name.substring(colonIdx + 1) : name;
+            return new PartialFunctionItem(name, nsURI, localName,
+                    placeholderCount, funcItem.getLibrary(),
+                    boundArgs, positions, args.size());
+        }
+
+        return new DynamicPartialItem(baseValue, placeholderCount,
+                boundArgs, positions, args.size());
     }
 
     @Override

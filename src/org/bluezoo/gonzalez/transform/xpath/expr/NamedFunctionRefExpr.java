@@ -37,6 +37,8 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  */
 public final class NamedFunctionRefExpr implements Expr {
 
+    private static final String FN_NAMESPACE = "http://www.w3.org/2005/xpath-functions";
+
     private final String prefix;
     private final String localName;
     private final String resolvedURI;
@@ -93,10 +95,15 @@ public final class NamedFunctionRefExpr implements Expr {
         
         // Check built-in functions first (use fullName for unprefixed)
         if (library.hasFunction(effectiveURI, localName)) {
-            return new XPathFunctionItem(fullName, effectiveURI, arity, library);
+            // Built-in functions with no explicit prefix are in the fn: namespace
+            String itemURI = effectiveURI;
+            if (itemURI == null || itemURI.isEmpty()) {
+                itemURI = FN_NAMESPACE;
+            }
+            return new XPathFunctionItem(fullName, itemURI, arity, library);
         }
         if (library.hasFunction(null, fullName)) {
-            return new XPathFunctionItem(fullName, effectiveURI, arity, library);
+            return new XPathFunctionItem(fullName, FN_NAMESPACE, arity, library);
         }
         
         // For namespaced functions, the function library may resolve user-defined

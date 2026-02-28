@@ -62,9 +62,9 @@ public final class NumberFunctions {
         @Override public int getMaxArgs() { return 1; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
             if (args.isEmpty()) {
-                // Convert context node's string-value to number
                 String str = context.getContextNode().getStringValue();
                 try {
                     return XPathNumber.of(Double.parseDouble(str.trim()));
@@ -72,7 +72,11 @@ public final class NumberFunctions {
                     return XPathNumber.NaN;
                 }
             }
-            return XPathNumber.of(args.get(0).asNumber());
+            XPathValue arg = args.get(0);
+            if (StringFunctions.isFunctionItem(arg)) {
+                throw new XPathException("FOTY0013: Cannot atomize a function item");
+            }
+            return XPathNumber.of(arg.asNumber());
         }
     };
 

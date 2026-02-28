@@ -1,5 +1,5 @@
 /*
- * PartialFunctionItem.java
+ * DynamicPartialItem.java
  * Copyright (C) 2026 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -25,54 +25,40 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
-import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
-import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
- * XPath 3.1 partial function application result.
+ * Partial application of a dynamic function call.
  *
- * <p>Created when a function call contains one or more argument placeholders
- * ({@code ?}). The partially applied function captures the bound arguments
- * and returns a new function item whose arity equals the number of placeholders.
- *
- * <p>This class implements the same interface as {@link XPathFunctionItem}
- * and can be used wherever a function item is expected.
+ * <p>Wraps any callable function value (InlineFunctionItem, PartialFunctionItem,
+ * XPathFunctionItem, etc.) with bound arguments and placeholder positions.
+ * When invoked, fills placeholder positions with the supplied arguments and
+ * delegates to the wrapped function.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class PartialFunctionItem implements XPathValue {
+public final class DynamicPartialItem implements XPathValue {
 
-    private final String fullName;
-    private final String namespaceURI;
-    private final String funcLocalName;
+    private final XPathValue baseFunction;
     private final int arity;
-    private final XPathFunctionLibrary library;
     private final XPathValue[] boundArgs;
     private final int[] placeholderPositions;
     private final int totalArgs;
 
     /**
-     * Creates a partial function item.
+     * Creates a dynamic partial function item.
      *
-     * @param fullName display name
-     * @param namespaceURI namespace URI for function lookup
-     * @param funcLocalName local name for function lookup
+     * @param baseFunction the wrapped function value
      * @param arity number of unbound placeholder arguments
-     * @param library function library for invocation
      * @param boundArgs array of bound argument values (null at placeholder positions)
      * @param placeholderPositions indices of placeholder arguments
      * @param totalArgs total number of arguments in the original call
      */
-    public PartialFunctionItem(String fullName, String namespaceURI, String funcLocalName,
-            int arity, XPathFunctionLibrary library, XPathValue[] boundArgs,
-            int[] placeholderPositions, int totalArgs) {
-        this.fullName = fullName;
-        this.namespaceURI = namespaceURI;
-        this.funcLocalName = funcLocalName;
+    public DynamicPartialItem(XPathValue baseFunction, int arity,
+            XPathValue[] boundArgs, int[] placeholderPositions, int totalArgs) {
+        this.baseFunction = baseFunction;
         this.arity = arity;
-        this.library = library;
         this.boundArgs = boundArgs;
         this.placeholderPositions = placeholderPositions;
         this.totalArgs = totalArgs;
@@ -107,7 +93,17 @@ public final class PartialFunctionItem implements XPathValue {
             fullArgs.set(placeholderPositions[i], args.get(i));
         }
 
-        return library.invokeFunction(namespaceURI, funcLocalName, fullArgs, context);
+        if (baseFunction instanceof InlineFunctionItem) {
+            return ((InlineFunctionItem) baseFunction).invoke(fullArgs, context);
+        }
+        if (baseFunction instanceof PartialFunctionItem) {
+            return ((PartialFunctionItem) baseFunction).invoke(fullArgs, context);
+        }
+        if (baseFunction instanceof org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem) {
+            return ((org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem) baseFunction)
+                    .invoke(fullArgs, context);
+        }
+        throw new XPathException("XPTY0004: Cannot invoke partial application of non-function item");
     }
 
     /**
@@ -126,7 +122,7 @@ public final class PartialFunctionItem implements XPathValue {
 
     @Override
     public String asString() {
-        return fullName + "(partial)";
+        return baseFunction.asString() + "(partial)";
     }
 
     @Override
@@ -146,6 +142,6 @@ public final class PartialFunctionItem implements XPathValue {
 
     @Override
     public String toString() {
-        return "partial(" + fullName + ")";
+        return "dynamic-partial(" + baseFunction + ")";
     }
 }
