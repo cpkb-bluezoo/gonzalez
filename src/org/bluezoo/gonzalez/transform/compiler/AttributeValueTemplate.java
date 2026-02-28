@@ -36,14 +36,14 @@ import java.util.List;
  * Attribute Value Template (AVT) in XSLT.
  *
  * <p>AVTs allow XPath expressions to be embedded in attribute values using
- * curly braces. For example: {@code class="{$type}-item"} where {@code {$type}}
+ * accolades. For example: {@code class="{$type}-item"} where {@code {$type}}
  * is evaluated as an XPath expression and concatenated with "-item".
  *
  * <p>AVT syntax:
  * <ul>
  *   <li>{@code {expr}} - XPath expression, result converted to string</li>
- *   <li>{@code {{} - literal left brace</li>
- *   <li>{@code }}} - literal right brace</li>
+ *   <li>{@code {{} - literal left accolade</li>
+ *   <li>{@code }}} - literal right accolade</li>
  * </ul>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
@@ -145,7 +145,7 @@ public final class AttributeValueTemplate {
 
             if (c == '{') {
                 if (i + 1 < len && value.charAt(i + 1) == '{') {
-                    // Escaped left brace
+                    // Escaped left accolade
                     literal.append('{');
                     i += 2;
                 } else {
@@ -155,7 +155,7 @@ public final class AttributeValueTemplate {
                         literal.setLength(0);
                     }
 
-                    // Find matching close brace
+                    // Find matching close accolade
                     int start = i + 1;
                     int depth = 1;
                     i = start;
@@ -185,11 +185,11 @@ public final class AttributeValueTemplate {
                     String exprStr = value.substring(start, i);
                     XPathExpression expr = XPathExpression.compile(exprStr, namespaceResolver);
                     parts.add(new ExpressionPart(expr));
-                    i++; // Skip closing brace
+                    i++; // Skip closing accolade
                 }
             } else if (c == '}') {
                 if (i + 1 < len && value.charAt(i + 1) == '}') {
-                    // Escaped right brace
+                    // Escaped right accolade
                     literal.append('}');
                     i += 2;
                 } else {

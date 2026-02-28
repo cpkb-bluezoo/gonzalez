@@ -33,6 +33,7 @@ import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
@@ -111,37 +112,21 @@ public class CopyOfNode extends XSLTInstruction {
                     // depth=0 means this is a directly selected node
                     deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
                 }
+            } else if (result instanceof XPathArray) {
+                // XPath 3.1 array - iterate over members and copy each
+                XPathArray arr = (XPathArray) result;
+                boolean needSpace = false;
+                for (XPathValue member : arr.members()) {
+                    needSpace = copySequenceItem(member, output, effectiveValidation,
+                        effectiveCopyNamespaces, needSpace);
+                }
             } else if (result.isSequence()) {
                 // Handle XPath 2.0 sequences - iterate over items
                 java.util.Iterator<XPathValue> iter = result.sequenceIterator();
                 boolean needSpace = false;
                 while (iter.hasNext()) {
-                    XPathValue item = iter.next();
-                    if (item instanceof XPathResultTreeFragment) {
-                        XPathResultTreeFragment rtf = (XPathResultTreeFragment) item;
-                        boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
-                        rtf.replayToOutput(output, includeTypes);
-                        needSpace = false;
-                    } else if (item instanceof XPathNodeSet) {
-                        XPathNodeSet ns = (XPathNodeSet) item;
-                        for (XPathNode node : ns.getNodes()) {
-                            deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
-                        }
-                        needSpace = false;
-                    } else if (item.isNodeSet()) {
-                        XPathNodeSet ns = item.asNodeSet();
-                        for (XPathNode node : ns.getNodes()) {
-                            deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
-                        }
-                        needSpace = false;
-                    } else {
-                        // Atomic value - output as text with space separator
-                        if (needSpace) {
-                            output.characters(" ");
-                        }
-                        output.characters(item.asString());
-                        needSpace = true;
-                    }
+                    needSpace = copySequenceItem(iter.next(), output,
+                        effectiveValidation, effectiveCopyNamespaces, needSpace);
                 }
             } else {
                 // For non-node-sets, output as text
@@ -152,6 +137,60 @@ public class CopyOfNode extends XSLTInstruction {
         }
     }
     
+    /**
+     * Copies a single sequence/array item to the output.
+     * Handles RTFs, node sets, arrays, and atomic values.
+     *
+     * @return true if a space separator is needed before the next atomic value
+     */
+    private boolean copySequenceItem(XPathValue item, OutputHandler output,
+            ValidationMode effectiveValidation, boolean effectiveCopyNamespaces,
+            boolean needSpace) throws SAXException {
+        if (item instanceof XPathResultTreeFragment) {
+            XPathResultTreeFragment rtf = (XPathResultTreeFragment) item;
+            boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
+            rtf.replayToOutput(output, includeTypes);
+            return false;
+        } else if (item instanceof XPathArray) {
+            XPathArray arr = (XPathArray) item;
+            boolean ns = needSpace;
+            for (XPathValue member : arr.members()) {
+                ns = copySequenceItem(member, output, effectiveValidation,
+                    effectiveCopyNamespaces, ns);
+            }
+            return ns;
+        } else if (item instanceof XPathNodeSet) {
+            XPathNodeSet nodeSet = (XPathNodeSet) item;
+            for (XPathNode node : nodeSet.getNodes()) {
+                deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
+            }
+            return false;
+        } else if (item instanceof XPathNode) {
+            deepCopyNode((XPathNode) item, output, effectiveValidation, effectiveCopyNamespaces, 0);
+            return false;
+        } else if (item.isNodeSet()) {
+            XPathNodeSet nodeSet = item.asNodeSet();
+            for (XPathNode node : nodeSet.getNodes()) {
+                deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
+            }
+            return false;
+        } else if (item.isSequence()) {
+            Iterator<XPathValue> iter = item.sequenceIterator();
+            boolean ns = needSpace;
+            while (iter.hasNext()) {
+                ns = copySequenceItem(iter.next(), output, effectiveValidation,
+                    effectiveCopyNamespaces, ns);
+            }
+            return ns;
+        } else {
+            if (needSpace) {
+                output.characters(" ");
+            }
+            output.characters(item.asString());
+            return true;
+        }
+    }
+
     /**
      * Deep copies a node to the output.
      * @param node the node to copy

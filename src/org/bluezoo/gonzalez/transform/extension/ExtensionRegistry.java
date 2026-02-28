@@ -171,7 +171,7 @@ public final class ExtensionRegistry {
      * <p>The returned set is unmodifiable and contains keys in the format
      * "{namespaceURI}localName". Functions in the default namespace (null or
      * empty namespace URI) are represented as just the local name without
-     * the curly braces.
+     * the accolades.
      *
      * @return an unmodifiable set of function name keys, never null
      */
@@ -185,7 +185,7 @@ public final class ExtensionRegistry {
      * <p>The returned set is unmodifiable and contains keys in the format
      * "{namespaceURI}localName". Elements in the default namespace (null or
      * empty namespace URI) are represented as just the local name without
-     * the curly braces.
+     * the accolades.
      *
      * @return an unmodifiable set of element name keys, never null
      */

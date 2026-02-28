@@ -188,8 +188,8 @@ functions, maps, arrays, and dynamic function calls.
 
 | Feature | Status |
 |---------|--------|
-| Square bracket constructor `[expr, ...]` | Supported |
-| Curly brace constructor `array{expr}` | Supported |
+| Bracket constructor `[expr, ...]` | Supported |
+| Accolade constructor `array{expr}` | Supported |
 | Lookup `$array?1`, `$array?*` | Supported |
 | `array:size`, `array:get`, `array:put`, `array:append` | Supported |
 | `array:subarray`, `array:remove`, `array:insert-before` | Supported |

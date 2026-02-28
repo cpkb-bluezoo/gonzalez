@@ -996,13 +996,8 @@ public final class BinaryExpr implements Expr {
      * left operand inserted as first argument.
      */
     private XPathValue evaluateArrow(XPathContext context) throws XPathException {
-        // The arrow operator requires special handling in the parser
-        // to properly transform the function call.
-        // For now, we just evaluate left and apply right as a simple call.
         XPathValue leftVal = left.evaluate(context);
         
-        // If right is a function call, we need to insert leftVal as first arg
-        // This is a simplified implementation that evaluates both sides
         if (right instanceof FunctionCall) {
             FunctionCall func = (FunctionCall) right;
             // Create new argument list with left value prepended
@@ -1012,9 +1007,18 @@ public final class BinaryExpr implements Expr {
                 args.add(argExpr.evaluate(context));
             }
             
-            // Invoke the function with left value as first argument
+            // Resolve prefix to namespace URI (same logic as FunctionCall.evaluate)
+            String namespaceURI = func.getResolvedNamespaceURI();
+            String prefix = func.getPrefix();
+            if (namespaceURI == null && prefix != null && !prefix.isEmpty()) {
+                namespaceURI = context.resolveNamespacePrefix(prefix);
+                if (namespaceURI == null) {
+                    throw new XPathException("Unknown namespace prefix: " + prefix);
+                }
+            }
+            
             return context.getFunctionLibrary()
-                .invokeFunction(func.getPrefix(), func.getLocalName(), args, context);
+                .invokeFunction(namespaceURI, func.getLocalName(), args, context);
         }
         
         // Fallback: just return left value (shouldn't happen with proper parsing)

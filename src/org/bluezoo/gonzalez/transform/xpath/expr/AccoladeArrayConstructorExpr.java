@@ -1,5 +1,5 @@
 /*
- * ArrayConstructorExpr.java
+ * AccoladeArrayConstructorExpr.java
  * Copyright (C) 2026 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
@@ -29,47 +30,41 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
- * An XPath 3.1 bracket array constructor: {@code [expr1, expr2, ...]}.
+ * An XPath 3.1 accolade array constructor: {@code array{ expr }}.
  *
- * <p>Each member expression is evaluated and becomes a member of the resulting
- * array. Unlike sequences, members are not flattened.
+ * <p>Unlike the bracket constructor where each comma-separated
+ * expression becomes one member, the accolade constructor evaluates
+ * the enclosed expression and each item in the resulting sequence becomes
+ * a separate array member.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class ArrayConstructorExpr implements Expr {
+public final class AccoladeArrayConstructorExpr implements Expr {
 
-    private final List<Expr> memberExprs;
+    private final Expr bodyExpr;
 
     /**
-     * Creates an array constructor with the given member expressions.
+     * Creates an accolade array constructor.
      *
-     * @param memberExprs the expressions for each array member
+     * @param bodyExpr the enclosed expression whose result items become members
      */
-    public ArrayConstructorExpr(List<Expr> memberExprs) {
-        this.memberExprs = new ArrayList<Expr>(memberExprs);
+    public AccoladeArrayConstructorExpr(Expr bodyExpr) {
+        this.bodyExpr = bodyExpr;
     }
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
-        List<XPathValue> members = new ArrayList<XPathValue>(memberExprs.size());
-        for (int i = 0; i < memberExprs.size(); i++) {
-            XPathValue member = memberExprs.get(i).evaluate(context);
-            members.add(member);
+        XPathValue result = bodyExpr.evaluate(context);
+        List<XPathValue> members = new ArrayList<XPathValue>();
+        Iterator<XPathValue> iter = result.sequenceIterator();
+        while (iter.hasNext()) {
+            members.add(iter.next());
         }
         return new XPathArray(members);
     }
 
     @Override
     public String toString() {
-        StringBuilder sb = new StringBuilder();
-        sb.append("[");
-        for (int i = 0; i < memberExprs.size(); i++) {
-            if (i > 0) {
-                sb.append(", ");
-            }
-            sb.append(memberExprs.get(i));
-        }
-        sb.append("]");
-        return sb.toString();
+        return "array{" + bodyExpr + "}";
     }
 }

@@ -36,6 +36,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
 import org.bluezoo.gonzalez.transform.xpath.expr.ArgumentPlaceholder;
 import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.ArrayConstructorExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.AccoladeArrayConstructorExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.LookupExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.MapConstructorExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.NamedFunctionRefExpr;
@@ -394,7 +395,7 @@ public final class XPathParser {
             }
 
             case LBRACKET: {
-                // XPath 3.1 square-bracket array constructor: [expr1, expr2, ...]
+                // XPath 3.1 bracket array constructor: [expr1, expr2, ...]
                 Expr arrayExpr = parseArrayConstructor();
                 ctx.filterBase = arrayExpr;
                 ctx.state = ParseState.PATH_CONTINUATION;
@@ -475,7 +476,7 @@ public final class XPathParser {
                     return ctx;
                 }
                 if (next == XPathToken.LBRACE && "array".equals(lexer.value())) {
-                    Expr arrayExpr = parseCurlyArrayConstructor();
+                    Expr arrayExpr = parseAccoladeArrayConstructor();
                     ctx.filterBase = arrayExpr;
                     ctx.state = ParseState.PATH_CONTINUATION;
                     return ctx;
@@ -809,7 +810,7 @@ public final class XPathParser {
     }
 
     /**
-     * Parses an XPath 3.1 square-bracket array constructor: [expr1, expr2, ...]
+     * Parses an XPath 3.1 bracket array constructor: [expr1, expr2, ...]
      */
     private Expr parseArrayConstructor() throws XPathSyntaxException {
         lexer.expect(XPathToken.LBRACKET);
@@ -829,26 +830,25 @@ public final class XPathParser {
     }
 
     /**
-     * Parses an XPath 3.1 curly-brace array constructor: array { expr1, expr2, ... }
-     * Unlike [a, b, c] which creates one member per expression, array{} wraps
-     * the single expression result into array members.
+     * Parses an XPath 3.1 accolade array constructor: array { expr }.
+     * Each item in the result sequence becomes a separate array member.
      */
-    private Expr parseCurlyArrayConstructor() throws XPathSyntaxException {
+    private Expr parseAccoladeArrayConstructor() throws XPathSyntaxException {
         lexer.expect(XPathToken.NCNAME); // consume 'array'
         lexer.expect(XPathToken.LBRACE);
 
-        List<Expr> members = new ArrayList<>();
-
+        Expr body;
         if (lexer.current() != XPathToken.RBRACE) {
-            members.add(parseSubExpression());
-
-            while (lexer.match(XPathToken.COMMA)) {
-                members.add(parseSubExpression());
-            }
+            body = parseSubExpression();
+        } else {
+            body = null;
         }
 
         lexer.expect(XPathToken.RBRACE);
-        return new ArrayConstructorExpr(members);
+        if (body == null) {
+            return new ArrayConstructorExpr(new ArrayList<Expr>());
+        }
+        return new AccoladeArrayConstructorExpr(body);
     }
 
     /**

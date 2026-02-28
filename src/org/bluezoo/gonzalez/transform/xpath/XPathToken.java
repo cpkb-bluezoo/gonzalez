@@ -254,9 +254,9 @@ public enum XPathToken {
     RBRACKET,
     /** The ',' comma (function argument separator). */
     COMMA,
-    /** The '{' left brace (XPath 3.1 map/array constructor). */
+    /** The '{' left accolade (XPath 3.1 map/array constructor). */
     LBRACE,
-    /** The '}' right brace (XPath 3.1 map/array constructor). */
+    /** The '}' right accolade (XPath 3.1 map/array constructor). */
     RBRACE,
 
     // Variable reference

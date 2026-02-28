@@ -192,6 +192,15 @@ public final class FunctionCall implements Expr {
     }
 
     /**
+     * Returns the namespace URI resolved at compile time, if any.
+     *
+     * @return the resolved namespace URI, or null
+     */
+    public String getResolvedNamespaceURI() {
+        return resolvedNamespaceURI;
+    }
+
+    /**
      * Returns the argument expressions.
      *
      * @return the arguments (immutable)

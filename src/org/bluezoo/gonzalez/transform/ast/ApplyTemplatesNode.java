@@ -46,6 +46,8 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
@@ -145,6 +147,37 @@ public class ApplyTemplatesNode extends XSLTInstruction {
                     if (nodes.isEmpty()) {
                         return; // No nodes in sequence (atomic values already processed)
                     }
+                } else if (result instanceof XPathArray || result instanceof XPathMap) {
+                    // XSLT 3.0: arrays and maps are function items that templates can match
+                    nodes = new ArrayList<>();
+                    if (context instanceof BasicTransformContext) {
+                        BasicTransformContext btc = (BasicTransformContext) context;
+                        TemplateMatcher matcher = context.getTemplateMatcher();
+                        String effectiveMode = mode;
+                        if ("#current".equals(mode)) {
+                            effectiveMode = context.getCurrentMode();
+                        }
+                        TemplateRule rule = matcher.findMatchForAtomicValue(result, effectiveMode, context);
+                        if (rule != null) {
+                            TransformContext itemContext = btc
+                                .withContextItem(result)
+                                .withPositionAndSize(1, 1)
+                                .pushVariableScope()
+                                .withCurrentTemplateRule(rule);
+                            for (WithParamNode param : params) {
+                                if (!param.isTunnel()) {
+                                    try {
+                                        itemContext = (TransformContext) itemContext.withVariable(
+                                            null, param.getName(), param.evaluate(context));
+                                    } catch (XPathException e) {
+                                        throw new SAXException("Error evaluating param: " + e.getMessage(), e);
+                                    }
+                                }
+                            }
+                            rule.getBody().execute(itemContext, output);
+                        }
+                    }
+                    return;
                 } else {
                     // XTTE0520: select must evaluate to node()*
                     throw new SAXException("XTTE0520: The select expression of xsl:apply-templates" +

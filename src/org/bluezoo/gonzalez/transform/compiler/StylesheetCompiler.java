@@ -2037,7 +2037,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
     
     /**
-     * Validates that an attribute is not an AVT (does not contain curly braces).
+     * Validates that an attribute is not an AVT (does not contain accolades).
      * XTSE0020: Certain attributes like xsl:decimal-format/@name are not AVTs.
      */
     /**
@@ -2143,8 +2143,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         literal.setLength(0);
                     }
                     
-                    // Find the matching closing brace
-                    // Need to handle: string literals, XPath comments, nested braces
+                    // Find the matching closing accolade
+                    // Need to handle: string literals, XPath comments, nested accolades
                     int start = i + 1;
                     int braceCount = 1;
                     i++;
