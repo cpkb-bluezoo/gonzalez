@@ -3650,7 +3650,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         importsAllowed = false;
         // Don't assign precedence here - it will be done after all includes are processed
         // Use the current importPrecedence value (-1 if not yet assigned)
-        String match = ctx.attributes.get("match");
+        String match = resolveStaticShadowAttribute(ctx, "match");
         String name = ctx.attributes.get("name");
         String mode = ctx.attributes.get("mode");
         String priorityStr = ctx.attributes.get("priority");
@@ -3858,6 +3858,36 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * Expands a QName to Clark notation {uri}localname for proper comparison.
      * Names like woo:a and hoo:a should be equal if both prefixes map to the same URI.
      */
+    /**
+     * Checks if an XPath expression string contains a descendant or
+     * descendant-or-self axis (indicating a crawling/non-motionless expression).
+     * Used for streamability analysis of xsl:merge-source select expressions.
+     */
+    private boolean containsDescendantAxis(String expr) {
+        boolean inSingleQuote = false;
+        boolean inDoubleQuote = false;
+        int len = expr.length();
+        for (int i = 0; i < len; i++) {
+            char c = expr.charAt(i);
+            if (c == '\'' && !inDoubleQuote) {
+                inSingleQuote = !inSingleQuote;
+            } else if (c == '"' && !inSingleQuote) {
+                inDoubleQuote = !inDoubleQuote;
+            } else if (!inSingleQuote && !inDoubleQuote) {
+                if (c == '/' && i + 1 < len && expr.charAt(i + 1) == '/') {
+                    return true;
+                }
+                if (c == 'd' && expr.startsWith("descendant::", i)) {
+                    return true;
+                }
+                if (c == 'd' && expr.startsWith("descendant-or-self::", i)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private boolean hasNonWhitespaceContent(List<XSLTNode> children) {
         for (XSLTNode child : children) {
             if (child instanceof LiteralText) {
@@ -5535,25 +5565,41 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private XSLTNode compileMerge(ElementContext ctx) throws SAXException {
         List<MergeNode.MergeSource> sources = new ArrayList<>();
         XSLTNode action = null;
+        int actionCount = 0;
+        boolean seenAction = false;
+        boolean seenFallbackBeforeAction = false;
         
         for (XSLTNode child : ctx.children) {
             String childStr = child.toString();
             if (childStr.contains("MergeSourceHolder")) {
-                // This is a merge-source we compiled
                 MergeSourceHolder holder = (MergeSourceHolder) child;
                 sources.add(holder.source);
             } else if (childStr.contains("MergeActionHolder")) {
-                // This is the merge-action
                 MergeActionHolder holder = (MergeActionHolder) child;
                 action = holder.content;
+                actionCount++;
+                seenAction = true;
+            } else if (child instanceof FallbackNode) {
+                if (!seenAction) {
+                    seenFallbackBeforeAction = true;
+                }
             }
         }
         
+        // XTSE0010: xsl:merge must have exactly one xsl:merge-action
+        if (actionCount > 1) {
+            throw new SAXException("XTSE0010: xsl:merge must not have more than one xsl:merge-action");
+        }
         if (sources.isEmpty()) {
             throw new SAXException("XTSE0010: xsl:merge requires at least one xsl:merge-source");
         }
         if (action == null) {
             throw new SAXException("XTSE0010: xsl:merge requires xsl:merge-action");
+        }
+        
+        // XTSE0010: xsl:fallback must come after xsl:merge-action
+        if (seenFallbackBeforeAction) {
+            throw new SAXException("XTSE0010: xsl:fallback in xsl:merge must follow xsl:merge-action");
         }
         
         // XTSE3190: check for duplicate merge-source names
@@ -5566,6 +5612,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
+        // XTSE2200: all merge-sources must have same number of merge-keys
+        if (sources.size() > 1) {
+            int firstKeyCount = sources.get(0).keys.size();
+            for (int i = 1; i < sources.size(); i++) {
+                int keyCount = sources.get(i).keys.size();
+                if (keyCount != firstKeyCount) {
+                    throw new SAXException("XTSE2200: All xsl:merge-source elements must have " +
+                        "the same number of xsl:merge-key children");
+                }
+            }
+        }
+        
         return new MergeNode(sources, action);
     }
 
@@ -5574,25 +5632,112 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      */
     private XSLTNode compileMergeSource(ElementContext ctx) throws SAXException {
         String name = ctx.attributes.get("name");
-        String selectStr = ctx.attributes.get("select");
+        
+        // Support shadow attribute _select for runtime-evaluated select expressions
+        String selectStr = resolveStaticShadowAttribute(ctx, "select");
+        
         String forEachItemStr = ctx.attributes.get("for-each-item");
         String forEachSourceStr = ctx.attributes.get("for-each-source");
         String sortBeforeMergeStr = ctx.attributes.get("sort-before-merge");
-        String streamableStr = ctx.attributes.get("streamable");
+        
+        // Support shadow attribute _streamable
+        String streamableStr = resolveStaticShadowAttribute(ctx, "streamable");
+        
+        // Trim whitespace from boolean-like attributes
+        if (streamableStr != null) {
+            streamableStr = streamableStr.trim();
+        }
+        if (sortBeforeMergeStr != null) {
+            sortBeforeMergeStr = sortBeforeMergeStr.trim();
+        }
+        
+        // XTSE0020: validate streamable attribute value
+        if (streamableStr != null && !streamableStr.isEmpty()) {
+            if (!"yes".equals(streamableStr) && !"no".equals(streamableStr)
+                && !"true".equals(streamableStr) && !"false".equals(streamableStr)
+                && !"1".equals(streamableStr) && !"0".equals(streamableStr)) {
+                throw new SAXException("XTSE0020: Invalid value for streamable attribute: '"
+                    + streamableStr + "' (must be yes/no/true/false)");
+            }
+        }
+        
+        // XTSE0020: validate sort-before-merge attribute value
+        if (sortBeforeMergeStr != null && !sortBeforeMergeStr.isEmpty()) {
+            if (!"yes".equals(sortBeforeMergeStr) && !"no".equals(sortBeforeMergeStr)
+                && !"true".equals(sortBeforeMergeStr) && !"false".equals(sortBeforeMergeStr)
+                && !"1".equals(sortBeforeMergeStr) && !"0".equals(sortBeforeMergeStr)) {
+                throw new SAXException("XTSE0020: Invalid value for sort-before-merge attribute: '"
+                    + sortBeforeMergeStr + "' (must be yes/no/true/false)");
+            }
+        }
+        
+        boolean sortBeforeMerge = "yes".equals(sortBeforeMergeStr) || "true".equals(sortBeforeMergeStr);
+        boolean streamable = "yes".equals(streamableStr) || "true".equals(streamableStr);
+        
+        // XTSE0010: xsl:merge-source must be a child of xsl:merge
+        if (!elementStack.isEmpty()) {
+            ElementContext parent = elementStack.peek();
+            if (!"merge".equals(parent.localName) || !XSLT_NS.equals(parent.namespaceURI)) {
+                throw new SAXException("XTSE0010: xsl:merge-source is not allowed here " +
+                    "(must be a child of xsl:merge)");
+            }
+        } else {
+            throw new SAXException("XTSE0010: xsl:merge-source is not allowed at the top level");
+        }
+        
+        // XTSE0010: merge-source must have select or for-each-item or for-each-source
+        if (selectStr == null && forEachItemStr == null && forEachSourceStr == null) {
+            throw new SAXException("XTSE0010: xsl:merge-source must have a select attribute, " +
+                "for-each-item attribute, or for-each-source attribute");
+        }
+        
+        // XTSE3195: cannot specify both for-each-item and for-each-source
+        if (forEachItemStr != null && forEachSourceStr != null) {
+            throw new SAXException("XTSE3195: xsl:merge-source must not have both " +
+                "for-each-item and for-each-source attributes");
+        }
+        
+        // XTSE3430: streamable with sort-before-merge is not allowed
+        if (streamable && sortBeforeMerge) {
+            throw new SAXException("XTSE3430: xsl:merge-source with streamable='yes' " +
+                "must not specify sort-before-merge='yes'");
+        }
+        
+        // XTSE3430: streamable with crawling (descendant axis) select is not allowed
+        if (streamable && selectStr != null && containsDescendantAxis(selectStr)) {
+            throw new SAXException("XTSE3430: xsl:merge-source with streamable='yes' " +
+                "has a select expression that is not motionless (uses descendant axis)");
+        }
+        
+        // XTSE1650: validation and type attributes require a schema-aware processor
+        String validationStr = ctx.attributes.get("validation");
+        String typeStr = ctx.attributes.get("type");
+        if (validationStr != null || typeStr != null) {
+            throw new SAXException("XTSE1650: xsl:merge-source attributes 'validation' and 'type' " +
+                "require a schema-aware XSLT processor");
+        }
         
         XPathExpression select = selectStr != null ? compileExpression(selectStr) : null;
         XPathExpression forEachItem = forEachItemStr != null ? compileExpression(forEachItemStr) : null;
         XPathExpression forEachSource = forEachSourceStr != null ? compileExpression(forEachSourceStr) : null;
-        boolean sortBeforeMerge = "yes".equals(sortBeforeMergeStr) || "true".equals(sortBeforeMergeStr);
-        boolean streamable = "yes".equals(streamableStr) || "true".equals(streamableStr);
         
-        // Collect merge keys
+        // Collect merge keys and check for invalid children
         List<MergeNode.MergeKey> keys = new ArrayList<>();
+        boolean hasNonKeyContent = false;
         for (XSLTNode child : ctx.children) {
-            if (child.toString().contains("MergeKeyHolder")) {
+            String childStr = child.toString();
+            if (childStr.contains("MergeKeyHolder")) {
                 MergeKeyHolder holder = (MergeKeyHolder) child;
                 keys.add(holder.key);
+            } else if (hasNonWhitespaceContent(Collections.singletonList(child))) {
+                hasNonKeyContent = true;
             }
+        }
+        
+        // XTSE0010: merge-source with select must not have non-merge-key content
+        if (selectStr != null && hasNonKeyContent) {
+            throw new SAXException("XTSE0010: xsl:merge-source with select attribute " +
+                "must not have content other than xsl:merge-key");
         }
         
         MergeNode.MergeSource source = new MergeNode.MergeSource(
@@ -5607,21 +5752,40 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      */
     private XSLTNode compileMergeKey(ElementContext ctx) throws SAXException {
         String selectStr = ctx.attributes.get("select");
-        if (selectStr == null || selectStr.isEmpty()) {
-            throw new SAXException("XTSE0010: xsl:merge-key requires select attribute");
-        }
-        if (!ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
-            throw new SAXException("XTSE3200: xsl:merge-key with select attribute " +
-                "must not have non-empty content");
+        
+        XPathExpression select = null;
+        XSLTNode body = null;
+        
+        if (selectStr != null && !selectStr.isEmpty()) {
+            // select attribute present
+            if (!ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
+                throw new SAXException("XTSE3200: xsl:merge-key with select attribute " +
+                    "must not have non-empty content");
+            }
+            select = compileExpression(selectStr);
+        } else {
+            // No select attribute - use body as sequence constructor
+            if (ctx.children.isEmpty()) {
+                throw new SAXException("XTSE0010: xsl:merge-key requires either select attribute or content");
+            }
+            if (ctx.children.size() == 1) {
+                body = ctx.children.get(0);
+            } else {
+                body = new SequenceNode(new ArrayList<>(ctx.children));
+            }
         }
         
-        XPathExpression select = compileExpression(selectStr);
-        String order = ctx.attributes.get("order");
-        String lang = ctx.attributes.get("lang");
-        String collation = ctx.attributes.get("collation");
-        String dataType = ctx.attributes.get("data-type");
+        String orderStr = ctx.attributes.get("order");
+        String langStr = ctx.attributes.get("lang");
+        String collationStr = ctx.attributes.get("collation");
+        String dataTypeStr = ctx.attributes.get("data-type");
         
-        MergeNode.MergeKey key = new MergeNode.MergeKey(select, order, lang, collation, dataType);
+        AttributeValueTemplate orderAvt = orderStr != null ? parseAvt(orderStr) : null;
+        AttributeValueTemplate langAvt = langStr != null ? parseAvt(langStr) : null;
+        AttributeValueTemplate collationAvt = collationStr != null ? parseAvt(collationStr) : null;
+        AttributeValueTemplate dataTypeAvt = dataTypeStr != null ? parseAvt(dataTypeStr) : null;
+        
+        MergeNode.MergeKey key = new MergeNode.MergeKey(select, body, orderAvt, langAvt, collationAvt, dataTypeAvt);
         return new MergeKeyHolder(key);
     }
 

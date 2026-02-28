@@ -21,13 +21,18 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
+import org.bluezoo.gonzalez.transform.runtime.DocumentLoader;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -96,59 +101,121 @@ public final class MergeNode implements XSLTNode {
         }
 
         try {
-            // Collect all items from all sources with their keys and source names
-            List<MergeItem> allItems = new ArrayList<>();
-            
+            // Resolve per-key order, data-type, collation, lang AVTs once per merge
+            List<ResolvedKeySpec[]> resolvedSpecs = new ArrayList<>();
             for (MergeSource source : sources) {
-                collectItems(source, context, allItems);
+                ResolvedKeySpec[] specs = new ResolvedKeySpec[source.keys.size()];
+                for (int i = 0; i < source.keys.size(); i++) {
+                    MergeKey mk = source.keys.get(i);
+                    String order = mk.resolveOrder(context);
+                    String dataType = mk.resolveDataType(context);
+                    String collation = mk.resolveCollation(context);
+                    String lang = mk.resolveLang(context);
+                    specs[i] = new ResolvedKeySpec(order, dataType, collation, lang);
+                }
+                resolvedSpecs.add(specs);
             }
 
-            // Sort all items by their merge keys
-            MergeSource firstSource = sources.get(0);
-            boolean ascending = firstSource.keys.isEmpty() || 
-                !"descending".equals(firstSource.keys.get(0).order);
-            
-            Collections.sort(allItems, new MergeItemComparator(ascending));
-
-            // Group items by merge key and process each group
-            Map<String, List<MergeItem>> groups = new LinkedHashMap<>();
-            for (MergeItem item : allItems) {
-                groups.computeIfAbsent(item.keyValue, k -> new ArrayList<>()).add(item);
+            // XTDE2210: all merge-sources must have compatible key specs
+            if (resolvedSpecs.size() > 1) {
+                ResolvedKeySpec[] firstSpecs = resolvedSpecs.get(0);
+                for (int si = 1; si < resolvedSpecs.size(); si++) {
+                    ResolvedKeySpec[] otherSpecs = resolvedSpecs.get(si);
+                    for (int ki = 0; ki < firstSpecs.length && ki < otherSpecs.length; ki++) {
+                        ResolvedKeySpec a = firstSpecs[ki];
+                        ResolvedKeySpec b = otherSpecs[ki];
+                        if (!a.order.equals(b.order) || !a.dataType.equals(b.dataType)
+                                || !a.collation.equals(b.collation)) {
+                            throw new SAXException("XTDE2210: Incompatible merge key " +
+                                "specifications across merge sources (key " + (ki + 1) +
+                                ": order='" + a.order + "'/'" + b.order +
+                                "', data-type='" + a.dataType + "'/'" + b.dataType +
+                                "', collation='" + a.collation + "'/'" + b.collation + "')");
+                        }
+                    }
+                }
             }
+
+            // Use first source's key specs for the comparator
+            ResolvedKeySpec[] primarySpecs;
+            if (!resolvedSpecs.isEmpty() && resolvedSpecs.get(0).length > 0) {
+                primarySpecs = resolvedSpecs.get(0);
+            } else {
+                primarySpecs = new ResolvedKeySpec[]{
+                    new ResolvedKeySpec("ascending", "text", null, null)
+                };
+            }
+
+            // Collect all items from all sources
+            List<MergeItem> allItems = new ArrayList<>();
+            for (int si = 0; si < sources.size(); si++) {
+                MergeSource source = sources.get(si);
+                ResolvedKeySpec[] specs = si < resolvedSpecs.size()
+                    ? resolvedSpecs.get(si) : primarySpecs;
+                collectItems(source, context, allItems, specs);
+            }
+
+            // Sort all items by their composite merge keys
+            int keyCount = primarySpecs.length;
+            Collections.sort(allItems, new MergeItemComparator(primarySpecs, keyCount));
+
+            // Group items by composite merge key (all key values must match)
+            List<MergeGroup> groups = buildGroups(allItems, keyCount);
 
             // Process each group
-            for (Map.Entry<String, List<MergeItem>> entry : groups.entrySet()) {
-                String keyValue = entry.getKey();
-                List<MergeItem> groupItems = entry.getValue();
-                
-                // Build node sets for each source
-                List<XPathNode> allNodes = new ArrayList<>();
-                Map<String, List<XPathNode>> nodesBySource = new LinkedHashMap<>();
-                
-                for (MergeItem item : groupItems) {
-                    allNodes.add(item.node);
-                    nodesBySource.computeIfAbsent(
-                        item.sourceName != null ? item.sourceName : "", 
-                        k -> new ArrayList<>()
-                    ).add(item.node);
+            int groupCount = groups.size();
+            for (int gi = 0; gi < groupCount; gi++) {
+                MergeGroup group = groups.get(gi);
+                List<Object> allGroupItems = new ArrayList<>();
+                Map<String, List<Object>> itemsBySource = new LinkedHashMap<>();
+
+                for (MergeItem item : group.items) {
+                    allGroupItems.add(item.item);
+                    String srcKey = item.sourceName != null ? item.sourceName : "";
+                    List<Object> sourceList = itemsBySource.get(srcKey);
+                    if (sourceList == null) {
+                        sourceList = new ArrayList<>();
+                        itemsBySource.put(srcKey, sourceList);
+                    }
+                    sourceList.add(item.item);
                 }
-                
-                // Create context with merge group info via special variables
-                TransformContext groupContext = context.withPositionAndSize(1, 1);
-                
-                // Store merge context for current-merge-group() and current-merge-key()
-                groupContext.getVariableScope().bind("__current_merge_group__", 
-                    new XPathNodeSet(allNodes));
+
+                TransformContext groupContext = context.withPositionAndSize(gi + 1, groupCount);
+
+                // Store merge group - use XPathNodeSet if all items are nodes, else XPathSequence
+                XPathValue groupValue = toGroupValue(allGroupItems);
+                groupContext.getVariableScope().bind("__current_merge_group__", groupValue);
+
+                // Store first key value as the merge key
+                String mergeKeyStr = group.items.get(0).keyValues[0];
                 groupContext.getVariableScope().bind("__current_merge_key__",
-                    new XPathString(keyValue));
-                
-                // Store per-source groups for current-merge-group('name')
-                for (Map.Entry<String, List<XPathNode>> sourceEntry : nodesBySource.entrySet()) {
+                    new XPathString(mergeKeyStr));
+
+                // Bind known source names so current-merge-group('name') can
+                // validate the name (XTDE3490) and return empty for absent sources
+                StringBuilder sourceNameList = new StringBuilder();
+                for (MergeSource src : sources) {
+                    if (src.name != null) {
+                        groupContext.getVariableScope().bind(
+                            "__current_merge_group_" + src.name + "__",
+                            XPathNodeSet.empty());
+                        if (sourceNameList.length() > 0) {
+                            sourceNameList.append('|');
+                        }
+                        sourceNameList.append(src.name);
+                    }
+                }
+                groupContext.getVariableScope().bind("__merge_source_names__",
+                    new XPathString(sourceNameList.toString()));
+
+                // Store per-source groups (overwrites empty bindings where applicable)
+                for (Map.Entry<String, List<Object>> sourceEntry : itemsBySource.entrySet()) {
+                    XPathValue sourceGroupValue = toGroupValue(sourceEntry.getValue());
                     groupContext.getVariableScope().bind(
                         "__current_merge_group_" + sourceEntry.getKey() + "__",
-                        new XPathNodeSet(sourceEntry.getValue()));
+                        sourceGroupValue);
                 }
-                
+
                 action.execute(groupContext, output);
             }
 
@@ -158,80 +225,349 @@ public final class MergeNode implements XSLTNode {
     }
 
     /**
-     * Collects items from a merge source.
+     * Converts a list of items (XPathNode or XPathValue) into the appropriate group type.
+     * Returns XPathNodeSet if all items are nodes, otherwise XPathSequence.
      */
-    private void collectItems(MergeSource source, TransformContext context, 
-            List<MergeItem> items) throws XPathException, SAXException {
-        
-        XPathValue selectResult = source.select.evaluate(context);
-        
-        // Iterate over selected items
-        Iterator<XPathNode> iter;
-        if (selectResult instanceof XPathNodeSet) {
-            iter = ((XPathNodeSet) selectResult).iterator();
-        } else if (selectResult instanceof XPathSequence) {
-            List<XPathNode> nodes = new ArrayList<>();
-            for (XPathValue v : (XPathSequence) selectResult) {
-                if (v instanceof XPathNode) {
-                    nodes.add((XPathNode) v);
-                } else if (v instanceof XPathNodeSet) {
-                    for (XPathNode n : ((XPathNodeSet) v).getNodes()) {
-                        nodes.add(n);
-                    }
-                }
+    private XPathValue toGroupValue(List<Object> items) {
+        boolean allNodes = true;
+        for (Object item : items) {
+            if (!(item instanceof XPathNode)) {
+                allNodes = false;
+                break;
             }
-            iter = nodes.iterator();
-        } else if (selectResult instanceof XPathNode) {
-            iter = Collections.singletonList((XPathNode) selectResult).iterator();
-        } else {
-            return; // No nodes
         }
+        if (allNodes) {
+            List<XPathNode> nodes = new ArrayList<>();
+            for (Object item : items) {
+                nodes.add((XPathNode) item);
+            }
+            return new XPathNodeSet(nodes);
+        }
+        List<XPathValue> values = new ArrayList<>();
+        for (Object item : items) {
+            if (item instanceof XPathValue) {
+                values.add((XPathValue) item);
+            } else if (item instanceof XPathNode) {
+                values.add(new XPathNodeSet(Collections.singletonList((XPathNode) item)));
+            }
+        }
+        return new XPathSequence(values);
+    }
 
-        while (iter.hasNext()) {
-            XPathNode node = iter.next();
-            
-            // Evaluate merge key for this item
-            String keyValue = evaluateMergeKey(source, node, context);
-            
-            items.add(new MergeItem(node, keyValue, source.name));
+    /**
+     * Groups sorted items by their composite merge key.
+     */
+    private List<MergeGroup> buildGroups(List<MergeItem> sortedItems, int keyCount) {
+        List<MergeGroup> groups = new ArrayList<>();
+        MergeGroup currentGroup = null;
+
+        for (MergeItem item : sortedItems) {
+            if (currentGroup == null || !keysEqual(currentGroup.items.get(0), item, keyCount)) {
+                currentGroup = new MergeGroup();
+                groups.add(currentGroup);
+            }
+            currentGroup.items.add(item);
+        }
+        return groups;
+    }
+
+    private boolean keysEqual(MergeItem a, MergeItem b, int keyCount) {
+        int aLen = a.keyValues.length;
+        int bLen = b.keyValues.length;
+        for (int i = 0; i < keyCount; i++) {
+            String aKey = i < aLen ? a.keyValues[i] : "";
+            String bKey = i < bLen ? b.keyValues[i] : "";
+            if (!aKey.equals(bKey)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Collects items from a merge source, handling for-each-item and for-each-source.
+     */
+    private void collectItems(MergeSource source, TransformContext context,
+            List<MergeItem> items, ResolvedKeySpec[] specs) throws XPathException, SAXException {
+
+        if (source.forEachItem != null) {
+            collectItemsForEachItem(source, context, items, specs);
+        } else if (source.forEachSource != null) {
+            collectItemsForEachSource(source, context, items, specs);
+        } else if (source.select != null) {
+            collectItemsDirect(source, context, items, specs);
         }
     }
 
     /**
-     * Evaluates the merge key for an item.
+     * Handles for-each-item: evaluates the expression to get a sequence of items,
+     * then for each item sets it as the context and evaluates select.
      */
-    private String evaluateMergeKey(MergeSource source, XPathNode node, 
-            TransformContext context) throws XPathException {
-        
-        if (source.keys.isEmpty()) {
-            // No explicit key - use string value of node
-            return node.getStringValue();
-        }
+    private void collectItemsForEachItem(MergeSource source, TransformContext context,
+            List<MergeItem> items, ResolvedKeySpec[] specs) throws XPathException, SAXException {
 
-        // Create context with node as context item
-        TransformContext nodeCtx;
-        if (context instanceof BasicTransformContext) {
-            nodeCtx = ((BasicTransformContext) context).withContextNode(node);
-        } else {
-            nodeCtx = context.withContextNode(node);
-        }
+        XPathValue feResult = source.forEachItem.evaluate(context);
+        List<Object> feItems = flattenToItems(feResult);
 
-        // Evaluate first key (composite keys would concatenate)
-        StringBuilder keyBuilder = new StringBuilder();
-        for (MergeKey key : source.keys) {
-            if (keyBuilder.length() > 0) {
-                keyBuilder.append('\u0000'); // Separator for composite keys
+        for (Object feItem : feItems) {
+            TransformContext itemCtx;
+            if (feItem instanceof XPathNode) {
+                if (context instanceof BasicTransformContext) {
+                    itemCtx = ((BasicTransformContext) context).withContextNode((XPathNode) feItem);
+                } else {
+                    itemCtx = context.withContextNode((XPathNode) feItem);
+                }
+            } else if (feItem instanceof XPathValue) {
+                if (context instanceof BasicTransformContext) {
+                    itemCtx = ((BasicTransformContext) context).withContextItem((XPathValue) feItem);
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
             }
-            XPathValue keyResult = key.select.evaluate(nodeCtx);
-            keyBuilder.append(keyResult != null ? keyResult.asString() : "");
+
+            if (source.select != null) {
+                collectFromSelect(source, itemCtx, items, specs);
+            }
         }
-        
-        return keyBuilder.toString();
+    }
+
+    /**
+     * Handles for-each-source: evaluates the expression to get URI strings,
+     * loads each document, and evaluates select within that document context.
+     */
+    private void collectItemsForEachSource(MergeSource source, TransformContext context,
+            List<MergeItem> items, ResolvedKeySpec[] specs) throws XPathException, SAXException {
+
+        XPathValue feResult = source.forEachSource.evaluate(context);
+        List<Object> uriValues = flattenToItems(feResult);
+
+        List<String> stripSpace = null;
+        List<String> preserveSpace = null;
+        CompiledStylesheet stylesheet = context.getStylesheet();
+        if (stylesheet != null) {
+            stripSpace = stylesheet.getStripSpaceElements();
+            preserveSpace = stylesheet.getPreserveSpaceElements();
+        }
+
+        String baseUri = context.getStaticBaseURI();
+
+        for (Object uriVal : uriValues) {
+            String uri = itemToString(uriVal);
+            XPathNode docNode = DocumentLoader.loadDocument(uri, baseUri, stripSpace, preserveSpace);
+            if (docNode == null) {
+                throw new SAXException("FODC0002: Cannot load document at " + uri);
+            }
+
+            TransformContext docCtx;
+            if (context instanceof BasicTransformContext) {
+                docCtx = ((BasicTransformContext) context).withContextNode(docNode);
+            } else {
+                docCtx = context.withContextNode(docNode);
+            }
+
+            if (source.select != null) {
+                collectFromSelect(source, docCtx, items, specs);
+            }
+        }
+    }
+
+    /**
+     * Direct collection without for-each-item/for-each-source.
+     */
+    private void collectItemsDirect(MergeSource source, TransformContext context,
+            List<MergeItem> items, ResolvedKeySpec[] specs) throws XPathException, SAXException {
+        collectFromSelect(source, context, items, specs);
+    }
+
+    /**
+     * Evaluates the select expression and collects resulting items with their keys.
+     */
+    private void collectFromSelect(MergeSource source, TransformContext context,
+            List<MergeItem> items, ResolvedKeySpec[] specs) throws XPathException, SAXException {
+
+        XPathValue selectResult = source.select.evaluate(context);
+        List<Object> selectedItems = flattenToItems(selectResult);
+
+        List<MergeItem> sourceItems = new ArrayList<>();
+        for (Object item : selectedItems) {
+            Object[] keysResult = evaluateMergeKeys(source, item, context);
+            String[] keyValues = (String[]) keysResult[0];
+            XPathValue[] rawValues = (XPathValue[]) keysResult[1];
+            sourceItems.add(new MergeItem(item, keyValues, rawValues, source.name));
+        }
+
+        if (source.sortBeforeMerge && !sourceItems.isEmpty()) {
+            int keyCount = specs.length;
+            Collections.sort(sourceItems, new MergeItemComparator(specs, keyCount));
+        } else if (source.streamable && sourceItems.size() > 1
+                && isCodepointCollation(specs)) {
+            // XTDE2220: for streamable sources with codepoint collation,
+            // verify input is in the required order.
+            // We can only verify order for codepoint collation since we don't
+            // implement other collation comparison algorithms.
+            MergeItemComparator orderChecker = new MergeItemComparator(specs, specs.length);
+            for (int j = 1; j < sourceItems.size(); j++) {
+                int c = orderChecker.compare(sourceItems.get(j - 1), sourceItems.get(j));
+                if (c > 0) {
+                    throw new SAXException("XTDE2220: Input to merge source" +
+                        (source.name != null ? " '" + source.name + "'" : "") +
+                        " is not in the required order");
+                }
+            }
+        }
+
+        items.addAll(sourceItems);
+    }
+
+    /**
+     * Flattens an XPathValue into a list of individual items (XPathNode or XPathValue).
+     */
+    private List<Object> flattenToItems(XPathValue result) {
+        if (result == null) {
+            return Collections.emptyList();
+        }
+        List<Object> items = new ArrayList<>();
+        if (result instanceof XPathNodeSet) {
+            Iterator<XPathNode> iter = ((XPathNodeSet) result).iterator();
+            while (iter.hasNext()) {
+                items.add(iter.next());
+            }
+        } else if (result instanceof XPathSequence) {
+            for (XPathValue v : (XPathSequence) result) {
+                if (v instanceof XPathNodeSet) {
+                    Iterator<XPathNode> iter = ((XPathNodeSet) v).iterator();
+                    while (iter.hasNext()) {
+                        items.add(iter.next());
+                    }
+                } else if (v instanceof XPathNode) {
+                    items.add(v);
+                } else {
+                    items.add(v);
+                }
+            }
+        } else if (result instanceof XPathNode) {
+            items.add(result);
+        } else {
+            items.add(result);
+        }
+        return items;
+    }
+
+    /**
+     * Evaluates all merge keys for a given item (XPathNode or XPathValue).
+     * Returns a two-element array: [String[] keyStrings, XPathValue[] rawValues].
+     */
+    private Object[] evaluateMergeKeys(MergeSource source, Object item,
+            TransformContext context) throws XPathException, SAXException {
+
+        if (source.keys.isEmpty()) {
+            String sv = itemToString(item);
+            return new Object[]{new String[]{sv}, new XPathValue[]{new XPathString(sv)}};
+        }
+
+        TransformContext itemCtx;
+        if (item instanceof XPathNode) {
+            if (context instanceof BasicTransformContext) {
+                itemCtx = ((BasicTransformContext) context).withContextNode((XPathNode) item);
+            } else {
+                itemCtx = context.withContextNode((XPathNode) item);
+            }
+        } else if (item instanceof XPathValue) {
+            if (context instanceof BasicTransformContext) {
+                itemCtx = ((BasicTransformContext) context).withContextItem((XPathValue) item);
+            } else {
+                itemCtx = context;
+            }
+        } else {
+            itemCtx = context;
+        }
+
+        String[] keyValues = new String[source.keys.size()];
+        XPathValue[] rawValues = new XPathValue[source.keys.size()];
+        for (int i = 0; i < source.keys.size(); i++) {
+            MergeKey key = source.keys.get(i);
+            XPathValue keyResult;
+            if (key.select != null) {
+                keyResult = key.select.evaluate(itemCtx);
+            } else if (key.body != null) {
+                keyResult = evaluateBody(key.body, itemCtx);
+            } else {
+                keyResult = null;
+            }
+
+            // XTTE1020: merge-key must evaluate to a single atomic value
+            if (keyResult instanceof XPathNodeSet) {
+                XPathNodeSet ns = (XPathNodeSet) keyResult;
+                int size = 0;
+                java.util.Iterator<XPathNode> it = ns.iterator();
+                while (it.hasNext()) {
+                    it.next();
+                    size++;
+                    if (size > 1) {
+                        throw new SAXException("XTTE1020: Merge key evaluated to a " +
+                            "sequence of more than one item");
+                    }
+                }
+            } else if (keyResult instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) keyResult;
+                java.util.Iterator<XPathValue> it = seq.iterator();
+                int size = 0;
+                while (it.hasNext()) {
+                    it.next();
+                    size++;
+                    if (size > 1) {
+                        throw new SAXException("XTTE1020: Merge key evaluated to a " +
+                            "sequence of more than one item");
+                    }
+                }
+            }
+
+            rawValues[i] = keyResult;
+            keyValues[i] = keyResult != null ? keyResult.asString() : "";
+        }
+        return new Object[]{keyValues, rawValues};
+    }
+
+    private static final String CODEPOINT_COLLATION =
+        "http://www.w3.org/2005/xpath-functions/collation/codepoint";
+
+    private boolean isCodepointCollation(ResolvedKeySpec[] specs) {
+        for (ResolvedKeySpec spec : specs) {
+            if (!CODEPOINT_COLLATION.equals(spec.collation)) {
+                return false;
+            }
+            if (spec.lang != null && !spec.lang.isEmpty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private String itemToString(Object item) {
+        if (item instanceof XPathNode) {
+            return ((XPathNode) item).getStringValue();
+        }
+        if (item instanceof XPathValue) {
+            return ((XPathValue) item).asString();
+        }
+        return item != null ? item.toString() : "";
+    }
+
+    /**
+     * Evaluates a merge-key body (sequence constructor) to get its string value.
+     */
+    private XPathValue evaluateBody(XSLTNode body, TransformContext context)
+            throws XPathException, SAXException {
+        StringOutputHandler stringOutput = new StringOutputHandler();
+        body.execute(context, stringOutput);
+        String result = stringOutput.getResult();
+        return new XPathString(result);
     }
 
     @Override
     public StreamingCapability getStreamingCapability() {
-        // Merge can support streaming in certain configurations
         return StreamingCapability.GROUNDED;
     }
 
@@ -252,7 +588,7 @@ public final class MergeNode implements XSLTNode {
         public final boolean streamable;
         public final List<MergeKey> keys;
 
-        public MergeSource(String name, XPathExpression select, 
+        public MergeSource(String name, XPathExpression select,
                 XPathExpression forEachItem, XPathExpression forEachSource,
                 boolean sortBeforeMerge, boolean streamable, List<MergeKey> keys) {
             this.name = name;
@@ -270,50 +606,240 @@ public final class MergeNode implements XSLTNode {
      */
     public static class MergeKey {
         public final XPathExpression select;
-        public final String order;      // "ascending" or "descending"
-        public final String lang;
-        public final String collation;
-        public final String dataType;   // "text" or "number"
+        public final XSLTNode body;
+        public final AttributeValueTemplate orderAvt;
+        public final AttributeValueTemplate langAvt;
+        public final AttributeValueTemplate collationAvt;
+        public final AttributeValueTemplate dataTypeAvt;
 
-        public MergeKey(XPathExpression select, String order, String lang, 
-                String collation, String dataType) {
+        public MergeKey(XPathExpression select, XSLTNode body,
+                AttributeValueTemplate orderAvt, AttributeValueTemplate langAvt,
+                AttributeValueTemplate collationAvt, AttributeValueTemplate dataTypeAvt) {
             this.select = select;
-            this.order = order != null ? order : "ascending";
-            this.lang = lang;
-            this.collation = collation;
-            this.dataType = dataType != null ? dataType : "text";
+            this.body = body;
+            this.orderAvt = orderAvt;
+            this.langAvt = langAvt;
+            this.collationAvt = collationAvt;
+            this.dataTypeAvt = dataTypeAvt;
+        }
+
+        String resolveOrder(TransformContext context) throws XPathException {
+            if (orderAvt == null) {
+                return "ascending";
+            }
+            String val = orderAvt.evaluate(context);
+            if (val == null || val.isEmpty()) {
+                return "ascending";
+            }
+            return val;
+        }
+
+        String resolveDataType(TransformContext context) throws XPathException {
+            if (dataTypeAvt == null) {
+                return "text";
+            }
+            String val = dataTypeAvt.evaluate(context);
+            if (val == null || val.isEmpty()) {
+                return "text";
+            }
+            return val;
+        }
+
+        String resolveCollation(TransformContext context) throws XPathException {
+            if (collationAvt == null) {
+                return "http://www.w3.org/2005/xpath-functions/collation/codepoint";
+            }
+            String val = collationAvt.evaluate(context);
+            if (val == null || val.isEmpty()) {
+                return "http://www.w3.org/2005/xpath-functions/collation/codepoint";
+            }
+            return val;
+        }
+
+        String resolveLang(TransformContext context) throws XPathException {
+            if (langAvt == null) {
+                return "";
+            }
+            String val = langAvt.evaluate(context);
+            if (val == null) {
+                return "";
+            }
+            return val;
         }
     }
 
     /**
-     * Internal class representing an item with its merge key.
+     * Resolved key specification with order and data-type evaluated at merge execution time.
+     */
+    private static class ResolvedKeySpec {
+        final String order;
+        final String dataType;
+        final String collation;
+        final String lang;
+
+        ResolvedKeySpec(String order, String dataType, String collation, String lang) {
+            this.order = order != null ? order : "ascending";
+            this.dataType = dataType != null ? dataType : "text";
+            this.collation = collation != null ? collation
+                : "http://www.w3.org/2005/xpath-functions/collation/codepoint";
+            this.lang = lang != null ? lang : "";
+        }
+    }
+
+    /**
+     * Internal class representing an item with its merge key values.
+     * The item is either an XPathNode or an XPathValue.
      */
     private static class MergeItem {
-        final XPathNode node;
-        final String keyValue;
+        final Object item;
+        final String[] keyValues;
+        final XPathValue[] rawKeyValues;
         final String sourceName;
 
-        MergeItem(XPathNode node, String keyValue, String sourceName) {
-            this.node = node;
-            this.keyValue = keyValue;
+        MergeItem(Object item, String[] keyValues, XPathValue[] rawKeyValues, String sourceName) {
+            this.item = item;
+            this.keyValues = keyValues;
+            this.rawKeyValues = rawKeyValues;
             this.sourceName = sourceName;
         }
     }
 
     /**
-     * Comparator for sorting merge items by key.
+     * A group of items sharing the same merge key.
+     */
+    private static class MergeGroup {
+        final List<MergeItem> items = new ArrayList<>();
+    }
+
+    /**
+     * Comparator for sorting merge items by composite keys.
+     * Supports per-key order direction, numeric comparison, and type-aware comparison.
      */
     private static class MergeItemComparator implements Comparator<MergeItem> {
-        private final boolean ascending;
+        private final ResolvedKeySpec[] specs;
+        private final int keyCount;
 
-        MergeItemComparator(boolean ascending) {
-            this.ascending = ascending;
+        MergeItemComparator(ResolvedKeySpec[] specs, int keyCount) {
+            this.specs = specs;
+            this.keyCount = keyCount;
         }
 
         @Override
         public int compare(MergeItem a, MergeItem b) {
-            int cmp = a.keyValue.compareTo(b.keyValue);
-            return ascending ? cmp : -cmp;
+            for (int i = 0; i < keyCount; i++) {
+                String aKey = i < a.keyValues.length ? a.keyValues[i] : "";
+                String bKey = i < b.keyValues.length ? b.keyValues[i] : "";
+
+                ResolvedKeySpec spec = i < specs.length ? specs[i] : specs[specs.length - 1];
+                boolean ascending = "ascending".equals(spec.order);
+                boolean numeric = "number".equals(spec.dataType);
+
+                int cmp;
+                if (numeric) {
+                    cmp = compareNumeric(aKey, bKey);
+                } else {
+                    // Check raw values for type-aware comparison
+                    XPathValue aRaw = getRawValue(a, i);
+                    XPathValue bRaw = getRawValue(b, i);
+                    if (aRaw != null && bRaw != null && isNumericType(aRaw) && isNumericType(bRaw)) {
+                        cmp = compareNumeric(aKey, bKey);
+                    } else {
+                        cmp = aKey.compareTo(bKey);
+                    }
+                }
+
+                if (cmp != 0) {
+                    return ascending ? cmp : -cmp;
+                }
+            }
+            return 0;
+        }
+
+        private XPathValue getRawValue(MergeItem item, int keyIndex) {
+            if (item.rawKeyValues == null) {
+                return null;
+            }
+            if (keyIndex < item.rawKeyValues.length) {
+                return item.rawKeyValues[keyIndex];
+            }
+            return null;
+        }
+
+        private boolean isNumericType(XPathValue v) {
+            if (v instanceof XPathNumber) {
+                return true;
+            }
+            if (v == null) {
+                return false;
+            }
+            XPathValue.Type t = v.getType();
+            return t == XPathValue.Type.NUMBER;
+        }
+
+        private int compareNumeric(String aKey, String bKey) {
+            double aNum = parseDouble(aKey);
+            double bNum = parseDouble(bKey);
+            return Double.compare(aNum, bNum);
+        }
+
+        private double parseDouble(String s) {
+            if (s == null || s.isEmpty()) {
+                return Double.NaN;
+            }
+            try {
+                return Double.parseDouble(s.trim());
+            } catch (NumberFormatException e) {
+                return Double.NaN;
+            }
+        }
+    }
+
+    /**
+     * Minimal output handler that captures text output as a string.
+     * Used for evaluating merge-key body content.
+     */
+    private static class StringOutputHandler implements OutputHandler {
+        private final StringBuilder sb = new StringBuilder();
+
+        @Override
+        public void characters(String text) {
+            sb.append(text);
+        }
+
+        @Override
+        public void charactersRaw(String text) {
+            sb.append(text);
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName) {}
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {}
+
+        @Override
+        public void attribute(String uri, String localName, String qName, String value) {}
+
+        @Override
+        public void namespace(String prefix, String uri) {}
+
+        @Override
+        public void processingInstruction(String target, String data) {}
+
+        @Override
+        public void comment(String text) {}
+
+        @Override
+        public void startDocument() {}
+
+        @Override
+        public void endDocument() {}
+
+        @Override
+        public void flush() {}
+
+        String getResult() {
+            return sb.toString();
         }
     }
 

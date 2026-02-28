@@ -2775,20 +2775,41 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             if (args.isEmpty()) {
-                // Return all items in current merge group
                 XPathValue group = context.getVariable(null, "__current_merge_group__");
                 if (group != null) {
                     return group;
                 }
             } else {
-                // Return items from specific source
                 String sourceName = args.get(0).asString();
-                XPathValue group = context.getVariable(null, "__current_merge_group_" + sourceName + "__");
+                // XTDE3490: validate source name against known merge source names
+                XPathValue namesVal = context.getVariable(null, "__merge_source_names__");
+                if (namesVal != null) {
+                    String knownNames = namesVal.asString();
+                    boolean found = false;
+                    int start = 0;
+                    while (start <= knownNames.length()) {
+                        int end = knownNames.indexOf('|', start);
+                        if (end < 0) {
+                            end = knownNames.length();
+                        }
+                        String name = knownNames.substring(start, end);
+                        if (name.equals(sourceName)) {
+                            found = true;
+                            break;
+                        }
+                        start = end + 1;
+                    }
+                    if (!found) {
+                        throw new XPathException("XTDE3490: Unknown merge source name: '"
+                            + sourceName + "'");
+                    }
+                }
+                XPathValue group = context.getVariable(null,
+                    "__current_merge_group_" + sourceName + "__");
                 if (group != null) {
                     return group;
                 }
             }
-            // Return empty sequence if not in merge context
             return XPathNodeSet.empty();
         }
     }
