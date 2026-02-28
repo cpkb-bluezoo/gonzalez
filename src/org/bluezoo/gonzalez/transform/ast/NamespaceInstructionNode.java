@@ -69,6 +69,16 @@ public class NamespaceInstructionNode extends XSLTInstruction {
                 uri = "";
             }
             
+            // XTDE0920: name must not evaluate to "xmlns"
+            if ("xmlns".equals(prefix)) {
+                throw new SAXException("XTDE0920: xsl:namespace name must not be 'xmlns'");
+            }
+            
+            // XTDE0905: namespace URI must not be the xmlns namespace
+            if ("http://www.w3.org/2000/xmlns/".equals(uri)) {
+                throw new SAXException("XTDE0905: namespace URI must not be the xmlns namespace");
+            }
+            
             // XTDE0930: for a non-empty prefix, URI must not be empty
             if (prefix != null && !prefix.isEmpty() && uri.isEmpty()) {
                 throw new SAXException("XTDE0930: xsl:namespace with non-empty name '" +

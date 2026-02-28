@@ -987,8 +987,8 @@ public final class SequenceFunctions {
                 return XPathSequence.EMPTY;
             }
             String uri = qname.getNamespaceURI();
-            if (uri == null || uri.isEmpty()) {
-                return XPathSequence.EMPTY;
+            if (uri == null) {
+                uri = "";
             }
             return XPathAnyURI.of(uri);
         }
@@ -1136,7 +1136,9 @@ public final class SequenceFunctions {
                             if (uri != null && !uri.isEmpty()) {
                                 return XPathAnyURI.of(uri);
                             }
-                            // Empty URI means undeclared prefix
+                            if (nsPrefix.isEmpty()) {
+                                return XPathAnyURI.of("");
+                            }
                             return XPathSequence.EMPTY;
                         }
                     }

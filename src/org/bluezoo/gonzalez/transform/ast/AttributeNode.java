@@ -181,11 +181,21 @@ public class AttributeNode extends XSLTInstruction {
                 namespace = "";
             }
             
+            // If namespace is explicitly empty, strip the prefix
+            if (namespace.isEmpty() && prefix != null) {
+                prefix = null;
+            }
+            
+            // Reject the xmlns namespace
+            if ("http://www.w3.org/2000/xmlns/".equals(namespace)) {
+                throw new SAXException("XTDE0835: The xmlns namespace URI is not permitted for xsl:attribute");
+            }
+            
             // Build qName - if we have a namespace but no prefix, generate one
             // Special handling for xmlns prefix: per XSLT spec 11.7.1, the xmlns
             // prefix may be used if namespace attribute is present, but is not required.
             // Since xmlns is reserved in XML, we generate an alternative prefix.
-            String qName = name;
+            String qName = (prefix != null) ? name : localName;
             if (!namespace.isEmpty()) {
                 if (prefix == null || prefix.isEmpty() || "xmlns".equals(prefix)) {
                     // Generate a prefix for this namespace

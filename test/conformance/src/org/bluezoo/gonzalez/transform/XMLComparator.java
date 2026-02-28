@@ -12,9 +12,22 @@
 
 package org.bluezoo.gonzalez.transform;
 
+import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
 
 /**
  * XML comparison utility for test assertions.
@@ -94,6 +107,11 @@ public final class XMLComparator {
         String sortedActual = sortAttributes(normActual);
         
         if (sortedExpected.equals(sortedActual)) {
+            return Result.equal();
+        }
+
+        // Try namespace-aware DOM comparison as fallback
+        if (domEquals(expected, actual)) {
             return Result.equal();
         }
 
@@ -365,6 +383,126 @@ public final class XMLComparator {
         }
         
         return attrs;
+    }
+
+    /**
+     * Performs namespace-aware DOM comparison of two XML fragments.
+     * Handles namespace inheritance equivalence (e.g. redundant declarations).
+     */
+    private boolean domEquals(String expected, String actual) {
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(true);
+            DocumentBuilder builder = factory.newDocumentBuilder();
+            String wrappedExpected = "<_wrap>" + expected + "</_wrap>";
+            String wrappedActual = "<_wrap>" + actual + "</_wrap>";
+            Document expectedDoc = builder.parse(
+                new InputSource(new StringReader(wrappedExpected)));
+            Document actualDoc = builder.parse(
+                new InputSource(new StringReader(wrappedActual)));
+            return nodesEqual(expectedDoc.getDocumentElement(), actualDoc.getDocumentElement());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean nodesEqual(Node expected, Node actual) {
+        if (expected.getNodeType() != actual.getNodeType()) {
+            return false;
+        }
+        switch (expected.getNodeType()) {
+            case Node.ELEMENT_NODE:
+                return elementsEqual((Element) expected, (Element) actual);
+            case Node.TEXT_NODE:
+            case Node.CDATA_SECTION_NODE:
+                String expText = expected.getTextContent();
+                String actText = actual.getTextContent();
+                if (expText == null) {
+                    return actText == null;
+                }
+                return expText.equals(actText);
+            case Node.COMMENT_NODE:
+                return safeEquals(expected.getNodeValue(), actual.getNodeValue());
+            case Node.PROCESSING_INSTRUCTION_NODE:
+                return safeEquals(expected.getNodeName(), actual.getNodeName())
+                    && safeEquals(expected.getNodeValue(), actual.getNodeValue());
+            default:
+                return true;
+        }
+    }
+
+    private boolean elementsEqual(Element expected, Element actual) {
+        String expNs = expected.getNamespaceURI();
+        String actNs = actual.getNamespaceURI();
+        if (expNs == null) {
+            expNs = "";
+        }
+        if (actNs == null) {
+            actNs = "";
+        }
+        if (!expNs.equals(actNs)) {
+            return false;
+        }
+        if (!safeEquals(expected.getLocalName(), actual.getLocalName())) {
+            return false;
+        }
+        Map<String, String> expAttrs = getNonNamespaceAttributes(expected);
+        Map<String, String> actAttrs = getNonNamespaceAttributes(actual);
+        if (!expAttrs.equals(actAttrs)) {
+            return false;
+        }
+        NodeList expChildren = expected.getChildNodes();
+        NodeList actChildren = actual.getChildNodes();
+        List<Node> expSignificant = getSignificantChildren(expChildren);
+        List<Node> actSignificant = getSignificantChildren(actChildren);
+        if (expSignificant.size() != actSignificant.size()) {
+            return false;
+        }
+        for (int i = 0; i < expSignificant.size(); i++) {
+            if (!nodesEqual(expSignificant.get(i), actSignificant.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Map<String, String> getNonNamespaceAttributes(Element element) {
+        Map<String, String> result = new TreeMap<String, String>();
+        NamedNodeMap attrs = element.getAttributes();
+        for (int i = 0; i < attrs.getLength(); i++) {
+            Node attr = attrs.item(i);
+            String ns = attr.getNamespaceURI();
+            if ("http://www.w3.org/2000/xmlns/".equals(ns)) {
+                continue;
+            }
+            String key = (ns != null && !ns.isEmpty()) ? "{" + ns + "}" + attr.getLocalName()
+                : attr.getLocalName();
+            result.put(key, attr.getNodeValue());
+        }
+        return result;
+    }
+
+    private List<Node> getSignificantChildren(NodeList children) {
+        List<Node> result = new ArrayList<Node>();
+        for (int i = 0; i < children.getLength(); i++) {
+            Node child = children.item(i);
+            if (child.getNodeType() == Node.TEXT_NODE) {
+                String text = child.getTextContent();
+                if (text != null && !text.trim().isEmpty()) {
+                    result.add(child);
+                }
+            } else if (child.getNodeType() != Node.DOCUMENT_TYPE_NODE) {
+                result.add(child);
+            }
+        }
+        return result;
+    }
+
+    private boolean safeEquals(String a, String b) {
+        if (a == null) {
+            return b == null;
+        }
+        return a.equals(b);
     }
 
     /**

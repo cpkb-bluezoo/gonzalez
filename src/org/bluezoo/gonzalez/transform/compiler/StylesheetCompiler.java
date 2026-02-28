@@ -2734,19 +2734,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Output ALL in-scope namespaces - SAXOutputHandler will deduplicate inherited ones.
         // Namespace aliasing is applied at runtime by LiteralResultElement.
         
-        // Collect PREFIXES that are actually used (can't be excluded)
-        // We track prefixes, not URIs, because multiple prefixes can map to the same URI
-        // and we only need to output the ones actually used.
-        Set<String> usedPrefixes = new HashSet<>();
-        // The element's own prefix is used (or default "" if unprefixed)
-        usedPrefixes.add(prefix != null ? prefix : "");
-        // Check attribute prefixes
+        // Collect attribute prefixes (these must always have namespace declarations)
+        Set<String> attributePrefixes = new HashSet<>();
         for (String attrName : ctx.attributes.keySet()) {
-            if (attrName.startsWith("xsl:")) continue; // Skip XSLT attributes
+            if (attrName.startsWith("xsl:")) continue;
             int colon = attrName.indexOf(':');
             if (colon > 0) {
-                String attrPrefix = attrName.substring(0, colon);
-                usedPrefixes.add(attrPrefix);
+                attributePrefixes.add(attrName.substring(0, colon));
             }
         }
         
@@ -2754,18 +2748,33 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         for (Map.Entry<String, String> ns : ctx.namespaceBindings.entrySet()) {
             String nsPrefix = ns.getKey();
             String nsUri = ns.getValue();
-            // Don't output the XSLT namespace
             if (XSLT_NS.equals(nsUri)) {
                 continue;
             }
-            // Include if the prefix is actually used
-            if (usedPrefixes.contains(nsPrefix)) {
+            // Attribute prefixes must always be declared
+            if (attributePrefixes.contains(nsPrefix)) {
                 outputNamespaces.put(nsPrefix, nsUri);
                 continue;
             }
             // Exclude if in excluded set (by URI)
-            if (!localExcludedURIs.contains(nsUri)) {
-                outputNamespaces.put(nsPrefix, nsUri);
+            if (localExcludedURIs.contains(nsUri)) {
+                continue;
+            }
+            outputNamespaces.put(nsPrefix, nsUri);
+        }
+        
+        // Parse xsl:inherit-namespaces (XSLT 2.0+)
+        boolean inheritNs = true;
+        String inheritNsValue = ctx.attributes.get("xsl:inherit-namespaces");
+        if (inheritNsValue != null && !inheritNsValue.isEmpty()) {
+            String trimmed = inheritNsValue.trim();
+            if ("yes".equals(trimmed) || "true".equals(trimmed) || "1".equals(trimmed)) {
+                inheritNs = true;
+            } else if ("no".equals(trimmed) || "false".equals(trimmed) || "0".equals(trimmed)) {
+                inheritNs = false;
+            } else {
+                throw new SAXException("XTSE0020: xsl:inherit-namespaces must be 'yes' or 'no', got: "
+                    + inheritNsValue);
             }
         }
         
@@ -2773,7 +2782,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // on-empty/on-non-empty are now handled by SequenceNode's two-phase execution
         return new LiteralResultElement(ctx.namespaceURI, localName, prefix, 
             avts, outputNamespaces, useAttributeSets, null, null, content,
-            null, null);
+            null, null, inheritNs);
     }
 
     // ========================================================================
@@ -4389,8 +4398,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String stylesheetPrefix = ctx.attributes.get("stylesheet-prefix");
         String resultPrefix = ctx.attributes.get("result-prefix");
         
-        if (stylesheetPrefix == null || resultPrefix == null) {
-            return;
+        if (stylesheetPrefix == null) {
+            throw new SAXException("XTSE0010: xsl:namespace-alias requires stylesheet-prefix attribute");
+        }
+        if (resultPrefix == null) {
+            throw new SAXException("XTSE0010: xsl:namespace-alias requires result-prefix attribute");
         }
         
         // Handle #default prefix
@@ -4807,6 +4819,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String useAttrSetsRaw = ctx.attributes.get("use-attribute-sets");
         String typeValue = ctx.attributes.get("type");
         String validationValue = ctx.attributes.get("validation");
+        String inheritNsValue = ctx.attributes.get("inherit-namespaces");
         
         // Expand use-attribute-sets names using namespace bindings
         String useAttrSets = expandAttributeSetNames(useAttrSetsRaw, ctx.namespaceBindings);
@@ -4858,10 +4871,24 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Also capture all namespace bindings for prefix resolution
         Map<String, String> nsBindings = new HashMap<>(ctx.namespaceBindings);
         
+        // Parse inherit-namespaces (XSLT 2.0+)
+        boolean inheritNs = true;
+        if (inheritNsValue != null && !inheritNsValue.isEmpty()) {
+            String trimmed = inheritNsValue.trim();
+            if ("yes".equals(trimmed) || "true".equals(trimmed) || "1".equals(trimmed)) {
+                inheritNs = true;
+            } else if ("no".equals(trimmed) || "false".equals(trimmed) || "0".equals(trimmed)) {
+                inheritNs = false;
+            } else {
+                throw new SAXException("XTSE0020: inherit-namespaces must be 'yes' or 'no', got: "
+                    + inheritNsValue);
+            }
+        }
+        
         // Keep xsl:on-empty and xsl:on-non-empty in content - handled by SequenceNode's two-phase execution
         return new ElementNode(nameAvt, nsAvt, useAttrSets, new SequenceNode(ctx.children), 
                                defaultNs, nsBindings, typeNamespaceURI, typeLocalName, validation,
-                               null, null);
+                               null, null, inheritNs);
     }
 
     private XSLTNode compileAttribute(ElementContext ctx) throws SAXException {

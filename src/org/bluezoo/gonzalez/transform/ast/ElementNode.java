@@ -54,12 +54,13 @@ public class ElementNode extends XSLTInstruction {
     private final ValidationMode validation;  // null means use stylesheet default
     private final XSLTNode onEmptyNode;      // XSLT 3.0 xsl:on-empty child
     private final XSLTNode onNonEmptyNode;   // XSLT 3.0 xsl:on-non-empty child
+    private final boolean inheritNamespaces;  // XSLT 2.0+ inherit-namespaces
     
     public ElementNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt, 
                String useAttrSets, SequenceNode content,
                String defaultNamespace, Map<String, String> namespaceBindings) {
         this(nameAvt, nsAvt, useAttrSets, content, defaultNamespace, namespaceBindings, 
-             null, null, null, null, null);
+             null, null, null, null, null, true);
     }
     
     public ElementNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt, 
@@ -67,7 +68,7 @@ public class ElementNode extends XSLTInstruction {
                String defaultNamespace, Map<String, String> namespaceBindings,
                String typeNamespaceURI, String typeLocalName) {
         this(nameAvt, nsAvt, useAttrSets, content, defaultNamespace, namespaceBindings, 
-             typeNamespaceURI, typeLocalName, null, null, null);
+             typeNamespaceURI, typeLocalName, null, null, null, true);
     }
     
     public ElementNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt, 
@@ -75,7 +76,7 @@ public class ElementNode extends XSLTInstruction {
                String defaultNamespace, Map<String, String> namespaceBindings,
                String typeNamespaceURI, String typeLocalName, ValidationMode validation) {
         this(nameAvt, nsAvt, useAttrSets, content, defaultNamespace, namespaceBindings,
-             typeNamespaceURI, typeLocalName, validation, null, null);
+             typeNamespaceURI, typeLocalName, validation, null, null, true);
     }
     
     public ElementNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt, 
@@ -83,6 +84,15 @@ public class ElementNode extends XSLTInstruction {
                String defaultNamespace, Map<String, String> namespaceBindings,
                String typeNamespaceURI, String typeLocalName, ValidationMode validation,
                XSLTNode onEmptyNode, XSLTNode onNonEmptyNode) {
+        this(nameAvt, nsAvt, useAttrSets, content, defaultNamespace, namespaceBindings,
+             typeNamespaceURI, typeLocalName, validation, onEmptyNode, onNonEmptyNode, true);
+    }
+    
+    public ElementNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt, 
+               String useAttrSets, SequenceNode content,
+               String defaultNamespace, Map<String, String> namespaceBindings,
+               String typeNamespaceURI, String typeLocalName, ValidationMode validation,
+               XSLTNode onEmptyNode, XSLTNode onNonEmptyNode, boolean inheritNamespaces) {
         this.nameAvt = nameAvt;
         this.nsAvt = nsAvt;
         this.useAttrSets = useAttrSets;
@@ -94,6 +104,7 @@ public class ElementNode extends XSLTInstruction {
         this.validation = validation;
         this.onEmptyNode = onEmptyNode;
         this.onNonEmptyNode = onNonEmptyNode;
+        this.inheritNamespaces = inheritNamespaces;
     }
     
     @Override public String getInstructionName() { return "element"; }
@@ -113,6 +124,11 @@ public class ElementNode extends XSLTInstruction {
             if (namespace != null && hasInvalidURIChars(namespace)) {
                 throw new SAXException("XTDE0835: '" + namespace +
                     "' is not a valid namespace URI for xsl:element");
+            }
+            
+            // Reject the xmlns namespace
+            if ("http://www.w3.org/2000/xmlns/".equals(namespace)) {
+                throw new SAXException("XTDE0835: The xmlns namespace URI is not permitted");
             }
             
             // Parse qName
@@ -144,6 +160,11 @@ public class ElementNode extends XSLTInstruction {
             }
             if (namespace == null) {
                 namespace = "";
+            }
+            
+            // If namespace is explicitly empty, strip the prefix (element is in no namespace)
+            if (namespace.isEmpty() && prefix != null) {
+                prefix = null;
             }
             
             String qName = prefix != null ? prefix + ":" + localName : localName;
@@ -192,10 +213,11 @@ public class ElementNode extends XSLTInstruction {
             // Declare the namespace for this element
             // For unprefixed elements, declare default namespace (even if empty)
             // For prefixed elements, declare the prefix binding
+            // Use elementPrefixNamespace so XTDE0430 does not flag this as a namespace node
             if (prefix == null || prefix.isEmpty()) {
-                output.namespace("", namespace);
+                output.elementPrefixNamespace("", namespace);
             } else {
-                output.namespace(prefix, namespace);
+                output.elementPrefixNamespace(prefix, namespace);
             }
             
             // Apply attribute sets if specified
@@ -215,10 +237,18 @@ public class ElementNode extends XSLTInstruction {
             output.setAtomicValuePending(false);
             output.setInAttributeContent(false);
             
-            // Execute content with on-empty/on-non-empty support (XSLT 3.0)
-            // SequenceNode handles the two-phase conditional execution if needed
-            if (content != null) {
-                content.executeWithOnEmptySupport(context, output, content.hasOnEmptyOrOnNonEmpty());
+            if (!inheritNamespaces) {
+                output.setInheritNamespaces(false);
+            }
+            try {
+                // Execute content with on-empty/on-non-empty support (XSLT 3.0)
+                if (content != null) {
+                    content.executeWithOnEmptySupport(context, output, content.hasOnEmptyOrOnNonEmpty());
+                }
+            } finally {
+                if (!inheritNamespaces) {
+                    output.setInheritNamespaces(true);
+                }
             }
             
             // Complete validation after content execution

@@ -81,6 +81,9 @@ public final class LiteralResultElement implements XSLTNode {
     // XSLT 3.0 on-empty/on-non-empty support
     private final XSLTNode onEmptyNode;
     private final XSLTNode onNonEmptyNode;
+    
+    // XSLT 2.0+ inherit-namespaces
+    private final boolean inheritNamespaces;
 
     /**
      * Creates a literal result element.
@@ -221,6 +224,43 @@ public final class LiteralResultElement implements XSLTNode {
                                 SequenceNode content,
                                 XSLTNode onEmptyNode,
                                 XSLTNode onNonEmptyNode) {
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations,
+             namespaceContext, useAttributeSets, typeNamespaceURI, typeLocalName,
+             content, onEmptyNode, onNonEmptyNode, true);
+    }
+
+    /**
+     * Creates a literal result element with all options including inherit-namespaces (XSLT 2.0+).
+     */
+    public LiteralResultElement(String namespaceURI, String localName, String prefix,
+                                Map<String, AttributeValueTemplate> attributes,
+                                Map<String, String> namespaceDeclarations,
+                                List<String> useAttributeSets,
+                                String typeNamespaceURI,
+                                String typeLocalName,
+                                SequenceNode content,
+                                XSLTNode onEmptyNode,
+                                XSLTNode onNonEmptyNode,
+                                boolean inheritNamespaces) {
+        this(namespaceURI, localName, prefix, attributes, namespaceDeclarations,
+             null, useAttributeSets, typeNamespaceURI, typeLocalName,
+             content, onEmptyNode, onNonEmptyNode, inheritNamespaces);
+    }
+
+    /**
+     * Full constructor with all options.
+     */
+    public LiteralResultElement(String namespaceURI, String localName, String prefix,
+                                Map<String, AttributeValueTemplate> attributes,
+                                Map<String, String> namespaceDeclarations,
+                                Map<String, String> namespaceContext,
+                                List<String> useAttributeSets,
+                                String typeNamespaceURI,
+                                String typeLocalName,
+                                SequenceNode content,
+                                XSLTNode onEmptyNode,
+                                XSLTNode onNonEmptyNode,
+                                boolean inheritNamespaces) {
         this.namespaceURI = namespaceURI != null ? namespaceURI : "";
         this.localName = localName;
         this.prefix = prefix;
@@ -230,7 +270,6 @@ public final class LiteralResultElement implements XSLTNode {
         this.namespaceDeclarations = namespaceDeclarations != null ?
             Collections.unmodifiableMap(new LinkedHashMap<>(namespaceDeclarations)) :
             Collections.emptyMap();
-        // Use namespaceContext if provided, otherwise fall back to namespaceDeclarations
         this.namespaceContext = namespaceContext != null ?
             Collections.unmodifiableMap(new LinkedHashMap<>(namespaceContext)) :
             this.namespaceDeclarations;
@@ -242,6 +281,7 @@ public final class LiteralResultElement implements XSLTNode {
         this.content = content != null ? content : SequenceNode.EMPTY;
         this.onEmptyNode = onEmptyNode;
         this.onNonEmptyNode = onNonEmptyNode;
+        this.inheritNamespaces = inheritNamespaces;
         this.streamingCapability = computeStreamingCapability();
     }
 
@@ -333,6 +373,18 @@ public final class LiteralResultElement implements XSLTNode {
             output.namespace(elementAlias.resultPrefix, elementAlias.resultUri);
         }
 
+        // Ensure element's own prefix has a namespace binding.
+        // It may have been excluded by exclude-result-prefixes; if so, declare it as
+        // an element prefix namespace (participates in fixup, not XTDE0430 checking).
+        if (!outputUri.isEmpty()) {
+            String effectivePrefix = outputPrefix != null ? outputPrefix : "";
+            boolean prefixDeclared = namespaceDeclarations.containsKey(effectivePrefix);
+            if (!prefixDeclared && (elementAlias == null || 
+                !effectivePrefix.equals(elementAlias.resultPrefix))) {
+                output.elementPrefixNamespace(effectivePrefix, outputUri);
+            }
+        }
+
         // Apply attribute sets first (can be overridden by explicit attributes)
         if (!useAttributeSets.isEmpty()) {
             for (String setName : useAttributeSets) {
@@ -391,9 +443,17 @@ public final class LiteralResultElement implements XSLTNode {
         output.setAtomicValuePending(false);
         output.setInAttributeContent(false);
         
-        // Execute content with on-empty/on-non-empty support (XSLT 3.0)
-        // SequenceNode handles the two-phase conditional execution if needed
-        content.executeWithOnEmptySupport(context, output, content.hasOnEmptyOrOnNonEmpty());
+        if (!inheritNamespaces) {
+            output.setInheritNamespaces(false);
+        }
+        try {
+            // Execute content with on-empty/on-non-empty support (XSLT 3.0)
+            content.executeWithOnEmptySupport(context, output, content.hasOnEmptyOrOnNonEmpty());
+        } finally {
+            if (!inheritNamespaces) {
+                output.setInheritNamespaces(true);
+            }
+        }
 
         // End element
         output.endElement(outputUri, localName, qName);

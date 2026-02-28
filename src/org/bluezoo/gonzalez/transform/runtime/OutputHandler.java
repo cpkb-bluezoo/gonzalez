@@ -314,4 +314,42 @@ public interface OutputHandler {
         return false;
     }
 
+    /**
+     * Declares a namespace binding for the element's own prefix.
+     *
+     * <p>Unlike {@link #namespace(String, String)}, bindings declared via this
+     * method are not treated as explicit namespace nodes for the purposes of
+     * XTDE0430 conflict detection. They participate in namespace fixup
+     * (prefix renaming) when they conflict with explicit namespace nodes.
+     *
+     * <p>Used by xsl:element whose namespace attribute provides the binding,
+     * as opposed to literal result elements whose xmlns declarations create
+     * explicit namespace nodes.
+     *
+     * @param prefix the namespace prefix
+     * @param uri the namespace URI
+     * @throws SAXException if an error occurs
+     */
+    default void elementPrefixNamespace(String prefix, String uri) throws SAXException {
+        namespace(prefix, uri);
+    }
+
+    /**
+     * Controls namespace inheritance for the current element's children.
+     *
+     * <p>When set to false, direct child elements will receive namespace
+     * undeclarations for any namespace bindings from this element that
+     * the child does not explicitly re-declare. This implements the XSLT
+     * {@code inherit-namespaces="no"} behaviour.
+     *
+     * <p>Must be called after the element's own namespace declarations,
+     * before executing content. Call with true to restore normal inheritance
+     * after content execution completes.
+     *
+     * @param inherit false to suppress namespace inheritance for children
+     * @throws SAXException if an error occurs
+     */
+    default void setInheritNamespaces(boolean inherit) throws SAXException {
+    }
+
 }

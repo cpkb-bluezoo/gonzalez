@@ -248,8 +248,17 @@ public class CopyNode extends XSLTInstruction {
                 // Reset atomic separator for fresh content context
                 output.setAtomicValuePending(false);
                 output.setInAttributeContent(false);
-                if (content != null) {
-                    content.execute(context, output);
+                if (!effectiveInheritNamespaces) {
+                    output.setInheritNamespaces(false);
+                }
+                try {
+                    if (content != null) {
+                        content.execute(context, output);
+                    }
+                } finally {
+                    if (!effectiveInheritNamespaces) {
+                        output.setInheritNamespaces(true);
+                    }
                 }
                 
                 // Complete validation after content execution

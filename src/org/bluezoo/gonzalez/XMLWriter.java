@@ -1170,6 +1170,25 @@ public class XMLWriter {
         return null;
     }
 
+    /**
+     * Returns all currently in-scope namespace bindings (prefix to URI).
+     * Bindings in inner scopes shadow outer scopes with the same prefix.
+     * The implicit xml binding is not included.
+     *
+     * @return map of prefix to namespace URI for all in-scope bindings
+     */
+    public Map<String, String> getAllNamespaceBindings() {
+        Map<String, String> result = new HashMap<String, String>();
+        for (Map<String, String> scope : namespaceStack) {
+            for (Map.Entry<String, String> entry : scope.entrySet()) {
+                if (!result.containsKey(entry.getKey())) {
+                    result.put(entry.getKey(), entry.getValue());
+                }
+            }
+        }
+        return result;
+    }
+
     // ========== Internal Helper Methods ==========
 
     /**

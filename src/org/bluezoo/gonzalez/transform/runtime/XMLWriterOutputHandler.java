@@ -33,10 +33,12 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Output handler adapter that uses {@link XMLWriter} for streaming XML output.
@@ -79,6 +81,11 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     private boolean contentReceived = false;
     private boolean claimedByResultDocument = false;
 
+    // inherit-namespaces="no" tracking
+    private boolean pendingInheritCapture = false;
+    private List<String> inheritUndeclarePrefixes = null;
+    private int inheritDepth = -1;
+
     /** Buffered attribute. */
     private static class PendingAttribute {
         final String namespaceURI;
@@ -98,10 +105,16 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     private static class PendingNamespace {
         final String prefix;
         final String uri;
+        final boolean elementPrefix;
         
         PendingNamespace(String prefix, String uri) {
+            this(prefix, uri, false);
+        }
+        
+        PendingNamespace(String prefix, String uri, boolean elementPrefix) {
             this.prefix = prefix;
             this.uri = uri;
+            this.elementPrefix = elementPrefix;
         }
     }
 
@@ -221,6 +234,9 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         inPendingElement = true;
         pendingAttributes.clear();
         pendingNamespaces.clear();
+        if (inheritUndeclarePrefixes != null) {
+            inheritDepth++;
+        }
     }
 
     @Override
@@ -232,6 +248,9 @@ public final class XMLWriterOutputHandler implements OutputHandler {
             writer.writeEndElement();
         } catch (IOException e) {
             throw new SAXException("Error writing end element", e);
+        }
+        if (inheritUndeclarePrefixes != null) {
+            inheritDepth--;
         }
     }
 
@@ -256,6 +275,16 @@ public final class XMLWriterOutputHandler implements OutputHandler {
 
     @Override
     public void namespace(String prefix, String uri) throws SAXException {
+        addPendingNamespace(prefix, uri, false);
+    }
+
+    @Override
+    public void elementPrefixNamespace(String prefix, String uri) throws SAXException {
+        addPendingNamespace(prefix, uri, true);
+    }
+
+    private void addPendingNamespace(String prefix, String uri, boolean elementPrefix)
+            throws SAXException {
         if (!inPendingElement) {
             throw new SAXException("namespace() called outside of element start");
         }
@@ -264,7 +293,20 @@ public final class XMLWriterOutputHandler implements OutputHandler {
             return;
         }
         
-        pendingNamespaces.add(new PendingNamespace(prefix, uri));
+        String newPrefix = prefix != null ? prefix : "";
+        String newUri = uri != null ? uri : "";
+        for (int i = 0; i < pendingNamespaces.size(); i++) {
+            PendingNamespace existing = pendingNamespaces.get(i);
+            String existingPrefix = existing.prefix != null ? existing.prefix : "";
+            if (existingPrefix.equals(newPrefix)) {
+                String existingUri = existing.uri != null ? existing.uri : "";
+                if (existingUri.equals(newUri)) {
+                    return;
+                }
+            }
+        }
+        
+        pendingNamespaces.add(new PendingNamespace(prefix, uri, elementPrefix));
     }
 
     @Override
@@ -359,6 +401,17 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         }
     }
 
+    @Override
+    public void setInheritNamespaces(boolean inherit) throws SAXException {
+        if (!inherit) {
+            pendingInheritCapture = true;
+        } else {
+            pendingInheritCapture = false;
+            inheritUndeclarePrefixes = null;
+            inheritDepth = -1;
+        }
+    }
+
     // ========== Private Helpers ==========
 
     /**
@@ -385,6 +438,30 @@ public final class XMLWriterOutputHandler implements OutputHandler {
             String actualElementPrefix = elementPrefix;
             String actualQName = pendingQName;
             
+            // XTDE0430: check for duplicate prefixes among explicit namespace nodes
+            for (int i = 0; i < pendingNamespaces.size(); i++) {
+                PendingNamespace ns1 = pendingNamespaces.get(i);
+                if (ns1.elementPrefix) {
+                    continue;
+                }
+                String p1 = ns1.prefix != null ? ns1.prefix : "";
+                for (int j = i + 1; j < pendingNamespaces.size(); j++) {
+                    PendingNamespace ns2 = pendingNamespaces.get(j);
+                    if (ns2.elementPrefix) {
+                        continue;
+                    }
+                    String p2 = ns2.prefix != null ? ns2.prefix : "";
+                    if (p1.equals(p2)) {
+                        String u1 = ns1.uri != null ? ns1.uri : "";
+                        String u2 = ns2.uri != null ? ns2.uri : "";
+                        if (!u1.equals(u2)) {
+                            throw new SAXException("XTDE0430: Two namespace nodes with prefix '"
+                                + p1 + "' have different URIs: '" + u1 + "' and '" + u2 + "'");
+                        }
+                    }
+                }
+            }
+
             // Namespace fixup: check for conflicts between element prefix and xsl:namespace declarations
             PendingNamespace conflictingNs = null;
             if (elementPrefix != null && !elementPrefix.isEmpty() && !pendingUri.isEmpty()) {
@@ -423,6 +500,17 @@ public final class XMLWriterOutputHandler implements OutputHandler {
                 writer.writeStartElement(pendingLocalName);
             }
             
+            // Collect child's declared prefixes before writing (for inherit-namespaces)
+            Set<String> childDeclaredPrefixes = null;
+            if (inheritUndeclarePrefixes != null && inheritDepth == 1) {
+                childDeclaredPrefixes = new HashSet<String>();
+                for (int i = 0; i < pendingNamespaces.size(); i++) {
+                    PendingNamespace ns = pendingNamespaces.get(i);
+                    String nsPrefix = (ns.prefix != null) ? ns.prefix : "";
+                    childDeclaredPrefixes.add(nsPrefix);
+                }
+            }
+
             // Write namespace declarations
             prefixToNamespaceMap.clear();
             for (int i = 0; i < pendingNamespaces.size(); i++) {
@@ -438,6 +526,35 @@ public final class XMLWriterOutputHandler implements OutputHandler {
                 }
             }
             pendingNamespaces.clear();
+
+            // Capture parent namespaces for inherit-namespaces="no"
+            if (pendingInheritCapture) {
+                inheritUndeclarePrefixes = new ArrayList<String>();
+                Map<String, String> allBindings = writer.getAllNamespaceBindings();
+                for (Map.Entry<String, String> entry : allBindings.entrySet()) {
+                    String bindPrefix = entry.getKey();
+                    String bindUri = entry.getValue();
+                    if (!"xml".equals(bindPrefix) && bindUri != null && !bindUri.isEmpty()) {
+                        inheritUndeclarePrefixes.add(bindPrefix);
+                    }
+                }
+                inheritDepth = 0;
+                pendingInheritCapture = false;
+            }
+
+            // Add undeclarations for inherit-namespaces="no" on direct children
+            if (childDeclaredPrefixes != null) {
+                for (int i = 0; i < inheritUndeclarePrefixes.size(); i++) {
+                    String undeclPrefix = inheritUndeclarePrefixes.get(i);
+                    if (!childDeclaredPrefixes.contains(undeclPrefix)) {
+                        if (undeclPrefix.isEmpty()) {
+                            writer.writeDefaultNamespace("");
+                        } else {
+                            writer.writeNamespace(undeclPrefix, "");
+                        }
+                    }
+                }
+            }
             
             // Write attributes
             for (PendingAttribute attr : pendingAttributes.values()) {
