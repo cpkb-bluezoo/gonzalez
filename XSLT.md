@@ -42,7 +42,7 @@ Gonzalez implements comprehensive error handling with three modes:
 3. **Event-Driven** - SAX-based input and output
 4. **Accumulator-Based** - XSLT 3.0 accumulators as the primary stateful mechanism
 5. **Automatic Streamability** - Analyze XSLT 1.0/2.0 stylesheets for streaming execution
-6. **Progressive XPath Support** - XPath 2.0/3.0 features essential for XSLT 3.0
+6. **Full XPath Support** - XPath 1.0 through 3.1 including maps, arrays, and higher-order functions
 7. **Predictable Resources** - Iterative algorithms, explicit state management
 
 ## Architecture
@@ -128,14 +128,14 @@ Stylesheets are compiled using SAX events from the Gonzalez XML parser:
 
 ### XPath Engine
 
-The XPath engine implements XPath 1.0 with progressive XPath 2.0/3.1 support:
+The XPath engine implements XPath 1.0, 2.0, 3.0, and 3.1:
 
-- **XPathLexer** - Tokenizes XPath expressions
+- **XPathLexer** - Tokenizes XPath expressions (including 3.1 syntax)
 - **XPathParser** - Pratt (operator precedence) parser using iterative algorithm
 - **Expression AST** - `Expr` interface with implementations for all XPath constructs
 - **Axis Iterators** - Lazy evaluation of XPath axes over node sets
-- **Function Libraries** - Core XPath 1.0 + XSLT 2.0/3.0 functions
-- **Type System** - XPath 2.0+ sequences and atomic values
+- **Function Libraries** - Core XPath 1.0, XSLT 2.0/3.0, math, map, and array functions
+- **Type System** - XPath 2.0+ sequences, atomic values, maps, arrays, function items
 
 #### XPath Type System
 
@@ -147,19 +147,63 @@ The XPath engine implements XPath 1.0 with progressive XPath 2.0/3.1 support:
 | NodeSet | Unordered collection of nodes | 1.0 |
 | Sequence | Ordered collection of items | 2.0+ |
 | Atomic | Untyped atomic value | 2.0+ |
+| Map | Immutable key-value map (`map{key:value}`) | 3.1 |
+| Array | Ordered collection of members (`[item, ...]`, `array{...}`) | 3.1 |
+| Function | Function item (named refs, inline, partial application) | 3.0+ |
 
-#### XPath 2.0/3.0 Feature Support
+#### XPath 2.0/3.1 Feature Support
 
-The XPath engine supports almost all XPath 1.0, 2.0, 3.0, and 3.1 features.
+The XPath engine supports XPath 1.0, 2.0, 3.0, and 3.1 including higher-order
+functions, maps, arrays, and dynamic function calls.
 
-**Not Planned (Complexity vs. Streaming Benefit):**
+**Higher-Order Functions (XPath 3.0+):**
 
-| Feature | Reason |
+| Feature | Status |
 |---------|--------|
-| Higher-order functions | Complex; limited streaming benefit |
-| Maps and arrays | XPath 3.1; adds significant complexity |
-| Dynamic function calls | Requires higher-order functions |
-| Full PSVI support of complex types | Requires deep XSD integration |
+| `fn:for-each($seq, $f)` | Supported |
+| `fn:filter($seq, $f)` | Supported |
+| `fn:fold-left($seq, $zero, $f)` | Supported |
+| `fn:fold-right($seq, $zero, $f)` | Supported |
+| `fn:for-each-pair($seq1, $seq2, $f)` | Supported |
+| `fn:sort($seq, $collation, $key)` | Supported |
+| Inline functions `function($x) { body }` | Supported |
+| Named function references `name#arity` | Supported (including user functions) |
+| Partial application `func(?, bound)` | Supported |
+| Dynamic function calls `$f(args)` | Supported |
+| Arrow operator `$x => fn:upper-case()` | Supported (function call form) |
+
+**Maps (XPath 3.1):**
+
+| Feature | Status |
+|---------|--------|
+| Map constructor `map{key: value}` | Supported |
+| `xsl:map` / `xsl:map-entry` instructions | Supported |
+| Lookup `$map?key`, `$map?*` | Supported |
+| `map:size`, `map:keys`, `map:contains`, `map:get` | Supported |
+| `map:put`, `map:remove`, `map:entry`, `map:merge` | Supported |
+| `map:find` | Supported |
+| `map:for-each` | Supported |
+
+**Arrays (XPath 3.1):**
+
+| Feature | Status |
+|---------|--------|
+| Square bracket constructor `[expr, ...]` | Supported |
+| Curly brace constructor `array{expr}` | Supported |
+| Lookup `$array?1`, `$array?*` | Supported |
+| `array:size`, `array:get`, `array:put`, `array:append` | Supported |
+| `array:subarray`, `array:remove`, `array:insert-before` | Supported |
+| `array:head`, `array:tail`, `array:reverse`, `array:join` | Supported |
+| `array:flatten`, `array:sort` | Supported |
+| `array:for-each`, `array:filter`, `array:fold-left/right` | Supported |
+| `array:for-each-pair` | Supported |
+
+**Schema Awareness:**
+
+Gonzalez is a **Basic XSLT processor** (non-schema-aware). `xsl:import-schema`
+parses schemas for type tests and substitution groups, but input documents are
+not validated against imported schemas. `validation="strict"` raises XTSE1660;
+`validation="lax"` and `validation="preserve"` are treated as `strip`.
 
 #### Iterative Parser Design
 
@@ -363,9 +407,8 @@ registry.registerElement("http://example.com/xsl", "custom",
 2. **External entity blocking** - Same limitation as Gonzalez parser
 3. **No Reader/character stream input** - Gonzalez requires byte streams for 
    encoding detection (BOM, XML declaration). Use `InputStream` or system ID instead of `Reader`
-4. **No higher-order functions** - Complex feature with limited streaming benefit
-5. **No maps/arrays** - XPath 3.1 feature that adds significant complexity
-6. **No full PSVI** - Post-Schema Validation Infoset not maintained on nodes
+4. **Basic XSLT processor** - Not schema-aware; no PSVI on nodes, no input
+   document validation against imported schemas
 
 ## Related Documentation
 
