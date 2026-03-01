@@ -138,13 +138,10 @@ public class ValueOfNode extends XSLTInstruction {
                 value = result.asString();
             }
             
-            // Only output non-empty values to preserve empty element serialization
-            if (!value.isEmpty()) {
-                if (disableEscaping) {
-                    output.charactersRaw(value);
-                } else {
-                    output.characters(value);
-                }
+            if (disableEscaping) {
+                output.charactersRaw(value);
+            } else {
+                output.characters(value);
             }
         } catch (XPathException e) {
             throw new SAXException("XPath evaluation error", e);

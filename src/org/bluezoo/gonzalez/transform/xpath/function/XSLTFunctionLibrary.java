@@ -1224,9 +1224,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             XPathValue result;
             String asType = function.getAsType();
             
-            // Check if return type indicates atomic/sequence (not node/RTF)
-            // Types like xs:boolean*, xs:integer, item()*, etc. should use sequence construction
-            if (asType != null && isAtomicOrSequenceType(asType)) {
+            // Use sequence construction to preserve item boundaries.
+            // For functions without a declared type, default to sequence mode
+            // so node-sets from xsl:sequence are not collapsed into RTFs.
+            if (asType == null || isAtomicOrSequenceType(asType)) {
                 // Use sequence construction mode to preserve item boundaries
                 org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler output = 
                     new org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler();
@@ -2528,30 +2529,40 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String name = args.get(0).asString();
             
-            // XTDE1440: argument must be a valid lexical QName
             if (name == null || name.isEmpty()) {
                 throw new XPathException("XTDE1440: Argument to element-available() " +
                     "is not a valid QName: empty string");
             }
-            if (!isValidQNameForElementAvailable(name)) {
-                throw new XPathException("XTDE1440: Argument to element-available() " +
-                    "is not a valid QName: '" + name + "'");
-            }
-            
-            // Resolve the prefix to a namespace URI
+
             String localName = null;
             String nsUri = null;
-            int colonPos = name.indexOf(':');
-            if (colonPos > 0) {
-                String prefix = name.substring(0, colonPos);
-                localName = name.substring(colonPos + 1);
-                nsUri = context.resolveNamespacePrefix(prefix);
-                if (nsUri == null) {
-                    throw new XPathException("XTDE1440: Prefix '" + prefix +
-                        "' in element-available() argument is not in scope");
+
+            // Handle EQName: Q{uri}local
+            if (name.startsWith("Q{")) {
+                int closeBrace = name.indexOf('}');
+                if (closeBrace < 2 || closeBrace == name.length() - 1) {
+                    throw new XPathException("XTDE1440: Argument to element-available() " +
+                        "is not a valid EQName: '" + name + "'");
                 }
+                nsUri = name.substring(2, closeBrace);
+                localName = name.substring(closeBrace + 1);
             } else {
-                localName = name;
+                if (!isValidQNameForElementAvailable(name)) {
+                    throw new XPathException("XTDE1440: Argument to element-available() " +
+                        "is not a valid QName: '" + name + "'");
+                }
+                int colonPos = name.indexOf(':');
+                if (colonPos > 0) {
+                    String prefix = name.substring(0, colonPos);
+                    localName = name.substring(colonPos + 1);
+                    nsUri = context.resolveNamespacePrefix(prefix);
+                    if (nsUri == null) {
+                        throw new XPathException("XTDE1440: Prefix '" + prefix +
+                            "' in element-available() argument is not in scope");
+                    }
+                } else {
+                    localName = name;
+                }
             }
             
             if (XSLT_NS.equals(nsUri)) {
@@ -2700,7 +2711,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         public int getMinArgs() { return 1; }
         
         @Override
-        public int getMaxArgs() { return 1; }
+        public int getMaxArgs() { return 2; }
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
@@ -2709,6 +2720,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             // XTDE1400: argument must be a valid EQName
             if (!isValidQName(name) && !isValidEQName(name)) {
                 throw new XPathException("XTDE1400: function-available() argument is not a valid EQName: '" + name + "'");
+            }
+            
+            int arity = -1;
+            if (args.size() >= 2) {
+                arity = (int) args.get(1).asNumber();
             }
             
             // Resolve prefix to namespace URI
@@ -2731,41 +2747,56 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             }
             
-            boolean available = isFunctionAvailable(nsUri, localName, context);
+            boolean available = isFunctionAvailable(nsUri, localName, arity, context);
             return available ? XPathBoolean.TRUE : XPathBoolean.FALSE;
         }
         
-        private boolean isFunctionAvailable(String nsUri, String localName, XPathContext context) {
+        private boolean isFunctionAvailable(String nsUri, String localName,
+                int arity, XPathContext context) {
             // No namespace or fn: namespace: check XSLT + core functions
             if (nsUri == null || nsUri.isEmpty() || FN_NAMESPACE.equals(nsUri)) {
-                if (INSTANCE.xsltFunctions.containsKey(localName)) {
-                    return true;
+                Function xsltFunc = INSTANCE.xsltFunctions.get(localName);
+                if (xsltFunc != null) {
+                    return arityMatches(xsltFunc, arity);
                 }
-                return CoreFunctionLibrary.INSTANCE.hasFunction(null, localName);
+                Function coreFunc =
+                    CoreFunctionLibrary.INSTANCE.getFunction(localName);
+                if (coreFunc != null) {
+                    return arityMatches(coreFunc, arity);
+                }
+                return false;
             }
-            // xs: namespace: check constructor functions
+            // xs: namespace: constructor functions always take exactly 1 arg
             if (XS_NAMESPACE.equals(nsUri)) {
-                return isXsConstructor(localName);
+                if (!isXsConstructor(localName)) {
+                    return false;
+                }
+                return arity < 0 || arity == 1;
             }
             // math: namespace
             if (MATH_NAMESPACE.equals(nsUri)) {
-                return isMathFunction(localName);
+                return isMathFunctionWithArity(localName, arity);
             }
             // map: namespace
             if (MAP_NAMESPACE.equals(nsUri)) {
-                return isMapFunction(localName);
+                return isMapFunctionWithArity(localName, arity);
             }
             // array: namespace
             if (ARRAY_NAMESPACE.equals(nsUri)) {
-                return isArrayFunction(localName);
+                return isArrayFunctionWithArity(localName, arity);
             }
             // User-defined functions: check via stylesheet context
-            if (nsUri != null && !nsUri.isEmpty() && context instanceof TransformContext) {
+            if (nsUri != null && !nsUri.isEmpty()
+                    && context instanceof TransformContext) {
                 TransformContext transformContext = (TransformContext) context;
                 CompiledStylesheet stylesheet = transformContext.getStylesheet();
                 if (stylesheet != null) {
-                    // Check if any function with this name exists (any arity)
-                    Map<String, UserFunction> funcs = stylesheet.getUserFunctions();
+                    Map<String, UserFunction> funcs =
+                        stylesheet.getUserFunctions();
+                    if (arity >= 0) {
+                        String key = nsUri + "#" + localName + "#" + arity;
+                        return funcs.containsKey(key);
+                    }
                     String prefix = nsUri + "#" + localName + "#";
                     for (String key : funcs.keySet()) {
                         if (key.startsWith(prefix)) {
@@ -2775,6 +2806,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             }
             return false;
+        }
+        
+        private boolean arityMatches(Function func, int arity) {
+            if (arity < 0) {
+                return true;
+            }
+            return arity >= func.getMinArgs() && arity <= func.getMaxArgs();
         }
         
         private boolean isXsConstructor(String localName) {
@@ -2797,40 +2835,71 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             }
         }
         
-        private boolean isMathFunction(String localName) {
+        private boolean isMathFunctionWithArity(String localName, int arity) {
+            int minArgs;
+            int maxArgs;
             switch (localName) {
-                case "pi": case "exp": case "exp10": case "log": case "log10":
-                case "pow": case "sqrt": case "sin": case "cos": case "tan":
-                case "asin": case "acos": case "atan": case "atan2":
-                    return true;
+                case "pi":
+                    minArgs = 0; maxArgs = 0; break;
+                case "pow": case "atan2":
+                    minArgs = 2; maxArgs = 2; break;
+                case "exp": case "exp10": case "log": case "log10":
+                case "sqrt": case "sin": case "cos": case "tan":
+                case "asin": case "acos": case "atan":
+                    minArgs = 1; maxArgs = 1; break;
                 default:
                     return false;
             }
+            return arity < 0 || (arity >= minArgs && arity <= maxArgs);
         }
         
-        private boolean isMapFunction(String localName) {
+        private boolean isMapFunctionWithArity(String localName, int arity) {
+            int minArgs;
+            int maxArgs;
             switch (localName) {
-                case "merge": case "keys": case "contains": case "get":
-                case "put": case "entry": case "size": case "remove":
+                case "merge":
+                    minArgs = 1; maxArgs = 2; break;
+                case "keys": case "size":
+                    minArgs = 1; maxArgs = 1; break;
+                case "contains": case "get": case "remove":
                 case "for-each": case "find":
-                    return true;
+                    minArgs = 2; maxArgs = 2; break;
+                case "put":
+                    minArgs = 3; maxArgs = 3; break;
+                case "entry":
+                    minArgs = 2; maxArgs = 2; break;
                 default:
                     return false;
             }
+            return arity < 0 || (arity >= minArgs && arity <= maxArgs);
         }
         
-        private boolean isArrayFunction(String localName) {
+        private boolean isArrayFunctionWithArity(String localName, int arity) {
+            int minArgs;
+            int maxArgs;
             switch (localName) {
-                case "size": case "get": case "put": case "append":
-                case "subarray": case "remove": case "insert-before":
-                case "head": case "tail": case "reverse": case "join":
-                case "for-each": case "filter": case "fold-left":
-                case "fold-right": case "for-each-pair": case "sort":
-                case "flatten":
-                    return true;
+                case "size": case "get": case "head": case "tail":
+                case "reverse": case "flatten":
+                    minArgs = 1; maxArgs = 1; break;
+                case "put": case "insert-before":
+                    minArgs = 3; maxArgs = 3; break;
+                case "append": case "remove": case "for-each":
+                case "filter":
+                    minArgs = 2; maxArgs = 2; break;
+                case "subarray":
+                    minArgs = 2; maxArgs = 3; break;
+                case "join":
+                    minArgs = 1; maxArgs = 1; break;
+                case "fold-left": case "fold-right":
+                    minArgs = 3; maxArgs = 3; break;
+                case "for-each-pair":
+                    minArgs = 3; maxArgs = 3; break;
+                case "sort":
+                    minArgs = 1; maxArgs = 2; break;
                 default:
                     return false;
             }
+            return arity < 0 || (arity >= minArgs && arity <= maxArgs);
         }
     }
 

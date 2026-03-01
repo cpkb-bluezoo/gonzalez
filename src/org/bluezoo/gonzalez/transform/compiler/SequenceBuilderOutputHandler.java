@@ -46,6 +46,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 public class SequenceBuilderOutputHandler implements OutputHandler {
     private final List<XPathValue> items = new ArrayList<>();
     private StringBuilder pendingText = new StringBuilder();
+    private boolean textPending = false;
     
     // For building elements, we use a nested buffer approach
     private SAXEventBuffer elementBuffer = null;
@@ -105,10 +106,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     }
     
     private void flushPendingText() {
-        if (pendingText.length() > 0) {
-            // In sequence construction, text becomes a text node item
+        if (textPending) {
             items.add(new SequenceTextItem(pendingText.toString()));
             pendingText.setLength(0);
+            textPending = false;
         }
     }
     
@@ -217,11 +218,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     public void characters(String text) throws SAXException {
         flushPendingAttribute();
         if (elementHandler != null && elementDepth > 0) {
-            // Text inside an element
             elementHandler.characters(text);
         } else {
-            // Text as a sequence item
             pendingText.append(text);
+            textPending = true;
         }
     }
     

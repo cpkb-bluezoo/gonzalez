@@ -2607,6 +2607,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * They must be in a non-null namespace.
      */
     private void processFunctionElement(ElementContext ctx) throws SAXException {
+        if (!isTopLevel()) {
+            throw new SAXException("XTSE0010: xsl:function must be a top-level element");
+        }
         importsAllowed = false;
         ensurePrecedenceAssigned();  // Assign precedence after all imports are processed
         
@@ -2629,12 +2632,36 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String localName = funcName.getLocalName();
         
         String asType = ctx.attributes.get("as"); // Optional return type
-        String cacheAttr = ctx.attributes.get("cache"); // XSLT 3.0 caching
+        String cacheAttr = ctx.attributes.get("cache");
         String overrideExtAttr = ctx.attributes.get("override-extension-function");
+        String overrideAttr = ctx.attributes.get("override");
+        String newEachTimeAttr = ctx.attributes.get("new-each-time");
         String identitySensitiveAttr = ctx.attributes.get("identity-sensitive");
         validateYesOrNo("xsl:function", "cache", cacheAttr);
         validateYesOrNo("xsl:function", "override-extension-function", overrideExtAttr);
+        validateYesOrNo("xsl:function", "override", overrideAttr);
+        // new-each-time allows yes/no/true/false/1/0/maybe
+        if (newEachTimeAttr != null) {
+            String net = newEachTimeAttr.trim();
+            if (!"yes".equals(net) && !"no".equals(net) && !"true".equals(net) &&
+                    !"false".equals(net) && !"1".equals(net) && !"0".equals(net) &&
+                    !"maybe".equals(net)) {
+                throw new SAXException("XTSE0020: Invalid value for new-each-time attribute " +
+                    "on xsl:function: must be yes, no, maybe, true, false, 1, or 0, got '" +
+                    newEachTimeAttr + "'");
+            }
+        }
         validateYesOrNo("xsl:function", "identity-sensitive", identitySensitiveAttr);
+        if (overrideAttr != null && overrideExtAttr != null) {
+            String ov = overrideAttr.trim();
+            boolean overrideVal = "yes".equals(ov) || "true".equals(ov) || "1".equals(ov);
+            String oev = overrideExtAttr.trim();
+            boolean overrideExtVal = "yes".equals(oev) || "true".equals(oev) || "1".equals(oev);
+            if (overrideVal != overrideExtVal) {
+                throw new SAXException("XTSE0020: xsl:function has conflicting values for " +
+                    "'override' and 'override-extension-function' attributes");
+            }
+        }
         boolean cached = "yes".equals(cacheAttr) || "true".equals(cacheAttr);
         
         // Extract parameters from children
@@ -4262,7 +4289,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         return XSLT_NS.equals(uri) ||
                "http://www.w3.org/XML/1998/namespace".equals(uri) ||
                "http://www.w3.org/2001/XMLSchema".equals(uri) ||
-               "http://www.w3.org/2001/XMLSchema-instance".equals(uri);
+               "http://www.w3.org/2001/XMLSchema-instance".equals(uri) ||
+               "http://www.w3.org/2005/xpath-functions".equals(uri);
     }
 
     private void processOutputElement(ElementContext ctx) throws SAXException {
@@ -4867,6 +4895,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             ElementContext parent = elementStack.isEmpty() ? null : elementStack.peek();
             if (parent != null && XSLT_NS.equals(parent.namespaceURI) && "function".equals(parent.localName)) {
                 throw new SAXException("XTSE0020: tunnel='yes' is not allowed on a function parameter");
+            }
+        }
+        
+        // Function params are always required; required='no' is not allowed
+        if (requiredAttr != null && !required) {
+            ElementContext parent = elementStack.isEmpty() ? null : elementStack.peek();
+            if (parent != null && XSLT_NS.equals(parent.namespaceURI)
+                    && "function".equals(parent.localName)) {
+                throw new SAXException("XTSE0020: XTSE0090: required='no' " +
+                    "is not allowed on xsl:param inside xsl:function");
             }
         }
         

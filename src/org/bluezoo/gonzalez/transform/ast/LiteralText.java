@@ -74,7 +74,7 @@ public final class LiteralText implements XSLTNode {
 
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
-        if (!text.isEmpty()) {
+        if (!text.isEmpty() || fromXslText) {
             if (disableOutputEscaping) {
                 output.charactersRaw(text);
             } else {

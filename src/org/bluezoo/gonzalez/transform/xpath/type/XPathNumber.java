@@ -78,6 +78,9 @@ public final class XPathNumber implements XPathValue {
             return NEGATIVE_INFINITY;
         }
         if (value == 0.0) {
+            if (Double.doubleToRawLongBits(value) == Long.MIN_VALUE) {
+                return new XPathNumber(-0.0);
+            }
             return ZERO;
         }
         if (value == 1.0) {
@@ -98,18 +101,19 @@ public final class XPathNumber implements XPathValue {
 
     @Override
     public String asString() {
-        // XPath 1.0 Section 4.2: number to string conversion
         if (Double.isNaN(value)) {
             return "NaN";
         }
         if (value == Double.POSITIVE_INFINITY) {
-            return "Infinity";
+            return "INF";
         }
         if (value == Double.NEGATIVE_INFINITY) {
-            return "-Infinity";
+            return "-INF";
         }
         if (value == 0.0) {
-            // Handle negative zero
+            if (Double.doubleToRawLongBits(value) == Long.MIN_VALUE) {
+                return "-0";
+            }
             return "0";
         }
 

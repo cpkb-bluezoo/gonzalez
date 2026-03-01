@@ -246,12 +246,17 @@ public final class NumberFunctions {
                 return XPathNumber.of(value);
             }
 
+            boolean negativeZero =
+                (Double.doubleToRawLongBits(value) == Long.MIN_VALUE);
+            if (negativeZero) {
+                return XPathNumber.of(-0.0);
+            }
+
             // XPath 3.0: round($value, $precision) — round to N decimal places
             if (args.size() >= 2) {
                 int precision = (int) args.get(1).asNumber();
                 double factor = Math.pow(10.0, precision);
                 double scaled = value * factor;
-                // Round half to even for negative, half away from zero for positive
                 double rounded = Math.floor(scaled + 0.5);
                 return XPathNumber.of(rounded / factor);
             }
