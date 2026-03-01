@@ -63,6 +63,9 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     private List<XPathNode> cachedNamespaceNodes;
     private String cachedStringValue;
     private int namespaceNodeCount;
+    
+    // For root nodes - DTD unparsed entity declarations: name → [publicId, systemId, notationName]
+    private Map<String, String[]> unparsedEntities;
 
     /**
      * Creates a root node.
@@ -333,6 +336,28 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
             return documentBaseURI;
         }
         return null;
+    }
+    
+    /**
+     * Registers an unparsed entity declaration from the DTD.
+     * Only meaningful on root (document) nodes.
+     */
+    public void addUnparsedEntity(String name, String publicId, String systemId, String notationName) {
+        if (unparsedEntities == null) {
+            unparsedEntities = new HashMap<String, String[]>();
+        }
+        unparsedEntities.put(name, new String[]{publicId, systemId, notationName});
+    }
+    
+    /**
+     * Returns the unparsed entity declaration for the given name, or null.
+     * Result array: [publicId, systemId, notationName].
+     */
+    public String[] getUnparsedEntity(String name) {
+        if (unparsedEntities == null) {
+            return null;
+        }
+        return unparsedEntities.get(name);
     }
 
     @Override

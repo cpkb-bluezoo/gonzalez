@@ -430,12 +430,14 @@ public final class XPathResultTreeFragment implements XPathValue {
         private RTFNode current;
         private StringBuilder textBuffer = new StringBuilder();
         private List<String[]> pendingNamespaces = new ArrayList<>();
+        private long docOrderCounter = 0;
         
         RTFTreeBuilder(String baseUri) {
             this.baseUri = baseUri;
             // Create root node immediately in case startDocument is not called
             root = new RTFNode(NodeType.ROOT, null, null, null);
             root.baseUri = baseUri;
+            root.docOrder = docOrderCounter++;
             current = root;
         }
         
@@ -495,6 +497,7 @@ public final class XPathResultTreeFragment implements XPathValue {
             
             // Create element with (possibly new) prefix
             RTFNode element = new RTFNode(NodeType.ELEMENT, uri, localName, elementPrefix);
+            element.docOrder = docOrderCounter++;
             element.parent = current;
             if (current != null) {
                 current.addChild(element);
@@ -591,6 +594,7 @@ public final class XPathResultTreeFragment implements XPathValue {
         private void flushText() {
             if (textBuffer.length() > 0 && current != null) {
                 RTFNode text = new RTFNode(NodeType.TEXT, null, null, null);
+                text.docOrder = docOrderCounter++;
                 text.value = textBuffer.toString();
                 text.parent = current;
                 current.addChild(text);
@@ -604,6 +608,7 @@ public final class XPathResultTreeFragment implements XPathValue {
             flushText();
             if (current != null) {
                 RTFNode comment = new RTFNode(NodeType.COMMENT, null, null, null);
+                comment.docOrder = docOrderCounter++;
                 comment.value = new String(ch, start, length);
                 comment.parent = current;
                 current.addChild(comment);
@@ -645,6 +650,7 @@ public final class XPathResultTreeFragment implements XPathValue {
             flushText();
             if (current != null) {
                 RTFNode pi = new RTFNode(NodeType.PROCESSING_INSTRUCTION, null, target, null);
+                pi.docOrder = docOrderCounter++;
                 pi.value = data;
                 pi.parent = current;
                 current.addChild(pi);
@@ -683,6 +689,7 @@ public final class XPathResultTreeFragment implements XPathValue {
         List<RTFNode> attributes = new ArrayList<RTFNode>();
         List<RTFNode> namespaces = new ArrayList<RTFNode>();
         String baseUri;  // Base URI from xml:base
+        long docOrder;
         
         // Type annotation (from xsl:type)
         String typeNamespaceURI;
@@ -823,7 +830,7 @@ public final class XPathResultTreeFragment implements XPathValue {
             return null;
         }
         
-        @Override public long getDocumentOrder() { return 0; }
+        @Override public long getDocumentOrder() { return docOrder; }
         @Override public boolean isSameNode(XPathNode other) { return this == other; }
         @Override public XPathNode getRoot() { 
             RTFNode n = this;

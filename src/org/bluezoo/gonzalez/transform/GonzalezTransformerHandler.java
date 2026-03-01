@@ -186,7 +186,7 @@ public class GonzalezTransformerHandler implements TransformerHandler, LexicalHa
     public void unparsedEntityDecl(String name, String publicId,
                                    String systemId, String notationName)
             throws SAXException {
-        // Not relevant for XSLT processing
+        delegate.unparsedEntityDecl(name, publicId, systemId, notationName);
     }
 
     // -- LexicalHandler --

@@ -288,6 +288,17 @@ public class GonzalezTransformHandler extends DefaultHandler
         StreamingNode.createComment(text, currentNode, documentOrderCounter++);
     }
     
+    /**
+     * Records an unparsed entity declaration from the DTD so that
+     * unparsed-entity-uri() and unparsed-entity-public-id() can look it up.
+     */
+    public void unparsedEntityDecl(String name, String publicId,
+                                   String systemId, String notationName) {
+        if (root != null) {
+            root.addUnparsedEntity(name, publicId, systemId, notationName);
+        }
+    }
+    
     @Override
     public void startDTD(String name, String publicId, String systemId) throws SAXException {
         // Not needed for XSLT processing

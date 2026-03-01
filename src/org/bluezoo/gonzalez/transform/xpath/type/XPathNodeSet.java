@@ -303,8 +303,34 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
             }
         }
 
+        sortByDocumentOrder(result);
         return new XPathNodeSet(result);
     }
+    
+    /**
+     * Sorts a list of nodes by document order using their getDocumentOrder() value.
+     */
+    public static void sortByDocumentOrder(List<XPathNode> nodes) {
+        if (nodes.size() <= 1) {
+            return;
+        }
+        Collections.sort(nodes, DOCUMENT_ORDER_COMPARATOR);
+    }
+    
+    private static final Comparator<XPathNode> DOCUMENT_ORDER_COMPARATOR = new Comparator<XPathNode>() {
+        @Override
+        public int compare(XPathNode a, XPathNode b) {
+            long aOrder = a.getDocumentOrder();
+            long bOrder = b.getDocumentOrder();
+            if (aOrder < bOrder) {
+                return -1;
+            }
+            if (aOrder > bOrder) {
+                return 1;
+            }
+            return 0;
+        }
+    };
 
     /**
      * Returns the intersection of this node-set and another.

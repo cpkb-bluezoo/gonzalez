@@ -510,12 +510,83 @@ public class ApplyTemplatesNode extends XSLTInstruction {
                 } else {
                     TransformContext execCtx = childCtx.pushVariableScope()
                         .withCurrentTemplateRule(r);
+                    bindTemplateParams(r, execCtx, context, output);
                     r.getBody().execute(execCtx, output);
                 }
             }
             
             if (accMgr != null) {
                 accMgr.notifyEndElement(child);
+            }
+        }
+    }
+    
+    /**
+     * Binds tunnel and non-tunnel parameters from the original xsl:apply-templates
+     * to a matched template's declared parameters. Called when a user template is
+     * reached through the built-in template chain.
+     */
+    private void bindTemplateParams(TemplateRule rule, TransformContext execCtx,
+            TransformContext callerCtx, OutputHandler output) throws SAXException {
+        for (TemplateParameter templateParam : rule.getParameters()) {
+            XPathValue value = null;
+            boolean found = false;
+            
+            if (templateParam.isTunnel()) {
+                // Tunnel param: check with-param tunnel params, then context tunnel params
+                for (WithParamNode param : params) {
+                    if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                        try {
+                            value = param.evaluate(callerCtx);
+                            found = true;
+                        } catch (XPathException e) {
+                            throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    value = execCtx.getTunnelParameters().get(templateParam.getName());
+                    found = (value != null);
+                }
+            } else {
+                // Non-tunnel param: match with non-tunnel with-param
+                for (WithParamNode param : params) {
+                    if (!param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                        try {
+                            value = param.evaluate(callerCtx);
+                            found = true;
+                        } catch (XPathException e) {
+                            throw new SAXException("Error evaluating param: " + e.getMessage(), e);
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            if (found && value != null) {
+                execCtx.getVariableScope().bind(
+                    templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
+            } else if (templateParam.isRequired()) {
+                throw new SAXException("XTDE0700: Template parameter $" +
+                    templateParam.getLocalName() + " is required but no value was supplied");
+            } else {
+                XPathValue defaultValue = null;
+                if (templateParam.getSelectExpr() != null) {
+                    try {
+                        defaultValue = templateParam.getSelectExpr().evaluate(execCtx);
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
+                    }
+                } else if (templateParam.getDefaultContent() != null) {
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    templateParam.getDefaultContent().execute(execCtx, new BufferOutputHandler(buffer));
+                    defaultValue = new XPathResultTreeFragment(buffer);
+                } else {
+                    defaultValue = new XPathString("");
+                }
+                execCtx.getVariableScope().bind(
+                    templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
             }
         }
     }

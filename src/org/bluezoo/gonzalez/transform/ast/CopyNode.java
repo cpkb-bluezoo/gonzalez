@@ -109,7 +109,7 @@ public class CopyNode extends XSLTInstruction {
         if (selectExpr != null) {
             try {
                 XPathValue result = selectExpr.evaluate(context);
-                if (result == null || (result.isNodeSet() && ((XPathNodeSet) result).isEmpty())) {
+                if (result == null || (result.isNodeSet() && result.asNodeSet().isEmpty())) {
                     // Empty result - execute on-empty if present
                     if (onEmptyNode != null) {
                         onEmptyNode.execute(context, output);
@@ -118,7 +118,7 @@ public class CopyNode extends XSLTInstruction {
                 }
                 if (result.isNodeSet()) {
                     // Copy each node in the node-set
-                    for (XPathNode n : ((XPathNodeSet) result).getNodes()) {
+                    for (XPathNode n : result.asNodeSet().getNodes()) {
                         executeCopyForNode(n, context, output);
                     }
                     return;

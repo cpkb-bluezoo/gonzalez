@@ -555,7 +555,7 @@ class EntityDeclParser {
                     case QUOT:
                     case APOS:
                         // Closing quote of system ID
-                        sawWhitespaceBeforeNData = false;  // Reset (though PUBLIC entities can't have NDATA)
+                        sawWhitespaceBeforeNData = false;
                         state = State.AFTER_SYSTEM_CLOSING_QUOTE_AFTER_PUBLIC;
                         break;
                     default:
@@ -566,19 +566,26 @@ class EntityDeclParser {
                 break;
                 
             case AFTER_SYSTEM_CLOSING_QUOTE_AFTER_PUBLIC:
-                // After closing quote of system ID in PUBLIC declaration, expecting >
+                // After closing quote of system ID in PUBLIC declaration
                 switch (token) {
                     case S:
-                        // Whitespace after system ID
+                        sawWhitespaceBeforeNData = true;
                         break;
                     case GT:
                         // End of entity declaration
                         finish();
                         return true;
+                    case NDATA:
+                        if (!sawWhitespaceBeforeNData) {
+                            throw fatalError("Expected whitespace before NDATA in <!ENTITY", locator);
+                        }
+                        if (currentEntity.isParameter) {
+                            throw fatalError("Parameter entities cannot have NDATA annotation", locator);
+                        }
+                        state = State.EXPECT_NDATA_NAME;
+                        break;
                     default:
-                        // WFC: Entity Declaration (Production 70)
-                        // "Entity declarations must end with '>'"
-                        throw fatalError("Expected '>' after PUBLIC declaration, got: " + token, locator);
+                        throw fatalError("Expected '>' or NDATA after PUBLIC declaration, got: " + token, locator);
                 }
                 break;
                 

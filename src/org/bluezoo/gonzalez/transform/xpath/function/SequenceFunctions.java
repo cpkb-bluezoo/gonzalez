@@ -539,7 +539,7 @@ public final class SequenceFunctions {
             // Handle empty sequence / empty node-set
             if (relArg == null || 
                 (relArg instanceof XPathSequence && ((XPathSequence) relArg).isEmpty()) ||
-                (relArg.isNodeSet() && ((XPathNodeSet) relArg).isEmpty())) {
+                (relArg.isNodeSet() && relArg.asNodeSet().isEmpty())) {
                 return XPathSequence.EMPTY;
             }
             
@@ -568,7 +568,7 @@ public final class SequenceFunctions {
                     XPathValue baseArg = args.get(1);
                     if (baseArg == null || 
                         (baseArg instanceof XPathSequence && ((XPathSequence) baseArg).isEmpty()) ||
-                        (baseArg.isNodeSet() && ((XPathNodeSet) baseArg).isEmpty())) {
+                        (baseArg.isNodeSet() && baseArg.asNodeSet().isEmpty())) {
                         throw new XPathException("FONS0005: Base URI is empty");
                     }
                     base = baseArg.asString();
@@ -814,7 +814,7 @@ public final class SequenceFunctions {
                 if (!arg.isNodeSet()) {
                     throw new XPathException("XPTY0004: Argument to document-uri must be a node");
                 }
-                XPathNodeSet ns = (XPathNodeSet) arg;
+                XPathNodeSet ns = arg.asNodeSet();
                 if (ns.isEmpty()) {
                     return XPathSequence.EMPTY;
                 }
@@ -1149,7 +1149,7 @@ public final class SequenceFunctions {
                 throw new XPathException("XPTY0004: in-scope-prefixes requires an element argument");
             }
             
-            XPathNodeSet nodeSet = (XPathNodeSet) arg;
+            XPathNodeSet nodeSet = arg.asNodeSet();
             if (nodeSet.isEmpty()) {
                 throw new XPathException("XPTY0004: in-scope-prefixes requires an element argument");
             }
@@ -1222,7 +1222,7 @@ public final class SequenceFunctions {
                 throw new XPathException("XPTY0004: namespace-uri-for-prefix requires an element argument");
             }
             
-            XPathNodeSet nodeSet = (XPathNodeSet) elementArg;
+            XPathNodeSet nodeSet = elementArg.asNodeSet();
             if (nodeSet.isEmpty()) {
                 throw new XPathException("XPTY0004: namespace-uri-for-prefix requires an element argument");
             }
@@ -1289,7 +1289,7 @@ public final class SequenceFunctions {
                 if (!arg.isNodeSet()) {
                     throw new XPathException("XPTY0004: node-name requires a node argument");
                 }
-                XPathNodeSet ns = (XPathNodeSet) arg;
+                XPathNodeSet ns = arg.asNodeSet();
                 if (ns.isEmpty()) {
                     return XPathSequence.EMPTY;
                 }
@@ -1346,7 +1346,7 @@ public final class SequenceFunctions {
                 throw new XPathException("XPTY0004: resolve-QName requires an element argument");
             }
             
-            XPathNodeSet nodeSet = (XPathNodeSet) elementArg;
+            XPathNodeSet nodeSet = elementArg.asNodeSet();
             if (nodeSet.isEmpty()) {
                 throw new XPathException("XPTY0004: resolve-QName requires an element argument");
             }

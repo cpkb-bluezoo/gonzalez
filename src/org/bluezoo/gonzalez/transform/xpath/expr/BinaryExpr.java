@@ -943,6 +943,7 @@ public final class BinaryExpr implements Expr {
             }
         }
         
+        XPathNodeSet.sortByDocumentOrder(result);
         return new XPathNodeSet(result);
     }
 
@@ -971,6 +972,7 @@ public final class BinaryExpr implements Expr {
             }
         }
         
+        XPathNodeSet.sortByDocumentOrder(result);
         return new XPathNodeSet(result);
     }
 

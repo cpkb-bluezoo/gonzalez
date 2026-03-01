@@ -137,7 +137,7 @@ public final class NodeSetFunctions {
             
             if (arg.isNodeSet()) {
                 // For node-set, get string value of each node and split on whitespace
-                for (XPathNode node : ((XPathNodeSet) arg).getNodes()) {
+                for (XPathNode node : arg.asNodeSet().getNodes()) {
                     splitIds(node.getStringValue(), idValues);
                 }
             } else {
@@ -160,7 +160,7 @@ public final class NodeSetFunctions {
                         root = rtfNodes.first().getRoot();
                     }
                 } else if (docArg.isNodeSet()) {
-                    XPathNodeSet docNodes = (XPathNodeSet) docArg;
+                    XPathNodeSet docNodes = docArg.asNodeSet();
                     if (!docNodes.isEmpty()) {
                         root = docNodes.first().getRoot();
                     }

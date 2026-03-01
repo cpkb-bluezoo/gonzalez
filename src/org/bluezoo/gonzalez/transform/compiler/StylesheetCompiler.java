@@ -6617,13 +6617,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Process xsl:with-param children
         List<EvaluateNode.WithParamNode> params = new ArrayList<>();
         for (XSLTNode child : ctx.children) {
-            // Check if this is a with-param node
-            // In our structure, params are processed as children
-            if (child instanceof ParamNode) {
-                ParamNode p = (ParamNode) child;
+            if (child instanceof WithParamNode) {
+                WithParamNode wp = (WithParamNode) child;
                 params.add(new EvaluateNode.WithParamNode(
-                    p.getNamespaceURI(), p.getLocalName(), 
-                    p.getSelectExpr(), p.getContent()));
+                    wp.getNamespaceURI(), wp.getLocalName(), 
+                    wp.getSelectExpr(), wp.getContent()));
             }
         }
         

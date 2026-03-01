@@ -133,6 +133,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         map.put("function-available", new FunctionAvailableFunction());
         map.put("type-available", new TypeAvailableFunction());
         map.put("unparsed-entity-uri", new UnparsedEntityUriFunction());
+        map.put("unparsed-entity-public-id", new UnparsedEntityPublicIdFunction());
         
         // XSLT 3.0 accumulator functions
         map.put("accumulator-before", new AccumulatorBeforeFunction());
@@ -1793,7 +1794,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 XPathValue baseArg = args.get(1);
                 if (baseArg.isNodeSet()) {
                     // Use the base URI from the node if it has one
-                    XPathNodeSet baseNodes = (XPathNodeSet) baseArg;
+                    XPathNodeSet baseNodes = baseArg.asNodeSet();
                     if (!baseNodes.isEmpty()) {
                         XPathNode baseNode = baseNodes.first();
                         if (baseNode instanceof XPathNodeWithBaseURI) {
@@ -1815,7 +1816,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             // Handle node-set argument (document each node's string value)
             if (uriArg.isNodeSet()) {
-                XPathNodeSet uriNodes = (XPathNodeSet) uriArg;
+                XPathNodeSet uriNodes = uriArg.asNodeSet();
                 List<XPathNode> results = new ArrayList<>();
                 for (XPathNode node : uriNodes) {
                     String uri = node.getStringValue();
@@ -2362,7 +2363,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 if (!arg.isNodeSet()) {
                     throw new XPathException("generate-id() argument must be a node-set");
                 }
-                XPathNodeSet ns = (XPathNodeSet) arg;
+                XPathNodeSet ns = arg.asNodeSet();
                 if (ns.isEmpty()) {
                     return XPathString.of("");
                 }
@@ -3003,7 +3004,6 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            // XTDE1370: context node must exist and its root must be a document node
             XPathNode contextNode = context.getContextNode();
             if (contextNode == null) {
                 throw new XPathException("XTDE1370: unparsed-entity-uri() requires a context " +
@@ -3014,7 +3014,62 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 throw new XPathException("XTDE1370: The root of the tree containing the " +
                     "context node is not a document node");
             }
-            // Would need access to DTD declarations
+            String entityName = args.get(0).asString();
+            if (root instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
+                org.bluezoo.gonzalez.transform.runtime.StreamingNode docNode =
+                    (org.bluezoo.gonzalez.transform.runtime.StreamingNode) root;
+                String[] entity = docNode.getUnparsedEntity(entityName);
+                if (entity != null && entity[1] != null) {
+                    String systemId = entity[1];
+                    // Resolve relative to document URI
+                    String docUri = docNode.getDocumentURI();
+                    if (docUri != null && !docUri.isEmpty()) {
+                        try {
+                            java.net.URI base = new java.net.URI(docUri);
+                            java.net.URI resolved = base.resolve(systemId);
+                            return XPathString.of(resolved.toString());
+                        } catch (Exception e) {
+                            return XPathString.of(systemId);
+                        }
+                    }
+                    return XPathString.of(systemId);
+                }
+            }
+            return XPathString.of("");
+        }
+    }
+    
+    private static class UnparsedEntityPublicIdFunction implements Function {
+        @Override
+        public String getName() { return "unparsed-entity-public-id"; }
+        
+        @Override
+        public int getMinArgs() { return 1; }
+        
+        @Override
+        public int getMaxArgs() { return 1; }
+        
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathNode contextNode = context.getContextNode();
+            if (contextNode == null) {
+                throw new XPathException("XTDE1380: unparsed-entity-public-id() requires a context " +
+                    "node, but the context item is absent");
+            }
+            XPathNode root = contextNode.getRoot();
+            if (root == null || root.getNodeType() != NodeType.ROOT) {
+                throw new XPathException("XTDE1380: The root of the tree containing the " +
+                    "context node is not a document node");
+            }
+            String entityName = args.get(0).asString();
+            if (root instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
+                org.bluezoo.gonzalez.transform.runtime.StreamingNode docNode =
+                    (org.bluezoo.gonzalez.transform.runtime.StreamingNode) root;
+                String[] entity = docNode.getUnparsedEntity(entityName);
+                if (entity != null && entity[0] != null) {
+                    return XPathString.of(entity[0]);
+                }
+            }
             return XPathString.of("");
         }
     }
@@ -4325,13 +4380,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue arg = args.get(0);
-            if (arg == null || (arg.isNodeSet() && ((XPathNodeSet) arg).isEmpty())) {
+            if (arg == null || (arg.isNodeSet() && arg.asNodeSet().isEmpty())) {
                 return XPathNodeSet.empty();
             }
             if (!arg.isNodeSet()) {
                 throw new XPathException("outermost() argument must be a node-set");
             }
-            XPathNodeSet ns = (XPathNodeSet) arg;
+            XPathNodeSet ns = arg.asNodeSet();
             List<XPathNode> nodes = ns.getNodes();
             Set<XPathNode> nodeSet = new HashSet<XPathNode>(nodes);
             List<XPathNode> result = new ArrayList<XPathNode>();
@@ -4372,13 +4427,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue arg = args.get(0);
-            if (arg == null || (arg.isNodeSet() && ((XPathNodeSet) arg).isEmpty())) {
+            if (arg == null || (arg.isNodeSet() && arg.asNodeSet().isEmpty())) {
                 return XPathNodeSet.empty();
             }
             if (!arg.isNodeSet()) {
                 throw new XPathException("innermost() argument must be a node-set");
             }
-            XPathNodeSet ns = (XPathNodeSet) arg;
+            XPathNodeSet ns = arg.asNodeSet();
             List<XPathNode> nodes = ns.getNodes();
             Set<XPathNode> nodeSet = new HashSet<XPathNode>(nodes);
             List<XPathNode> result = new ArrayList<XPathNode>();
