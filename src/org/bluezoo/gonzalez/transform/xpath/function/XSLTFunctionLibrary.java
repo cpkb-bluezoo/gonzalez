@@ -3855,11 +3855,42 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             if (node == null) {
                 throw new XPathException("FOJS0006: xml-to-json requires a node argument");
             }
+            if (args.size() > 1) {
+                XPathValue opts = args.get(1);
+                if (opts instanceof XPathMap) {
+                    XPathMap map = (XPathMap) opts;
+                    validateXmlToJsonOptions(map);
+                }
+            }
             try {
                 String result = JsonXmlConverter.xmlToJson(node);
                 return XPathString.of(result);
             } catch (org.xml.sax.SAXException e) {
                 throw new XPathException(e.getMessage());
+            }
+        }
+
+        private void validateXmlToJsonOptions(XPathMap map) throws XPathException {
+            for (Map.Entry<String, XPathValue> entry : map.entries()) {
+                String key = entry.getKey();
+                XPathValue value = entry.getValue();
+                if ("indent".equals(key)) {
+                    if (value instanceof XPathString) {
+                        throw new XPathException("XPTY0004: Option 'indent' must be a boolean, got string");
+                    }
+                    if (value instanceof XPathSequence) {
+                        XPathSequence seq = (XPathSequence) value;
+                        if (seq.isEmpty()) {
+                            throw new XPathException("XPTY0004: Option 'indent' must be a boolean, got empty sequence");
+                        }
+                        if (seq.size() > 1) {
+                            throw new XPathException("XPTY0004: Option 'indent' must be a single boolean");
+                        }
+                    }
+                    if (!(value instanceof XPathBoolean)) {
+                        throw new XPathException("XPTY0004: Option 'indent' must be a boolean");
+                    }
+                }
             }
         }
     }

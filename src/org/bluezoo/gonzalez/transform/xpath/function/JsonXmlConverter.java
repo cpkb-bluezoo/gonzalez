@@ -126,6 +126,10 @@ final class JsonXmlConverter {
                 if (target == null) {
                     throw new SAXException("FOJS0006: Document node has no element child");
                 }
+                XPathNode second = findFirstElement(children);
+                if (second != null) {
+                    throw new SAXException("FOJS0006: Document node has more than one element child");
+                }
             }
             writeJsonValue(target, writer);
             writer.close();
@@ -143,19 +147,39 @@ final class JsonXmlConverter {
         }
 
         if ("map".equals(localName)) {
+            validateAttributes(element, localName);
             writeJsonMap(element, writer);
         } else if ("array".equals(localName)) {
+            validateAttributes(element, localName);
             writeJsonArray(element, writer);
         } else if ("string".equals(localName)) {
-            writer.writeString(element.getStringValue());
+            validateAttributes(element, localName);
+            validateNoChildElements(element);
+            boolean escaped = isEscapedTrue(element, "escaped");
+            String text = element.getStringValue();
+            if (escaped) {
+                validateEscapedContent(text);
+            }
+            writer.writeString(text);
         } else if ("number".equals(localName)) {
+            validateAttributes(element, localName);
             String text = element.getStringValue().trim();
             writeJsonNumber(text, writer);
         } else if ("boolean".equals(localName)) {
-            String text = element.getStringValue().trim();
+            validateAttributes(element, localName);
+            String text = collapseWhitespace(element.getStringValue());
+            if (!"true".equals(text) && !"false".equals(text)
+                    && !"1".equals(text) && !"0".equals(text)) {
+                throw new SAXException("FOJS0006: Invalid boolean value: '" + text + "'");
+            }
             boolean val = "true".equals(text) || "1".equals(text);
             writer.writeBoolean(val);
         } else if ("null".equals(localName)) {
+            validateAttributes(element, localName);
+            String text = element.getStringValue().trim();
+            if (text.length() > 0) {
+                throw new SAXException("FOJS0006: null element must not have text content");
+            }
             writer.writeNull();
         } else {
             throw new SAXException("FOJS0006: Unknown element in JSON namespace: " + localName);
@@ -164,16 +188,34 @@ final class JsonXmlConverter {
 
     private static void writeJsonMap(XPathNode mapElement, JSONWriter writer) throws IOException, SAXException {
         writer.writeStartObject();
+        Set<String> seenKeys = new HashSet<String>();
         Iterator<XPathNode> children = mapElement.getChildren();
         if (children != null) {
             while (children.hasNext()) {
                 XPathNode child = children.next();
-                if (child.getNodeType() != NodeType.ELEMENT) {
+                NodeType childType = child.getNodeType();
+                if (childType == NodeType.TEXT) {
+                    String text = child.getStringValue();
+                    if (!isWhitespace(text)) {
+                        throw new SAXException("FOJS0006: Non-whitespace text content in map element");
+                    }
+                    continue;
+                }
+                if (childType != NodeType.ELEMENT) {
                     continue;
                 }
                 String key = getAttributeValue(child, "key");
                 if (key == null) {
                     throw new SAXException("FOJS0006: Map entry element missing 'key' attribute");
+                }
+                String compareKey = key;
+                boolean escapedKey = isEscapedTrue(child, "escaped-key");
+                if (escapedKey) {
+                    validateEscapedContent(key);
+                    compareKey = unescapeJsonString(key);
+                }
+                if (!seenKeys.add(compareKey)) {
+                    throw new SAXException("FOJS0006: Duplicate key in map: '" + key + "'");
                 }
                 writer.writeKey(key);
                 writeJsonValue(child, writer);
@@ -188,7 +230,15 @@ final class JsonXmlConverter {
         if (children != null) {
             while (children.hasNext()) {
                 XPathNode child = children.next();
-                if (child.getNodeType() != NodeType.ELEMENT) {
+                NodeType childType = child.getNodeType();
+                if (childType == NodeType.TEXT) {
+                    String text = child.getStringValue();
+                    if (!isWhitespace(text)) {
+                        throw new SAXException("FOJS0006: Non-whitespace text content in array element");
+                    }
+                    continue;
+                }
+                if (childType != NodeType.ELEMENT) {
                     continue;
                 }
                 writeJsonValue(child, writer);
@@ -247,6 +297,210 @@ final class JsonXmlConverter {
             }
         }
         return null;
+    }
+
+    /**
+     * Validates attributes on a JSON XML element.
+     * Attributes in the fn namespace are always rejected.
+     * Attributes in other non-empty namespaces are ignored (xml:space, xsi:type, etc.).
+     * No-namespace attributes must be from the allowed set for the element type.
+     */
+    private static void validateAttributes(XPathNode element, String elementLocalName)
+            throws SAXException {
+        Iterator<XPathNode> attrs = element.getAttributes();
+        if (attrs == null) {
+            return;
+        }
+        while (attrs.hasNext()) {
+            XPathNode attr = attrs.next();
+            String attrNs = attr.getNamespaceURI();
+            if (attrNs == null) {
+                attrNs = "";
+            }
+            if (FN_NS.equals(attrNs)) {
+                throw new SAXException("FOJS0006: Attribute in XPath functions namespace not allowed: "
+                        + attr.getLocalName());
+            }
+            if (attrNs.length() > 0) {
+                continue;
+            }
+            String attrName = attr.getLocalName();
+            if ("key".equals(attrName) || "escaped-key".equals(attrName)) {
+                if ("escaped-key".equals(attrName)) {
+                    validateBooleanAttrValue(attr.getStringValue(), attrName);
+                }
+                continue;
+            }
+            if ("escaped".equals(attrName)) {
+                if (!"string".equals(elementLocalName)) {
+                    throw new SAXException("FOJS0006: Attribute 'escaped' is only allowed on string elements");
+                }
+                validateBooleanAttrValue(attr.getStringValue(), attrName);
+                continue;
+            }
+            throw new SAXException("FOJS0006: Unrecognized attribute '" + attrName
+                    + "' on " + elementLocalName + " element");
+        }
+    }
+
+    /**
+     * Validates that an attribute value is a valid xs:boolean
+     * after whitespace collapsing: "true", "false", "1", "0".
+     */
+    private static void validateBooleanAttrValue(String value, String attrName) throws SAXException {
+        String collapsed = collapseWhitespace(value);
+        if (!"true".equals(collapsed) && !"false".equals(collapsed)
+                && !"1".equals(collapsed) && !"0".equals(collapsed)) {
+            throw new SAXException("FOJS0006: Invalid value for '" + attrName
+                    + "' attribute: '" + value + "'");
+        }
+    }
+
+    /**
+     * Returns true if the given escaped/escaped-key attribute is present and evaluates to true.
+     */
+    private static boolean isEscapedTrue(XPathNode element, String attrName) {
+        String value = getAttributeValue(element, attrName);
+        if (value == null) {
+            return false;
+        }
+        String collapsed = collapseWhitespace(value);
+        return "true".equals(collapsed) || "1".equals(collapsed);
+    }
+
+    /**
+     * Validates that an escaped string contains only valid JSON escape sequences.
+     * Raises FOJS0007 if an invalid escape is found.
+     */
+    private static void validateEscapedContent(String content) throws SAXException {
+        int len = content.length();
+        for (int i = 0; i < len; i++) {
+            char c = content.charAt(i);
+            if (c != '\\') {
+                continue;
+            }
+            i++;
+            if (i >= len) {
+                throw new SAXException("FOJS0007: Incomplete escape sequence at end of string");
+            }
+            char next = content.charAt(i);
+            switch (next) {
+                case '"':
+                case '\\':
+                case '/':
+                case 'b':
+                case 'f':
+                case 'n':
+                case 'r':
+                case 't':
+                    break;
+                case 'u':
+                    if (i + 4 >= len) {
+                        throw new SAXException("FOJS0007: Incomplete \\u escape sequence");
+                    }
+                    for (int j = 1; j <= 4; j++) {
+                        char h = content.charAt(i + j);
+                        if (!isHexDigit(h)) {
+                            throw new SAXException("FOJS0007: Invalid hex digit in \\u escape: " + h);
+                        }
+                    }
+                    i += 4;
+                    break;
+                default:
+                    throw new SAXException("FOJS0007: Invalid escape sequence: \\" + next);
+            }
+        }
+    }
+
+    private static boolean isHexDigit(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+
+    /**
+     * Validates that a string/number/boolean element has no child elements.
+     */
+    private static void validateNoChildElements(XPathNode element) throws SAXException {
+        Iterator<XPathNode> children = element.getChildren();
+        if (children == null) {
+            return;
+        }
+        while (children.hasNext()) {
+            XPathNode child = children.next();
+            if (child.getNodeType() == NodeType.ELEMENT) {
+                throw new SAXException("FOJS0006: Child elements not allowed in "
+                        + element.getLocalName() + " element");
+            }
+        }
+    }
+
+    /**
+     * Unescapes a JSON escaped string value for comparison purposes.
+     */
+    private static String unescapeJsonString(String escaped) {
+        StringBuilder sb = new StringBuilder();
+        int len = escaped.length();
+        for (int i = 0; i < len; i++) {
+            char c = escaped.charAt(i);
+            if (c == '\\' && i + 1 < len) {
+                char next = escaped.charAt(i + 1);
+                switch (next) {
+                    case '"': sb.append('"'); i++; break;
+                    case '\\': sb.append('\\'); i++; break;
+                    case '/': sb.append('/'); i++; break;
+                    case 'b': sb.append('\b'); i++; break;
+                    case 'f': sb.append('\f'); i++; break;
+                    case 'n': sb.append('\n'); i++; break;
+                    case 'r': sb.append('\r'); i++; break;
+                    case 't': sb.append('\t'); i++; break;
+                    case 'u':
+                        if (i + 5 < len) {
+                            String hex = escaped.substring(i + 2, i + 6);
+                            int codePoint = Integer.parseInt(hex, 16);
+                            sb.append((char) codePoint);
+                            i += 5;
+                        } else {
+                            sb.append(c);
+                        }
+                        break;
+                    default:
+                        sb.append(c);
+                        break;
+                }
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static boolean isWhitespace(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static String collapseWhitespace(String value) {
+        int start = 0;
+        int end = value.length();
+        while (start < end) {
+            char c = value.charAt(start);
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                break;
+            }
+            start++;
+        }
+        while (end > start) {
+            char c = value.charAt(end - 1);
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                break;
+            }
+            end--;
+        }
+        return value.substring(start, end);
     }
 
     /**
