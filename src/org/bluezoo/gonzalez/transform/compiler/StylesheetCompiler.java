@@ -194,6 +194,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private int localTemplateCounter = 0;  // Fallback counter when no resolver
     private boolean importsAllowed = true;
     private boolean precedenceAssigned = false;
+    private boolean isPrincipalStylesheet = true;
     
     // Tracks explicit mode attribute values for XTSE0545 conflict detection
     // Key: "modeName|attrName", Value: explicit attribute value
@@ -342,6 +343,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      */
     public StylesheetCompiler() {
         this(null, null, 0);
+        this.isPrincipalStylesheet = true;
     }
 
     /**
@@ -352,6 +354,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      */
     public StylesheetCompiler(StylesheetResolver resolver, String baseUri) {
         this(resolver, baseUri, -1);  // -1 means assign precedence after includes are processed
+        this.isPrincipalStylesheet = true;
     }
 
     /**
@@ -365,6 +368,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     StylesheetCompiler(StylesheetResolver resolver, String baseUri, int fixedPrecedence) {
         this.resolver = resolver;
         this.baseUri = baseUri;
+        this.isPrincipalStylesheet = false;
         
         // If a fixed precedence is specified (for includes), use it
         if (fixedPrecedence >= 0) {
@@ -776,20 +780,33 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         // Check for use-when attribute (XSLT 2.0 conditional compilation)
-        // Can appear on any element in the stylesheet
-        // - On XSLT elements: use-when is in no namespace
-        // - On literal result elements: xsl:use-when is in XSLT namespace
-        String useWhen = atts.getValue("use-when");
-        if (useWhen == null) {
-            // Check for xsl:use-when on literal result elements
-            useWhen = atts.getValue(XSLT_NS, "use-when");
-        }
-        if (useWhen != null && !useWhen.isEmpty()) {
-            if (!evaluateUseWhen(useWhen)) {
-                // Exclude this element and all its descendants
-                useWhenSkipDepth = 1;
-                elementStack.push(new ElementContext(uri, localName, originalPrefix));
-                return;
+        // - On XSLT elements: use-when is a no-namespace attribute
+        // - On literal result elements: xsl:use-when must be in the XSLT namespace
+        // - Per XSLT 3.0 §3.8: use-when has no effect on xsl:stylesheet/xsl:transform
+        // A no-namespace use-when on an LRE is just a literal attribute, not xsl:use-when
+        boolean isXsltElement = XSLT_NS.equals(uri);
+        boolean isRootStylesheetElement = isPrincipalStylesheet && isXsltElement
+            && elementStack.isEmpty()
+            && ("stylesheet".equals(localName) || "transform".equals(localName));
+        if (!isRootStylesheetElement) {
+            String useWhen = null;
+            if (isXsltElement) {
+                // XSLT element: use-when is in no namespace (standard attribute)
+                useWhen = atts.getValue("", "use-when");
+                if (useWhen == null) {
+                    useWhen = atts.getValue("use-when");
+                }
+            } else {
+                // Literal result element: only xsl:use-when (in XSLT namespace) counts
+                useWhen = atts.getValue(XSLT_NS, "use-when");
+            }
+            if (useWhen != null && !useWhen.isEmpty()) {
+                if (!evaluateUseWhen(useWhen)) {
+                    // Exclude this element and all its descendants
+                    useWhenSkipDepth = 1;
+                    elementStack.push(new ElementContext(uri, localName, originalPrefix));
+                    return;
+                }
             }
         }
         
@@ -4604,6 +4621,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String select = ctx.attributes.get("select");
         String staticAttr = ctx.attributes.get("static");
         String asType = ctx.attributes.get("as"); // XSLT 2.0 type annotation
+        validateYesOrNo("xsl:variable", "static", staticAttr);
         
         // Parse QName with resolved namespace
         // XTSE0080: Check for reserved namespace
@@ -4613,6 +4631,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         boolean isStatic = isStaticValue(staticAttr);
         
         if (isStatic && isTopLevel) {
+            // XTSE0620: static variable must not have both select and content
+            if (select != null && !ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
+                throw new SAXException("XTSE0620: static xsl:variable must not have both " +
+                    "a select attribute and non-empty content");
+            }
             // Static variable: evaluate at compile time and store for use-when
             // Use the element's base URI for static-base-uri()
             XPathValue staticValue = evaluateStaticExpression(select, varName.getLocalName(), ctx.baseURI);
@@ -6827,7 +6850,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * @param expr the use-when expression
      * @return true if the element should be included, false to exclude
      */
-    private boolean evaluateUseWhen(String expr) {
+    private boolean evaluateUseWhen(String expr) throws SAXException {
         try {
             // Compile the expression
             XPathExpression compiled = XPathExpression.compile(expr, this);
@@ -6840,10 +6863,23 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // Evaluate and convert to boolean
             XPathValue result = compiled.evaluate(staticContext);
             return result != null && result.asBoolean();
+        } catch (XPathSyntaxException e) {
+            throw new SAXException("XPST0003: Static error in use-when expression: " + 
+                expr + " - " + e.getMessage(), e);
+        } catch (XPathException e) {
+            String msg = e.getMessage();
+            // Propagate known error codes
+            if (msg != null && (msg.startsWith("XPDY") || msg.startsWith("XPST")
+                    || msg.startsWith("FODC") || msg.startsWith("XPTY")
+                    || msg.startsWith("XTSE") || msg.startsWith("FORG"))) {
+                throw new SAXException(msg, e);
+            }
+            // Dynamic errors from use-when context (e.g., no context node)
+            throw new SAXException("Error in use-when expression: " + 
+                expr + " - " + msg, e);
         } catch (Exception e) {
-            // If evaluation fails, treat as false (exclude element)
-            // In strict mode, this should be an error
-            return false;
+            throw new SAXException("Error in use-when expression: " + 
+                expr + " - " + e.getMessage(), e);
         }
     }
     
@@ -6875,6 +6911,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         @Override public int getContextPosition() { return 0; }
         @Override public int getContextSize() { return 0; }
         
+        /**
+         * Indicates that this is a use-when static context with no context item.
+         * Expressions that access the context item should raise XPDY0002.
+         */
+        public boolean isUseWhenContext() { return true; }
+        
         @Override
         public XPathValue getVariable(String namespaceURI, String localName) {
             // Check local variables first (for quantified expressions)
@@ -6887,7 +6929,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (value != null) {
                 return value;
             }
-            return null;
+            // In use-when context, only static variables are accessible
+            // Non-static variables should raise XPST0008
+            throw new RuntimeException("XPST0008: Variable $" + localName +
+                " is not available in a use-when expression (only static variables are accessible)");
         }
         
         @Override

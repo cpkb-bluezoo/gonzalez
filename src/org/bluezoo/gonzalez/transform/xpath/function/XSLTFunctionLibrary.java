@@ -2331,6 +2331,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 node = context.getContextNode();
             } else {
                 XPathValue arg = args.get(0);
+                // Empty sequence returns ""
+                if (arg.isSequence() && ((XPathSequence) arg).isEmpty()) {
+                    return XPathString.of("");
+                }
                 if (!arg.isNodeSet()) {
                     throw new XPathException("generate-id() argument must be a node-set");
                 }
@@ -2501,51 +2505,105 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String name = args.get(0).asString();
             
-            if (name.startsWith("xsl:")) {
-                String localName = name.substring(4);
-                switch (localName) {
-                    case "apply-imports":
-                    case "apply-templates":
-                    case "attribute":
-                    case "attribute-set":
-                    case "call-template":
-                    case "choose":
-                    case "comment":
-                    case "copy":
-                    case "copy-of":
-                    case "decimal-format":
-                    case "element":
-                    case "fallback":
-                    case "for-each":
-                    case "if":
-                    case "import":
-                    case "include":
-                    case "key":
-                    case "message":
-                    case "namespace-alias":
-                    case "number":
-                    case "otherwise":
-                    case "output":
-                    case "param":
-                    case "preserve-space":
-                    case "processing-instruction":
-                    case "sort":
-                    case "strip-space":
-                    case "stylesheet":
-                    case "template":
-                    case "text":
-                    case "transform":
-                    case "value-of":
-                    case "variable":
-                    case "when":
-                    case "with-param":
-                        return XPathBoolean.TRUE;
-                    default:
-                        return XPathBoolean.FALSE;
-                }
+            // Resolve the prefix to a namespace URI
+            String localName = null;
+            String nsUri = null;
+            int colonPos = name.indexOf(':');
+            if (colonPos > 0) {
+                String prefix = name.substring(0, colonPos);
+                localName = name.substring(colonPos + 1);
+                nsUri = context.resolveNamespacePrefix(prefix);
+            } else {
+                localName = name;
+            }
+            
+            if (XSLT_NS.equals(nsUri)) {
+                return isXsltElement(localName) ? XPathBoolean.TRUE : XPathBoolean.FALSE;
             }
             
             return XPathBoolean.FALSE;
+        }
+        
+        private static final String XSLT_NS = "http://www.w3.org/1999/XSL/Transform";
+        
+        private boolean isXsltElement(String localName) {
+            switch (localName) {
+                case "apply-imports":
+                case "apply-templates":
+                case "attribute":
+                case "attribute-set":
+                case "call-template":
+                case "choose":
+                case "comment":
+                case "copy":
+                case "copy-of":
+                case "decimal-format":
+                case "element":
+                case "fallback":
+                case "for-each":
+                case "for-each-group":
+                case "function":
+                case "if":
+                case "import":
+                case "include":
+                case "key":
+                case "message":
+                case "namespace":
+                case "namespace-alias":
+                case "next-match":
+                case "number":
+                case "otherwise":
+                case "output":
+                case "param":
+                case "perform-sort":
+                case "preserve-space":
+                case "processing-instruction":
+                case "result-document":
+                case "sequence":
+                case "sort":
+                case "strip-space":
+                case "stylesheet":
+                case "template":
+                case "text":
+                case "transform":
+                case "value-of":
+                case "variable":
+                case "when":
+                case "with-param":
+                // XSLT 3.0 elements
+                case "accumulator":
+                case "accumulator-rule":
+                case "assert":
+                case "break":
+                case "catch":
+                case "context-item":
+                case "evaluate":
+                case "expose":
+                case "fork":
+                case "global-context-item":
+                case "iterate":
+                case "map":
+                case "map-entry":
+                case "merge":
+                case "merge-action":
+                case "merge-key":
+                case "merge-source":
+                case "mode":
+                case "next-iteration":
+                case "on-completion":
+                case "on-empty":
+                case "on-non-empty":
+                case "override":
+                case "package":
+                case "source-document":
+                case "stream":
+                case "try":
+                case "use-package":
+                case "where-populated":
+                    return true;
+                default:
+                    return false;
+            }
         }
     }
 
@@ -2577,8 +2635,126 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 throw new XPathException("XTDE1400: function-available() argument is not a valid EQName: '" + name + "'");
             }
             
-            boolean available = INSTANCE.hasFunction(null, name);
+            // Resolve prefix to namespace URI
+            String nsUri = null;
+            String localName = name;
+            
+            // Handle EQName: Q{uri}local
+            if (name.startsWith("Q{")) {
+                int closeBrace = name.indexOf('}');
+                if (closeBrace >= 2) {
+                    nsUri = name.substring(2, closeBrace);
+                    localName = name.substring(closeBrace + 1);
+                }
+            } else {
+                int colonPos = name.indexOf(':');
+                if (colonPos > 0) {
+                    String prefix = name.substring(0, colonPos);
+                    localName = name.substring(colonPos + 1);
+                    nsUri = context.resolveNamespacePrefix(prefix);
+                }
+            }
+            
+            boolean available = isFunctionAvailable(nsUri, localName, context);
             return available ? XPathBoolean.TRUE : XPathBoolean.FALSE;
+        }
+        
+        private boolean isFunctionAvailable(String nsUri, String localName, XPathContext context) {
+            // No namespace or fn: namespace: check XSLT + core functions
+            if (nsUri == null || nsUri.isEmpty() || FN_NAMESPACE.equals(nsUri)) {
+                if (INSTANCE.xsltFunctions.containsKey(localName)) {
+                    return true;
+                }
+                return CoreFunctionLibrary.INSTANCE.hasFunction(null, localName);
+            }
+            // xs: namespace: check constructor functions
+            if (XS_NAMESPACE.equals(nsUri)) {
+                return isXsConstructor(localName);
+            }
+            // math: namespace
+            if (MATH_NAMESPACE.equals(nsUri)) {
+                return isMathFunction(localName);
+            }
+            // map: namespace
+            if (MAP_NAMESPACE.equals(nsUri)) {
+                return isMapFunction(localName);
+            }
+            // array: namespace
+            if (ARRAY_NAMESPACE.equals(nsUri)) {
+                return isArrayFunction(localName);
+            }
+            // User-defined functions: check via stylesheet context
+            if (nsUri != null && !nsUri.isEmpty() && context instanceof TransformContext) {
+                TransformContext transformContext = (TransformContext) context;
+                CompiledStylesheet stylesheet = transformContext.getStylesheet();
+                if (stylesheet != null) {
+                    // Check if any function with this name exists (any arity)
+                    Map<String, UserFunction> funcs = stylesheet.getUserFunctions();
+                    String prefix = nsUri + "#" + localName + "#";
+                    for (String key : funcs.keySet()) {
+                        if (key.startsWith(prefix)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+        
+        private boolean isXsConstructor(String localName) {
+            switch (localName) {
+                case "string": case "boolean": case "decimal": case "float": case "double":
+                case "integer": case "long": case "int": case "short": case "byte":
+                case "duration": case "dateTime": case "time": case "date":
+                case "gYearMonth": case "gYear": case "gMonthDay": case "gDay": case "gMonth":
+                case "hexBinary": case "base64Binary": case "anyURI": case "QName":
+                case "normalizedString": case "token": case "language":
+                case "NMTOKEN": case "NMTOKENS": case "Name": case "NCName":
+                case "ID": case "IDREF": case "IDREFS": case "ENTITY": case "ENTITIES":
+                case "nonPositiveInteger": case "negativeInteger":
+                case "nonNegativeInteger": case "unsignedLong": case "unsignedInt":
+                case "unsignedShort": case "unsignedByte": case "positiveInteger":
+                case "untypedAtomic": case "yearMonthDuration": case "dayTimeDuration":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        
+        private boolean isMathFunction(String localName) {
+            switch (localName) {
+                case "pi": case "exp": case "exp10": case "log": case "log10":
+                case "pow": case "sqrt": case "sin": case "cos": case "tan":
+                case "asin": case "acos": case "atan": case "atan2":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        
+        private boolean isMapFunction(String localName) {
+            switch (localName) {
+                case "merge": case "keys": case "contains": case "get":
+                case "put": case "entry": case "size": case "remove":
+                case "for-each": case "find":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        
+        private boolean isArrayFunction(String localName) {
+            switch (localName) {
+                case "size": case "get": case "put": case "append":
+                case "subarray": case "remove": case "insert-before":
+                case "head": case "tail": case "reverse": case "join":
+                case "for-each": case "filter": case "fold-left":
+                case "fold-right": case "for-each-pair": case "sort":
+                case "flatten":
+                    return true;
+                default:
+                    return false;
+            }
         }
     }
 
