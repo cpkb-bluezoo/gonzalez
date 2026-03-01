@@ -207,12 +207,14 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
             // Evaluate select expression
             XPathValue selectResult = select.evaluate(context);
             
-            // Initialize iteration parameters with default values
             Map<String, XPathValue> currentParams = new HashMap<>();
             for (IterateParam param : params) {
-                XPathValue defaultVal = param.getDefaultValue() != null
-                    ? param.getDefaultValue().evaluate(context)
-                    : null;
+                XPathValue defaultVal;
+                if (param.getDefaultValue() != null) {
+                    defaultVal = param.getDefaultValue().evaluate(context);
+                } else {
+                    defaultVal = XPathNodeSet.EMPTY;
+                }
                 currentParams.put(param.getName(), defaultVal);
             }
             

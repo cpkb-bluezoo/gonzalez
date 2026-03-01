@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 import org.xml.sax.SAXException;
@@ -31,6 +32,10 @@ import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -65,16 +70,11 @@ public class OnEmptyNode extends XSLTInstruction implements ExpressionHolder {
     
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
-        // Note: xsl:on-empty is handled specially by the sequence constructor
-        // This execution is for when the sequence is indeed empty
         if (selectExpr != null) {
             try {
                 XPathValue result = selectExpr.evaluate(context);
                 if (result != null) {
-                    String str = result.asString();
-                    if (!str.isEmpty()) {
-                        output.characters(str);
-                    }
+                    ValueOutputHelper.outputValue(result, output);
                 }
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating xsl:on-empty select", e);

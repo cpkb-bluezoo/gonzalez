@@ -411,9 +411,15 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                     "; supplied value is empty sequence");
             }
             
-            // For non-empty results, validate the type matches
+            // For non-empty results, validate the type matches.
+            // If type is atomic and result is a text node/nodeset, atomize first.
             if (!isEmpty) {
-                if (!expectedType.matches(result, org.bluezoo.gonzalez.transform.xpath.type.SchemaContext.NONE)) {
+                XPathValue checkVal = result;
+                if (expectedType.getItemKind() == SequenceType.ItemKind.ATOMIC && 
+                    (result instanceof XPathNode || result instanceof XPathNodeSet)) {
+                    checkVal = new org.bluezoo.gonzalez.transform.xpath.type.XPathString(result.asString());
+                }
+                if (!expectedType.matches(checkVal, org.bluezoo.gonzalez.transform.xpath.type.SchemaContext.NONE)) {
                     String templateDesc = rule.getName() != null ? 
                         "named template '" + rule.getName() + "'" :
                         "template matching '" + rule.getMatchPattern() + "'";

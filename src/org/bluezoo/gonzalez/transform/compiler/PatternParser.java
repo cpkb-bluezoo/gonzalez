@@ -184,8 +184,8 @@ final class PatternParser {
                 patternStr);
         }
 
-        // Atomic/context-item pattern: . or .[pred] (XSLT 3.0)
-        if (token == XPathToken.DOT && version >= 3.0) {
+        // Atomic/context-item pattern: . or .[pred] (XSLT 3.0, also 2.0 fwd-compat)
+        if (token == XPathToken.DOT && version >= 2.0) {
             lexer.advance(); // consume .
             if (lexer.current() == XPathToken.LBRACKET) {
                 String pred = extractAllPredicates(lexer, prepared);

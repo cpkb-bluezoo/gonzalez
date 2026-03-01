@@ -4569,9 +4569,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         importsAllowed = false;
         String name = ctx.attributes.get("name");
         
-        // XTSE0010: name attribute is required
         if (name == null || name.isEmpty()) {
             throw new SAXException("XTSE0010: Required attribute 'name' is missing on xsl:attribute-set");
+        }
+        
+        String streamableAttr = ctx.attributes.get("streamable");
+        if (streamableAttr != null && !streamableAttr.isEmpty()) {
+            validateYesOrNo("xsl:attribute-set", "streamable", streamableAttr);
         }
         
         String useAttrSets = ctx.attributes.get("use-attribute-sets");

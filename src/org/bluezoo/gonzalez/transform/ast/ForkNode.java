@@ -158,6 +158,7 @@ public final class ForkNode implements XSLTNode {
         
         // Multiple branches - execute in parallel
         final SAXEventBuffer[] results = new SAXEventBuffer[branchCount];
+        final BufferOutputHandler[] bufferHandlers = new BufferOutputHandler[branchCount];
         final SAXException[] errors = new SAXException[1];
         final CountDownLatch latch = new CountDownLatch(branchCount);
         
@@ -166,13 +167,11 @@ public final class ForkNode implements XSLTNode {
             final ForkBranch branch = branches.get(index);
             
             if (branch.getContent() == null) {
-                // Empty branch - no work to do
                 results[index] = new SAXEventBuffer();
                 latch.countDown();
                 continue;
             }
             
-            // Clone context for this branch
             final TransformContext branchContext = cloneContextForBranch(context);
             
             FORK_EXECUTOR.execute(new Runnable() {
@@ -183,6 +182,7 @@ public final class ForkNode implements XSLTNode {
                         branch.getContent().execute(branchContext, bufferHandler);
                         bufferHandler.flush();
                         results[index] = buffer;
+                        bufferHandlers[index] = bufferHandler;
                     } catch (SAXException e) {
                         synchronized (errors) {
                             if (errors[0] == null) {
@@ -215,7 +215,23 @@ public final class ForkNode implements XSLTNode {
             throw errors[0];
         }
         
-        // Replay all buffers to output in document order
+        // Replay all buffers to output in document order.
+        // First pass: emit any parent attributes/namespaces (for the enclosing element).
+        for (int i = 0; i < branchCount; i++) {
+            if (bufferHandlers[i] != null) {
+                List<String[]> pns = bufferHandlers[i].getParentNamespaces();
+                for (int j = 0; j < pns.size(); j++) {
+                    String[] ns = pns.get(j);
+                    output.namespace(ns[0], ns[1]);
+                }
+                List<String[]> pa = bufferHandlers[i].getParentAttributes();
+                for (int j = 0; j < pa.size(); j++) {
+                    String[] attr = pa.get(j);
+                    output.attribute(attr[0], attr[1], attr[2], attr[3]);
+                }
+            }
+        }
+        // Second pass: replay buffered content.
         for (int i = 0; i < branchCount; i++) {
             if (results[i] != null) {
                 results[i].replayContent(new SAXEventAdapter(output));
@@ -266,6 +282,10 @@ public final class ForkNode implements XSLTNode {
 
     /**
      * OutputHandler that buffers to SAXEventBuffer.
+     *
+     * <p>Attributes that arrive before any element start tag are stored
+     * separately as "parent attributes" -- these are meant for the enclosing
+     * element created outside the fork branch.
      */
     private static class BufferOutputHandler implements OutputHandler {
         private final SAXEventBuffer buffer;
@@ -274,9 +294,20 @@ public final class ForkNode implements XSLTNode {
         private String pendingLocalName;
         private String pendingQName;
         private final AttributesImpl pendingAttrs = new AttributesImpl();
+        private final List<String[]> parentAttrs = new ArrayList<>();
+        private final List<String[]> parentNamespaces = new ArrayList<>();
+        private boolean hadElement = false;
 
         BufferOutputHandler(SAXEventBuffer buffer) {
             this.buffer = buffer;
+        }
+
+        List<String[]> getParentAttributes() {
+            return parentAttrs;
+        }
+
+        List<String[]> getParentNamespaces() {
+            return parentNamespaces;
         }
 
         public void startDocument() throws SAXException {
@@ -290,6 +321,7 @@ public final class ForkNode implements XSLTNode {
 
         public void startElement(String uri, String localName, String qName) throws SAXException {
             flush();
+            hadElement = true;
             inStartTag = true;
             pendingUri = uri != null ? uri : "";
             pendingLocalName = localName;
@@ -307,20 +339,34 @@ public final class ForkNode implements XSLTNode {
 
         public void attribute(String uri, String localName, String qName, String value) 
                 throws SAXException {
-            if (!inStartTag) {
+            if (inStartTag) {
+                pendingAttrs.addAttribute(
+                    uri != null ? uri : "", 
+                    localName,
+                    qName != null ? qName : localName, 
+                    "CDATA", 
+                    value);
+            } else if (!hadElement) {
+                parentAttrs.add(new String[]{
+                    uri != null ? uri : "",
+                    localName,
+                    qName != null ? qName : localName,
+                    value
+                });
+            } else {
                 throw new SAXException("Attribute outside of start tag");
             }
-            pendingAttrs.addAttribute(
-                uri != null ? uri : "", 
-                localName,
-                qName != null ? qName : localName, 
-                "CDATA", 
-                value);
         }
 
         public void namespace(String prefix, String uri) throws SAXException {
-            flush();
-            buffer.startPrefixMapping(prefix != null ? prefix : "", uri);
+            if (!hadElement && !inStartTag) {
+                parentNamespaces.add(new String[]{
+                    prefix != null ? prefix : "", uri
+                });
+            } else {
+                flush();
+                buffer.startPrefixMapping(prefix != null ? prefix : "", uri);
+            }
         }
 
         public void characters(String text) throws SAXException {
@@ -331,7 +377,6 @@ public final class ForkNode implements XSLTNode {
         }
 
         public void charactersRaw(String text) throws SAXException {
-            // Buffer doesn't distinguish raw vs escaped - just store as characters
             characters(text);
         }
 
@@ -356,37 +401,43 @@ public final class ForkNode implements XSLTNode {
 
     /**
      * Adapts SAXEventBuffer replay (ContentHandler) to OutputHandler.
+     *
+     * <p>SAX sends startPrefixMapping BEFORE startElement, but OutputHandler
+     * expects namespace() AFTER startElement. This adapter buffers pending
+     * namespace declarations and emits them after each startElement call.
      */
     private static class SAXEventAdapter implements org.xml.sax.ContentHandler {
         private final OutputHandler output;
+        private final List<String[]> pendingNamespaces = new ArrayList<>();
 
         SAXEventAdapter(OutputHandler output) {
             this.output = output;
         }
 
         public void setDocumentLocator(org.xml.sax.Locator locator) {
-            // Ignored
         }
 
         public void startDocument() throws SAXException {
-            // Don't propagate - we're replaying content only
         }
 
         public void endDocument() throws SAXException {
-            // Don't propagate - we're replaying content only
         }
 
         public void startPrefixMapping(String prefix, String uri) throws SAXException {
-            output.namespace(prefix, uri);
+            pendingNamespaces.add(new String[]{prefix, uri});
         }
 
         public void endPrefixMapping(String prefix) throws SAXException {
-            // OutputHandler doesn't track this - skip
         }
 
         public void startElement(String uri, String localName, String qName, Attributes atts) 
                 throws SAXException {
             output.startElement(uri, localName, qName);
+            for (int i = 0; i < pendingNamespaces.size(); i++) {
+                String[] ns = pendingNamespaces.get(i);
+                output.namespace(ns[0], ns[1]);
+            }
+            pendingNamespaces.clear();
             for (int i = 0; i < atts.getLength(); i++) {
                 output.attribute(
                     atts.getURI(i), 
@@ -413,7 +464,6 @@ public final class ForkNode implements XSLTNode {
         }
 
         public void skippedEntity(String name) throws SAXException {
-            // Ignored
         }
     }
 

@@ -144,9 +144,8 @@ public final class VariableScope {
         // Search from current scope up to root
         Scope scope = currentScope;
         while (scope != null) {
-            XPathValue value = scope.variables.get(key);
-            if (value != null) {
-                return value;
+            if (scope.variables.containsKey(key)) {
+                return scope.variables.get(key);
             }
             scope = scope.parent;
         }

@@ -70,6 +70,15 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     }
     
     /**
+     * Returns true if we are currently building element content.
+     * When true, callers should use the normal output methods (characters,
+     * atomicValue) rather than addItem, so values flow into the element.
+     */
+    public boolean isInsideElement() {
+        return elementDepth > 0;
+    }
+    
+    /**
      * Directly adds an XPathValue to the sequence.
      * Used by xsl:document to add document nodes directly.
      */

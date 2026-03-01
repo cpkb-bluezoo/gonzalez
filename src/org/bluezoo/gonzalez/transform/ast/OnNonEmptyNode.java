@@ -65,16 +65,11 @@ public class OnNonEmptyNode extends XSLTInstruction implements ExpressionHolder 
 
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
-        // Note: xsl:on-non-empty is handled specially by the sequence constructor
-        // This execution is for when the sequence is indeed non-empty
         if (selectExpr != null) {
             try {
                 XPathValue result = selectExpr.evaluate(context);
                 if (result != null) {
-                    String str = result.asString();
-                    if (!str.isEmpty()) {
-                        output.characters(str);
-                    }
+                    ValueOutputHelper.outputValue(result, output);
                 }
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating xsl:on-non-empty select", e);

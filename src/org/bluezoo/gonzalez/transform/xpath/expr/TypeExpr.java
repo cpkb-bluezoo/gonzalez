@@ -222,12 +222,11 @@ public class TypeExpr implements Expr {
     private XPathValue evaluateTreatAs(XPathValue value, XPathContext context) throws XPathException {
         SchemaContext schemaContext = (context instanceof SchemaContext) ? (SchemaContext) context : SchemaContext.NONE;
         if (!targetType.matches(value, schemaContext)) {
-            throw new XPathException("Value does not match type " + targetType + 
+            throw new XPathException("XPDY0050: Value does not match type " + targetType + 
                 " in 'treat as' expression");
         }
-        // For user-defined types, also validate against facets
         if (isUserDefinedType() && !validateAgainstSchemaType(value, context)) {
-            throw new XPathException("Value does not match type " + targetType + 
+            throw new XPathException("XPDY0050: Value does not match type " + targetType + 
                 " in 'treat as' expression");
         }
         return value;

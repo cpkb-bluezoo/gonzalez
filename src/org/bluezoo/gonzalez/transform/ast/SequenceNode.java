@@ -207,6 +207,7 @@ public final class SequenceNode implements XSLTNode {
         private final OutputHandler parent;
         private final BufferOutputHandler bufferHandler;
         private boolean hasAttributeOrNamespace = false;
+        private int elementDepth = 0;
         
         ContentSplittingHandler(OutputHandler parent, SAXEventBuffer buffer) {
             this.parent = parent;
@@ -229,26 +230,34 @@ public final class SequenceNode implements XSLTNode {
         
         @Override
         public void startElement(String namespaceURI, String localName, String qName) throws SAXException {
+            elementDepth++;
             bufferHandler.startElement(namespaceURI, localName, qName);
         }
         
         @Override
         public void endElement(String namespaceURI, String localName, String qName) throws SAXException {
             bufferHandler.endElement(namespaceURI, localName, qName);
+            elementDepth--;
         }
         
         @Override
         public void attribute(String namespaceURI, String localName, String qName, String value) throws SAXException {
-            // Attributes go directly to parent - they belong to the parent element
-            hasAttributeOrNamespace = true;
-            parent.attribute(namespaceURI, localName, qName, value);
+            if (elementDepth == 0) {
+                hasAttributeOrNamespace = true;
+                parent.attribute(namespaceURI, localName, qName, value);
+            } else {
+                bufferHandler.attribute(namespaceURI, localName, qName, value);
+            }
         }
         
         @Override
         public void namespace(String prefix, String uri) throws SAXException {
-            // Namespace declarations go directly to parent
-            hasAttributeOrNamespace = true;
-            parent.namespace(prefix, uri);
+            if (elementDepth == 0) {
+                hasAttributeOrNamespace = true;
+                parent.namespace(prefix, uri);
+            } else {
+                bufferHandler.namespace(prefix, uri);
+            }
         }
         
         @Override

@@ -201,7 +201,7 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
             
             // Reject the xmlns namespace
             if ("http://www.w3.org/2000/xmlns/".equals(namespace)) {
-                throw new SAXException("XTDE0835: The xmlns namespace URI is not permitted for xsl:attribute");
+                throw new SAXException("XTDE0865: The xmlns namespace URI is not permitted for xsl:attribute");
             }
             
             // Build qName - if we have a namespace but no prefix, generate one

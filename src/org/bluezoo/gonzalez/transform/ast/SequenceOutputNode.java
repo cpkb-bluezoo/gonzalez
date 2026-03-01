@@ -68,21 +68,24 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
             }
             
             // When building a sequence, add items directly to preserve
-            // node identity (xsl:sequence returns nodes by reference)
+            // node identity (xsl:sequence returns nodes by reference).
+            // But NOT when inside an element - values must flow into element content.
             if (output instanceof SequenceBuilderOutputHandler) {
                 SequenceBuilderOutputHandler seqBuilder = (SequenceBuilderOutputHandler) output;
-                if (result instanceof XPathSequence) {
-                    for (XPathValue item : (XPathSequence) result) {
-                        seqBuilder.addItem(item);
+                if (!seqBuilder.isInsideElement()) {
+                    if (result instanceof XPathSequence) {
+                        for (XPathValue item : (XPathSequence) result) {
+                            seqBuilder.addItem(item);
+                        }
+                    } else if (result instanceof XPathNodeSet) {
+                        for (XPathNode node : ((XPathNodeSet) result).getNodes()) {
+                            seqBuilder.addItem(new XPathNodeSet(Collections.singletonList(node)));
+                        }
+                    } else {
+                        seqBuilder.addItem(result);
                     }
-                } else if (result instanceof XPathNodeSet) {
-                    for (XPathNode node : ((XPathNodeSet) result).getNodes()) {
-                        seqBuilder.addItem(new XPathNodeSet(Collections.singletonList(node)));
-                    }
-                } else {
-                    seqBuilder.addItem(result);
+                    return;
                 }
-                return;
             }
             
             if (result instanceof XPathResultTreeFragment) {

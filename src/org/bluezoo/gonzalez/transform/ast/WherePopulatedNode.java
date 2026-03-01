@@ -23,11 +23,12 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import org.xml.sax.SAXException;
 
-import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
+import java.util.ArrayList;
+import java.util.List;
+
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
-import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 
 /**
  * WherePopulatedNode XSLT instruction.
@@ -49,26 +50,318 @@ public class WherePopulatedNode extends XSLTInstruction {
             return;
         }
         
-        // Buffer the output to check if it produces anything
-        SAXEventBuffer buffer = new SAXEventBuffer();
-        BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
+        // Execute content into a deep-empty filtering handler that splits
+        // the output into top-level items and tracks whether each is populated
+        DeepEmptyFilter filter = new DeepEmptyFilter();
+        content.execute(context, filter);
+        filter.finishCurrentItem();
         
-        content.execute(context, bufferOutput);
-        
-        // Only output if content was produced
-        if (!buffer.isEmpty()) {
-            // Replay content events through an adapter to the OutputHandler
-            if (output instanceof org.xml.sax.ContentHandler) {
-                buffer.replayContent((org.xml.sax.ContentHandler) output);
-            } else {
-                // For OutputHandlers that don't implement ContentHandler,
-                // convert buffer to RTF and serialize
-                XPathResultTreeFragment rtf = new XPathResultTreeFragment(buffer);
-                String text = rtf.asString();
-                if (!text.isEmpty()) {
-                    output.characters(text);
+        // Replay only populated items
+        List<ItemRecord> items = filter.getItems();
+        for (int i = 0; i < items.size(); i++) {
+            ItemRecord item = items.get(i);
+            if (!item.deepEmpty) {
+                if (item.isAttribute) {
+                    output.attribute(item.attrUri, item.attrLocal, item.attrQName, item.attrValue);
+                } else if (item.isNamespace) {
+                    output.namespace(item.nsPrefix, item.nsUri);
+                } else if (item.buffer != null && !item.buffer.isEmpty()) {
+                    item.buffer.replayContent(new SAXToOutputAdapter(output));
                 }
             }
+        }
+    }
+
+    /**
+     * Record for a single top-level item in the where-populated trial sequence.
+     */
+    private static class ItemRecord {
+        SAXEventBuffer buffer;
+        boolean deepEmpty;
+        boolean isAttribute;
+        String attrUri;
+        String attrLocal;
+        String attrQName;
+        String attrValue;
+        boolean isNamespace;
+        String nsPrefix;
+        String nsUri;
+    }
+
+    /**
+     * OutputHandler that splits content into individual top-level items and
+     * tracks whether each item is deep-empty per XSLT 3.0 section 11.9.
+     *
+     * <p>An item is deep-empty if:
+     * <ul>
+     *   <li>It is a text node of zero length</li>
+     *   <li>It is an element whose only children are all deep-empty</li>
+     * </ul>
+     * Attributes, namespace nodes, PIs, and comments are always populated.
+     * Uses deferred start tag to collect attributes before writing to buffer.
+     */
+    private static class DeepEmptyFilter implements OutputHandler {
+        private final List<ItemRecord> items = new ArrayList<>();
+        private SAXEventBuffer currentBuffer;
+        private int depth = 0;
+        private boolean[] populatedAtDepth = new boolean[64];
+        private boolean inStartTag = false;
+        private String pendingUri;
+        private String pendingLocal;
+        private String pendingQName;
+        private final org.xml.sax.helpers.AttributesImpl pendingAttrs =
+            new org.xml.sax.helpers.AttributesImpl();
+        private final List<String[]> pendingNs = new ArrayList<>();
+
+        List<ItemRecord> getItems() {
+            return items;
+        }
+
+        private void flushStartTag() throws SAXException {
+            if (!inStartTag) {
+                return;
+            }
+            if (currentBuffer == null) {
+                currentBuffer = new SAXEventBuffer();
+            }
+            for (int i = 0; i < pendingNs.size(); i++) {
+                String[] ns = pendingNs.get(i);
+                currentBuffer.startPrefixMapping(ns[0], ns[1]);
+            }
+            pendingNs.clear();
+            currentBuffer.startElement(pendingUri, pendingLocal, pendingQName, pendingAttrs);
+            pendingAttrs.clear();
+            inStartTag = false;
+        }
+
+        void finishCurrentItem() throws SAXException {
+            flushStartTag();
+            if (currentBuffer != null && !currentBuffer.isEmpty()) {
+                ItemRecord rec = new ItemRecord();
+                rec.buffer = currentBuffer;
+                rec.deepEmpty = false;
+                items.add(rec);
+                currentBuffer = null;
+            }
+        }
+
+        public void startDocument() throws SAXException {
+        }
+
+        public void endDocument() throws SAXException {
+        }
+
+        public void startElement(String uri, String localName, String qName) throws SAXException {
+            flushStartTag();
+            if (depth == 0) {
+                finishCurrentItem();
+                currentBuffer = new SAXEventBuffer();
+                populatedAtDepth[0] = false;
+            }
+            inStartTag = true;
+            pendingUri = uri != null ? uri : "";
+            pendingLocal = localName;
+            pendingQName = qName != null ? qName : localName;
+            pendingAttrs.clear();
+            depth++;
+            if (depth < populatedAtDepth.length) {
+                populatedAtDepth[depth] = false;
+            }
+        }
+
+        public void endElement(String uri, String localName, String qName) throws SAXException {
+            flushStartTag();
+            if (currentBuffer == null) {
+                currentBuffer = new SAXEventBuffer();
+            }
+            currentBuffer.endElement(
+                uri != null ? uri : "", localName,
+                qName != null ? qName : localName);
+            boolean childrenPopulated = false;
+            if (depth < populatedAtDepth.length) {
+                childrenPopulated = populatedAtDepth[depth];
+            }
+            depth--;
+            if (childrenPopulated && depth >= 0 && depth < populatedAtDepth.length) {
+                populatedAtDepth[depth] = true;
+            }
+            if (depth == 0) {
+                ItemRecord rec = new ItemRecord();
+                rec.buffer = currentBuffer;
+                rec.deepEmpty = !populatedAtDepth[0];
+                items.add(rec);
+                currentBuffer = null;
+            }
+        }
+
+        public void attribute(String uri, String localName, String qName, String value) 
+                throws SAXException {
+            if (depth == 0 && !inStartTag) {
+                ItemRecord rec = new ItemRecord();
+                rec.isAttribute = true;
+                rec.attrUri = uri;
+                rec.attrLocal = localName;
+                rec.attrQName = qName;
+                rec.attrValue = value;
+                rec.deepEmpty = (value == null || value.isEmpty());
+                items.add(rec);
+            } else if (inStartTag) {
+                pendingAttrs.addAttribute(
+                    uri != null ? uri : "", localName,
+                    qName != null ? qName : localName, "CDATA", value);
+            }
+        }
+
+        public void namespace(String prefix, String uri) throws SAXException {
+            if (depth == 0 && !inStartTag) {
+                ItemRecord rec = new ItemRecord();
+                rec.isNamespace = true;
+                rec.nsPrefix = prefix;
+                rec.nsUri = uri;
+                rec.deepEmpty = false;
+                items.add(rec);
+            } else if (inStartTag) {
+                pendingNs.add(new String[]{prefix != null ? prefix : "", uri});
+            } else {
+                flushStartTag();
+                if (currentBuffer == null) {
+                    currentBuffer = new SAXEventBuffer();
+                }
+                currentBuffer.startPrefixMapping(prefix != null ? prefix : "", uri);
+            }
+        }
+
+        public void characters(String text) throws SAXException {
+            if (text == null || text.isEmpty()) {
+                return;
+            }
+            flushStartTag();
+            if (depth == 0) {
+                ItemRecord rec = new ItemRecord();
+                rec.buffer = new SAXEventBuffer();
+                rec.buffer.characters(text.toCharArray(), 0, text.length());
+                rec.deepEmpty = false;
+                items.add(rec);
+            } else {
+                if (currentBuffer == null) {
+                    currentBuffer = new SAXEventBuffer();
+                }
+                currentBuffer.characters(text.toCharArray(), 0, text.length());
+                if (depth < populatedAtDepth.length) {
+                    populatedAtDepth[depth] = true;
+                }
+            }
+        }
+
+        public void charactersRaw(String text) throws SAXException {
+            characters(text);
+        }
+
+        public void comment(String text) throws SAXException {
+            flushStartTag();
+            boolean isEmpty = (text == null || text.isEmpty());
+            if (depth == 0) {
+                ItemRecord rec = new ItemRecord();
+                rec.buffer = new SAXEventBuffer();
+                rec.deepEmpty = isEmpty;
+                items.add(rec);
+            } else {
+                if (!isEmpty && depth < populatedAtDepth.length) {
+                    populatedAtDepth[depth] = true;
+                }
+            }
+        }
+
+        public void processingInstruction(String target, String data) throws SAXException {
+            flushStartTag();
+            boolean isEmpty = (data == null || data.isEmpty());
+            if (depth == 0) {
+                ItemRecord rec = new ItemRecord();
+                rec.buffer = new SAXEventBuffer();
+                if (!isEmpty) {
+                    rec.buffer.processingInstruction(target, data);
+                }
+                rec.deepEmpty = isEmpty;
+                items.add(rec);
+            } else {
+                if (currentBuffer == null) {
+                    currentBuffer = new SAXEventBuffer();
+                }
+                currentBuffer.processingInstruction(target, data);
+                if (!isEmpty && depth < populatedAtDepth.length) {
+                    populatedAtDepth[depth] = true;
+                }
+            }
+        }
+
+        public void flush() throws SAXException {
+            flushStartTag();
+        }
+    }
+
+    /**
+     * Adapts SAXEventBuffer replay (ContentHandler) to OutputHandler,
+     * preserving element structure instead of converting to text.
+     *
+     * <p>SAX sends startPrefixMapping before startElement, but OutputHandler
+     * expects namespace() after startElement, so namespace declarations are
+     * buffered and emitted after each startElement.
+     */
+    private static class SAXToOutputAdapter implements org.xml.sax.ContentHandler {
+        private final OutputHandler output;
+        private final java.util.List<String[]> pendingNs = new java.util.ArrayList<>();
+
+        SAXToOutputAdapter(OutputHandler output) {
+            this.output = output;
+        }
+
+        public void setDocumentLocator(org.xml.sax.Locator locator) {
+        }
+
+        public void startDocument() throws SAXException {
+        }
+
+        public void endDocument() throws SAXException {
+        }
+
+        public void startPrefixMapping(String prefix, String uri) throws SAXException {
+            pendingNs.add(new String[]{prefix, uri});
+        }
+
+        public void endPrefixMapping(String prefix) throws SAXException {
+        }
+
+        public void startElement(String uri, String localName, String qName,
+                                 org.xml.sax.Attributes atts) throws SAXException {
+            output.startElement(uri, localName, qName);
+            for (int i = 0; i < pendingNs.size(); i++) {
+                String[] ns = pendingNs.get(i);
+                output.namespace(ns[0], ns[1]);
+            }
+            pendingNs.clear();
+            for (int i = 0; i < atts.getLength(); i++) {
+                output.attribute(atts.getURI(i), atts.getLocalName(i),
+                                 atts.getQName(i), atts.getValue(i));
+            }
+        }
+
+        public void endElement(String uri, String localName, String qName) throws SAXException {
+            output.endElement(uri, localName, qName);
+        }
+
+        public void characters(char[] ch, int start, int length) throws SAXException {
+            output.characters(new String(ch, start, length));
+        }
+
+        public void ignorableWhitespace(char[] ch, int start, int length) throws SAXException {
+            output.characters(new String(ch, start, length));
+        }
+
+        public void processingInstruction(String target, String data) throws SAXException {
+            output.processingInstruction(target, data);
+        }
+
+        public void skippedEntity(String name) throws SAXException {
         }
     }
 }
