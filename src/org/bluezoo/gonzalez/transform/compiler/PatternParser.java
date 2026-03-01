@@ -196,10 +196,13 @@ final class PatternParser {
                 int lastBracketEnd = bracketRange[1];
 
                 String afterFirst = normalized.substring(lastBracketEnd + 1);
-                while (afterFirst.startsWith("[")) {
-                    int[] nextRange = findPredicateRange(afterFirst);
+                while (afterFirst.trim().startsWith("[")) {
+                    // Skip whitespace between predicates
+                    int skip = afterFirst.length() - afterFirst.trim().length();
+                    String trimmedAfter = afterFirst.substring(skip);
+                    int[] nextRange = findPredicateRange(trimmedAfter);
                     if (nextRange != null) {
-                        lastBracketEnd = lastBracketEnd + 1 + nextRange[1];
+                        lastBracketEnd = lastBracketEnd + 1 + skip + nextRange[1];
                         afterFirst = normalized.substring(
                             lastBracketEnd + 1);
                     } else {
@@ -208,7 +211,7 @@ final class PatternParser {
                 }
 
                 String afterAllPredicates = normalized.substring(
-                    lastBracketEnd + 1);
+                    lastBracketEnd + 1).trim();
                 if (afterAllPredicates.isEmpty()) {
                     basePattern = normalized.substring(0,
                         firstBracketStart);
