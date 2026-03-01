@@ -533,6 +533,7 @@ public class GonzalezTransformHandler extends DefaultHandler
                 // Set current template rule so xsl:next-match works if template has match pattern
                 TransformContext templateContext = context.pushVariableScope()
                     .withCurrentTemplateRule(template);
+                bindInitialTemplateParams(template, templateContext);
                 XSLTNode body = template.getBody();
                 if (body != null) {
                     body.execute(templateContext, output);
@@ -551,6 +552,7 @@ public class GonzalezTransformHandler extends DefaultHandler
                     // Set current template rule so xsl:next-match works if template has match pattern
                     TransformContext templateContext = context.pushVariableScope()
                         .withCurrentTemplateRule(xslInitialTemplate);
+                    bindInitialTemplateParams(xslInitialTemplate, templateContext);
                     XSLTNode body = xslInitialTemplate.getBody();
                     if (body != null) {
                         body.execute(templateContext, output);
@@ -563,6 +565,41 @@ public class GonzalezTransformHandler extends DefaultHandler
             
             // End output document
             output.endDocument();
+    }
+
+    /**
+     * Binds template parameters to their default values for initial-template
+     * invocation. Since no xsl:with-param values are supplied when invoking
+     * via initial-template, all non-required params get their defaults.
+     */
+    private void bindInitialTemplateParams(TemplateRule template,
+                                           TransformContext templateContext)
+        throws SAXException
+    {
+        for (TemplateParameter templateParam : template.getParameters()) {
+            XPathValue defaultValue = null;
+            if (templateParam.getSelectExpr() != null) {
+                try {
+                    defaultValue = templateParam.getSelectExpr().evaluate(templateContext);
+                } catch (XPathException e) {
+                    throw new SAXException("Error evaluating param default: " +
+                        e.getMessage(), e);
+                }
+            } else if (templateParam.getDefaultContent() != null) {
+                SAXEventBuffer buffer = new SAXEventBuffer();
+                templateParam.getDefaultContent().execute(templateContext,
+                    new BufferOutputHandler(buffer));
+                defaultValue = new XPathResultTreeFragment(buffer);
+            } else {
+                defaultValue = new XPathString("");
+            }
+            if (defaultValue != null) {
+                templateContext.getVariableScope().bind(
+                    templateParam.getNamespaceURI(),
+                    templateParam.getLocalName(),
+                    defaultValue);
+            }
+        }
     }
 
     private void initializeGlobals(BasicTransformContext context) throws SAXException {

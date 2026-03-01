@@ -387,7 +387,7 @@ public class TypeExpr implements Expr {
                     return new XPathString(value);
             }
         } catch (NumberFormatException e) {
-            throw new XPathException("Cannot cast '" + value + "' to xs:" + typeName + 
+            throw new XPathException("FORG0001: Cannot cast '" + value + "' to xs:" + typeName + 
                 ": " + e.getMessage());
         }
     }
@@ -501,7 +501,7 @@ public class TypeExpr implements Expr {
                     return new XPathString(value);
             }
         } catch (NumberFormatException e) {
-            throw new XPathException("Cannot cast '" + value + "' to " + primitiveTypeName + 
+            throw new XPathException("FORG0001: Cannot cast '" + value + "' to " + primitiveTypeName + 
                 ": " + e.getMessage());
         }
     }

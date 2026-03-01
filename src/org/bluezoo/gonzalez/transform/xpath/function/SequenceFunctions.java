@@ -107,6 +107,7 @@ public final class SequenceFunctions {
         functions.add(AVAILABLE_ENVIRONMENT_VARIABLES);
         functions.add(ENVIRONMENT_VARIABLE);
         functions.add(SORT);
+        functions.add(HAS_CHILDREN);
         // XPath 3.0 higher-order function introspection
         functions.add(FUNCTION_NAME);
         functions.add(FUNCTION_ARITY);
@@ -2190,6 +2191,58 @@ public final class SequenceFunctions {
                 return XPathSequence.EMPTY;
             }
             throw new XPathException("XPTY0004: Argument to function-name is not a function item");
+        }
+    };
+
+    /**
+     * XPath 3.0 has-children() function.
+     *
+     * <p>Returns true if the supplied node has one or more child nodes.
+     * If the argument is omitted, tests the context item.
+     *
+     * <p>Signature: has-children() as xs:boolean
+     * <br>has-children(node) as xs:boolean
+     *
+     * @see <a href="https://www.w3.org/TR/xpath-functions-30/#func-has-children">XPath 3.0 has-children()</a>
+     */
+    public static final Function HAS_CHILDREN = new Function() {
+        @Override public String getName() { return "has-children"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            XPathNode node;
+            if (args.isEmpty()) {
+                node = context.getContextNode();
+            } else {
+                XPathValue arg = args.get(0);
+                if (arg == null || (arg instanceof XPathSequence && ((XPathSequence) arg).isEmpty())) {
+                    return XPathBoolean.FALSE;
+                }
+                if (arg instanceof XPathNode) {
+                    node = (XPathNode) arg;
+                } else if (arg instanceof XPathNodeSet) {
+                    XPathNodeSet ns = (XPathNodeSet) arg;
+                    Iterator<XPathNode> iter = ns.iterator();
+                    if (!iter.hasNext()) {
+                        return XPathBoolean.FALSE;
+                    }
+                    node = iter.next();
+                } else {
+                    return XPathBoolean.FALSE;
+                }
+            }
+            NodeType nodeType = node.getNodeType();
+            if (nodeType != NodeType.ROOT && nodeType != NodeType.ELEMENT) {
+                return XPathBoolean.FALSE;
+            }
+            Iterator<XPathNode> children = node.getChildren();
+            if (children != null && children.hasNext()) {
+                return XPathBoolean.TRUE;
+            }
+            return XPathBoolean.FALSE;
         }
     };
 
