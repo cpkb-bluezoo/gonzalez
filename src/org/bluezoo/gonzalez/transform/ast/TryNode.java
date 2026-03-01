@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
@@ -29,9 +30,14 @@ import org.xml.sax.SAXException;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
  * TryNode XSLT instruction.
+ *
+ * <p>Per XSLT 3.0, the try block output is buffered and only committed
+ * if evaluation succeeds. On error, the buffer is discarded and the
+ * matching catch block is evaluated instead.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -48,10 +54,12 @@ public class TryNode extends XSLTInstruction {
     
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
+        RecordingOutputHandler buffer = new RecordingOutputHandler();
         try {
             if (tryContent != null) {
-                tryContent.execute(context, output);
+                tryContent.execute(context, buffer);
             }
+            buffer.replayTo(output);
         } catch (SAXException e) {
             handleError(extractErrorCode(e), context, output, e);
         } catch (RuntimeException e) {
@@ -134,5 +142,214 @@ public class TryNode extends XSLTInstruction {
             }
         }
         // No catch blocks or only filtered ones that didn't match - swallow silently
+    }
+
+    /**
+     * OutputHandler that records events for later replay.
+     * Used to buffer xsl:try output so it can be discarded on error.
+     */
+    private static class RecordingOutputHandler implements OutputHandler {
+
+        private final List<Event> events = new ArrayList<>();
+        private boolean atomicValuePending = false;
+        private boolean inAttributeContent = false;
+
+        void replayTo(OutputHandler target) throws SAXException {
+            for (Event event : events) {
+                event.replayTo(target);
+            }
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.startDocument();
+                }
+            });
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.endDocument();
+                }
+            });
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName)
+                throws SAXException {
+            final String u = uri;
+            final String l = localName;
+            final String q = qName;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.startElement(u, l, q);
+                }
+            });
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            final String u = uri;
+            final String l = localName;
+            final String q = qName;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.endElement(u, l, q);
+                }
+            });
+        }
+
+        @Override
+        public void attribute(String uri, String localName, String qName,
+                String value) throws SAXException {
+            final String u = uri;
+            final String l = localName;
+            final String q = qName;
+            final String v = value;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.attribute(u, l, q, v);
+                }
+            });
+        }
+
+        @Override
+        public void namespace(String prefix, String uri) throws SAXException {
+            final String p = prefix;
+            final String u = uri;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.namespace(p, u);
+                }
+            });
+        }
+
+        @Override
+        public void characters(String text) throws SAXException {
+            final String t = text;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.characters(t);
+                }
+            });
+        }
+
+        @Override
+        public void charactersRaw(String text) throws SAXException {
+            final String t = text;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.charactersRaw(t);
+                }
+            });
+        }
+
+        @Override
+        public void comment(String text) throws SAXException {
+            final String t = text;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.comment(t);
+                }
+            });
+        }
+
+        @Override
+        public void processingInstruction(String target, String data)
+                throws SAXException {
+            final String tgt = target;
+            final String d = data;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.processingInstruction(tgt, d);
+                }
+            });
+        }
+
+        @Override
+        public void flush() throws SAXException {
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.flush();
+                }
+            });
+        }
+
+        @Override
+        public void setElementType(String namespaceURI, String localName)
+                throws SAXException {
+            final String u = namespaceURI;
+            final String l = localName;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.setElementType(u, l);
+                }
+            });
+        }
+
+        @Override
+        public void setAttributeType(String namespaceURI, String localName)
+                throws SAXException {
+            final String u = namespaceURI;
+            final String l = localName;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.setAttributeType(u, l);
+                }
+            });
+        }
+
+        @Override
+        public void atomicValue(XPathValue value) throws SAXException {
+            final XPathValue v = value;
+            events.add(new Event() {
+                @Override
+                void replayTo(OutputHandler h) throws SAXException {
+                    h.atomicValue(v);
+                }
+            });
+        }
+
+        @Override
+        public boolean isAtomicValuePending() {
+            return atomicValuePending;
+        }
+
+        @Override
+        public void setAtomicValuePending(boolean pending) {
+            this.atomicValuePending = pending;
+        }
+
+        @Override
+        public boolean isInAttributeContent() {
+            return inAttributeContent;
+        }
+
+        @Override
+        public void setInAttributeContent(boolean inAttr) {
+            this.inAttributeContent = inAttr;
+        }
+
+        private abstract static class Event {
+            abstract void replayTo(OutputHandler h) throws SAXException;
+        }
     }
 }

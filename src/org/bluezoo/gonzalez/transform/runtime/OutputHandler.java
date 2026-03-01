@@ -291,6 +291,21 @@ public interface OutputHandler {
     }
 
     /**
+     * Appends a node directly to the output, preserving its identity.
+     * Used by xsl:copy-of with copy-accumulators="yes" to maintain
+     * the link from copied nodes to their source for accumulator lookups.
+     * Default implementation falls back to deep copy via SAX events.
+     *
+     * @param node the node to append
+     * @return true if the node was accepted directly
+     * @throws SAXException if an error occurs
+     */
+    default boolean appendNode(org.bluezoo.gonzalez.transform.xpath.type.XPathNode node)
+            throws SAXException {
+        return false;
+    }
+
+    /**
      * Returns true if this handler has received any content (elements, text, etc.).
      * Used by xsl:result-document to detect XTDE1490 conflicts with implicit output.
      *

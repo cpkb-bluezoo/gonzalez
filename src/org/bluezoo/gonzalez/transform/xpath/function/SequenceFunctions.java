@@ -1584,7 +1584,15 @@ public final class SequenceFunctions {
      *   <li>Preserve the same name, value, and structure</li>
      * </ul>
      */
-    private static class CopiedNode implements XPathNode {
+    /**
+     * Creates a deep copy of a node that preserves a getCopySource() link
+     * to the original, enabling accumulator value propagation.
+     */
+    public static XPathNode createCopiedNode(XPathNode original) {
+        return new CopiedNode(original);
+    }
+
+    static class CopiedNode implements XPathNode {
         private final XPathNode original;
         private final long uniqueId;
         private static long nextId = Long.MIN_VALUE;
@@ -1650,6 +1658,8 @@ public final class SequenceFunctions {
         
         // Copied nodes are fully navigable since they have all children materialized
         @Override public boolean isFullyNavigable() { return true; }
+
+        @Override public XPathNode getCopySource() { return original; }
     }
 
     /**

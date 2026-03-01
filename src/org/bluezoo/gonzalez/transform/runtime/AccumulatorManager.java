@@ -29,10 +29,17 @@ import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.xml.sax.SAXException;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -57,6 +64,23 @@ import java.util.Set;
  */
 public final class AccumulatorManager {
 
+    /**
+     * Sentinel XPathValue that wraps a deferred error.
+     * When an accumulator rule or initial-value causes an error,
+     * it is stored as a DeferredError and re-thrown when the value is accessed.
+     */
+    static final class DeferredError implements XPathValue {
+        final Exception cause;
+        DeferredError(Exception cause) {
+            this.cause = cause;
+        }
+        @Override public Type getType() { return Type.STRING; }
+        @Override public String asString() { return ""; }
+        @Override public double asNumber() { return Double.NaN; }
+        @Override public boolean asBoolean() { return false; }
+        @Override public XPathNodeSet asNodeSet() { return null; }
+    }
+
     private final CompiledStylesheet stylesheet;
     private final TransformContext transformContext;
     private final Map<String, AccumulatorState> accumulators;
@@ -72,6 +96,9 @@ public final class AccumulatorManager {
     /** Document roots that have been fully traversed (by identity). */
     private final Set<XPathNode> traversedDocuments;
 
+    /** Accumulators currently being evaluated (for cycle detection). */
+    private final Set<String> evaluatingAccumulators;
+
     /**
      * Creates a new AccumulatorManager.
      *
@@ -86,6 +113,7 @@ public final class AccumulatorManager {
         this.beforeValues = new HashMap<>();
         this.afterValues = new HashMap<>();
         this.traversedDocuments = new HashSet<XPathNode>();
+        this.evaluatingAccumulators = new HashSet<>();
     }
 
     /**
@@ -103,6 +131,7 @@ public final class AccumulatorManager {
         this.beforeValues = other.beforeValues;
         this.afterValues = other.afterValues;
         this.traversedDocuments = other.traversedDocuments;
+        this.evaluatingAccumulators = other.evaluatingAccumulators;
 
         for (Map.Entry<String, AccumulatorState> entry : other.accumulators.entrySet()) {
             this.accumulators.put(entry.getKey(), new AccumulatorState(entry.getValue()));
@@ -183,15 +212,24 @@ public final class AccumulatorManager {
      * and records the before/after values.
      */
     private void traverseNode(XPathNode node) throws SAXException {
+        XPathNode copySource = node.getCopySource();
+        if (copySource != null) {
+            traverseCopiedNode(node, copySource);
+            return;
+        }
+
         for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
             String accName = entry.getKey();
             AccumulatorState state = entry.getValue();
             AccumulatorDefinition def = state.getDefinition();
 
-            for (AccumulatorRule rule : def.getPreDescentRules()) {
-                if (matchesPattern(rule.getMatchPattern(), node)) {
-                    XPathValue newValue = evaluateRule(state, rule, node);
-                    state.setCurrentValue(newValue);
+            if (!(state.getCurrentValue() instanceof DeferredError)) {
+                for (AccumulatorRule rule : def.getPreDescentRules()) {
+                    if (matchesPattern(rule.getMatchPattern(), node)) {
+                        XPathValue newValue = evaluateRule(state, rule, node);
+                        newValue = coerceWithDeferral(newValue, def);
+                        state.setCurrentValue(newValue);
+                    }
                 }
             }
 
@@ -208,14 +246,60 @@ public final class AccumulatorManager {
             AccumulatorState state = entry.getValue();
             AccumulatorDefinition def = state.getDefinition();
 
-            for (AccumulatorRule rule : def.getPostDescentRules()) {
-                if (matchesPattern(rule.getMatchPattern(), node)) {
-                    XPathValue newValue = evaluateRule(state, rule, node);
-                    state.setCurrentValue(newValue);
+            if (!(state.getCurrentValue() instanceof DeferredError)) {
+                for (AccumulatorRule rule : def.getPostDescentRules()) {
+                    if (matchesPattern(rule.getMatchPattern(), node)) {
+                        XPathValue newValue = evaluateRule(state, rule, node);
+                        newValue = coerceWithDeferral(newValue, def);
+                        state.setCurrentValue(newValue);
+                    }
                 }
             }
 
             afterValues.get(accName).put(node, state.getCurrentValue());
+        }
+    }
+
+    /**
+     * Traverses a copied node subtree, propagating accumulator values from
+     * the original source nodes. Ensures the source document is traversed first.
+     */
+    private void traverseCopiedNode(XPathNode copiedNode, XPathNode sourceNode)
+            throws SAXException {
+        ensureDocumentTraversed(sourceNode);
+
+        for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
+            String accName = entry.getKey();
+            AccumulatorState state = entry.getValue();
+            Map<XPathNode, XPathValue> srcBefore = beforeValues.get(accName);
+            if (srcBefore != null) {
+                XPathValue val = srcBefore.get(sourceNode);
+                if (val != null) {
+                    beforeValues.get(accName).put(copiedNode, val);
+                    state.setCurrentValue(val);
+                }
+            }
+        }
+
+        Iterator<XPathNode> copiedChildren = copiedNode.getChildren();
+        Iterator<XPathNode> sourceChildren = sourceNode.getChildren();
+        while (copiedChildren.hasNext() && sourceChildren.hasNext()) {
+            XPathNode copiedChild = copiedChildren.next();
+            XPathNode sourceChild = sourceChildren.next();
+            traverseCopiedNode(copiedChild, sourceChild);
+        }
+
+        for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
+            String accName = entry.getKey();
+            AccumulatorState state = entry.getValue();
+            Map<XPathNode, XPathValue> srcAfter = afterValues.get(accName);
+            if (srcAfter != null) {
+                XPathValue val = srcAfter.get(sourceNode);
+                if (val != null) {
+                    afterValues.get(accName).put(copiedNode, val);
+                    state.setCurrentValue(val);
+                }
+            }
         }
     }
 
@@ -243,7 +327,10 @@ public final class AccumulatorManager {
             try {
                 preTraverseDocument(root);
             } catch (SAXException e) {
-                // Traversal failed - already marked as traversed to prevent retries
+                String msg = e.getMessage();
+                if (msg != null && msg.contains("XTDE3400")) {
+                    throw new RuntimeException(msg, e);
+                }
             }
         }
     }
@@ -252,11 +339,11 @@ public final class AccumulatorManager {
         try {
             XPathExpression initialExpr = def.getInitialValue();
             if (initialExpr != null) {
-                return initialExpr.evaluate(transformContext);
+                XPathValue value = initialExpr.evaluate(transformContext);
+                return coerceToAsType(value, def);
             }
         } catch (Exception e) {
-            throw new SAXException("Error evaluating initial value for accumulator " +
-                                   def.getName() + ": " + e.getMessage(), e);
+            return new DeferredError(e);
         }
         return XPathString.of("");
     }
@@ -277,10 +364,13 @@ public final class AccumulatorManager {
             AccumulatorDefinition def = state.getDefinition();
             state.push();
 
-            for (AccumulatorRule rule : def.getPreDescentRules()) {
-                if (matchesPattern(rule.getMatchPattern(), node)) {
-                    XPathValue newValue = evaluateRule(state, rule, node);
-                    state.setCurrentValue(newValue);
+            if (!(state.getCurrentValue() instanceof DeferredError)) {
+                for (AccumulatorRule rule : def.getPreDescentRules()) {
+                    if (matchesPattern(rule.getMatchPattern(), node)) {
+                        XPathValue newValue = evaluateRule(state, rule, node);
+                        newValue = coerceWithDeferral(newValue, def);
+                        state.setCurrentValue(newValue);
+                    }
                 }
             }
         }
@@ -300,10 +390,13 @@ public final class AccumulatorManager {
         for (AccumulatorState state : accumulators.values()) {
             AccumulatorDefinition def = state.getDefinition();
 
-            for (AccumulatorRule rule : def.getPostDescentRules()) {
-                if (matchesPattern(rule.getMatchPattern(), node)) {
-                    XPathValue newValue = evaluateRule(state, rule, node);
-                    state.setCurrentValue(newValue);
+            if (!(state.getCurrentValue() instanceof DeferredError)) {
+                for (AccumulatorRule rule : def.getPostDescentRules()) {
+                    if (matchesPattern(rule.getMatchPattern(), node)) {
+                        XPathValue newValue = evaluateRule(state, rule, node);
+                        newValue = coerceWithDeferral(newValue, def);
+                        state.setCurrentValue(newValue);
+                    }
                 }
             }
 
@@ -318,8 +411,138 @@ public final class AccumulatorManager {
         return pattern.matches(node, transformContext);
     }
 
+    /**
+     * Coerces a value to the accumulator's declared as type.
+     * Untyped atomic values are promoted to the target type per XPath rules.
+     */
+    private XPathValue coerceToAsType(XPathValue value, AccumulatorDefinition def)
+            throws SAXException {
+        String asType = def.getAsType();
+        if (asType == null || value == null || value instanceof DeferredError) {
+            return value;
+        }
+        String baseType = asType.replaceAll("[*+?]", "").trim();
+        boolean isNumericType = "xs:double".equals(baseType) || "xs:float".equals(baseType)
+                || "xs:decimal".equals(baseType) || "xs:integer".equals(baseType)
+                || "xs:long".equals(baseType) || "xs:int".equals(baseType)
+                || "xs:short".equals(baseType) || "xs:byte".equals(baseType)
+                || "xs:nonNegativeInteger".equals(baseType)
+                || "xs:positiveInteger".equals(baseType)
+                || "xs:nonPositiveInteger".equals(baseType)
+                || "xs:negativeInteger".equals(baseType)
+                || "xs:unsignedLong".equals(baseType)
+                || "xs:unsignedInt".equals(baseType)
+                || "xs:unsignedShort".equals(baseType)
+                || "xs:unsignedByte".equals(baseType);
+        boolean isIntegerSubtype = "xs:integer".equals(baseType)
+                || "xs:long".equals(baseType) || "xs:int".equals(baseType)
+                || "xs:short".equals(baseType) || "xs:byte".equals(baseType)
+                || "xs:nonNegativeInteger".equals(baseType)
+                || "xs:positiveInteger".equals(baseType)
+                || "xs:nonPositiveInteger".equals(baseType)
+                || "xs:negativeInteger".equals(baseType)
+                || "xs:unsignedLong".equals(baseType)
+                || "xs:unsignedInt".equals(baseType)
+                || "xs:unsignedShort".equals(baseType)
+                || "xs:unsignedByte".equals(baseType);
+
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            List<XPathValue> coerced = new ArrayList<>();
+            boolean changed = false;
+            for (XPathValue item : seq) {
+                XPathValue c = coerceSingleItem(item, isNumericType, isIntegerSubtype, baseType, def);
+                if (c != item) {
+                    changed = true;
+                }
+                coerced.add(c);
+            }
+            if (changed) {
+                return new XPathSequence(coerced);
+            }
+            return value;
+        }
+        return coerceSingleItem(value, isNumericType, isIntegerSubtype, baseType, def);
+    }
+
+    private XPathValue coerceSingleItem(XPathValue item, boolean isNumericType,
+            boolean isIntegerSubtype, String baseType, AccumulatorDefinition def)
+            throws SAXException {
+        if (item instanceof XPathNode || item instanceof XPathNodeSet) {
+            if (isNumericType) {
+                double d = item.asNumber();
+                checkNumericCoercion(d, isIntegerSubtype, baseType, def);
+                if (isIntegerSubtype) {
+                    return XPathNumber.of((long) d);
+                }
+                return XPathNumber.of(d);
+            }
+            if ("xs:string".equals(baseType)) {
+                return XPathString.of(item.asString());
+            }
+            return item;
+        }
+        if (item instanceof XPathUntypedAtomic) {
+            if (isNumericType) {
+                double d = item.asNumber();
+                checkNumericCoercion(d, isIntegerSubtype, baseType, def);
+                if (isIntegerSubtype) {
+                    return XPathNumber.of((long) d);
+                }
+                return XPathNumber.of(d);
+            }
+            if ("xs:string".equals(baseType)) {
+                return XPathString.of(item.asString());
+            }
+            return item;
+        }
+        if (isNumericType) {
+            if (item instanceof XPathString) {
+                throw new SAXException("XPTY0004: Cannot convert string to " + baseType +
+                    " in accumulator " + def.getName());
+            }
+            double d = item.asNumber();
+            checkNumericCoercion(d, isIntegerSubtype, baseType, def);
+            if (isIntegerSubtype) {
+                long lv = (long) d;
+                if (lv != d) {
+                    return XPathNumber.of(lv);
+                }
+            }
+        }
+        return item;
+    }
+
+    /**
+     * Wraps coercion to catch errors and produce DeferredError values,
+     * matching the spec requirement that accumulator errors are deferred.
+     */
+    private XPathValue coerceWithDeferral(XPathValue value, AccumulatorDefinition def) {
+        if (value instanceof DeferredError) {
+            return value;
+        }
+        try {
+            return coerceToAsType(value, def);
+        } catch (Exception e) {
+            return new DeferredError(e);
+        }
+    }
+
+    private void checkNumericCoercion(double d, boolean isIntegerSubtype,
+            String baseType, AccumulatorDefinition def) throws SAXException {
+        if (Double.isInfinite(d) || Double.isNaN(d)) {
+            throw new SAXException("FOAR0001: Cannot convert " + d + " to " + baseType +
+                " in accumulator " + def.getName());
+        }
+    }
+
     private XPathValue evaluateRule(AccumulatorState state, AccumulatorRule rule,
                                      XPathNode node) throws SAXException {
+        String accName = state.getDefinition().getName();
+        if (!evaluatingAccumulators.add(accName)) {
+            throw new SAXException("XTDE3400: Cyclic dependency detected " +
+                "evaluating accumulator '" + accName + "'");
+        }
         try {
             TransformContext ruleContext = transformContext.withContextNode(node);
             ruleContext.getVariableScope().bind("value", state.getCurrentValue());
@@ -335,9 +558,22 @@ public final class AccumulatorManager {
             }
 
             return state.getCurrentValue();
+        } catch (SAXException e) {
+            String msg = e.getMessage();
+            if (msg != null && msg.startsWith("XTDE3400")) {
+                throw e;
+            }
+            return new DeferredError(e);
+        } catch (RuntimeException e) {
+            String msg = e.getMessage();
+            if (msg != null && msg.contains("XTDE3400")) {
+                throw e;
+            }
+            return new DeferredError(e);
         } catch (Exception e) {
-            throw new SAXException("Error evaluating accumulator rule for " +
-                                   state.getDefinition().getName() + ": " + e.getMessage(), e);
+            return new DeferredError(e);
+        } finally {
+            evaluatingAccumulators.remove(accName);
         }
     }
 
@@ -367,19 +603,26 @@ public final class AccumulatorManager {
      * @return the before value, or null if accumulator not found
      */
     public XPathValue getAccumulatorBefore(String name, XPathNode node) {
+        if (evaluatingAccumulators.contains(name)) {
+            throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
+                "evaluating accumulator '" + name + "'");
+        }
         if (node != null) {
             ensureDocumentTraversed(node);
             Map<XPathNode, XPathValue> nodeMap = beforeValues.get(name);
             if (nodeMap != null) {
                 XPathValue val = nodeMap.get(node);
                 if (val != null) {
+                    rethrowIfDeferred(val);
                     return val;
                 }
             }
         }
         AccumulatorState state = accumulators.get(name);
         if (state != null) {
-            return state.getBeforeValue();
+            XPathValue val = state.getBeforeValue();
+            rethrowIfDeferred(val);
+            return val;
         }
         return null;
     }
@@ -393,21 +636,42 @@ public final class AccumulatorManager {
      * @return the after value, or null if accumulator not found
      */
     public XPathValue getAccumulatorAfter(String name, XPathNode node) {
+        if (evaluatingAccumulators.contains(name)) {
+            throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
+                "evaluating accumulator '" + name + "'");
+        }
         if (node != null) {
             ensureDocumentTraversed(node);
             Map<XPathNode, XPathValue> nodeMap = afterValues.get(name);
             if (nodeMap != null) {
                 XPathValue val = nodeMap.get(node);
                 if (val != null) {
+                    rethrowIfDeferred(val);
                     return val;
                 }
             }
         }
         AccumulatorState state = accumulators.get(name);
         if (state != null) {
-            return state.getAfterValue();
+            XPathValue val = state.getAfterValue();
+            rethrowIfDeferred(val);
+            return val;
         }
         return null;
+    }
+
+    /**
+     * Re-throws a deferred error as a RuntimeException if the value is a DeferredError.
+     */
+    private void rethrowIfDeferred(XPathValue val) {
+        if (val instanceof DeferredError) {
+            Exception cause = ((DeferredError) val).cause;
+            String msg = cause.getMessage();
+            if (msg == null) {
+                msg = cause.getClass().getName();
+            }
+            throw new RuntimeException(msg, cause);
+        }
     }
 
     /**

@@ -519,7 +519,9 @@ public class GonzalezTransformHandler extends DefaultHandler
                     }
                 }
                 // Execute the named template with document root as context node
-                TransformContext templateContext = context.pushVariableScope();
+                // Set current template rule so xsl:next-match works if template has match pattern
+                TransformContext templateContext = context.pushVariableScope()
+                    .withCurrentTemplateRule(template);
                 XSLTNode body = template.getBody();
                 if (body != null) {
                     body.execute(templateContext, output);
@@ -535,7 +537,9 @@ public class GonzalezTransformHandler extends DefaultHandler
                 
                 if (xslInitialTemplate != null) {
                     // xsl:initial-template exists - invoke it with document root as context
-                    TransformContext templateContext = context.pushVariableScope();
+                    // Set current template rule so xsl:next-match works if template has match pattern
+                    TransformContext templateContext = context.pushVariableScope()
+                        .withCurrentTemplateRule(xslInitialTemplate);
                     XSLTNode body = xslInitialTemplate.getBody();
                     if (body != null) {
                         body.execute(templateContext, output);

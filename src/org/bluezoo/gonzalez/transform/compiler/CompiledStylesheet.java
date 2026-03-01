@@ -805,6 +805,10 @@ public final class CompiledStylesheet {
          */
         public Builder addModeDeclaration(ModeDeclaration mode) {
             String key = mode.getName() != null ? mode.getName() : "#default";
+            ModeDeclaration existing = modeDeclarations.get(key);
+            if (existing != null) {
+                mode = mode.mergeWith(existing);
+            }
             modeDeclarations.put(key, mode);
             return this;
         }
@@ -1041,10 +1045,15 @@ public final class CompiledStylesheet {
                 }
             }
             
-            // Add mode declarations - first definition wins
+            // Merge mode declarations - importing attributes take priority,
+            // but unset attributes are inherited from imports
             for (Map.Entry<String, ModeDeclaration> entry : imported.modeDeclarations.entrySet()) {
-                if (!modeDeclarations.containsKey(entry.getKey())) {
-                    modeDeclarations.put(entry.getKey(), entry.getValue());
+                String key = entry.getKey();
+                ModeDeclaration existing = modeDeclarations.get(key);
+                if (existing == null) {
+                    modeDeclarations.put(key, entry.getValue());
+                } else {
+                    modeDeclarations.put(key, existing.mergeWith(entry.getValue()));
                 }
             }
             

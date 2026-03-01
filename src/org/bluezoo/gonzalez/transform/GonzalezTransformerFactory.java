@@ -107,6 +107,9 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     /** Package resolver for xsl:use-package support (XSLT 3.0). */
     private PackageResolver packageResolver;
 
+    /** Static parameters to override at compile time (XSLT 3.0). */
+    private final Map<String, String> staticParameters = new HashMap<>();
+
     /**
      * Creates a new transformer factory.
      */
@@ -176,6 +179,11 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         
         // Create compiler with resolver and base URI
         StylesheetCompiler compiler = new StylesheetCompiler(resolver, baseUri);
+
+        // Pass static parameter overrides to the compiler
+        for (Map.Entry<String, String> entry : staticParameters.entrySet()) {
+            compiler.setStaticParameter(entry.getKey(), entry.getValue());
+        }
         
         // Configure package resolver for xsl:use-package support
         if (packageResolver != null) {
@@ -345,6 +353,24 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     public void setPackageResolver(PackageResolver resolver) {
         this.packageResolver = resolver;
+    }
+
+    /**
+     * Sets a static parameter that overrides a stylesheet's static xsl:param
+     * default value at compile time. Must be called before newTemplates().
+     *
+     * @param name the parameter local name
+     * @param value the parameter value as a string
+     */
+    public void setStaticParameter(String name, String value) {
+        staticParameters.put(name, value);
+    }
+
+    /**
+     * Clears all static parameter overrides.
+     */
+    public void clearStaticParameters() {
+        staticParameters.clear();
     }
 
     /**

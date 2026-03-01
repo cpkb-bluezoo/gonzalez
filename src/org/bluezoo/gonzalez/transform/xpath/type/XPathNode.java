@@ -290,4 +290,15 @@ public interface XPathNode {
         return getTypeLocalName() != null;
     }
 
+    /**
+     * Returns the original source node if this node was created by copy-of().
+     * Used by the AccumulatorManager to propagate accumulator values
+     * from source trees to copied trees.
+     *
+     * @return the original node, or null if this is not a copy
+     */
+    default XPathNode getCopySource() {
+        return null;
+    }
+
 }

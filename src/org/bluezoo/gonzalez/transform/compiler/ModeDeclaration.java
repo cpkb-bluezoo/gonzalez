@@ -147,6 +147,8 @@ public final class ModeDeclaration {
     private final String useAccumulators;
     private final boolean typed;
     private final boolean warning;
+    private final boolean onNoMatchExplicit;
+    private final boolean useAccumulatorsExplicit;
 
     /**
      * Creates a new mode declaration.
@@ -165,12 +167,43 @@ public final class ModeDeclaration {
                            String useAccumulators, boolean typed, boolean warning) {
         this.name = name;
         this.streamable = streamable;
+        this.onNoMatchExplicit = onNoMatch != null;
         this.onNoMatch = onNoMatch != null ? onNoMatch : OnNoMatch.TEXT_ONLY_COPY;
         this.onMultipleMatch = onMultipleMatch != null ? onMultipleMatch : OnMultipleMatch.USE_LAST;
         this.visibility = visibility != null ? visibility : Visibility.PUBLIC;
+        this.useAccumulatorsExplicit = useAccumulators != null;
         this.useAccumulators = useAccumulators;
         this.typed = typed;
         this.warning = warning;
+    }
+
+    /**
+     * Returns true if on-no-match was explicitly specified.
+     */
+    public boolean isOnNoMatchExplicit() {
+        return onNoMatchExplicit;
+    }
+
+    /**
+     * Returns true if use-accumulators was explicitly specified.
+     */
+    public boolean isUseAccumulatorsExplicit() {
+        return useAccumulatorsExplicit;
+    }
+
+    /**
+     * Merges this mode declaration with an imported one.
+     * Explicitly-set attributes on this declaration take priority;
+     * unset attributes are inherited from the imported declaration.
+     */
+    public ModeDeclaration mergeWith(ModeDeclaration imported) {
+        OnNoMatch mergedOnNoMatch = this.onNoMatchExplicit
+            ? this.onNoMatch : imported.onNoMatch;
+        String mergedUseAccumulators = this.useAccumulatorsExplicit
+            ? this.useAccumulators : imported.useAccumulators;
+        return new ModeDeclaration(this.name, this.streamable,
+            mergedOnNoMatch, this.onMultipleMatch, this.visibility,
+            mergedUseAccumulators, this.typed, this.warning);
     }
 
     /**

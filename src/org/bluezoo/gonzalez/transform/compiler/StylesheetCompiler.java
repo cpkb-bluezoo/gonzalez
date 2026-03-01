@@ -236,6 +236,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     
     // Static variables (XSLT 3.0): evaluated at compile time, available in use-when
     private final Map<String, XPathValue> staticVariables = new HashMap<>();
+
+    // External static parameter overrides (set before compilation)
+    private final Map<String, String> staticParameterOverrides = new HashMap<>();
     
     // Simplified stylesheet: root element is a literal result element with xsl:version attribute
     // Per XSLT 1.0 Section 2.3: equivalent to xsl:stylesheet containing template match="/"
@@ -565,6 +568,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      */
     public void setPackageResolver(PackageResolver resolver) {
         this.packageResolver = resolver;
+    }
+
+    /**
+     * Sets an external static parameter override. When the compiler encounters
+     * an xsl:param with static="yes" and a matching name, this value is used
+     * instead of the default select expression.
+     *
+     * @param name the parameter local name
+     * @param value the string value to use
+     */
+    public void setStaticParameter(String name, String value) {
+        staticParameterOverrides.put(name, value);
     }
 
     /**
@@ -2494,8 +2509,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         XPathExpression initialValue = compileExpression(initialValueStr);
         String asType = ctx.attributes.get("as");
         String streamableAttr = resolveStaticShadowAttribute(ctx, "streamable");
-        // Only validate if we have a non-shadow attribute (shadow attrs may resolve dynamically)
-        if (!ctx.hasShadowAttribute("streamable")) {
+        if (streamableAttr != null && !streamableAttr.isEmpty()) {
             validateYesOrNo("xsl:accumulator", "streamable", streamableAttr);
         }
         boolean streamable = !"no".equals(streamableAttr);  // Default is yes
@@ -4879,8 +4893,14 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         if (isStatic && isTopLevel) {
             // Static param: evaluate at compile time and store for use-when
-            // Use the element's base URI for static-base-uri()
-            XPathValue staticValue = evaluateStaticExpression(select, paramName.getLocalName(), ctx.baseURI);
+            // Check for external override first
+            String overrideSelect = staticParameterOverrides.get(paramName.getLocalName());
+            if (overrideSelect == null) {
+                overrideSelect = staticParameterOverrides.get(name);
+            }
+            String effectiveSelect = overrideSelect != null ? overrideSelect : select;
+            XPathValue staticValue = evaluateStaticExpression(effectiveSelect,
+                    paramName.getLocalName(), ctx.baseURI);
             staticVariables.put(paramName.getLocalName(), staticValue);
             // Add as global variable with pre-computed static value
             try {
@@ -5465,6 +5485,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String typeValue = ctx.attributes.get("type");
         String validationValue = ctx.attributes.get("validation");
         String copyNamespaces = ctx.attributes.get("copy-namespaces");
+        String copyAccumulatorsAttr = resolveStaticShadowAttribute(ctx, "copy-accumulators");
         
         if (select == null) {
             throw new SAXException("xsl:copy-of requires select attribute");
@@ -5520,8 +5541,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
+        boolean copyAccumulators = "yes".equals(copyAccumulatorsAttr)
+                || "true".equals(copyAccumulatorsAttr)
+                || "1".equals(copyAccumulatorsAttr);
+
         return new CopyOfNode(compileExpression(select), typeNamespaceURI, typeLocalName, 
-                              validation, copyNs, copyNamespacesAvt);
+                              validation, copyNs, copyNamespacesAvt, copyAccumulators);
     }
 
     private XSLTNode compileSequence(ElementContext ctx) throws SAXException {

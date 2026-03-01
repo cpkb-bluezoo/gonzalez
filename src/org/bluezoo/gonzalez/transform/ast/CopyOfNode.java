@@ -51,24 +51,32 @@ public class CopyOfNode extends XSLTInstruction {
     private final ValidationMode validation;
     private final boolean copyNamespaces;          // Static value (when no AVT)
     private final AttributeValueTemplate copyNamespacesAvt;  // AVT (XSLT 3.0 shadow attribute)
+    private final boolean copyAccumulators;
     
     public CopyOfNode(XPathExpression selectExpr) { 
-        this(selectExpr, null, null, null, true, null);
+        this(selectExpr, null, null, null, true, null, false);
     }
     
     public CopyOfNode(XPathExpression selectExpr, String typeNamespaceURI, String typeLocalName,
                ValidationMode validation, boolean copyNamespaces) {
-        this(selectExpr, typeNamespaceURI, typeLocalName, validation, copyNamespaces, null);
+        this(selectExpr, typeNamespaceURI, typeLocalName, validation, copyNamespaces, null, false);
     }
     
     public CopyOfNode(XPathExpression selectExpr, String typeNamespaceURI, String typeLocalName,
                ValidationMode validation, boolean copyNamespaces, AttributeValueTemplate copyNamespacesAvt) {
+        this(selectExpr, typeNamespaceURI, typeLocalName, validation, copyNamespaces, copyNamespacesAvt, false);
+    }
+    
+    public CopyOfNode(XPathExpression selectExpr, String typeNamespaceURI, String typeLocalName,
+               ValidationMode validation, boolean copyNamespaces, AttributeValueTemplate copyNamespacesAvt,
+               boolean copyAccumulators) {
         this.selectExpr = selectExpr;
         this.typeNamespaceURI = typeNamespaceURI;
         this.typeLocalName = typeLocalName;
         this.validation = validation;
         this.copyNamespaces = copyNamespaces;
         this.copyNamespacesAvt = copyNamespacesAvt;
+        this.copyAccumulators = copyAccumulators;
     }
     
     @Override public String getInstructionName() { return "copy-of"; }
@@ -109,7 +117,6 @@ public class CopyOfNode extends XSLTInstruction {
             } else if (result instanceof XPathNodeSet) {
                 XPathNodeSet nodeSet = (XPathNodeSet) result;
                 for (XPathNode node : nodeSet.getNodes()) {
-                    // depth=0 means this is a directly selected node
                     deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
                 }
             } else if (result instanceof XPathArray) {

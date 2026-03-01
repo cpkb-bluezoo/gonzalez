@@ -482,11 +482,19 @@ public class XSLTConformanceTest {
             } else if ("param".equals(localName) && inTest) {
                 String paramName = attrs.getValue("name");
                 String paramSelect = attrs.getValue("select");
+                String paramStatic = attrs.getValue("static");
                 if (paramName != null && paramSelect != null && currentTest != null) {
-                    if (currentTest.stylesheetParams == null) {
-                        currentTest.stylesheetParams = new LinkedHashMap<>();
+                    if ("yes".equals(paramStatic)) {
+                        if (currentTest.staticParams == null) {
+                            currentTest.staticParams = new LinkedHashMap<>();
+                        }
+                        currentTest.staticParams.put(paramName, paramSelect);
+                    } else {
+                        if (currentTest.stylesheetParams == null) {
+                            currentTest.stylesheetParams = new LinkedHashMap<>();
+                        }
+                        currentTest.stylesheetParams.put(paramName, paramSelect);
                     }
-                    currentTest.stylesheetParams.put(paramName, paramSelect);
                 }
             } else if ("initial-template".equals(localName) && inTest) {
                 initialTemplate = attrs.getValue("name");
@@ -711,6 +719,14 @@ public class XSLTConformanceTest {
                 factory.setPackageResolver(resolver);
             } else {
                 factory.setPackageResolver(null);
+            }
+
+            // Set static parameters before compilation
+            factory.clearStaticParameters();
+            if (testCase.staticParams != null) {
+                for (Map.Entry<String, String> entry : testCase.staticParams.entrySet()) {
+                    factory.setStaticParameter(entry.getKey(), entry.getValue());
+                }
             }
 
             // Compile stylesheet - use FileChannel for NIO-native input
@@ -1038,6 +1054,7 @@ public class XSLTConformanceTest {
         String expectedError;
         Map<String, String> expectedResultDocuments;
         Map<String, String> stylesheetParams;
+        Map<String, String> staticParams;
         Map<String, File> packages;
         String specValue;
 
