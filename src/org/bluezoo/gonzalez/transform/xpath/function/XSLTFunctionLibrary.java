@@ -427,6 +427,36 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     throw new XPathException("Invalid xs:hexBinary: " + value);
                 }
                 return XPathString.of(hex.toUpperCase());
+            case "NMTOKENS":
+            case "IDREFS":
+            case "ENTITIES":
+                // List types: split whitespace-separated value into a sequence
+                String listValue = value.trim();
+                if (listValue.isEmpty()) {
+                    return XPathSequence.EMPTY;
+                }
+                List<XPathValue> listItems = new ArrayList<>();
+                int listStart = 0;
+                int listLen = listValue.length();
+                while (listStart < listLen) {
+                    while (listStart < listLen && Character.isWhitespace(listValue.charAt(listStart))) {
+                        listStart++;
+                    }
+                    if (listStart >= listLen) {
+                        break;
+                    }
+                    int listEnd = listStart;
+                    while (listEnd < listLen && !Character.isWhitespace(listValue.charAt(listEnd))) {
+                        listEnd++;
+                    }
+                    String token = listValue.substring(listStart, listEnd);
+                    listItems.add(XPathString.of(token));
+                    listStart = listEnd;
+                }
+                if (listItems.size() == 1) {
+                    return listItems.get(0);
+                }
+                return XPathSequence.fromList(listItems);
             case "normalizedString":
             case "token":
             case "language":

@@ -1665,7 +1665,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 
             case "template":
                 // XTSE0010: xsl:template must be a top-level element
-                if (!isTopLevel()) {
+                // Also allowed inside xsl:override (within xsl:use-package)
+                if (!isTopLevel() && !isInsideOverride()) {
                     throw new SAXException("XTSE0010: xsl:template is only allowed at the top level");
                 }
                 processTemplateElement(ctx);
@@ -2439,6 +2440,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         XPathExpression initialValue = compileExpression(initialValueStr);
         String asType = ctx.attributes.get("as");
         String streamableAttr = resolveStaticShadowAttribute(ctx, "streamable");
+        // Only validate if we have a non-shadow attribute (shadow attrs may resolve dynamically)
+        if (!ctx.hasShadowAttribute("streamable")) {
+            validateYesOrNo("xsl:accumulator", "streamable", streamableAttr);
+        }
         boolean streamable = !"no".equals(streamableAttr);  // Default is yes
         
         AccumulatorDefinition.Builder accBuilder = new AccumulatorDefinition.Builder()
@@ -2448,11 +2453,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             .asType(asType);
         
         // Process accumulator-rule children
+        int ruleCount = 0;
         for (XSLTNode child : ctx.children) {
             if (child instanceof AccumulatorRuleNode) {
                 AccumulatorRuleNode ruleNode = (AccumulatorRuleNode) child;
                 accBuilder.addRule(ruleNode.toRule());
+                ruleCount++;
             }
+        }
+        
+        // XTSE0010: accumulator must have at least one accumulator-rule
+        if (ruleCount == 0) {
+            throw new SAXException("XTSE0010: xsl:accumulator must have at least one xsl:accumulator-rule child");
         }
         
         builder.addAccumulator(accBuilder.build());
@@ -2462,6 +2474,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * Processes an xsl:mode declaration (XSLT 3.0).
      */
     private void processModeDeclaration(ElementContext ctx) throws SAXException {
+        // XTSE0010: xsl:mode must be empty
+        validateEmptyElement(ctx, "xsl:mode");
+        
         String name = ctx.attributes.get("name");
         String streamableAttr = ctx.attributes.get("streamable");
         String onNoMatchAttr = ctx.attributes.get("on-no-match");
@@ -2470,6 +2485,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String useAccumulators = ctx.attributes.get("use-accumulators");
         String typedAttr = ctx.attributes.get("typed");
         String warningOnNoMatch = ctx.attributes.get("warning-on-no-match");
+        String warningOnMultipleMatch = ctx.attributes.get("warning-on-multiple-match");
+        
+        // XTSE0020: validate boolean attributes
+        validateYesOrNo("xsl:mode", "streamable", streamableAttr);
+        validateYesOrNo("xsl:mode", "typed", typedAttr);
+        validateYesOrNo("xsl:mode", "warning-on-no-match", warningOnNoMatch);
+        validateYesOrNo("xsl:mode", "warning-on-multiple-match", warningOnMultipleMatch);
         
         // XTSE0545: detect conflicting mode declarations at same import precedence
         String modeKey = name != null ? name : "#default";
@@ -2520,7 +2542,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         importsAllowed = false;
         ensurePrecedenceAssigned();  // Assign precedence after all imports are processed
         
-        String name = ctx.attributes.get("name");
+        // Check shadow attribute first (_name="{...}"), then regular name
+        String name = resolveStaticShadowAttribute(ctx, "name");
+        if (name == null || name.isEmpty()) {
+            name = ctx.attributes.get("name");
+        }
         if (name == null || name.isEmpty()) {
             throw new SAXException("xsl:function requires name attribute");
         }
@@ -2536,6 +2562,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         String asType = ctx.attributes.get("as"); // Optional return type
         String cacheAttr = ctx.attributes.get("cache"); // XSLT 3.0 caching
+        String overrideExtAttr = ctx.attributes.get("override-extension-function");
+        String identitySensitiveAttr = ctx.attributes.get("identity-sensitive");
+        validateYesOrNo("xsl:function", "cache", cacheAttr);
+        validateYesOrNo("xsl:function", "override-extension-function", overrideExtAttr);
+        validateYesOrNo("xsl:function", "identity-sensitive", identitySensitiveAttr);
         boolean cached = "yes".equals(cacheAttr) || "true".equals(cacheAttr);
         
         // Extract parameters from children
@@ -2968,6 +2999,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
     
     /**
+     * Checks if the current element is inside an xsl:override context.
+     * xsl:override children (template, function, variable, etc.) should be
+     * treated as top-level declarations for compilation purposes.
+     */
+    private boolean isInsideOverride() {
+        if (elementStack.isEmpty()) {
+            return false;
+        }
+        ElementContext parent = elementStack.peek();
+        if (XSLT_NS.equals(parent.namespaceURI) && "override".equals(parent.localName)) {
+            return true;
+        }
+        return false;
+    }
+    
+    /**
      * Validates that an instruction is not used at the top level of the stylesheet.
      * XTSE0010: Many XSLT instructions are only allowed within a sequence constructor.
      * @param elementName the local name of the XSLT element
@@ -3015,8 +3062,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * stylesheet.
      */
     private void processImport(ElementContext ctx) throws SAXException {
-        // Check that imports are still allowed (must be at top of stylesheet)
-        if (!importsAllowed) {
+        // In XSLT 1.0/2.0, imports must appear before other top-level elements.
+        // XSLT 3.0 removed this restriction (section 3.10.2).
+        if (!importsAllowed && stylesheetVersion < 3.0) {
             throw new SAXException("xsl:import must appear before all other " +
                 "elements in the stylesheet (except other xsl:import elements)");
         }
@@ -3780,6 +3828,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             } else if (child instanceof SortSpecNode) {
                 // XTSE0010: xsl:sort not allowed directly in template
                 throw new SAXException("XTSE0010: xsl:sort is not allowed directly in xsl:template");
+            } else if (child instanceof ContextItemDeclaration) {
+                // XSLT 3.0: xsl:context-item is allowed in the preamble (before/with params)
+                bodyNodes.add(child);
             } else {
                 // Only non-whitespace content counts as "found non-param" for ordering check
                 if (!isWhitespaceText) {
@@ -4028,11 +4079,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             return qname;
         }
         
-        int colonPos = qname.indexOf(':');
+        // Trim whitespace (names may have surrounding spaces)
+        String trimmedQname = qname.trim();
+        
+        // Handle EQName syntax: Q{uri}localname (XSLT 3.0)
+        if (trimmedQname.startsWith("Q{")) {
+            int closeBrace = trimmedQname.indexOf('}');
+            if (closeBrace >= 2) {
+                String uri = trimmedQname.substring(2, closeBrace);
+                String localPart = trimmedQname.substring(closeBrace + 1);
+                if (checkReserved && isReservedNamespace(uri)) {
+                    if (!(XSLT_NS.equals(uri) && "initial-template".equals(localPart) && stylesheetVersion >= 2.0)) {
+                        throw new SAXException("XTSE0080: Reserved namespace '" + uri + 
+                            "' cannot be used in the name '" + qname + "'");
+                    }
+                }
+                return "{" + uri + "}" + localPart;
+            }
+        }
+        
+        int colonPos = trimmedQname.indexOf(':');
         if (colonPos > 0) {
             // Prefixed name - expand to Clark notation
-            String prefix = qname.substring(0, colonPos);
-            String localName = qname.substring(colonPos + 1);
+            String prefix = trimmedQname.substring(0, colonPos);
+            String localName = trimmedQname.substring(colonPos + 1);
             String uri = resolve(prefix);
             if (uri != null && !uri.isEmpty()) {
                 // XTSE0080: Check for reserved namespaces in component names
@@ -4050,7 +4120,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         // Unprefixed - return as-is (no namespace)
-        return qname;
+        return trimmedQname;
     }
     
     /**
@@ -4278,6 +4348,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * Expands an attribute set name, optionally checking for reserved namespaces.
      */
     private String expandAttributeSetName(String name, Map<String, String> namespaceBindings, boolean checkReserved) throws SAXException {
+        // Handle EQName syntax: Q{uri}localname (XSLT 3.0)
+        if (name.startsWith("Q{")) {
+            int closeBrace = name.indexOf('}');
+            if (closeBrace >= 2) {
+                String uri = name.substring(2, closeBrace);
+                String localPart = name.substring(closeBrace + 1);
+                if (checkReserved && isReservedNamespace(uri)) {
+                    throw new SAXException("XTSE0080: Reserved namespace '" + uri + 
+                        "' cannot be used in the attribute set name '" + name + "'");
+                }
+                return "{" + uri + "}" + localPart;
+            }
+        }
+        
         int colonIdx = name.indexOf(':');
         if (colonIdx > 0) {
             String prefix = name.substring(0, colonIdx);
@@ -4594,6 +4678,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String staticAttr = ctx.attributes.get("static");
         String tunnelAttr = ctx.attributes.get("tunnel");
         String requiredAttr = ctx.attributes.get("required");  // XSLT 2.0+
+        validateYesOrNo("xsl:param", "tunnel", tunnelAttr);
+        validateYesOrNo("xsl:param", "required", requiredAttr);
+        validateYesOrNo("xsl:param", "static", staticAttr);
         // XSLT 2.0 uses "yes"/"no", XSLT 3.0 also allows "true"/"false"
         String tunnelVal = tunnelAttr != null ? tunnelAttr.trim() : null;
         boolean tunnel = "yes".equals(tunnelVal) || "true".equals(tunnelVal) || "1".equals(tunnelVal);
@@ -4611,6 +4698,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (parent != null && XSLT_NS.equals(parent.namespaceURI) && "function".equals(parent.localName)) {
                 throw new SAXException("XTSE0020: tunnel='yes' is not allowed on a function parameter");
             }
+        }
+        
+        // XTSE0010: required param must not have select attribute or content
+        if (required && select != null) {
+            throw new SAXException("XTSE0010: A required parameter must not have a select attribute: " + name);
+        }
+        if (required && !ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
+            throw new SAXException("XTSE0010: A required parameter must not have content: " + name);
+        }
+        
+        // XTSE0010: static param must not have content (sequence constructor)
+        boolean isStaticCheck = isStaticValue(staticAttr);
+        if (isStaticCheck && !ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
+            throw new SAXException("XTSE0010: A static parameter must not have content (use select attribute): " + name);
         }
         
         // Parse QName with resolved namespace
@@ -4763,7 +4864,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     
     private XSLTNode compileValueOf(ElementContext ctx) throws SAXException {
         String select = ctx.attributes.get("select");
-        boolean disableEscaping = "yes".equals(ctx.attributes.get("disable-output-escaping"));
+        String doeAttr = ctx.attributes.get("disable-output-escaping");
+        validateYesOrNo("xsl:value-of", "disable-output-escaping", doeAttr);
+        boolean disableEscaping = "yes".equals(doeAttr);
         // XSLT 2.0+ separator attribute (default is single space for sequences)
         String separator = ctx.attributes.get("separator");
         // In XSLT 2.0+, value-of outputs all items; in 1.0, only the first
@@ -4810,7 +4913,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private XSLTNode compileText(ElementContext ctx) throws SAXException {
-        boolean disableEscaping = "yes".equals(ctx.attributes.get("disable-output-escaping"));
+        String doeTextAttr = ctx.attributes.get("disable-output-escaping");
+        validateYesOrNo("xsl:text", "disable-output-escaping", doeTextAttr);
+        boolean disableEscaping = "yes".equals(doeTextAttr);
 
         // XSLT 3.0: when expand-text is active, xsl:text content may contain
         // TVT nodes (ValueOfNode, SequenceNode) alongside LiteralText
@@ -6062,6 +6167,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         String compositeStr = ctx.attributes.get("composite");
+        validateYesOrNo("xsl:for-each-group", "composite", compositeStr);
         boolean isComposite = "yes".equals(compositeStr) || "1".equals(compositeStr) || "true".equals(compositeStr);
 
         if (groupBy != null && !groupBy.isEmpty()) {
@@ -6530,6 +6636,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String select = ctx.attributes.get("select");
         String asType = ctx.attributes.get("as"); // XSLT 2.0+: type declaration
         String tunnelAttr = ctx.attributes.get("tunnel");
+        validateYesOrNo("xsl:with-param", "tunnel", tunnelAttr);
         // XSLT 2.0 uses "yes"/"no", XSLT 3.0 also allows "true"/"false"
         String tunnelVal = tunnelAttr != null ? tunnelAttr.trim() : null;
         boolean tunnel = "yes".equals(tunnelVal) || "true".equals(tunnelVal) || "1".equals(tunnelVal);
@@ -6681,17 +6788,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (terminateValue.contains("{") && terminateValue.contains("}")) {
                 terminateAvt = parseAvt(terminateValue);
             } else {
-                // Static value - normalize and validate at compile time
-                // XSLT 3.0 allows yes/no/true/false/1/0, case-insensitive with whitespace
-                String normalized = terminateValue.trim().toLowerCase();
-                if ("yes".equals(normalized) || "true".equals(normalized) || "1".equals(normalized)) {
+                // Static value - validate at compile time (case-sensitive)
+                validateYesOrNo("xsl:message", "terminate", terminateValue);
+                String trimmed = terminateValue.trim();
+                if ("yes".equals(trimmed) || "true".equals(trimmed) || "1".equals(trimmed)) {
                     terminateStatic = true;
-                } else if ("no".equals(normalized) || "false".equals(normalized) || "0".equals(normalized) || normalized.isEmpty()) {
-                    terminateStatic = false;
                 } else {
-                    // XTSE0020: Invalid value for terminate attribute
-                    throw new SAXException("XTSE0020: Invalid value for terminate attribute: '" + 
-                                          terminateValue + "'. Must be 'yes' or 'no'");
+                    terminateStatic = false;
                 }
             }
         }

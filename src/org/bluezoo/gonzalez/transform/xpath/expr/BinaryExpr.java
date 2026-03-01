@@ -575,11 +575,11 @@ public final class BinaryExpr implements Expr {
                 result = leftNum / rightNum;
                 break;
             case IDIV:
-                // XPath 2.0 integer division: rounds towards zero (truncates)
+                // FOAR0001: integer division by zero (idiv is XPath 2.0+ only)
                 if (rightNum == 0.0) {
-                    throw new XPathException("Division by zero in idiv");
+                    throw new XPathException("FOAR0001: Division by zero");
                 }
-                result = Math.floor(leftNum / rightNum);
+                result = (double) ((long) (leftNum / rightNum));
                 break;
             case MOD:
                 result = leftNum % rightNum;
@@ -589,6 +589,23 @@ public final class BinaryExpr implements Expr {
         }
 
         return XPathNumber.of(result);
+    }
+    
+    /**
+     * Checks if both operands are integer or decimal (not float/double).
+     * Per XPath 2.0+ spec, division by zero raises FOAR0001 for integer/decimal
+     * but returns INF/-INF/NaN for float/double (IEEE 754 semantics).
+     * In XPath 1.0, all division follows IEEE 754 (no FOAR0001 error).
+     */
+    private boolean isIntegerOrDecimalOperand(XPathValue leftVal, XPathValue rightVal) {
+        if (leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
+            XPathNumber leftNum = (XPathNumber) leftVal;
+            XPathNumber rightNum = (XPathNumber) rightVal;
+            if (leftNum.isInteger() && rightNum.isInteger()) {
+                return true;
+            }
+        }
+        return false;
     }
     
     private XPathValue evaluateDateTimeArithmetic(XPathValue leftVal, XPathValue rightVal) throws XPathException {
