@@ -51,6 +51,10 @@ abstract class AbstractPattern implements Pattern {
         this.predicateStr = predicateStr;
     }
 
+    String getPredicateStr() {
+        return predicateStr;
+    }
+
     /**
      * Subclass-specific match logic (without predicate evaluation).
      * Called by {@link #matchesWithTarget} before applying the predicate.

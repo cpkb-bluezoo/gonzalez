@@ -88,8 +88,16 @@ final class PatternParser {
 
     private static Pattern parseUnion(XPathLexer lexer, String patternStr,
                                        String prepared, double version) {
+        return parseUnion(lexer, patternStr, prepared, version, false);
+    }
+
+    private static Pattern parseUnion(XPathLexer lexer, String patternStr,
+                                       String prepared, double version,
+                                       boolean preserveSteps) {
         List<Pattern> alternatives = new ArrayList<>();
-        alternatives.add(parseIntersect(lexer, patternStr, prepared, version));
+        alternatives.add(
+            parseIntersect(lexer, patternStr, prepared, version,
+                           preserveSteps));
 
         while (lexer.current() == XPathToken.PIPE ||
                lexer.current() == XPathToken.UNION) {
@@ -98,7 +106,8 @@ final class PatternParser {
             }
             lexer.advance();
             alternatives.add(
-                parseIntersect(lexer, patternStr, prepared, version));
+                parseIntersect(lexer, patternStr, prepared, version,
+                               preserveSteps));
         }
 
         if (alternatives.size() == 1) {
@@ -109,24 +118,30 @@ final class PatternParser {
     }
 
     private static Pattern parseIntersect(XPathLexer lexer, String patternStr,
-                                           String prepared, double version) {
-        Pattern left = parseExcept(lexer, patternStr, prepared, version);
+                                           String prepared, double version,
+                                           boolean preserveSteps) {
+        Pattern left = parseExcept(lexer, patternStr, prepared, version,
+                                   preserveSteps);
 
         while (version >= 3.0 && lexer.current() == XPathToken.INTERSECT) {
             lexer.advance();
-            Pattern right = parseExcept(lexer, patternStr, prepared, version);
+            Pattern right = parseExcept(lexer, patternStr, prepared, version,
+                                        preserveSteps);
             left = new IntersectPattern(patternStr, left, right);
         }
         return left;
     }
 
     private static Pattern parseExcept(XPathLexer lexer, String patternStr,
-                                        String prepared, double version) {
-        Pattern left = parseSingle(lexer, patternStr, prepared, version);
+                                        String prepared, double version,
+                                        boolean preserveSteps) {
+        Pattern left = parseSingle(lexer, patternStr, prepared, version,
+                                   preserveSteps);
 
         while (version >= 3.0 && lexer.current() == XPathToken.EXCEPT) {
             lexer.advance();
-            Pattern right = parseSingle(lexer, patternStr, prepared, version);
+            Pattern right = parseSingle(lexer, patternStr, prepared, version,
+                                        preserveSteps);
             left = new ExceptPattern(patternStr, left, right);
         }
         return left;
@@ -136,6 +151,12 @@ final class PatternParser {
 
     private static Pattern parseSingle(XPathLexer lexer, String patternStr,
                                         String prepared, double version) {
+        return parseSingle(lexer, patternStr, prepared, version, false);
+    }
+
+    private static Pattern parseSingle(XPathLexer lexer, String patternStr,
+                                        String prepared, double version,
+                                        boolean preserveSteps) {
         XPathToken token = lexer.current();
 
         // XTSE0340: bare numeric literal is not a valid pattern
@@ -257,7 +278,8 @@ final class PatternParser {
         }
 
         // Path pattern (single step or multi-step)
-        return parsePathPattern(lexer, patternStr, prepared, version);
+        return parsePathPatternInner(lexer, patternStr, prepared, version,
+                                     preserveSteps, false);
     }
 
     // ---- Path pattern: step / step // step ----
@@ -266,6 +288,28 @@ final class PatternParser {
                                              String patternStr,
                                              String prepared,
                                              double version) {
+        return parsePathPatternInner(lexer, patternStr, prepared, version,
+                                     false, false);
+    }
+
+    /**
+     * Core relative path pattern parser.
+     *
+     * @param preserveSteps if true, single-step patterns are returned as
+     *        PathPattern rather than collapsing to NameTestPattern (used
+     *        inside parenthesized groups to preserve axis info)
+     * @param isAbsolute whether this path starts from the document root
+     */
+    private static Pattern parsePathPatternInner(XPathLexer lexer,
+            String patternStr, String prepared, double version,
+            boolean preserveSteps, boolean isAbsolute) {
+        // Parenthesized group at the start of a relative path: (a|b)/...
+        if (lexer.current() == XPathToken.LPAREN && version >= 3.0) {
+            List<PatternStep> emptyPrefix = new ArrayList<>();
+            return expandParenthesizedStep(lexer, patternStr, prepared,
+                version, emptyPrefix, Step.Axis.CHILD, isAbsolute);
+        }
+
         List<PatternStep> steps = new ArrayList<>();
         steps.add(parseStep(lexer, patternStr, prepared, Step.Axis.CHILD));
 
@@ -280,10 +324,17 @@ final class PatternParser {
                 nextAxis = Step.Axis.CHILD;
             }
             lexer.advance();
+
+            // Parenthesized group in step position: x/(a|b)/...
+            if (lexer.current() == XPathToken.LPAREN && version >= 3.0) {
+                return expandParenthesizedStep(lexer, patternStr, prepared,
+                    version, steps, nextAxis, isAbsolute);
+            }
+
             steps.add(parseStep(lexer, patternStr, prepared, nextAxis));
         }
 
-        if (!hasPath && steps.size() == 1) {
+        if (!hasPath && steps.size() == 1 && !preserveSteps) {
             PatternStep only = steps.get(0);
             double priority = computePriority(only);
             return new NameTestPattern(patternStr, only.predicateStr,
@@ -291,7 +342,7 @@ final class PatternParser {
         }
 
         PatternStep[] arr = steps.toArray(new PatternStep[0]);
-        return new PathPattern(patternStr, null, arr, false);
+        return new PathPattern(patternStr, null, arr, isAbsolute);
     }
 
     private static Pattern buildAbsolutePath(XPathLexer lexer,
@@ -302,6 +353,13 @@ final class PatternParser {
         List<PatternStep> steps = new ArrayList<>();
         Step.Axis firstAxis = isDoubleSlash ?
             Step.Axis.DESCENDANT : Step.Axis.CHILD;
+
+        // First step might be parenthesized: //(a|b)
+        if (lexer.current() == XPathToken.LPAREN && version >= 3.0) {
+            return expandParenthesizedStep(lexer, patternStr, prepared,
+                version, steps, firstAxis, true);
+        }
+
         steps.add(parseStep(lexer, patternStr, prepared, firstAxis));
 
         while (lexer.current() == XPathToken.SLASH ||
@@ -313,6 +371,13 @@ final class PatternParser {
                 nextAxis = Step.Axis.CHILD;
             }
             lexer.advance();
+
+            // Parenthesized group: /x/(a|b)/...
+            if (lexer.current() == XPathToken.LPAREN && version >= 3.0) {
+                return expandParenthesizedStep(lexer, patternStr, prepared,
+                    version, steps, nextAxis, true);
+            }
+
             steps.add(parseStep(lexer, patternStr, prepared, nextAxis));
         }
 
@@ -327,6 +392,220 @@ final class PatternParser {
         return new PathPattern(patternStr, null, arr, true);
     }
 
+    /**
+     * Handles a parenthesized group in step position within a path pattern.
+     * Expands patterns like {@code x/(a|b)/text()} into a union of
+     * complete paths: {@code x/a/text() | x/b/text()}.
+     *
+     * @param prefixSteps steps parsed before the parenthesized group
+     * @param parenAxis the axis inherited from the preceding / or //
+     * @param isAbsolute whether the path is absolute (starts with /)
+     */
+    private static Pattern expandParenthesizedStep(XPathLexer lexer,
+            String patternStr, String prepared, double version,
+            List<PatternStep> prefixSteps, Step.Axis parenAxis,
+            boolean isAbsolute) {
+        // Parse the parenthesized inner pattern, preserving step axes
+        lexer.advance(); // consume (
+        Pattern inner = parseUnion(lexer, patternStr, prepared, version,
+                                   true);
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+        }
+
+        // Optional predicates after the parenthesized group
+        String parenPred = null;
+        if (lexer.current() == XPathToken.LBRACKET) {
+            parenPred = extractAllPredicates(lexer, prepared);
+        }
+
+        // Parse any suffix steps (e.g. /text() after (a|b))
+        List<PatternStep> suffixSteps = new ArrayList<>();
+        while (lexer.current() == XPathToken.SLASH ||
+               lexer.current() == XPathToken.DOUBLE_SLASH) {
+            Step.Axis nextAxis;
+            if (lexer.current() == XPathToken.DOUBLE_SLASH) {
+                nextAxis = Step.Axis.DESCENDANT;
+            } else {
+                nextAxis = Step.Axis.CHILD;
+            }
+            lexer.advance();
+            suffixSteps.add(parseStep(lexer, patternStr, prepared, nextAxis));
+        }
+
+        // Apply predicates to the inner pattern if any
+        if (parenPred != null) {
+            inner = new PredicatedPattern(patternStr, parenPred, inner);
+        }
+
+        // Distribute prefix and suffix across inner alternatives
+        return distributePathSteps(patternStr, inner, prefixSteps,
+            suffixSteps, parenAxis, isAbsolute);
+    }
+
+    /**
+     * Distributes prefix/suffix path steps across a parenthesized pattern.
+     * For union patterns, creates expanded alternatives. For except and
+     * intersect, creates a contextual pattern that evaluates both arms
+     * relative to the same ancestor (simple expansion is incorrect for
+     * these operators).
+     */
+    private static Pattern distributePathSteps(String patternStr,
+            Pattern inner, List<PatternStep> prefix,
+            List<PatternStep> suffix, Step.Axis parenAxis,
+            boolean isAbsolute) {
+        // For union patterns, expand each alternative
+        if (inner instanceof UnionPattern) {
+            Pattern[] alts = ((UnionPattern) inner).getAlternatives();
+            Pattern[] expanded = new Pattern[alts.length];
+            for (int i = 0; i < alts.length; i++) {
+                expanded[i] = wrapAlternativeInPath(patternStr, alts[i],
+                    prefix, suffix, parenAxis, isAbsolute);
+            }
+            return new UnionPattern(patternStr, expanded);
+        }
+
+        // For except/intersect, both arms must be evaluated relative
+        // to the same ancestor context. Create a ParenStepPathPattern.
+        if (inner instanceof ExceptPattern) {
+            ExceptPattern ep = (ExceptPattern) inner;
+            return buildParenStepPattern(patternStr, prefix, suffix,
+                ep.getLeft(), ep.getRight(), true, parenAxis, isAbsolute);
+        }
+
+        if (inner instanceof IntersectPattern) {
+            IntersectPattern ip = (IntersectPattern) inner;
+            return buildParenStepPattern(patternStr, prefix, suffix,
+                ip.getLeft(), ip.getRight(), false, parenAxis, isAbsolute);
+        }
+
+        // Single pattern: wrap into a path
+        return wrapAlternativeInPath(patternStr, inner, prefix, suffix,
+            parenAxis, isAbsolute);
+    }
+
+    /**
+     * Builds a ParenStepPathPattern for except/intersect within a path.
+     */
+    private static Pattern buildParenStepPattern(String patternStr,
+            List<PatternStep> prefix, List<PatternStep> suffix,
+            Pattern leftArm, Pattern rightArm, boolean isExcept,
+            Step.Axis parenAxis, boolean isAbsolute) {
+        // Extract a single step from each arm
+        List<PatternStep> leftSteps = extractSteps(leftArm, parenAxis);
+        List<PatternStep> rightSteps = extractSteps(rightArm, parenAxis);
+
+        PatternStep leftStep;
+        if (!leftSteps.isEmpty()) {
+            leftStep = leftSteps.get(leftSteps.size() - 1);
+        } else {
+            leftStep = new PatternStep(ChildAxisAnyNodeTest.INSTANCE,
+                                        parenAxis, null);
+        }
+
+        PatternStep rightStep;
+        if (!rightSteps.isEmpty()) {
+            rightStep = rightSteps.get(rightSteps.size() - 1);
+        } else {
+            rightStep = new PatternStep(ChildAxisAnyNodeTest.INSTANCE,
+                                         parenAxis, null);
+        }
+
+        PatternStep[] prefixArr = prefix.toArray(new PatternStep[0]);
+        PatternStep[] suffixArr = suffix.toArray(new PatternStep[0]);
+
+        return new ParenStepPathPattern(patternStr, prefixArr, suffixArr,
+            leftStep, rightStep, isExcept, parenAxis, isAbsolute);
+    }
+
+    /**
+     * Wraps a single alternative pattern into a full path by combining
+     * prefix steps, the alternative's own steps, and suffix steps.
+     */
+    private static Pattern wrapAlternativeInPath(String patternStr,
+            Pattern alt, List<PatternStep> prefix,
+            List<PatternStep> suffix, Step.Axis parenAxis,
+            boolean isAbsolute) {
+        // Extract steps from the alternative
+        List<PatternStep> altSteps = extractSteps(alt, parenAxis);
+
+        // Build combined path: prefix + altSteps + suffix
+        List<PatternStep> combined = new ArrayList<>();
+        combined.addAll(prefix);
+        combined.addAll(altSteps);
+        combined.addAll(suffix);
+
+        if (combined.size() == 1 && !isAbsolute) {
+            PatternStep only = combined.get(0);
+            double priority = computePriority(only);
+            return new NameTestPattern(patternStr, only.predicateStr,
+                                       only.nodeTest, priority);
+        }
+
+        PatternStep[] arr = combined.toArray(new PatternStep[0]);
+        return new PathPattern(patternStr, null, arr, isAbsolute);
+    }
+
+    /**
+     * Extracts PatternStep(s) from a pattern for path combination.
+     * A NameTestPattern produces one step; a PathPattern produces its
+     * steps array; other types get wrapped as a single step.
+     */
+    private static List<PatternStep> extractSteps(Pattern pat,
+            Step.Axis defaultAxis) {
+        List<PatternStep> result = new ArrayList<>();
+
+        if (pat instanceof NameTestPattern) {
+            NameTestPattern ntp = (NameTestPattern) pat;
+            result.add(new PatternStep(ntp.getNodeTest(), defaultAxis,
+                                       ntp.getPredicateStr()));
+            return result;
+        }
+
+        if (pat instanceof PathPattern) {
+            PatternStep[] steps = ((PathPattern) pat).getSteps();
+            for (int i = 0; i < steps.length; i++) {
+                PatternStep s = steps[i];
+                // For the first step, use the inherited axis from the
+                // parenthesized context (e.g. // before the paren)
+                if (i == 0 && s.axis == Step.Axis.CHILD) {
+                    result.add(new PatternStep(s.nodeTest, defaultAxis,
+                                               s.predicateStr));
+                } else {
+                    result.add(s);
+                }
+            }
+            return result;
+        }
+
+        if (pat instanceof PredicatedPattern) {
+            PredicatedPattern pp = (PredicatedPattern) pat;
+            List<PatternStep> innerSteps = extractSteps(pp.getInner(),
+                                                         defaultAxis);
+            // Apply the predicate to the last step
+            if (!innerSteps.isEmpty()) {
+                int lastIdx = innerSteps.size() - 1;
+                PatternStep last = innerSteps.get(lastIdx);
+                String combinedPred = last.predicateStr;
+                String ppPred = pp.getPredicateStr();
+                if (combinedPred != null && ppPred != null) {
+                    combinedPred = "(" + combinedPred + ") and (" +
+                                   ppPred + ")";
+                } else if (ppPred != null) {
+                    combinedPred = ppPred;
+                }
+                innerSteps.set(lastIdx, new PatternStep(last.nodeTest,
+                    last.axis, combinedPred));
+            }
+            return innerSteps;
+        }
+
+        // Fallback: wrap the pattern's toString as a single element step
+        NodeTest nt = new ElementTest(null, null, null);
+        result.add(new PatternStep(nt, defaultAxis, null));
+        return result;
+    }
+
     // ---- Step parsing: axis + node-test + predicates ----
 
     private static PatternStep parseStep(XPathLexer lexer, String patternStr,
@@ -337,12 +616,15 @@ final class PatternParser {
         boolean explicitChild = false;
 
         // Explicit axis: child::, descendant::, self::, attribute::
-        // child:: is the default and should not override the context axis
-        // (e.g. //child::foo should keep DESCENDANT from //)
+        // child:: and self:: should not override the context axis from
+        // / or // — they only add a node test constraint. For example,
+        // //child::foo and //self::baz should keep DESCENDANT from //.
         if (token.isAxis()) {
             Step.Axis explicitAxis = mapAxis(token, patternStr);
             if (explicitAxis == Step.Axis.CHILD) {
                 explicitChild = true;
+            } else if (explicitAxis == Step.Axis.SELF) {
+                // self:: keeps the path axis; it's just a node test filter
             } else {
                 axis = explicitAxis;
             }
@@ -967,6 +1249,11 @@ final class PatternParser {
         String idArg = args.get(0).trim();
         String docVarName = null;
         if (args.size() > 1) {
+            if (version < 3.0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: 2-argument id() in patterns requires " +
+                    "XSLT 3.0: " + patternStr);
+            }
             String docArg = args.get(1).trim();
             if (docArg.startsWith("$")) {
                 docVarName = docArg.substring(1);

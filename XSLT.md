@@ -22,8 +22,8 @@ Current pass rates against the W3C XSLT 3.0 Conformance Test Suite:
 | Version | Tests | Passed | Rate |
 |---------|-------|--------|------|
 | XSLT 1.0 | 2,023 | 2,023 | 100.0% |
-| XSLT 2.0 | 4,729 | 4,323 | 91.4% |
-| XSLT 3.0 | 9,352 | 8,186 | 87.5% |
+| XSLT 2.0 | 4,729 | 4,326 | 91.5% |
+| XSLT 3.0 | 9,352 | 8,185 | 87.5% |
 
 ## Error Handling
 
