@@ -48,6 +48,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathTypedAtomic;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
@@ -575,8 +576,8 @@ public final class StringFunctions {
                 return XPathTypedAtomic.fromNode(stringValue, typeNs, typeLocal);
             }
             
-            // No type annotation - return untyped string
-            return XPathString.of(stringValue);
+            // Per XPath 2.0+, atomization of untyped nodes yields xs:untypedAtomic
+            return XPathUntypedAtomic.ofUntyped(stringValue);
         }
     };
 
@@ -1058,7 +1059,8 @@ public final class StringFunctions {
         if (typeLocal != null) {
             return XPathTypedAtomic.fromNode(stringValue, typeNs, typeLocal);
         }
-        return XPathString.of(stringValue);
+        // Per XPath 2.0+, atomization of untyped nodes yields xs:untypedAtomic
+        return XPathUntypedAtomic.ofUntyped(stringValue);
     }
 
     private static List<Integer> toIntList(XPathValue value) {

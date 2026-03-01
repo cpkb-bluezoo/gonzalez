@@ -99,6 +99,7 @@ import org.bluezoo.gonzalez.transform.ast.MessageNode;
 import org.bluezoo.gonzalez.transform.ast.NamespaceInstructionNode;
 import org.bluezoo.gonzalez.transform.ast.NextMatchNode;
 import org.bluezoo.gonzalez.transform.ast.NumberNode;
+import org.bluezoo.gonzalez.transform.ast.OnCompletionNode;
 import org.bluezoo.gonzalez.transform.ast.OnEmptyNode;
 import org.bluezoo.gonzalez.transform.ast.OnNonEmptyNode;
 import org.bluezoo.gonzalez.transform.ast.OtherwiseNode;
@@ -445,8 +446,87 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         StreamabilityAnalyzer analyzer = new StreamabilityAnalyzer();
         StreamabilityAnalyzer.StylesheetStreamability analysis = analyzer.analyze(stylesheet);
         stylesheet.setStreamabilityAnalysis(analysis);
+
+        // XTSE3430: Validate that templates in streamable modes are streamable
+        try {
+            validateStreamableModes(stylesheet, analysis);
+        } catch (SAXException e) {
+            throw new TransformerConfigurationException(e.getMessage(), e);
+        }
         
         return stylesheet;
+    }
+
+    /**
+     * XTSE3430: Validates that all templates in streamable modes are streamable.
+     * A template in a streamable mode must not use constructs that require
+     * full document buffering (FREE_RANGING).
+     */
+    private void validateStreamableModes(CompiledStylesheet stylesheet,
+                                          StreamabilityAnalyzer.StylesheetStreamability analysis)
+            throws SAXException {
+        Map<String, ModeDeclaration> modes = stylesheet.getModeDeclarations();
+        Map<TemplateRule, StreamabilityAnalyzer.TemplateStreamability> templateAnalysis =
+            analysis.getTemplateAnalysis();
+
+        for (Map.Entry<String, ModeDeclaration> modeEntry : modes.entrySet()) {
+            ModeDeclaration mode = modeEntry.getValue();
+            if (!mode.isStreamable()) {
+                continue;
+            }
+            String modeName = mode.getName();
+
+            // Check every template in this streamable mode
+            for (Map.Entry<TemplateRule, StreamabilityAnalyzer.TemplateStreamability> entry
+                    : templateAnalysis.entrySet()) {
+                TemplateRule template = entry.getKey();
+                String templateMode = template.getMode();
+
+                // Match default mode (null) to "#default" key, or named modes
+                boolean inThisMode;
+                if (modeName == null || "#default".equals(modeName)) {
+                    inThisMode = (templateMode == null || "#default".equals(templateMode));
+                } else {
+                    inThisMode = modeName.equals(templateMode);
+                }
+
+                if (!inThisMode) {
+                    continue;
+                }
+
+                StreamabilityAnalyzer.TemplateStreamability ts = entry.getValue();
+                if (ts.requiresDocumentBuffering()) {
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("XTSE3430: Template");
+                    String matchStr = template.getMatchPattern() != null
+                        ? template.getMatchPattern().toString() : null;
+                    if (matchStr != null) {
+                        sb.append(" matching '");
+                        sb.append(matchStr);
+                        sb.append("'");
+                    }
+                    String tName = template.getName();
+                    if (tName != null) {
+                        sb.append(" named '");
+                        sb.append(tName);
+                        sb.append("'");
+                    }
+                    sb.append(" in streamable mode");
+                    if (modeName != null && !"#default".equals(modeName)) {
+                        sb.append(" '");
+                        sb.append(modeName);
+                        sb.append("'");
+                    }
+                    sb.append(" is not streamable");
+                    List<String> reasons = ts.getBufferingReasons();
+                    if (!reasons.isEmpty()) {
+                        sb.append(": ");
+                        sb.append(reasons.get(0));
+                    }
+                    throw new SAXException(sb.toString());
+                }
+            }
+        }
     }
 
     /**
@@ -1859,7 +1939,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     throw new SAXException("XTSE3125: xsl:on-completion must not have " +
                         "both a select attribute and children");
                 }
-                return new SequenceNode(new ArrayList<>(ctx.children));
+                if (onCompSelect != null) {
+                    XPathExpression onCompExpr = compileExpression(onCompSelect);
+                    return new OnCompletionNode(onCompExpr);
+                }
+                return new OnCompletionNode(new SequenceNode(new ArrayList<>(ctx.children)));
                 
             case "fork":
                 validateNotTopLevel(ctx.localName);
@@ -6350,7 +6434,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (child instanceof ParamNode) {
                 ParamNode pn = (ParamNode) child;
                 params.add(new IterateNode.IterateParam(pn.getName(), pn.getSelectExpr()));
-            } else if (child.toString().contains("on-completion")) {
+            } else if (child instanceof OnCompletionNode) {
                 onCompletion = child;
             } else {
                 bodyNodes.add(child);

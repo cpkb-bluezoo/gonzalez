@@ -68,34 +68,93 @@ public class TryNode extends XSLTInstruction {
     }
     
     /**
-     * Extracts the error code from an exception message.
-     * Looks for patterns like "XTDE0540:" or just "XTDE0540" at the start.
+     * Extracts the error code from an exception, walking the cause chain.
+     * SAXExceptions often wrap the real exception with the error code.
      */
     private String extractErrorCode(Throwable e) {
-        String message = e.getMessage();
+        Throwable current = e;
+        while (current != null) {
+            String code = extractCodeFromMessage(current.getMessage());
+            if (code != null) {
+                return code;
+            }
+            // SAXException uses getException() rather than getCause()
+            Throwable next = null;
+            if (current instanceof SAXException) {
+                next = ((SAXException) current).getException();
+            }
+            if (next == null) {
+                next = current.getCause();
+            }
+            if (next == current) {
+                break;
+            }
+            current = next;
+        }
+        return null;
+    }
+
+    /**
+     * Extracts an error code from a single message string.
+     * Looks for patterns like "XTDE0540:" or "FORG0001:" anywhere in the message.
+     */
+    private String extractCodeFromMessage(String message) {
         if (message == null) {
             return null;
         }
-        
+
         // Look for error codes at the start: "XTDE0540: ..." or "XTDE0540 ..."
         int colonIdx = message.indexOf(':');
         int spaceIdx = message.indexOf(' ');
         int endIdx = -1;
-        
+
         if (colonIdx > 0 && colonIdx < 12) {
             endIdx = colonIdx;
         } else if (spaceIdx > 0 && spaceIdx < 12) {
             endIdx = spaceIdx;
         }
-        
+
         if (endIdx > 0) {
             String potential = message.substring(0, endIdx);
-            // Validate it looks like an error code (letters + digits)
-            if (potential.matches("[A-Z]{4}[0-9]{4}[a-z]*")) {
+            if (isErrorCode(potential)) {
                 return potential;
             }
         }
+
+        // Also scan the message for embedded error codes (e.g., "... FORG0001: ...")
+        int len = message.length();
+        for (int i = 0; i < len - 7; i++) {
+            char c = message.charAt(i);
+            if (c >= 'A' && c <= 'Z') {
+                int end = i + 8;
+                if (end <= len) {
+                    String candidate = message.substring(i, end);
+                    if (isErrorCode(candidate)) {
+                        return candidate;
+                    }
+                }
+            }
+        }
         return null;
+    }
+
+    private boolean isErrorCode(String s) {
+        if (s.length() < 8) {
+            return false;
+        }
+        for (int i = 0; i < 4; i++) {
+            char c = s.charAt(i);
+            if (c < 'A' || c > 'Z') {
+                return false;
+            }
+        }
+        for (int i = 4; i < 8; i++) {
+            char c = s.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
     }
     
     /**

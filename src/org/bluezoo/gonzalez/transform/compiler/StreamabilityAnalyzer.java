@@ -21,9 +21,12 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.runtime.BufferingStrategy;
+import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 
+import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -291,24 +294,82 @@ public final class StreamabilityAnalyzer {
     }
 
     /**
-     * Analyzes an XSLT node for streamability.
+     * Analyzes an XSLT node for streamability by collecting all XPath
+     * expression strings from the serialized node representation.
      */
     private ExpressionStreamability analyzeNode(XSLTNode node, List<String> reasons) {
-        // Use the node's streaming capability as a starting point
-        XSLTNode.StreamingCapability cap = node.getStreamingCapability();
-        
-        switch (cap) {
-            case FULL:
-                return ExpressionStreamability.CONSUMING;
-            case GROUNDED:
-                reasons.add("Node requires subtree: " + node.getClass().getSimpleName());
-                return ExpressionStreamability.GROUNDED;
-            case PARTIAL:
-            case NONE:
-                reasons.add("Node requires buffering: " + node.getClass().getSimpleName());
-                return ExpressionStreamability.FREE_RANGING;
-            default:
-                return ExpressionStreamability.CONSUMING;
+        // Collect all expression strings from the node tree
+        List<String> expressions = new ArrayList<>();
+        collectExpressions(node, expressions, 0);
+
+        ExpressionStreamability result = ExpressionStreamability.MOTIONLESS;
+        for (String expr : expressions) {
+            ExpressionStreamability es = analyzeExpression(expr, reasons);
+            result = combineStreamability(result, es);
+            if (result == ExpressionStreamability.FREE_RANGING) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Recursively collects XPath expression strings from an XSLT node tree
+     * using reflection, with depth limiting to prevent infinite recursion.
+     */
+    private void collectExpressions(XSLTNode node, List<String> expressions, int depth) {
+        if (node == null || depth > 50) {
+            return;
+        }
+
+        // Use reflection to find XPathExpression fields
+        Class<?> clazz = node.getClass();
+        while (clazz != null && clazz != Object.class) {
+            for (Field field : clazz.getDeclaredFields()) {
+                if (XPathExpression.class.isAssignableFrom(field.getType())) {
+                    field.setAccessible(true);
+                    try {
+                        XPathExpression expr = (XPathExpression) field.get(node);
+                        if (expr != null) {
+                            expressions.add(expr.toString());
+                        }
+                    } catch (Exception e) {
+                        // Skip
+                    }
+                }
+            }
+            clazz = clazz.getSuperclass();
+        }
+
+        // Recurse into SequenceNode children
+        if (node instanceof SequenceNode) {
+            SequenceNode seq = (SequenceNode) node;
+            List<XSLTNode> children = seq.getChildren();
+            if (children != null) {
+                for (XSLTNode child : children) {
+                    collectExpressions(child, expressions, depth + 1);
+                }
+            }
+        }
+
+        // Recurse into XSLTNode fields (body, content, etc.) via reflection
+        clazz = node.getClass();
+        while (clazz != null && clazz != Object.class) {
+            for (Field field : clazz.getDeclaredFields()) {
+                Class<?> fieldType = field.getType();
+                if (XSLTNode.class.isAssignableFrom(fieldType) && fieldType != node.getClass()) {
+                    field.setAccessible(true);
+                    try {
+                        XSLTNode child = (XSLTNode) field.get(node);
+                        if (child != null && child != node) {
+                            collectExpressions(child, expressions, depth + 1);
+                        }
+                    } catch (Exception e) {
+                        // Skip
+                    }
+                }
+            }
+            clazz = clazz.getSuperclass();
         }
     }
 
@@ -368,14 +429,53 @@ public final class StreamabilityAnalyzer {
 
     /**
      * Checks if expression contains grounded constructs.
+     * Uses strict axis detection to avoid false positives from
+     * strings like ".." in URIs or "id(" in identifiers.
      */
     private boolean containsGroundedConstruct(String expr) {
         return expr.contains("parent::") ||
                expr.contains("ancestor::") ||
                expr.contains("ancestor-or-self::") ||
                expr.contains("preceding-sibling::") ||
-               expr.contains("..") ||
-               expr.contains("last()");  // last() in predicates needs sibling info
+               containsParentAbbrev(expr) ||
+               containsLastFunction(expr);
+    }
+
+    /**
+     * Checks if expression contains the abbreviated parent axis (..)
+     * without matching single dots (.), URIs, or decimal numbers.
+     */
+    private boolean containsParentAbbrev(String expr) {
+        int idx = 0;
+        while (idx < expr.length() - 1) {
+            idx = expr.indexOf("..", idx);
+            if (idx < 0) {
+                return false;
+            }
+            // Ensure it's not part of a longer sequence like "..."
+            if (idx + 2 < expr.length() && expr.charAt(idx + 2) == '.') {
+                idx += 3;
+                continue;
+            }
+            // Ensure it's used as an axis step, not inside a string literal
+            if (idx > 0) {
+                char before = expr.charAt(idx - 1);
+                if (before == '\'' || before == '"') {
+                    idx += 2;
+                    continue;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Checks if expression contains last() as a function call.
+     */
+    private boolean containsLastFunction(String expr) {
+        int idx = expr.indexOf("last()");
+        return idx >= 0;
     }
 
     /**
@@ -383,10 +483,33 @@ public final class StreamabilityAnalyzer {
      */
     private boolean containsFreeRangingConstruct(String expr) {
         return expr.contains("preceding::") ||
-               expr.contains("key(") ||
-               expr.contains("id(") ||
-               expr.contains("//") && expr.contains("[") ||  // // with predicates may need full doc
+               expr.contains("following::") ||
+               containsStandaloneKeyCall(expr) ||
                expr.contains("document(");
+    }
+
+    /**
+     * Checks if expression contains a standalone key() function call,
+     * not part of current-grouping-key() or similar.
+     */
+    private boolean containsStandaloneKeyCall(String expr) {
+        int idx = 0;
+        while (idx < expr.length()) {
+            idx = expr.indexOf("key(", idx);
+            if (idx < 0) {
+                return false;
+            }
+            // Ensure "key(" is not preceded by a letter/hyphen (e.g., "grouping-key(")
+            if (idx > 0) {
+                char before = expr.charAt(idx - 1);
+                if (Character.isLetterOrDigit(before) || before == '-' || before == '_') {
+                    idx += 4;
+                    continue;
+                }
+            }
+            return true;
+        }
+        return false;
     }
 
     /**

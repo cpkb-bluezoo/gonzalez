@@ -1086,21 +1086,80 @@ public class SequenceType {
     }
     
     private boolean matchesNodeKind(XPathValue value) {
+        if (value instanceof XPathResultTreeFragment) {
+            return itemKind == ItemKind.DOCUMENT_NODE || itemKind == ItemKind.NODE;
+        }
         if (value instanceof XPathNode) {
-            return true;
+            return matchesSingleNodeKind((XPathNode) value);
         }
         if (value instanceof XPathNodeSet) {
+            XPathNodeSet ns = (XPathNodeSet) value;
+            for (XPathNode node : ns) {
+                if (!matchesSingleNodeKind(node)) {
+                    return false;
+                }
+            }
             return true;
         }
         if (value instanceof XPathSequence) {
             for (XPathValue item : (XPathSequence) value) {
-                if (!(item instanceof XPathNode) && !(item instanceof XPathNodeSet)) {
+                if (item instanceof XPathResultTreeFragment) {
+                    if (itemKind != ItemKind.DOCUMENT_NODE && itemKind != ItemKind.NODE) {
+                        return false;
+                    }
+                } else if (item instanceof XPathNode) {
+                    if (!matchesSingleNodeKind((XPathNode) item)) {
+                        return false;
+                    }
+                } else if (item instanceof XPathNodeSet) {
+                    XPathNodeSet ns2 = (XPathNodeSet) item;
+                    for (XPathNode node : ns2) {
+                        if (!matchesSingleNodeKind(node)) {
+                            return false;
+                        }
+                    }
+                } else {
                     return false;
                 }
             }
             return true;
         }
         return false;
+    }
+
+    private boolean matchesSingleNodeKind(XPathNode node) {
+        switch (itemKind) {
+            case NODE:
+                return true;
+            case ELEMENT:
+                if (node.getNodeType() != NodeType.ELEMENT) {
+                    return false;
+                }
+                if (localName != null && !localName.equals(node.getLocalName())) {
+                    return false;
+                }
+                return true;
+            case ATTRIBUTE:
+                if (node.getNodeType() != NodeType.ATTRIBUTE) {
+                    return false;
+                }
+                if (localName != null && !localName.equals(node.getLocalName())) {
+                    return false;
+                }
+                return true;
+            case TEXT:
+                return node.getNodeType() == NodeType.TEXT;
+            case COMMENT:
+                return node.getNodeType() == NodeType.COMMENT;
+            case PROCESSING_INSTRUCTION:
+                return node.getNodeType() == NodeType.PROCESSING_INSTRUCTION;
+            case DOCUMENT_NODE:
+                return node.getNodeType() == NodeType.ROOT;
+            case NAMESPACE_NODE:
+                return node.getNodeType() == NodeType.NAMESPACE;
+            default:
+                return true;
+        }
     }
 
     private boolean matchesAtomicType(XPathValue value) {

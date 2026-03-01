@@ -3395,14 +3395,19 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             // After conversion attempt, check again
             if (expectedType.matches(result, schemaContext)) {
                 return result;
-            } else {
-                throw new XPathTypeException(
-                    "XTTE0505",
-                    "Function returned value does not match declared type '" + asType + "'",
-                    asType,
-                    result != null ? result.getClass().getSimpleName() : "null"
-                );
             }
+            // Skip strict matching only for document-node types where runtime
+            // representation (RTF) doesn't implement XPathNode
+            SequenceType.ItemKind expectedKind = expectedType.getItemKind();
+            if (expectedKind == SequenceType.ItemKind.DOCUMENT_NODE) {
+                return result;
+            }
+            throw new XPathTypeException(
+                "XTTE0505",
+                "Function returned value does not match declared type '" + asType + "'",
+                asType,
+                result != null ? result.getClass().getSimpleName() : "null"
+            );
             
         } catch (XPathTypeException e) {
             throw e;  // Re-throw XPathTypeException as-is
@@ -3896,33 +3901,62 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            XPathNode node;
             if (args.isEmpty()) {
-                node = context.getContextNode();
-            } else {
-                XPathValue arg = args.get(0);
-                if (arg instanceof XPathNode) {
-                    node = (XPathNode) arg;
-                } else if (arg instanceof XPathNodeSet) {
-                    java.util.Iterator<XPathNode> iter = ((XPathNodeSet) arg).iterator();
-                    if (!iter.hasNext()) {
-                        return XPathSequence.EMPTY;
-                    }
-                    node = iter.next();
-                } else {
-                    throw new XPathException("Argument to snapshot() must be a node");
+                XPathNode node = context.getContextNode();
+                if (node == null) {
+                    return XPathSequence.EMPTY;
                 }
+                return snapshotNode(node);
             }
             
-            if (node == null) {
-                return XPathSequence.EMPTY;
+            XPathValue arg = args.get(0);
+            if (arg instanceof XPathNode) {
+                return snapshotNode((XPathNode) arg);
             }
-            // For fully navigable nodes, return as-is (already has all axes)
-            if (node.isFullyNavigable()) {
-                return XPathNodeSet.of(node);
+            if (arg instanceof XPathNodeSet) {
+                java.util.List<XPathNode> results = new java.util.ArrayList<>();
+                java.util.Iterator<XPathNode> iter = ((XPathNodeSet) arg).iterator();
+                while (iter.hasNext()) {
+                    XPathNode n = iter.next();
+                    XPathValue snap = snapshotNode(n);
+                    if (snap instanceof XPathNode) {
+                        results.add((XPathNode) snap);
+                    } else if (snap instanceof XPathNodeSet) {
+                        java.util.Iterator<XPathNode> si = ((XPathNodeSet) snap).iterator();
+                        while (si.hasNext()) {
+                            results.add(si.next());
+                        }
+                    }
+                }
+                if (results.isEmpty()) {
+                    return XPathSequence.EMPTY;
+                }
+                return new XPathNodeSet(results);
             }
-            // For streaming nodes, return as-is -- the streaming handler ensures
-            // the node state is captured at the point of call
+            if (arg instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) arg;
+                java.util.List<XPathValue> results = new java.util.ArrayList<>();
+                java.util.Iterator<XPathValue> iter = seq.iterator();
+                while (iter.hasNext()) {
+                    XPathValue item = iter.next();
+                    if (item instanceof XPathNode) {
+                        results.add(snapshotNode((XPathNode) item));
+                    } else {
+                        results.add(item);
+                    }
+                }
+                if (results.isEmpty()) {
+                    return XPathSequence.EMPTY;
+                }
+                return new XPathSequence(results);
+            }
+            // Non-node items: return as-is (snapshot of atomic is identity)
+            return arg;
+        }
+        
+        private XPathValue snapshotNode(XPathNode node) {
+            // Per XSLT 3.0 spec, snapshot returns the node itself
+            // (in tree-based mode, the full tree is already navigable)
             return XPathNodeSet.of(node);
         }
     }
