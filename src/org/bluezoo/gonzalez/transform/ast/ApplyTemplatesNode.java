@@ -100,6 +100,8 @@ public class ApplyTemplatesNode extends XSLTInstruction {
                             nodes.add((XPathNode) item);
                         } else if (item instanceof XPathNodeSet) {
                             nodes.addAll(((XPathNodeSet) item).getNodes());
+                        } else if (item instanceof XPathResultTreeFragment) {
+                            nodes.addAll(((XPathResultTreeFragment) item).asNodeSet().getNodes());
                         } else {
                             // Atomic value (XSLT 3.0)
                             atomicValues.add(item);

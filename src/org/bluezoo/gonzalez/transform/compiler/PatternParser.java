@@ -47,10 +47,15 @@ final class PatternParser {
      * @return a Pattern that matches equivalently to the old SimplePattern
      */
     static Pattern parse(String patternStr) {
-        String trimmed = patternStr.trim();
+        return parse(patternStr, 3.0);
+    }
+
+    static Pattern parse(String patternStr, double version) {
+        String trimmed = stripXPathComments(patternStr.trim());
 
         // XSLT 3.0 atomic value pattern: .[ predicate ]
-        if (trimmed.startsWith(".") && trimmed.length() > 1) {
+        if (version >= 3.0 && trimmed.startsWith(".") &&
+            trimmed.length() > 1) {
             String afterDot = trimmed.substring(1).trim();
             if (afterDot.startsWith("[") && afterDot.endsWith("]")) {
                 String pred = afterDot.substring(1,
@@ -74,42 +79,52 @@ final class PatternParser {
             throw new IllegalArgumentException("XTSE0340: numeric literal is not a valid pattern: " + patternStr);
         }
 
-        // Normalize axis syntax
-        String step1 = patternStr.replace("child::", "");
+        // Normalize axis syntax (use comment-stripped string)
+        // child::attribute() is impossible (attributes aren't children)
+        String step1 = stripChildAxis(trimmed);
         String normalized = step1.replace("attribute::", "@");
 
-        // Check for except (highest precedence of set operators)
-        int exceptIdx = findKeywordOutsideBrackets(normalized,
-            " except ", true);
-        if (exceptIdx > 0) {
-            String leftPart = normalized.substring(0, exceptIdx).trim();
-            String rightPart = normalized.substring(exceptIdx + 8).trim();
-            Pattern left = parse(leftPart);
-            Pattern right = parse(rightPart);
-            return new ExceptPattern(patternStr, left, right);
-        }
+        // XSLT 3.0: Check for except, intersect, union keywords
+        if (version >= 3.0) {
+            // Check for except (highest precedence of set operators)
+            int exceptIdx = findKeywordOutsideBrackets(normalized,
+                " except ", true);
+            if (exceptIdx > 0) {
+                String leftPart = normalized.substring(0,
+                    exceptIdx).trim();
+                String rightPart = normalized.substring(
+                    exceptIdx + 8).trim();
+                Pattern left = parse(leftPart, version);
+                Pattern right = parse(rightPart, version);
+                return new ExceptPattern(patternStr, left, right);
+            }
 
-        // Check for intersect
-        int intersectIdx = findKeywordOutsideBrackets(normalized,
-            " intersect ", true);
-        if (intersectIdx > 0) {
-            String leftPart = normalized.substring(0, intersectIdx).trim();
-            String rightPart = normalized.substring(
-                intersectIdx + 11).trim();
-            Pattern left = parse(leftPart);
-            Pattern right = parse(rightPart);
-            return new IntersectPattern(patternStr, left, right);
-        }
+            // Check for intersect
+            int intersectIdx = findKeywordOutsideBrackets(normalized,
+                " intersect ", true);
+            if (intersectIdx > 0) {
+                String leftPart = normalized.substring(0,
+                    intersectIdx).trim();
+                String rightPart = normalized.substring(
+                    intersectIdx + 11).trim();
+                Pattern left = parse(leftPart, version);
+                Pattern right = parse(rightPart, version);
+                return new IntersectPattern(patternStr, left, right);
+            }
 
-        // Check for "union" keyword
-        int unionKeyIdx = findKeywordOutsideBrackets(normalized, " union ");
-        if (unionKeyIdx > 0) {
-            String leftPart = normalized.substring(0, unionKeyIdx).trim();
-            String rightPart = normalized.substring(unionKeyIdx + 7).trim();
-            Pattern left = parse(leftPart);
-            Pattern right = parse(rightPart);
-            return new UnionPattern(patternStr,
-                new Pattern[] { left, right });
+            // Check for "union" keyword
+            int unionKeyIdx = findKeywordOutsideBrackets(normalized,
+                " union ");
+            if (unionKeyIdx > 0) {
+                String leftPart = normalized.substring(0,
+                    unionKeyIdx).trim();
+                String rightPart = normalized.substring(
+                    unionKeyIdx + 7).trim();
+                Pattern left = parse(leftPart, version);
+                Pattern right = parse(rightPart, version);
+                return new UnionPattern(patternStr,
+                    new Pattern[] { left, right });
+            }
         }
 
         // Check for | union
@@ -117,19 +132,38 @@ final class PatternParser {
             String[] parts = splitUnion(normalized);
             Pattern[] alternatives = new Pattern[parts.length];
             for (int i = 0; i < parts.length; i++) {
-                alternatives[i] = parse(parts[i].trim());
+                alternatives[i] = parse(parts[i].trim(), version);
             }
             return new UnionPattern(patternStr, alternatives);
         }
 
+        // Expand parenthesized union step in path:
+        // path/(A|B)/rest → path/A/rest | path/B/rest
+        if (version >= 3.0) {
+            String expanded = expandParenthesizedPathUnion(normalized);
+            if (expanded != null) {
+                return parse(expanded, version);
+            }
+        }
+
         // Variable reference patterns (XSLT 3.0): $x, $x/path, $x//path
         if (normalized.startsWith("$")) {
+            if (version < 3.0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: Variable references are not allowed " +
+                    "in XSLT " + version + " patterns: " + patternStr);
+            }
             return parseVariablePattern(patternStr, normalized);
         }
 
-        // doc() or document() function patterns
+        // doc() or document() function patterns (XSLT 3.0)
         if (normalized.startsWith("doc(") ||
             normalized.startsWith("document(")) {
+            if (version < 3.0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: doc()/document() are not allowed " +
+                    "in XSLT " + version + " patterns: " + patternStr);
+            }
             return parseDocPattern(patternStr, normalized);
         }
 
@@ -191,20 +225,36 @@ final class PatternParser {
             }
         }
 
-        // Parenthesized pattern: (foo|bar)
+        // Parenthesized pattern: (foo|bar) - XSLT 3.0 only
         if (basePattern.startsWith("(") && basePattern.endsWith(")")) {
+            if (version < 3.0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: Parenthesized patterns are not " +
+                    "allowed in XSLT " + version + " patterns: " +
+                    patternStr);
+            }
             String inner = basePattern.substring(1,
                 basePattern.length() - 1);
-            String[] parts = splitUnion(inner);
-            Pattern[] alternatives = new Pattern[parts.length];
-            for (int i = 0; i < parts.length; i++) {
-                alternatives[i] = parse(parts[i].trim());
-            }
-            if (predicateStr != null) {
-                // Wrap union with predicate (unusual but possible)
+
+            if (hasTopLevelUnion(inner)) {
+                String[] parts = splitUnion(inner);
+                Pattern[] alternatives = new Pattern[parts.length];
+                for (int i = 0; i < parts.length; i++) {
+                    String alt = parts[i].trim();
+                    if (predicateStr != null) {
+                        alt = alt + "[" + predicateStr + "]";
+                    }
+                    alternatives[i] = parse(alt, version);
+                }
                 return new UnionPattern(patternStr, alternatives);
             }
-            return new UnionPattern(patternStr, alternatives);
+
+            Pattern innerPattern = parse(inner, version);
+            if (predicateStr != null) {
+                return new PredicatedPattern(patternStr, predicateStr,
+                    innerPattern);
+            }
+            return innerPattern;
         }
 
         // Root pattern: /
@@ -213,9 +263,25 @@ final class PatternParser {
         }
 
         // document-node() pattern
-        if (basePattern.equals("document-node()") ||
-            basePattern.startsWith("document-node(")) {
-            return new DocumentNodePattern(patternStr);
+        if (basePattern.startsWith("document-node(")) {
+            int parenEnd = findMatchingParen(basePattern,
+                basePattern.indexOf('('));
+            if (parenEnd >= 0) {
+                String afterDocNode = basePattern.substring(parenEnd + 1);
+                if (afterDocNode.isEmpty()) {
+                    return new DocumentNodePattern(patternStr);
+                }
+                if (afterDocNode.startsWith("//")) {
+                    String rest = afterDocNode.substring(2);
+                    return parsePathFromDoubleSlash(patternStr,
+                        predicateStr, rest);
+                }
+                if (afterDocNode.startsWith("/")) {
+                    String rest = afterDocNode.substring(1);
+                    return parseAbsolutePath(patternStr, predicateStr,
+                        rest);
+                }
+            }
         }
 
         // Patterns starting with //
@@ -255,18 +321,19 @@ final class PatternParser {
                                                      String rest) {
         // //rest where rest may contain further path steps
         if (rest.contains("/")) {
-            // //a/b treated as path pattern with descendant axis
+            // //a/b treated as absolute path pattern with descendant axis
             return parseRelativePath(patternStr, predicateStr, rest,
-                PatternStep.AXIS_DESCENDANT);
+                PatternStep.AXIS_DESCENDANT, true);
         }
         // Simple //name - always priority 0.5 because it's a path pattern
+        // Requires a document root ancestor (// is rooted)
         NodeTest nt;
         if ("node()".equals(rest)) {
             nt = ChildAxisAnyNodeTest.INSTANCE;
         } else {
             nt = NodeTest.parse(rest);
         }
-        return new NameTestPattern(patternStr, predicateStr, nt, 0.5);
+        return new NameTestPattern(patternStr, predicateStr, nt, 0.5, true);
     }
 
     private static Pattern parseAbsolutePath(String patternStr,
@@ -369,6 +436,14 @@ final class PatternParser {
                                               String predicateStr,
                                               String rest,
                                               int firstAxis) {
+        return parseRelativePath(patternStr, predicateStr, rest, firstAxis, false);
+    }
+
+    private static Pattern parseRelativePath(String patternStr,
+                                              String predicateStr,
+                                              String rest,
+                                              int firstAxis,
+                                              boolean isAbsolute) {
         List<PatternStep> steps = new ArrayList<>();
         parseSteps(rest, steps);
         if (!steps.isEmpty() && firstAxis != PatternStep.AXIS_CHILD) {
@@ -377,7 +452,7 @@ final class PatternParser {
                 first.predicateStr));
         }
         PatternStep[] arr = steps.toArray(new PatternStep[0]);
-        return new PathPattern(patternStr, predicateStr, arr, false);
+        return new PathPattern(patternStr, predicateStr, arr, isAbsolute);
     }
 
     /**
@@ -462,14 +537,53 @@ final class PatternParser {
     private static Pattern parseSimpleTest(String patternStr,
                                             String predicateStr,
                                             String basePattern) {
+        // Handle self:: axis prefix (XSLT 3.0)
+        String testPart = basePattern.trim();
+        if (testPart.startsWith("self::")) {
+            testPart = testPart.substring(6).trim();
+        }
+        // child::attribute() is impossible — attributes aren't children
+        if (testPart.startsWith("child::attribute")) {
+            return new NameTestPattern(patternStr, predicateStr,
+                NeverMatchTest.INSTANCE, -0.5);
+        }
+        // Reject patterns with spaces in the name test
+        if (containsTopLevelSpace(testPart)) {
+            throw new IllegalArgumentException(
+                "XTSE0340: Invalid pattern: " + patternStr);
+        }
         NodeTest nt;
-        if ("node()".equals(basePattern)) {
+        if ("node()".equals(testPart)) {
             nt = ChildAxisAnyNodeTest.INSTANCE;
         } else {
-            nt = NodeTest.parse(basePattern);
+            nt = NodeTest.parse(testPart);
         }
-        double priority = computeNameTestPriority(basePattern);
+        double priority = computeNameTestPriority(testPart);
         return new NameTestPattern(patternStr, predicateStr, nt, priority);
+    }
+
+    private static boolean containsTopLevelSpace(String s) {
+        int depth = 0;
+        boolean inQuote = false;
+        char quoteChar = 0;
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!inQuote && (c == '"' || c == '\'')) {
+                inQuote = true;
+                quoteChar = c;
+            } else if (inQuote && c == quoteChar) {
+                inQuote = false;
+            } else if (!inQuote) {
+                if (c == '(' || c == '[') {
+                    depth++;
+                } else if (c == ')' || c == ']') {
+                    depth--;
+                } else if (c == ' ' && depth == 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     // ---- Function pattern parsers ----
@@ -556,8 +670,6 @@ final class PatternParser {
         }
 
         String idArg = argParts[0].trim();
-        idArg = stripQuotes(idArg);
-        String[] ids = splitWhitespace(idArg);
 
         String docVarName = null;
         if (argParts.length > 1) {
@@ -566,6 +678,30 @@ final class PatternParser {
                 docVarName = docArg.substring(1);
             }
         }
+
+        // Variable reference as id argument: id($varName)
+        if (idArg.startsWith("$")) {
+            String varName = idArg.substring(1);
+            if (rest.isEmpty()) {
+                return new IdPattern(patternStr, varName, docVarName,
+                    null, IdPattern.AXIS_NONE);
+            }
+            if (rest.startsWith("//")) {
+                Pattern trailing = parse(rest.substring(2));
+                return new IdPattern(patternStr, varName, docVarName,
+                    trailing, IdPattern.AXIS_DESCENDANT);
+            }
+            if (rest.startsWith("/")) {
+                Pattern trailing = parse(rest.substring(1));
+                return new IdPattern(patternStr, varName, docVarName,
+                    trailing, IdPattern.AXIS_CHILD);
+            }
+            return new IdPattern(patternStr, varName, docVarName,
+                null, IdPattern.AXIS_NONE);
+        }
+
+        idArg = stripQuotes(idArg);
+        String[] ids = splitWhitespace(idArg);
 
         if (rest.isEmpty()) {
             return new IdPattern(patternStr, ids, docVarName, null,
@@ -1043,6 +1179,117 @@ final class PatternParser {
             sb.append(")");
         }
         return sb.toString();
+    }
+
+    /**
+     * Strips the child:: axis prefix except before attribute() where
+     * child::attribute() is an impossible combination (attributes are
+     * not on the child axis).
+     */
+    private static String stripChildAxis(String s) {
+        StringBuilder sb = new StringBuilder();
+        int i = 0;
+        while (i < s.length()) {
+            int idx = s.indexOf("child::", i);
+            if (idx < 0) {
+                sb.append(s.substring(i));
+                break;
+            }
+            sb.append(s.substring(i, idx));
+            String after = s.substring(idx + 7);
+            if (after.startsWith("attribute")) {
+                sb.append("child::");
+            }
+            i = idx + 7;
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Expands a parenthesized union step within a path pattern.
+     * Transforms {@code path/(A|B)/rest} into {@code path/A/rest | path/B/rest}.
+     * Handles both / and // before the parenthesized group.
+     *
+     * @return the expanded string, or null if no expansion needed
+     */
+    private static String expandParenthesizedPathUnion(String pattern) {
+        int depth = 0;
+        boolean inQuote = false;
+        char quoteChar = 0;
+
+        for (int i = 0; i < pattern.length() - 1; i++) {
+            char c = pattern.charAt(i);
+            if (!inQuote && (c == '"' || c == '\'')) {
+                inQuote = true;
+                quoteChar = c;
+            } else if (inQuote && c == quoteChar) {
+                inQuote = false;
+            } else if (!inQuote) {
+                if (c == '[' || c == '(') {
+                    depth++;
+                } else if (c == ']' || c == ')') {
+                    depth--;
+                } else if (depth == 0 && c == '/' &&
+                           pattern.charAt(i + 1) == '(') {
+                    int openParen = i + 1;
+                    int closeParen = findMatchingParen(pattern, openParen);
+                    if (closeParen < 0) {
+                        continue;
+                    }
+                    String inner = pattern.substring(openParen + 1,
+                        closeParen);
+                    if (!hasTopLevelUnion(inner)) {
+                        continue;
+                    }
+                    String prefix = pattern.substring(0, i);
+                    String suffix = pattern.substring(closeParen + 1);
+                    String[] parts = splitUnion(inner);
+                    StringBuilder sb = new StringBuilder();
+                    for (int j = 0; j < parts.length; j++) {
+                        if (j > 0) {
+                            sb.append(" | ");
+                        }
+                        sb.append(prefix);
+                        sb.append("/");
+                        sb.append(parts[j].trim());
+                        sb.append(suffix);
+                    }
+                    return sb.toString();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Strips XPath 2.0+ comments from a string.
+     * XPath comments are delimited by (: and :) and can be nested.
+     */
+    static String stripXPathComments(String s) {
+        int idx = s.indexOf("(:");
+        if (idx < 0) {
+            return s;
+        }
+        StringBuilder sb = new StringBuilder();
+        int depth = 0;
+        int i = 0;
+        while (i < s.length()) {
+            if (i < s.length() - 1 && s.charAt(i) == '(' &&
+                s.charAt(i + 1) == ':') {
+                depth++;
+                i += 2;
+            } else if (i < s.length() - 1 && s.charAt(i) == ':' &&
+                       s.charAt(i + 1) == ')' && depth > 0) {
+                depth--;
+                i += 2;
+            } else if (depth == 0) {
+                sb.append(s.charAt(i));
+                i++;
+            } else {
+                i++;
+            }
+        }
+        return sb.toString().trim();
     }
 
     private static String stripQuotes(String s) {

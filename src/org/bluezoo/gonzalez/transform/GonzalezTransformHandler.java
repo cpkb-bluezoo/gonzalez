@@ -32,9 +32,13 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.runtime.*;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.*;
@@ -795,10 +799,110 @@ public class GonzalezTransformHandler extends DefaultHandler
             templateContext.getVariableScope().bind(templateParam.getName(), defaultValue);
         }
         
-        // Execute template body
+        // Execute template body, with optional return type validation
         XSLTNode body = rule.getBody();
         if (body != null) {
-            body.execute(templateContext, output);
+            String asType = rule.getAsType();
+            if (asType != null && !asType.isEmpty()) {
+                SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
+                body.execute(templateContext, seqBuilder);
+                XPathValue result = seqBuilder.getSequence();
+                
+                SequenceType expectedType = SequenceType.parse(asType, null);
+                if (expectedType != null && !expectedType.matches(result, SchemaContext.NONE)) {
+                    String templateDesc = rule.getName() != null ?
+                        "named template '" + rule.getName() + "'" :
+                        "template matching '" + rule.getMatchPattern() + "'";
+                    throw new SAXException("XTTE0505: Required item type of " +
+                        templateDesc + " is " + asType +
+                        "; supplied value does not match");
+                }
+                
+                outputValidatedResult(result, output);
+            } else {
+                body.execute(templateContext, output);
+            }
+        }
+    }
+
+    /**
+     * Outputs a validated sequence result to the output handler.
+     */
+    private void outputValidatedResult(XPathValue result, OutputHandler output)
+            throws SAXException {
+        if (result == null) {
+            return;
+        }
+        if (result instanceof XPathSequence) {
+            for (XPathValue item : (XPathSequence) result) {
+                outputSingleItem(item, output);
+            }
+        } else {
+            outputSingleItem(result, output);
+        }
+    }
+
+    private void outputSingleItem(XPathValue item, OutputHandler output) throws SAXException {
+        if (item instanceof XPathResultTreeFragment) {
+            ((XPathResultTreeFragment) item).replayToOutput(output);
+        } else if (item instanceof XPathNodeSet) {
+            for (XPathNode node : ((XPathNodeSet) item).getNodes()) {
+                serializeNode(node, output);
+            }
+        } else if (item instanceof XPathNode) {
+            serializeNode((XPathNode) item, output);
+        } else {
+            output.characters(item.asString());
+        }
+    }
+
+    private void serializeNode(XPathNode node, OutputHandler output) throws SAXException {
+        switch (node.getNodeType()) {
+            case ELEMENT: {
+                String uri = node.getNamespaceURI();
+                String localName = node.getLocalName();
+                String prefix = node.getPrefix();
+                String qName = (prefix != null && !prefix.isEmpty())
+                    ? prefix + ":" + localName : localName;
+                if (uri == null) {
+                    uri = "";
+                }
+                output.startElement(uri, localName, qName);
+                Iterator<XPathNode> attrs = node.getAttributes();
+                while (attrs.hasNext()) {
+                    XPathNode attr = attrs.next();
+                    String aUri = attr.getNamespaceURI();
+                    String aLocal = attr.getLocalName();
+                    String aPrefix = attr.getPrefix();
+                    String aQName = (aPrefix != null && !aPrefix.isEmpty())
+                        ? aPrefix + ":" + aLocal : aLocal;
+                    output.attribute(aUri != null ? aUri : "", aLocal, aQName,
+                        attr.getStringValue());
+                }
+                Iterator<XPathNode> children = node.getChildren();
+                while (children.hasNext()) {
+                    serializeNode(children.next(), output);
+                }
+                output.endElement(uri, localName, qName);
+                break;
+            }
+            case TEXT: {
+                String text = node.getStringValue();
+                if (text != null) {
+                    output.characters(text);
+                }
+                break;
+            }
+            case ROOT: {
+                Iterator<XPathNode> children = node.getChildren();
+                while (children.hasNext()) {
+                    serializeNode(children.next(), output);
+                }
+                break;
+            }
+            default:
+                output.characters(node.getStringValue());
+                break;
         }
     }
 

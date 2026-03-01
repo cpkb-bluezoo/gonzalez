@@ -119,7 +119,15 @@ public class PerformSortNode extends XSLTInstruction {
             if (rtf.isNodeSet()) {
                 XPathNodeSet ns = rtf.asNodeSet();
                 for (XPathNode node : ns.getNodes()) {
-                    nodes.add(node);
+                    // RTF root contains the sortable items as children
+                    if (node.getNodeType() == NodeType.ROOT) {
+                        Iterator<XPathNode> children = node.getChildren();
+                        while (children.hasNext()) {
+                            nodes.add(children.next());
+                        }
+                    } else {
+                        nodes.add(node);
+                    }
                 }
             }
         }

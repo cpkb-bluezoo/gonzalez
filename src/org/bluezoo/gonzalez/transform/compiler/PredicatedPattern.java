@@ -1,5 +1,5 @@
 /*
- * RootPattern.java
+ * PredicatedPattern.java
  * Copyright (C) 2026 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -25,26 +25,30 @@ import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 /**
- * Pattern matching the document root node ("/").
+ * Wraps a pattern with an additional predicate filter.
+ * Used for parenthesized patterns with predicates, e.g.
+ * {@code (* except doc)[*]}.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-final class RootPattern extends AbstractPattern {
+final class PredicatedPattern extends AbstractPattern {
 
-    static final RootPattern INSTANCE = new RootPattern();
+    private final Pattern inner;
 
-    private RootPattern() {
-        super("/", null);
+    PredicatedPattern(String patternStr, String predicateStr,
+                      Pattern inner) {
+        super(patternStr, predicateStr);
+        this.inner = inner;
     }
 
     @Override
     boolean matchesBase(XPathNode node, TransformContext context,
                         XPathNode targetNode) {
-        return node.getParent() == null && node.isRoot();
+        return inner.matches(node, context);
     }
 
     @Override
     public double getDefaultPriority() {
-        return -0.5;
+        return inner.getDefaultPriority();
     }
 }

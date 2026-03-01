@@ -29,7 +29,7 @@ package org.bluezoo.gonzalez.transform.xpath.type;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class XPathString implements XPathValue {
+public class XPathString implements XPathValue {
 
     /** Empty string singleton. */
     public static final XPathString EMPTY = new XPathString("");

@@ -393,6 +393,19 @@ public final class XPathResultTreeFragment implements XPathValue {
     private transient XPathNode rootNode;
     
     /**
+     * Detaches a node from its parent, making it a root of its own tree.
+     * This is used when extracting elements from RTFs for sequence construction,
+     * where top-level elements must be parentless per XSLT 3.0 specification.
+     *
+     * @param node the node to detach (must be an RTFNode)
+     */
+    public static void detachNode(XPathNode node) {
+        if (node instanceof RTFNode) {
+            ((RTFNode) node).parent = null;
+        }
+    }
+    
+    /**
      * Builds a node tree from the SAX event buffer.
      */
     private XPathNode buildNodeTree() {

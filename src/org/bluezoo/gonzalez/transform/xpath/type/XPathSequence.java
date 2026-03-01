@@ -110,6 +110,12 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
             if (item instanceof XPathSequence) {
                 // Flatten nested sequences
                 list.addAll(((XPathSequence) item).items);
+            } else if (item instanceof XPathNodeSet) {
+                // XPath 2.0+: flatten node-sets into individual nodes
+                Iterator<XPathValue> nodeIter = item.sequenceIterator();
+                while (nodeIter.hasNext()) {
+                    list.add(nodeIter.next());
+                }
             } else if (item != null) {
                 list.add(item);
             }
@@ -138,6 +144,12 @@ public final class XPathSequence implements XPathValue, Iterable<XPathValue> {
             if (item instanceof XPathSequence) {
                 // Flatten nested sequences
                 list.addAll(((XPathSequence) item).items);
+            } else if (item instanceof XPathNodeSet) {
+                // XPath 2.0+: flatten node-sets into individual nodes
+                Iterator<XPathValue> nodeIter = item.sequenceIterator();
+                while (nodeIter.hasNext()) {
+                    list.add(nodeIter.next());
+                }
             } else if (item != null) {
                 list.add(item);
             }

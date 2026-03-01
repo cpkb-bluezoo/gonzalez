@@ -137,6 +137,10 @@ public final class LocationPath implements Expr {
         if (absolute) {
             // Absolute path: start from root
             XPathNode root = context.getContextNode().getRoot();
+            if (!root.isRoot()) {
+                throw new XPathException("XPDY0050: An absolute path expression " +
+                    "applied to a parentless node that is not a document root");
+            }
             currentNodes.add(root);
         } else {
             // Relative path: start from context node

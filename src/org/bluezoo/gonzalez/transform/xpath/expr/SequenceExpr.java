@@ -85,6 +85,12 @@ public final class SequenceExpr implements Expr {
                     while (iter.hasNext()) {
                         results.add(iter.next());
                     }
+                } else if (value.isNodeSet()) {
+                    // XPath 2.0+: flatten node-sets into individual nodes
+                    Iterator<XPathValue> iter = value.sequenceIterator();
+                    while (iter.hasNext()) {
+                        results.add(iter.next());
+                    }
                 } else {
                     results.add(value);
                 }

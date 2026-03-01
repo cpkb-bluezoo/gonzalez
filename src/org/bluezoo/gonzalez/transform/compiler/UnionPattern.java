@@ -82,6 +82,10 @@ final class UnionPattern extends AbstractPattern {
         return false;
     }
 
+    Pattern[] getAlternatives() {
+        return alternatives;
+    }
+
     @Override
     public double getDefaultPriority() {
         double max = Double.NEGATIVE_INFINITY;

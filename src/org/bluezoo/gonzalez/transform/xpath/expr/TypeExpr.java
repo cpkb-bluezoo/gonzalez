@@ -369,9 +369,18 @@ public class TypeExpr implements Expr {
                     return castToGType(sourceValue, value, "gDay");
                     
                 case "anyURI":
-                case "QName":
+                    return new XPathAnyURI(value);
+                case "QName": {
+                    int colonPos = value.indexOf(':');
+                    if (colonPos > 0) {
+                        String prefix = value.substring(0, colonPos);
+                        String local = value.substring(colonPos + 1);
+                        return new XPathQName("", prefix, local);
+                    }
+                    return XPathQName.of(value);
+                }
                 case "untypedAtomic":
-                    return new XPathString(value);
+                    return new XPathUntypedAtomic(value);
                     
                 default:
                     // Unknown type - return as string

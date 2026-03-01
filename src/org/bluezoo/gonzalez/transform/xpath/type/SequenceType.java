@@ -217,6 +217,43 @@ public class SequenceType {
      * @param str the string to process
      * @return the string with XPath comments removed
      */
+    /**
+     * Normalizes whitespace before parentheses in type strings,
+     * e.g. "element ()" becomes "element()", "element ( name )" becomes "element(name)".
+     */
+    private static String normalizeTypeWhitespace(String str) {
+        if (str == null || !str.contains("(")) {
+            return str;
+        }
+        StringBuilder sb = new StringBuilder();
+        int len = str.length();
+        for (int i = 0; i < len; i++) {
+            char ch = str.charAt(i);
+            if (ch == ' ' || ch == '\t') {
+                int next = i + 1;
+                while (next < len && (str.charAt(next) == ' ' || str.charAt(next) == '\t')) {
+                    next++;
+                }
+                if (next < len && str.charAt(next) == '(') {
+                    continue;
+                }
+                sb.append(ch);
+            } else if (ch == '(' || ch == ')') {
+                sb.append(ch);
+                int next = i + 1;
+                while (next < len && (str.charAt(next) == ' ' || str.charAt(next) == '\t')) {
+                    next++;
+                }
+                if (next > i + 1) {
+                    i = next - 1;
+                }
+            } else {
+                sb.append(ch);
+            }
+        }
+        return sb.toString();
+    }
+
     private static String stripXPathComments(String str) {
         if (str == null || !str.contains("(:")) {
             return str;
@@ -370,15 +407,13 @@ public class SequenceType {
                 return true;  // Any item matches
                 
             case NODE:
-                // Check for node-set, result tree fragments, and sequences containing nodes
-                if (value instanceof XPathNodeSet) {
+                if (value instanceof XPathNode || value instanceof XPathNodeSet) {
                     return true;
                 }
                 if (value instanceof XPathResultTreeFragment) {
-                    return true;  // Result tree fragments are nodes
+                    return true;
                 }
                 if (value instanceof XPathSequence) {
-                    // Check if sequence contains only nodes
                     XPathSequence seq = (XPathSequence) value;
                     for (XPathValue item : seq) {
                         if (!(item instanceof XPathNode) && !(item instanceof XPathNodeSet) && !(item instanceof XPathResultTreeFragment)) {
@@ -408,7 +443,8 @@ public class SequenceType {
             case COMMENT:
             case PROCESSING_INSTRUCTION:
             case DOCUMENT_NODE:
-                return value instanceof XPathNodeSet;  // Simplified
+            case NAMESPACE_NODE:
+                return matchesNodeKind(value);
 
             case MAP:
                 return value instanceof XPathMap;
@@ -466,15 +502,13 @@ public class SequenceType {
                 return true;
                 
             case NODE:
-                // Check for node-set, result tree fragments, and sequences containing nodes
-                if (value instanceof XPathNodeSet) {
+                if (value instanceof XPathNode || value instanceof XPathNodeSet) {
                     return true;
                 }
                 if (value instanceof XPathResultTreeFragment) {
-                    return true;  // Result tree fragments are nodes
+                    return true;
                 }
                 if (value instanceof XPathSequence) {
-                    // Check if sequence contains only nodes
                     XPathSequence seq = (XPathSequence) value;
                     for (XPathValue item : seq) {
                         if (!(item instanceof XPathNode) && !(item instanceof XPathNodeSet) && !(item instanceof XPathResultTreeFragment)) {
@@ -504,7 +538,8 @@ public class SequenceType {
             case COMMENT:
             case PROCESSING_INSTRUCTION:
             case DOCUMENT_NODE:
-                return value instanceof XPathNodeSet;
+            case NAMESPACE_NODE:
+                return matchesNodeKind(value);
 
             case MAP:
                 return value instanceof XPathMap;
@@ -1050,6 +1085,24 @@ public class SequenceType {
         return 1;
     }
     
+    private boolean matchesNodeKind(XPathValue value) {
+        if (value instanceof XPathNode) {
+            return true;
+        }
+        if (value instanceof XPathNodeSet) {
+            return true;
+        }
+        if (value instanceof XPathSequence) {
+            for (XPathValue item : (XPathSequence) value) {
+                if (!(item instanceof XPathNode) && !(item instanceof XPathNodeSet)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
     private boolean matchesAtomicType(XPathValue value) {
         if (localName == null) {
             return true;
@@ -1093,9 +1146,12 @@ public class SequenceType {
             case "ID":
             case "IDREF":
             case "ENTITY":
+                // xs:string and subtypes: match XPathString but NOT XPathUntypedAtomic
+                return (value instanceof XPathString && !(value instanceof XPathUntypedAtomic)) ||
+                       value instanceof XPathAtomicValue;
+                
             case "anyURI":
-                return value instanceof XPathAnyURI || 
-                       value instanceof XPathString || value instanceof XPathAtomicValue;
+                return value instanceof XPathAnyURI || value instanceof XPathAtomicValue;
                 
             case "integer":
             case "int":
@@ -1172,12 +1228,13 @@ public class SequenceType {
                 
             case "QName":
             case "NOTATION":
-                return value instanceof XPathQName ||
-                       value instanceof XPathString || value instanceof XPathAtomicValue;
+                return value instanceof XPathQName || value instanceof XPathAtomicValue;
                 
             case "untypedAtomic":
+                return value instanceof XPathUntypedAtomic || value instanceof XPathAtomicValue;
+                
             case "anyAtomicType":
-                // These match any atomic value
+                // anyAtomicType matches any atomic value
                 return value instanceof XPathAtomicValue || 
                        value instanceof XPathTypedAtomic ||
                        value instanceof XPathString ||
@@ -1220,6 +1277,9 @@ public class SequenceType {
         // Strip XPath comments (: ... :) from the type string
         // This is valid in XPath expressions but should be ignored in SequenceType parsing
         type = stripXPathComments(type);
+        
+        // Normalize whitespace before parentheses: "element (" -> "element("
+        type = normalizeTypeWhitespace(type);
         
         // Parse occurrence indicator (at end, with optional space)
         Occurrence occ = Occurrence.ONE;

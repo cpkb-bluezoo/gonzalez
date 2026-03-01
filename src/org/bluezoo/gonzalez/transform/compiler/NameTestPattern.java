@@ -34,18 +34,32 @@ final class NameTestPattern extends AbstractPattern {
 
     private final NodeTest nodeTest;
     private final double priority;
+    private final boolean requiresDocumentRoot;
 
     NameTestPattern(String patternStr, String predicateStr, NodeTest nodeTest,
                     double priority) {
+        this(patternStr, predicateStr, nodeTest, priority, false);
+    }
+
+    NameTestPattern(String patternStr, String predicateStr, NodeTest nodeTest,
+                    double priority, boolean requiresDocumentRoot) {
         super(patternStr, predicateStr);
         this.nodeTest = nodeTest;
         this.priority = priority;
+        this.requiresDocumentRoot = requiresDocumentRoot;
     }
 
     @Override
     boolean matchesBase(XPathNode node, TransformContext context,
                         XPathNode targetNode) {
-        return nodeTest.matches(node);
+        if (!nodeTest.matches(node)) {
+            return false;
+        }
+        if (requiresDocumentRoot) {
+            XPathNode root = node.getRoot();
+            return root != null && root.isRoot();
+        }
+        return true;
     }
 
     @Override

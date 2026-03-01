@@ -89,13 +89,22 @@ final class PathPattern extends AbstractPattern {
                             evaluateStepPredicate(current, context, targetNode,
                                                   step.predicateStr,
                                                   step.nodeTest)) {
-                            // For absolute patterns at the outermost step, verify
-                            // this ancestor is a child of the document root
                             if (isAbsolute && i == 0) {
-                                XPathNode root = current.getParent();
-                                if (root != null && root.getParent() == null) {
-                                    found = true;
-                                    break;
+                                if (step.axis == PatternStep.AXIS_DESCENDANT ||
+                                    step.axis == PatternStep.AXIS_DESCENDANT_OR_SELF) {
+                                    // // pattern: just verify a document root exists above
+                                    XPathNode r = current.getRoot();
+                                    if (r != null && r.isRoot()) {
+                                        found = true;
+                                        break;
+                                    }
+                                } else {
+                                    // / pattern: ancestor must be direct child of root
+                                    XPathNode root = current.getParent();
+                                    if (root != null && root.getParent() == null && root.isRoot()) {
+                                        found = true;
+                                        break;
+                                    }
                                 }
                                 // Not under root - keep searching ancestors
                             } else {
@@ -138,11 +147,18 @@ final class PathPattern extends AbstractPattern {
             }
         }
 
-        // If absolute, the outermost matched ancestor's parent must be the
-        // document root (i.e., a node with no parent of its own)
+        // If absolute, verify a document root exists in the ancestor chain
         if (isAbsolute) {
+            if (steps.length > 0 &&
+                (steps[0].axis == PatternStep.AXIS_DESCENDANT ||
+                 steps[0].axis == PatternStep.AXIS_DESCENDANT_OR_SELF)) {
+                // // pattern: document root must exist somewhere above
+                XPathNode root = current.getRoot();
+                return root != null && root.isRoot();
+            }
+            // / pattern: parent must be the document root
             XPathNode root = current.getParent();
-            return root != null && root.getParent() == null;
+            return root != null && root.getParent() == null && root.isRoot();
         }
 
         return true;

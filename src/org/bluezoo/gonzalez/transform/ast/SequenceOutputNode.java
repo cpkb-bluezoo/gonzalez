@@ -21,10 +21,12 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.util.Collections;
 import java.util.Iterator;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
@@ -50,6 +52,24 @@ public class SequenceOutputNode extends XSLTInstruction {
             XPathValue result = selectExpr.evaluate(context);
             
             if (result == null) {
+                return;
+            }
+            
+            // When building a sequence, add items directly to preserve
+            // node identity (xsl:sequence returns nodes by reference)
+            if (output instanceof SequenceBuilderOutputHandler) {
+                SequenceBuilderOutputHandler seqBuilder = (SequenceBuilderOutputHandler) output;
+                if (result instanceof XPathSequence) {
+                    for (XPathValue item : (XPathSequence) result) {
+                        seqBuilder.addItem(item);
+                    }
+                } else if (result instanceof XPathNodeSet) {
+                    for (XPathNode node : ((XPathNodeSet) result).getNodes()) {
+                        seqBuilder.addItem(new XPathNodeSet(Collections.singletonList(node)));
+                    }
+                } else {
+                    seqBuilder.addItem(result);
+                }
                 return;
             }
             

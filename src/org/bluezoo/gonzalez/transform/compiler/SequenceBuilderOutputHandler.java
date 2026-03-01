@@ -163,11 +163,13 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
                     // The RTF root contains the element as a child - extract it
                     XPathNode root = nodeSet.iterator().next();
                     if (root.getNodeType() == NodeType.ROOT) {
-                        // Get the first element child
+                        // Get the first element child and detach from RTF root
+                        // to make it parentless per XSLT 3.0 sequence semantics
                         Iterator<XPathNode> children = root.getChildren();
                         while (children.hasNext()) {
                             XPathNode child = children.next();
                             if (child.getNodeType() == NodeType.ELEMENT) {
+                                XPathResultTreeFragment.detachNode(child);
                                 items.add(new XPathNodeSet(Collections.singletonList(child)));
                                 break;
                             }

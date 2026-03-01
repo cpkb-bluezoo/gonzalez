@@ -52,6 +52,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathAnyURI;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
@@ -410,9 +411,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     throw new XPathException("Invalid xs:boolean: " + value);
                 }
             case "anyURI":
-                return XPathString.of(value);  // Just return as string for now
-            case "QName":
-                return XPathString.of(value);  // Just return as string for now
+                return new XPathAnyURI(value);
+            case "QName": {
+                int colonPos = value.indexOf(':');
+                if (colonPos > 0) {
+                    String prefix = value.substring(0, colonPos);
+                    String local = value.substring(colonPos + 1);
+                    return new XPathQName("", prefix, local);
+                }
+                return XPathQName.of(value);
+            }
             case "base64Binary":
                 // Validate base64 encoding
                 String b64 = value.replaceAll("\\s+", "");  // Remove whitespace
@@ -467,7 +475,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             case "IDREF":
             case "ENTITY":
             case "untypedAtomic":
-                return XPathString.of(value);
+                return XPathUntypedAtomic.ofUntyped(value);
             default:
                 // For other types, return as string (basic support)
                 return XPathString.of(value);

@@ -3919,12 +3919,33 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        // Create a TemplateRule for each mode in the mode list
-        // #all means the template applies to all modes (default + all named)
-        for (String expandedMode : expandedModes) {
-            TemplateRule rule = new TemplateRule(pattern, expandedName, expandedMode, priority, 
-                importPrecedence, nextTemplateIndex(), params, body, asType, visibility);
-            builder.addTemplateRule(rule);
+        // Expand union patterns into separate template rules (per XSLT spec)
+        // Each alternative gets its own default priority.
+        // Only expand when no explicit priority is given — when explicit,
+        // all alternatives share the same priority and are treated as one rule.
+        if (pattern instanceof UnionPattern && priorityStr == null) {
+            Pattern[] alternatives =
+                ((UnionPattern) pattern).getAlternatives();
+            for (String expandedMode : expandedModes) {
+                for (int pi = 0; pi < alternatives.length; pi++) {
+                    Pattern p = alternatives[pi];
+                    double rulePriority = p.getDefaultPriority();
+                    // Only first alternative gets the template name
+                    String ruleName = (pi == 0) ? expandedName : null;
+                    TemplateRule rule = new TemplateRule(p, ruleName,
+                        expandedMode, rulePriority, importPrecedence,
+                        nextTemplateIndex(), params, body, asType,
+                        visibility);
+                    builder.addTemplateRule(rule);
+                }
+            }
+        } else {
+            for (String expandedMode : expandedModes) {
+                TemplateRule rule = new TemplateRule(pattern, expandedName,
+                    expandedMode, priority, importPrecedence,
+                    nextTemplateIndex(), params, body, asType, visibility);
+                builder.addTemplateRule(rule);
+            }
         }
     }
 
@@ -5451,6 +5472,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             return new SequenceOutputNode(compileExpression(select));
         } else {
+            // XSLT 2.0: xsl:sequence requires a select attribute
+            if (stylesheetVersion < 3.0) {
+                throw new SAXException("XTSE0010: xsl:sequence requires a select " +
+                    "attribute in XSLT " + stylesheetVersion);
+            }
             return new SequenceNode(new ArrayList<>(ctx.children));
         }
     }
@@ -7139,7 +7165,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Resolve namespace prefixes in the pattern before compilation
         String resolvedPattern = resolvePatternNamespaces(pattern);
         try {
-            return PatternParser.parse(resolvedPattern);
+            return PatternParser.parse(resolvedPattern, stylesheetVersion);
         } catch (IllegalArgumentException e) {
             throw new SAXException(e.getMessage());
         }
@@ -7194,8 +7220,6 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XPST0017: key() in patterns must have literal arguments");
         }
         
-        // Note: XSLT 3.0 processors accept parenthesized patterns, variable refs,
-        // and doc() in patterns regardless of the stylesheet version attribute.
     }
     
     /**
@@ -7328,6 +7352,28 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * key('name', 'value') and key('name', $var) are allowed,
      * but key('name', 1+2) or key('name', foo()) are not.
      */
+    /**
+     * Checks if a pattern contains a variable reference ($name) outside
+     * of quoted strings. Used to reject XSLT 3.0 variable patterns in
+     * XSLT 2.0 stylesheets.
+     */
+    private static boolean containsVariableRef(String pattern) {
+        boolean inQuote = false;
+        char quoteChar = 0;
+        for (int i = 0; i < pattern.length(); i++) {
+            char c = pattern.charAt(i);
+            if (!inQuote && (c == '\'' || c == '"')) {
+                inQuote = true;
+                quoteChar = c;
+            } else if (inQuote && c == quoteChar) {
+                inQuote = false;
+            } else if (!inQuote && c == '$') {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean hasKeyWithNonLiteralArg(String pattern) {
         int idx = 0;
         while ((idx = pattern.indexOf("key(", idx)) != -1) {

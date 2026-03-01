@@ -89,10 +89,14 @@ public final class PathExpr implements Expr {
                 }
             }
         } else if (filterResult.isSequence()) {
-            // XPath 2.0+: sequences may contain nodes
+            // XPath 2.0+: sequences may contain nodes or node-sets
             for (XPathValue item : (XPathSequence) filterResult) {
                 if (item instanceof XPathNode) {
                     contextNodes.add((XPathNode) item);
+                } else if (item instanceof XPathNodeSet) {
+                    for (XPathNode n : ((XPathNodeSet) item).getNodes()) {
+                        contextNodes.add(n);
+                    }
                 }
             }
         } else if (filterResult instanceof XPathNode) {

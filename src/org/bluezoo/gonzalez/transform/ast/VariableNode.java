@@ -41,6 +41,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -193,17 +194,17 @@ public class VariableNode extends XSLTInstruction {
                 value = XPathString.of("");
             }
             
-            // XTTE0570: Check value against declared 'as' type.
-            // Only check when using select expression (content construction
-            // creates the right node types by definition) and only for atomic
-            // types where we can reliably determine mismatches.
-            if (parsedAsType != null && selectExpr != null) {
+            // XTTE0570: Check value against declared 'as' type
+            // Skip atomic type checks when value contains elements or attributes (atomization needed)
+            if (parsedAsType != null && value != null) {
+                boolean shouldValidate = true;
                 if (parsedAsType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
-                    if (!parsedAsType.matches(value)) {
-                        throw new XPathException("XTTE0570: Variable $" + localName +
-                            ": required type is " + asType +
-                            ", supplied value does not match");
-                    }
+                    shouldValidate = !containsAtomizableNodes(value);
+                }
+                if (shouldValidate && !parsedAsType.matches(value, SchemaContext.NONE)) {
+                    throw new XPathException("XTTE0570: Variable $" + localName +
+                        ": required type is " + asType +
+                        ", supplied value does not match");
                 }
             }
             
@@ -221,6 +222,39 @@ public class VariableNode extends XSLTInstruction {
      * We mark item boundaries between instructions to ensure text nodes
      * from different instructions don't get merged.
      */
+    /**
+     * Returns true if the value contains element or attribute nodes that would
+     * need atomization before being compared to an atomic type.
+     * Text nodes are excluded since their string value is already the atomic value.
+     */
+    private static boolean containsAtomizableNodes(XPathValue value) {
+        if (value instanceof XPathResultTreeFragment) {
+            return true;
+        }
+        if (value instanceof XPathNode) {
+            NodeType nt = ((XPathNode) value).getNodeType();
+            return nt == NodeType.ELEMENT || nt == NodeType.ATTRIBUTE;
+        }
+        if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            for (XPathNode node : ns.getNodes()) {
+                NodeType nt = node.getNodeType();
+                if (nt == NodeType.ELEMENT || nt == NodeType.ATTRIBUTE) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (value instanceof XPathSequence) {
+            for (XPathValue item : (XPathSequence) value) {
+                if (containsAtomizableNodes(item)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private XPathValue executeSequenceConstructor(TransformContext context) throws SAXException {
         SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
         // Execute each child instruction with item boundaries
