@@ -371,8 +371,12 @@ public final class ForEachGroupNode implements XSLTNode {
             case GROUP_ADJACENT:
                 return groupAdjacent(items, groupAdjacentExpr, context, collation);
             case GROUP_STARTING_WITH:
+                // XTTE1120: items must be nodes for pattern matching
+                validateItemsAreNodes(items, "group-starting-with");
                 return groupStartingWith(items, groupStartingPattern, context);
             case GROUP_ENDING_WITH:
+                // XTTE1120: items must be nodes for pattern matching
+                validateItemsAreNodes(items, "group-ending-with");
                 return groupEndingWith(items, groupEndingPattern, context);
             default:
                 return groupByKey(items, groupByExpr, context, collation);
@@ -501,6 +505,14 @@ public final class ForEachGroupNode implements XSLTNode {
             if (composite) {
                 key = compositeKeyString(keyResult);
             } else {
+                // XTTE1100: group-adjacent key must evaluate to a single atomic value
+                if (keyResult instanceof XPathSequence) {
+                    int count = ((XPathSequence) keyResult).getItems().size();
+                    if (count == 0 || count > 1) {
+                        throw new XPathException("XTTE1100: The group-adjacent key expression " +
+                            "evaluates to a sequence of " + count + " items (expected exactly one)");
+                    }
+                }
                 key = keyResult.asString();
             }
 
@@ -724,6 +736,16 @@ public final class ForEachGroupNode implements XSLTNode {
         }
 
         return cmp;
+    }
+
+    private static void validateItemsAreNodes(List<XPathValue> items, String method)
+            throws XPathException {
+        for (XPathValue item : items) {
+            if (!(item instanceof XPathNode) && !item.isNodeSet()) {
+                throw new XPathException("XTTE1120: Population for " + method +
+                    " must consist of nodes, but found " + item.getClass().getSimpleName());
+            }
+        }
     }
 
     @Override

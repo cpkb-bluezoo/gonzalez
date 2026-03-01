@@ -76,6 +76,12 @@ public class AnalyzeStringNode extends XSLTInstruction {
             int patternFlags = 0;
             if (flagsAvt != null) {
                 String flags = flagsAvt.evaluate(context);
+                for (int i = 0; i < flags.length(); i++) {
+                    char c = flags.charAt(i);
+                    if (c != 'i' && c != 'm' && c != 's' && c != 'x') {
+                        throw new SAXException("XTDE1145: Invalid flag character '" + c + "' in xsl:analyze-string flags. Valid flags are: s, m, i, x");
+                    }
+                }
                 if (flags.contains("i")) patternFlags |= java.util.regex.Pattern.CASE_INSENSITIVE;
                 if (flags.contains("m")) patternFlags |= java.util.regex.Pattern.MULTILINE;
                 if (flags.contains("s")) patternFlags |= java.util.regex.Pattern.DOTALL;

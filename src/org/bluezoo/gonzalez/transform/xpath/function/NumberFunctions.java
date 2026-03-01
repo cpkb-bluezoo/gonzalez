@@ -30,6 +30,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.math.BigDecimal;
@@ -150,13 +151,19 @@ public final class NumberFunctions {
                     return durationSum;
                 }
                 
-                // Numeric sum
+                // Numeric sum - check first item type compatibility
+                if (first instanceof XPathString && !(first instanceof XPathUntypedAtomic)) {
+                    throw new XPathException("FORG0006: Cannot use string value in sum()");
+                }
                 double sum = first.asNumber();
                 if (Double.isNaN(sum)) {
                     return XPathNumber.NaN;
                 }
                 while (iter.hasNext()) {
                     XPathValue item = iter.next();
+                    if (item instanceof XPathString && !(item instanceof XPathUntypedAtomic)) {
+                        throw new XPathException("FORG0006: Cannot use string value in sum()");
+                    }
                     double num = item.asNumber();
                     if (Double.isNaN(num)) {
                         return XPathNumber.NaN;
@@ -389,6 +396,14 @@ public final class NumberFunctions {
                 }
                 return minValue;
             } else {
+                // FORG0006: if neither allStrings nor allDateTimes, check for mixed types
+                // xs:untypedAtomic is promotable to xs:double so it's allowed in numeric context
+                for (XPathValue v : items) {
+                    if ((v instanceof XPathString && !(v instanceof XPathUntypedAtomic))
+                            || v instanceof XPathDateTime) {
+                        throw new XPathException("FORG0006: Incompatible types in min() sequence");
+                    }
+                }
                 // Numeric comparison
                 double min = Double.POSITIVE_INFINITY;
                 for (XPathValue item : items) {
@@ -469,6 +484,14 @@ public final class NumberFunctions {
                 }
                 return maxValue;
             } else {
+                // FORG0006: if neither allStrings nor allDateTimes, check for mixed types
+                // xs:untypedAtomic is promotable to xs:double so it's allowed in numeric context
+                for (XPathValue v : items) {
+                    if ((v instanceof XPathString && !(v instanceof XPathUntypedAtomic))
+                            || v instanceof XPathDateTime) {
+                        throw new XPathException("FORG0006: Incompatible types in max() sequence");
+                    }
+                }
                 // Numeric comparison
                 double max = Double.NEGATIVE_INFINITY;
                 for (XPathValue item : items) {

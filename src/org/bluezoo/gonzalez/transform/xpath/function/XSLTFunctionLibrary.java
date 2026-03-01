@@ -1205,7 +1205,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         // Create new variable scope for function execution
         // Per XSLT spec, user-defined functions start with empty tunnel parameter context
-        TransformContext funcContext = context.pushVariableScope().withNoTunnelParameters();
+        // and no context item (XPDY0002 if '.' or '//' is used in function body)
+        TransformContext funcContext = context.pushVariableScope().withNoTunnelParameters()
+            .withContextNode(null);
+        if (funcContext instanceof org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) {
+            ((org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) funcContext)
+                .setContextItemUndefined(true);
+        }
         
         // Bind parameters to arguments
         List<UserFunction.FunctionParameter> params = function.getParameters();
@@ -1452,7 +1458,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             // which stays the same during predicate evaluation unlike the context node
             XPathNode node = context.getXsltCurrentNode();
             if (node == null) {
-                return XPathNodeSet.empty();
+                // XTDE1360: current() requires a context item
+                throw new XPathException("XTDE1360: The context item for current() is absent");
             }
             List<XPathNode> nodes = new ArrayList<>();
             nodes.add(node);
@@ -1520,18 +1527,26 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     }
                 }
                 if (topNode == null) {
-                    return XPathNodeSet.empty();
+                    throw new XPathException("XTDE1270: Third argument to key() is not a node");
                 }
                 root = topNode.getRoot();
+                // XTDE1270: root must be a document node
+                if (root == null || root.getNodeType() != NodeType.ROOT) {
+                    throw new XPathException("XTDE1270: The root of the tree containing the " +
+                        "third argument to key() is not a document node");
+                }
             } else {
                 XPathNode contextNode = context.getContextNode();
                 if (contextNode == null) {
-                    return XPathNodeSet.empty();
+                    throw new XPathException("XTDE1270: key() with two arguments requires " +
+                        "a context node, but the context item is absent");
                 }
                 root = contextNode.getRoot();
-            }
-            if (root == null) {
-                return XPathNodeSet.empty();
+                // XTDE1270: root must be a document node
+                if (root == null || root.getNodeType() != NodeType.ROOT) {
+                    throw new XPathException("XTDE1270: The root of the tree containing the " +
+                        "context node is not a document node");
+                }
             }
             
             // Collect search values from the second argument
@@ -2513,6 +2528,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String name = args.get(0).asString();
             
+            // XTDE1440: argument must be a valid lexical QName
+            if (name == null || name.isEmpty()) {
+                throw new XPathException("XTDE1440: Argument to element-available() " +
+                    "is not a valid QName: empty string");
+            }
+            if (!isValidQNameForElementAvailable(name)) {
+                throw new XPathException("XTDE1440: Argument to element-available() " +
+                    "is not a valid QName: '" + name + "'");
+            }
+            
             // Resolve the prefix to a namespace URI
             String localName = null;
             String nsUri = null;
@@ -2521,6 +2546,10 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 String prefix = name.substring(0, colonPos);
                 localName = name.substring(colonPos + 1);
                 nsUri = context.resolveNamespacePrefix(prefix);
+                if (nsUri == null) {
+                    throw new XPathException("XTDE1440: Prefix '" + prefix +
+                        "' in element-available() argument is not in scope");
+                }
             } else {
                 localName = name;
             }
@@ -2530,6 +2559,45 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             }
             
             return XPathBoolean.FALSE;
+        }
+        
+        private static boolean isValidQNameForElementAvailable(String name) {
+            int colonIdx = name.indexOf(':');
+            if (colonIdx == 0 || colonIdx == name.length() - 1) {
+                return false;
+            }
+            String checkPart = colonIdx > 0 ? name.substring(0, colonIdx) : name;
+            if (!isValidNCNameStart(checkPart.charAt(0))) {
+                return false;
+            }
+            for (int i = 1; i < checkPart.length(); i++) {
+                if (!isValidNCNameChar(checkPart.charAt(i))) {
+                    return false;
+                }
+            }
+            if (colonIdx > 0) {
+                String local = name.substring(colonIdx + 1);
+                if (local.isEmpty() || local.contains(":")) {
+                    return false;
+                }
+                if (!isValidNCNameStart(local.charAt(0))) {
+                    return false;
+                }
+                for (int i = 1; i < local.length(); i++) {
+                    if (!isValidNCNameChar(local.charAt(i))) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        
+        private static boolean isValidNCNameStart(char c) {
+            return Character.isLetter(c) || c == '_';
+        }
+        
+        private static boolean isValidNCNameChar(char c) {
+            return Character.isLetterOrDigit(c) || c == '_' || c == '-' || c == '.';
         }
         
         private static final String XSLT_NS = "http://www.w3.org/1999/XSL/Transform";
@@ -2866,6 +2934,17 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // XTDE1370: context node must exist and its root must be a document node
+            XPathNode contextNode = context.getContextNode();
+            if (contextNode == null) {
+                throw new XPathException("XTDE1370: unparsed-entity-uri() requires a context " +
+                    "node, but the context item is absent");
+            }
+            XPathNode root = contextNode.getRoot();
+            if (root == null || root.getNodeType() != NodeType.ROOT) {
+                throw new XPathException("XTDE1370: The root of the tree containing the " +
+                    "context node is not a document node");
+            }
             // Would need access to DTD declarations
             return XPathString.of("");
         }

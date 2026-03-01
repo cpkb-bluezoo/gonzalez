@@ -122,6 +122,13 @@ public final class ResultDocumentNode implements XSLTNode {
 
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
+        // XTDE1480: xsl:result-document must not be evaluated in temporary output state
+        if (output instanceof org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler
+                || output instanceof org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler) {
+            throw new SAXException("XTDE1480: xsl:result-document cannot be evaluated " +
+                "while writing to a temporary tree (e.g. inside a variable or function)");
+        }
+        
         // Evaluate href AVT to get output URI
         String href = null;
         if (hrefAvt != null) {
@@ -142,8 +149,11 @@ public final class ResultDocumentNode implements XSLTNode {
         
         try {
             if (href != null && !href.isEmpty()) {
-                // Create file output for secondary document
+                // XTDE1490: check for duplicate result document URI
                 URI uri = resolveHref(href, context);
+                context.claimResultDocumentUri(uri.toString());
+                
+                // Create file output for secondary document
                 java.io.File outFile = new java.io.File(uri.getPath());
                 java.io.File parentDir = outFile.getParentFile();
                 if (parentDir != null && !parentDir.exists()) {

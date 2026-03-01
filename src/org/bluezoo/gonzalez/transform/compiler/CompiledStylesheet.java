@@ -319,6 +319,9 @@ public final class CompiledStylesheet {
         private String globalContextItemType;  // XSLT 3.0
         private String globalContextItemUse;   // XSLT 3.0
         private String packageName;  // XSLT 3.0 package name
+        // Tracks output attributes per named output definition for XTSE1560 conflict detection
+        // Key: output-name (empty string for unnamed), Value: map of attr-name -> attr-value
+        private final Map<String, Map<String, String>> outputAttributeValues = new HashMap<>();
         private String packageVersion;  // XSLT 3.0 package version
         private String defaultMode;  // XSLT 3.0 default-mode from stylesheet element
 
@@ -513,6 +516,26 @@ public final class CompiledStylesheet {
         }
 
         /**
+         * Merges an output attribute value, detecting XTSE1560 conflicts.
+         */
+        public void mergeOutputAttribute(String outputName, String attrName, String attrValue)
+                throws SAXException {
+            String key = outputName != null ? outputName : "";
+            Map<String, String> existing = outputAttributeValues.get(key);
+            if (existing == null) {
+                existing = new HashMap<>();
+                outputAttributeValues.put(key, existing);
+            }
+            String prev = existing.get(attrName);
+            if (prev != null && !prev.equals(attrValue)) {
+                String desc = key.isEmpty() ? "unnamed" : "'" + key + "'";
+                throw new SAXException("XTSE1560: Conflicting values for " + attrName +
+                    " in " + desc + " output definition: '" + prev + "' vs '" + attrValue + "'");
+            }
+            existing.put(attrName, attrValue);
+        }
+
+        /**
          * Adds a key definition to the stylesheet.
          *
          * @param key the key definition
@@ -646,29 +669,29 @@ public final class CompiledStylesheet {
             String key = name != null ? name : "";
             String[] existingRaw = decimalFormatRaw.get(key);
             if (existingRaw != null) {
-                decimalSeparator = mergeRaw(decimalSeparator, existingRaw[0]);
-                groupingSeparator = mergeRaw(groupingSeparator, existingRaw[1]);
-                infinity = mergeRaw(infinity, existingRaw[2]);
-                minusSign = mergeRaw(minusSign, existingRaw[3]);
-                nan = mergeRaw(nan, existingRaw[4]);
-                percent = mergeRaw(percent, existingRaw[5]);
-                perMille = mergeRaw(perMille, existingRaw[6]);
-                zeroDigit = mergeRaw(zeroDigit, existingRaw[7]);
-                digit = mergeRaw(digit, existingRaw[8]);
-                patternSeparator = mergeRaw(patternSeparator, existingRaw[9]);
+                decimalSeparator = mergeRaw(decimalSeparator, existingRaw[0], "decimal-separator", name);
+                groupingSeparator = mergeRaw(groupingSeparator, existingRaw[1], "grouping-separator", name);
+                infinity = mergeRaw(infinity, existingRaw[2], "infinity", name);
+                minusSign = mergeRaw(minusSign, existingRaw[3], "minus-sign", name);
+                nan = mergeRaw(nan, existingRaw[4], "NaN", name);
+                percent = mergeRaw(percent, existingRaw[5], "percent", name);
+                perMille = mergeRaw(perMille, existingRaw[6], "per-mille", name);
+                zeroDigit = mergeRaw(zeroDigit, existingRaw[7], "zero-digit", name);
+                digit = mergeRaw(digit, existingRaw[8], "digit", name);
+                patternSeparator = mergeRaw(patternSeparator, existingRaw[9], "pattern-separator", name);
             } else {
                 DecimalFormatInfo existingInfo = decimalFormats.get(key);
                 if (existingInfo != null) {
-                    decimalSeparator = mergeRaw(decimalSeparator, charToStr(existingInfo.decimalSeparator));
-                    groupingSeparator = mergeRaw(groupingSeparator, charToStr(existingInfo.groupingSeparator));
-                    infinity = mergeRaw(infinity, existingInfo.infinity);
-                    minusSign = mergeRaw(minusSign, charToStr(existingInfo.minusSign));
-                    nan = mergeRaw(nan, existingInfo.nan);
-                    percent = mergeRaw(percent, charToStr(existingInfo.percent));
-                    perMille = mergeRaw(perMille, charToStr(existingInfo.perMille));
-                    zeroDigit = mergeRaw(zeroDigit, charToStr(existingInfo.zeroDigit));
-                    digit = mergeRaw(digit, charToStr(existingInfo.digit));
-                    patternSeparator = mergeRaw(patternSeparator, charToStr(existingInfo.patternSeparator));
+                    decimalSeparator = mergeRaw(decimalSeparator, charToStr(existingInfo.decimalSeparator), "decimal-separator", name);
+                    groupingSeparator = mergeRaw(groupingSeparator, charToStr(existingInfo.groupingSeparator), "grouping-separator", name);
+                    infinity = mergeRaw(infinity, existingInfo.infinity, "infinity", name);
+                    minusSign = mergeRaw(minusSign, charToStr(existingInfo.minusSign), "minus-sign", name);
+                    nan = mergeRaw(nan, existingInfo.nan, "NaN", name);
+                    percent = mergeRaw(percent, charToStr(existingInfo.percent), "percent", name);
+                    perMille = mergeRaw(perMille, charToStr(existingInfo.perMille), "per-mille", name);
+                    zeroDigit = mergeRaw(zeroDigit, charToStr(existingInfo.zeroDigit), "zero-digit", name);
+                    digit = mergeRaw(digit, charToStr(existingInfo.digit), "digit", name);
+                    patternSeparator = mergeRaw(patternSeparator, charToStr(existingInfo.patternSeparator), "pattern-separator", name);
                 }
             }
             decimalFormatRaw.put(key, new String[]{
@@ -698,6 +721,20 @@ public final class CompiledStylesheet {
             }
         }
         
+        private static String mergeRaw(String newVal, String existingVal, String attrName,
+                String formatName) throws SAXException {
+            if (newVal != null) {
+                // XTSE1290: detect conflicting values at same import precedence
+                if (existingVal != null && !newVal.equals(existingVal)) {
+                    String desc = formatName != null ? "'" + formatName + "'" : "(default)";
+                    throw new SAXException("XTSE1290: Conflicting values for " + attrName +
+                        " in decimal-format " + desc + ": '" + existingVal + "' vs '" + newVal + "'");
+                }
+                return newVal;
+            }
+            return existingVal;
+        }
+
         private static String mergeRaw(String newVal, String existingVal) {
             if (newVal != null) {
                 return newVal;

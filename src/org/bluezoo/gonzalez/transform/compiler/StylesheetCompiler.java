@@ -311,6 +311,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String xpathDefaultNamespace = null;  // XSLT 2.0+ xpath-default-namespace for XPath expressions
         String defaultCollation = null;  // XSLT 2.0+ default-collation for comparisons
         String defaultMode = null;  // XSLT 3.0 default-mode (null = inherit from parent)
+        final Set<String> childElementNames = new HashSet<>();  // Local names of XSLT child elements
         
         ElementContext(String namespaceURI, String localName, String originalPrefix) {
             this.namespaceURI = namespaceURI;
@@ -1059,6 +1060,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         String defaultNs = namespaces.get("");
                         if (defaultNs != null && !defaultNs.isEmpty()) {
                             excludedNamespaceURIs.add(defaultNs);
+                        } else {
+                            throw new SAXException("XTSE0809: #default used in " +
+                                "exclude-result-prefixes but no default namespace is declared");
                         }
                     } else {
                         String nsUri = namespaces.get(prefix);
@@ -1082,9 +1086,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         }
                     } else {
                         String nsUri = namespaces.get(prefix);
-                        if (nsUri != null && !nsUri.isEmpty()) {
-                            extensionNamespaceURIs.add(nsUri);
+                        if (nsUri == null || nsUri.isEmpty()) {
+                            throw new SAXException("XTSE1430: No namespace binding " +
+                                "in scope for prefix '" + prefix + "' in extension-element-prefixes");
                         }
+                        extensionNamespaceURIs.add(nsUri);
                     }
                 }
             }
@@ -1156,9 +1162,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         }
                     } else {
                         String nsUri = namespaces.get(prefix);
-                        if (nsUri != null && !nsUri.isEmpty()) {
-                            extensionNamespaceURIs.add(nsUri);
+                        if (nsUri == null || nsUri.isEmpty()) {
+                            throw new SAXException("XTSE1430: No namespace binding " +
+                                "in scope for prefix '" + prefix + "' in extension-element-prefixes");
                         }
+                        extensionNamespaceURIs.add(nsUri);
                     }
                 }
             }
@@ -1257,6 +1265,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // Add to parent's children
             if (node != null) {
                 elementStack.peek().children.add(node);
+            }
+            // Track child XSLT element names for parent validation
+            if (XSLT_NS.equals(ctx.namespaceURI)) {
+                elementStack.peek().childElementNames.add(ctx.localName);
             }
         }
     }
@@ -1458,6 +1470,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         excludedNamespaceURIs.add(defaultNs);
                         ctx.excludedByThisElement.add(defaultNs);
                     }
+                } else {
+                    throw new SAXException("XTSE0809: #default used in " +
+                        "exclude-result-prefixes but no default namespace is declared");
                 }
             } else {
                 String nsUri = namespaces.get(prefix);
@@ -1518,8 +1533,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 if (!fallbacks.isEmpty()) {
                     result = new SequenceNode(fallbacks);
                 } else {
-                    // No fallback - in XSLT 1.0 this is an error, but we'll return empty for now
-                    result = new SequenceNode(new ArrayList<>());
+                    // No fallback: XTDE1450 is a dynamic error raised at runtime
+                    // when the extension element is actually instantiated
+                    result = null;
                 }
             } else {
                 result = compileLiteralResultElement(ctx);
@@ -2069,6 +2085,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         validateSingleChar("zero-digit", zeroDigit);
         validateSingleChar("digit", digit);
         validateSingleChar("pattern-separator", patternSeparator);
+        
+        // XTSE1295: zero-digit must be a Unicode character with numeric value zero
+        if (zeroDigit != null && zeroDigit.length() == 1) {
+            int numericValue = Character.getNumericValue(zeroDigit.charAt(0));
+            if (numericValue != 0) {
+                throw new SAXException("XTSE1295: zero-digit character '" + zeroDigit +
+                    "' does not have numeric value zero");
+            }
+        }
         
         builder.addDecimalFormat(name, decimalSeparator, groupingSeparator,
             infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator);
@@ -4226,36 +4251,68 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                "http://www.w3.org/2001/XMLSchema-instance".equals(uri);
     }
 
-    private void processOutputElement(ElementContext ctx) {
+    private void processOutputElement(ElementContext ctx) throws SAXException {
         importsAllowed = false;
-        OutputProperties props = new OutputProperties();
         
         String method = ctx.attributes.get("method");
         if (method != null) {
-            props.setMethod(method);
+            method = method.trim();
+            // XTSE1570: method must be xml, html, xhtml, text, or a valid prefixed QName
+            if (!method.isEmpty()) {
+                int colonIdx = method.indexOf(':');
+                if (colonIdx < 0) {
+                    if (!"xml".equals(method) && !"html".equals(method) &&
+                            !"xhtml".equals(method) && !"text".equals(method) &&
+                            !"json".equals(method) && !"adaptive".equals(method)) {
+                        throw new SAXException("XTSE1570: Invalid output method '" + method +
+                            "'. Must be xml, html, xhtml, text, or a prefixed QName");
+                    }
+                } else {
+                    // Validate as a QName: must have exactly one colon, with non-empty parts
+                    String prefix = method.substring(0, colonIdx);
+                    String localPart = method.substring(colonIdx + 1);
+                    if (prefix.isEmpty() || localPart.isEmpty() || localPart.contains(":")) {
+                        throw new SAXException("XTSE1570: Invalid output method '" + method +
+                            "'. Not a valid QName");
+                    }
+                }
+            }
         }
         
+        String name = ctx.attributes.get("name");
+        
+        // XTSE1560: merge output attributes, detecting conflicts
+        String[] attrNames = {"method", "version", "encoding", "indent",
+            "omit-xml-declaration", "standalone", "doctype-public", "doctype-system",
+            "media-type", "byte-order-mark", "normalization-form"};
+        for (String attrName : attrNames) {
+            String val = ctx.attributes.get(attrName);
+            if (val != null) {
+                builder.mergeOutputAttribute(name, attrName, val);
+            }
+        }
+        
+        // Build the actual output properties from merged attributes
+        OutputProperties props = new OutputProperties();
+        if (method != null) {
+            props.setMethod(method);
+        }
         String version = ctx.attributes.get("version");
         if (version != null) {
             props.setVersion(version);
         }
-        
         String encoding = ctx.attributes.get("encoding");
         if (encoding != null) {
             props.setEncoding(encoding);
         }
-        
         String indent = ctx.attributes.get("indent");
         if ("yes".equals(indent)) {
             props.setIndent(true);
         }
-        
         String omitDecl = ctx.attributes.get("omit-xml-declaration");
         if ("yes".equals(omitDecl)) {
             props.setOmitXmlDeclaration(true);
         }
-        
-        // XSLT 2.0: use-character-maps attribute
         String useCharacterMaps = ctx.attributes.get("use-character-maps");
         if (useCharacterMaps != null && !useCharacterMaps.isEmpty()) {
             String[] mapNames = useCharacterMaps.split("\\s+");
@@ -4291,6 +4348,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Note: use is optional in XSLT 2.0+ (can have content instead)
         if (use == null && ctx.children.isEmpty()) {
             throw new SAXException("XTSE0010: xsl:key requires use attribute or content");
+        }
+        // XTSE1205: xsl:key must not have both use attribute and content
+        if (use != null && !ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
+            throw new SAXException("XTSE1205: xsl:key must not have both a use attribute and content");
         }
         
         // XTSE1210: collation URI must be recognized
@@ -5538,6 +5599,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
+        validateSortStable(sorts);
         return new ApplyTemplatesNode(selectExpr, expandedMode, sorts, params);
     }
 
@@ -5673,6 +5735,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // else: whitespace before/between sorts - strip it
         }
         
+        validateSortStable(sorts);
         return new ForEachNode(compileExpression(select), sorts, new SequenceNode(bodyNodes));
     }
 
@@ -6308,6 +6371,19 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XTSE1080: xsl:for-each-group must have exactly one of group-by, group-adjacent, group-starting-with, or group-ending-with");
         }
         
+        // XTSE1090: collation and composite are only allowed with group-by or group-adjacent
+        boolean hasGroupBy = groupBy != null && !groupBy.isEmpty();
+        boolean hasGroupAdjacent = groupAdjacent != null && !groupAdjacent.isEmpty();
+        if (collationStr != null && !collationStr.isEmpty() && !hasGroupBy && !hasGroupAdjacent) {
+            throw new SAXException("XTSE1090: collation attribute on xsl:for-each-group " +
+                "is only allowed when group-by or group-adjacent is specified");
+        }
+        String compositeStr = ctx.attributes.get("composite");
+        if (compositeStr != null && !hasGroupBy && !hasGroupAdjacent) {
+            throw new SAXException("XTSE1090: composite attribute on xsl:for-each-group " +
+                "is only allowed when group-by or group-adjacent is specified");
+        }
+        
         XPathExpression select = compileExpression(selectStr);
         
         // Extract xsl:sort specifications from children (same logic as xsl:for-each)
@@ -6355,10 +6431,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (collationStr != null && !collationStr.isEmpty()) {
             collationAvt = parseAvt(collationStr);
         }
-        
-        String compositeStr = ctx.attributes.get("composite");
         validateYesOrNo("xsl:for-each-group", "composite", compositeStr);
         boolean isComposite = "yes".equals(compositeStr) || "1".equals(compositeStr) || "true".equals(compositeStr);
+        validateSortStable(sorts);
 
         if (groupBy != null && !groupBy.isEmpty()) {
             XPathExpression groupByExpr = compileExpression(groupBy);
@@ -6428,9 +6503,23 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (sorts.isEmpty()) {
             throw new SAXException("XTSE0010: xsl:perform-sort requires at least one xsl:sort child");
         }
+        validateSortStable(sorts);
         
         XPathExpression selectExpr = select != null ? compileExpression(select) : null;
         XSLTNode content = contentNodes.isEmpty() ? null : new SequenceNode(contentNodes);
+        
+        // XTSE1040: if select is present, only xsl:sort and xsl:fallback are allowed
+        if (selectExpr != null && content != null) {
+            for (XSLTNode node : contentNodes) {
+                if (node instanceof LiteralText && isWhitespace(((LiteralText) node).getText())) {
+                    continue;
+                }
+                if (!(node instanceof FallbackNode)) {
+                    throw new SAXException("XTSE1040: xsl:perform-sort with select attribute " +
+                        "must not contain content other than xsl:sort and xsl:fallback");
+                }
+            }
+        }
         
         // If no select, the content must be present
         if (selectExpr == null && content == null) {
@@ -6628,6 +6717,14 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (regexStr == null || regexStr.isEmpty()) {
             throw new SAXException("xsl:analyze-string requires regex attribute");
+        }
+        
+        // XTSE1130: must have at least one of matching-substring or non-matching-substring
+        boolean hasMatching = ctx.childElementNames.contains("matching-substring");
+        boolean hasNonMatching = ctx.childElementNames.contains("non-matching-substring");
+        if (!hasMatching && !hasNonMatching) {
+            throw new SAXException("XTSE1130: xsl:analyze-string must contain at least one of " +
+                "xsl:matching-substring or xsl:non-matching-substring");
         }
         
         XPathExpression select = compileExpression(selectStr);
@@ -6866,6 +6963,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String caseOrder = ctx.attributes.get("case-order"); // "upper-first" or "lower-first"
         String lang = ctx.attributes.get("lang");
         String collation = ctx.attributes.get("collation");  // XSLT 2.0+ collation URI
+        String stable = ctx.attributes.get("stable");
         
         AttributeValueTemplate dataTypeAvt = dataType != null ? parseAvt(dataType) : null;
         AttributeValueTemplate orderAvt = order != null ? parseAvt(order) : null;
@@ -6874,7 +6972,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         AttributeValueTemplate collationAvt = collation != null ? parseAvt(collation) : null;
         
         SortSpec spec = new SortSpec(selectExpr, dataTypeAvt, orderAvt, caseOrderAvt, langAvt, collationAvt);
+        spec.setHasStable(stable != null);
         return new SortSpecNode(spec);
+    }
+
+    /**
+     * Validates XTSE1017: stable attribute is only allowed on the first xsl:sort.
+     */
+    private static void validateSortStable(List<SortSpec> sorts) throws SAXException {
+        for (int i = 1; i < sorts.size(); i++) {
+            if (sorts.get(i).hasStable()) {
+                throw new SAXException("XTSE1017: The stable attribute is only " +
+                    "allowed on the first xsl:sort element");
+            }
+        }
     }
 
     private XSLTNode compileNumber(ElementContext ctx) throws SAXException {
@@ -7161,6 +7272,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private Pattern compilePattern(String pattern) throws SAXException {
         // Validate pattern syntax based on XSLT version
         validatePattern(pattern);
+        
+        // XTSE1060: current-group() is not allowed in patterns
+        if (pattern != null && pattern.contains("current-group()")) {
+            throw new SAXException("XTSE1060: current-group() is not allowed in a pattern");
+        }
+        // XTSE1070: current-grouping-key() is not allowed in patterns
+        if (pattern != null && pattern.contains("current-grouping-key()")) {
+            throw new SAXException("XTSE1070: current-grouping-key() is not allowed in a pattern");
+        }
         
         // Resolve namespace prefixes in the pattern before compilation
         String resolvedPattern = resolvePatternNamespaces(pattern);

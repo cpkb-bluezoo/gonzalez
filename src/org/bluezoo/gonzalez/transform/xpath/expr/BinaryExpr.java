@@ -572,6 +572,9 @@ public final class BinaryExpr implements Expr {
                 result = leftNum * rightNum;
                 break;
             case DIV:
+                // IEEE 754: division by zero returns ±Infinity or NaN
+                // FOAR0001 only applies to xs:integer/xs:decimal operands but we
+                // cannot distinguish types at this level, so rely on idiv for that
                 result = leftNum / rightNum;
                 break;
             case IDIV:

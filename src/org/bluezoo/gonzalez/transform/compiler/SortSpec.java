@@ -37,6 +37,7 @@ public class SortSpec {
     private final AttributeValueTemplate caseOrderAvt;
     private final AttributeValueTemplate langAvt;
     private final AttributeValueTemplate collationAvt;
+    private boolean hasStable;
     
     public SortSpec(XPathExpression selectExpr, AttributeValueTemplate dataTypeAvt, 
                    AttributeValueTemplate orderAvt, AttributeValueTemplate caseOrderAvt, 
@@ -50,6 +51,10 @@ public class SortSpec {
     }
     
     public XPathExpression getSelectExpr() { return selectExpr; }
+    
+    public boolean hasStable() { return hasStable; }
+    
+    public void setHasStable(boolean hasStable) { this.hasStable = hasStable; }
     
     /** Evaluate data-type AVT at runtime. Returns "text" or "number". */
     public String getDataType(TransformContext context) throws XPathException {

@@ -80,6 +80,7 @@ public class BasicTransformContext implements TransformContext {
     private final OutputHandler principalOutput;  // Principal output for xsl:result-document
     private final java.util.Set<String> usedResultUris;  // Track URIs for XTDE1490
     private final org.bluezoo.gonzalez.transform.ErrorHandlingMode errorHandlingMode;  // Error handling mode
+    private boolean contextItemUndefined;  // XPDY0002: true inside xsl:function bodies
 
     /**
      * Creates a new transform context.
@@ -368,6 +369,19 @@ public class BasicTransformContext implements TransformContext {
      */
     public XPathValue getContextItem() {
         return contextItem;
+    }
+
+    @Override
+    public boolean isContextItemUndefined() {
+        return contextItemUndefined;
+    }
+
+    /**
+     * Marks this context as having an explicitly undefined context item.
+     * Used for xsl:function bodies where accessing '.' or '//' is XPDY0002.
+     */
+    public void setContextItemUndefined(boolean undefined) {
+        this.contextItemUndefined = undefined;
     }
 
     /**
@@ -855,6 +869,7 @@ public class BasicTransformContext implements TransformContext {
      */
     private BasicTransformContext inherit(BasicTransformContext derived) {
         derived.defaultCollationOverride = this.defaultCollationOverride;
+        derived.contextItemUndefined = this.contextItemUndefined;
         return derived;
     }
 

@@ -268,6 +268,19 @@ public interface XPathContext {
     }
 
     /**
+     * Returns whether the context item is explicitly undefined (e.g. inside a
+     * stylesheet function body). When true, accessing the context item via '.'
+     * or a location path should raise XPDY0002. This is distinct from a null
+     * context node, which can occur during static variable evaluation where
+     * the source document is not yet available.
+     *
+     * @return true if the context item is explicitly undefined
+     */
+    default boolean isContextItemUndefined() {
+        return false;
+    }
+
+    /**
      * Returns the current dateTime for this transformation.
      *
      * <p>Per XPath/XSLT spec, current-dateTime() must return the same value

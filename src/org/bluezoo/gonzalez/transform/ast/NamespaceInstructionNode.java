@@ -85,6 +85,15 @@ public class NamespaceInstructionNode extends XSLTInstruction {
                     prefix + "' must not produce a zero-length namespace URI");
             }
             
+            // XTDE0925: xml prefix and http://www.w3.org/XML/1998/namespace must be bound exclusively to each other
+            String xmlNamespaceUri = "http://www.w3.org/XML/1998/namespace";
+            if ("xml".equals(prefix) && !xmlNamespaceUri.equals(uri)) {
+                throw new SAXException("XTDE0925: xsl:namespace: prefix 'xml' must be bound to http://www.w3.org/XML/1998/namespace");
+            }
+            if (xmlNamespaceUri.equals(uri) && !"xml".equals(prefix)) {
+                throw new SAXException("XTDE0925: xsl:namespace: namespace URI http://www.w3.org/XML/1998/namespace must be bound to prefix 'xml'");
+            }
+            
             output.namespace(prefix != null ? prefix : "", uri);
         } catch (XPathException e) {
             throw new SAXException("Error in xsl:namespace", e);

@@ -48,6 +48,10 @@ public final class ContextItemExpr implements Expr {
         if (node != null) {
             return new XPathNodeSet(Collections.singletonList(node));
         }
+        // XPDY0002: in function bodies, context item is explicitly undefined
+        if (context.isContextItemUndefined()) {
+            throw new XPathException("XPDY0002: Context item is undefined");
+        }
         return null;
     }
 
