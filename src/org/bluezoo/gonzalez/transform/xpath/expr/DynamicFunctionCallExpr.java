@@ -54,6 +54,24 @@ public final class DynamicFunctionCallExpr implements Expr {
         this.args = args;
     }
 
+    /**
+     * Returns the base expression.
+     *
+     * @return the base expression
+     */
+    public Expr getBase() {
+        return base;
+    }
+
+    /**
+     * Returns the argument expressions.
+     *
+     * @return the argument list
+     */
+    public List<Expr> getArguments() {
+        return args;
+    }
+
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         // Check for partial application (any argument is a placeholder '?')

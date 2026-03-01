@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
@@ -56,7 +57,7 @@ import java.util.Map;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class ForEachGroupNode implements XSLTNode {
+public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
 
     /**
      * Grouping method for xsl:for-each-group.
@@ -168,6 +169,21 @@ public final class ForEachGroupNode implements XSLTNode {
         this.collationAvt = collationAvt;
         this.sorts = sorts != null ? sorts : Collections.emptyList();
         this.composite = composite;
+    }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (select != null) {
+            exprs.add(select);
+        }
+        if (groupByExpr != null) {
+            exprs.add(groupByExpr);
+        }
+        if (groupAdjacentExpr != null) {
+            exprs.add(groupAdjacentExpr);
+        }
+        return exprs;
     }
 
     @Override

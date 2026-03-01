@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
@@ -35,17 +36,13 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  */
 final class ElementWithIdPattern extends AbstractPattern {
 
-    static final int AXIS_NONE = 0;
-    static final int AXIS_CHILD = 1;
-    static final int AXIS_DESCENDANT = 2;
-
     private final String[] ids;
     private final String docVarName;
     private final Pattern trailingPattern;
-    private final int trailingAxis;
+    private final Step.Axis trailingAxis;
 
     ElementWithIdPattern(String patternStr, String[] ids, String docVarName,
-                         Pattern trailingPattern, int trailingAxis) {
+                         Pattern trailingPattern, Step.Axis trailingAxis) {
         super(patternStr, null);
         this.ids = ids;
         this.docVarName = docVarName;
@@ -96,11 +93,11 @@ final class ElementWithIdPattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_NONE) {
+        if (trailingAxis == null) {
             return SchemaUtils.nodeHasIdTypedChild(node, ids, context);
         }
 
-        if (trailingAxis == AXIS_DESCENDANT) {
+        if (trailingAxis == Step.Axis.DESCENDANT) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }
@@ -114,7 +111,7 @@ final class ElementWithIdPattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_CHILD) {
+        if (trailingAxis == Step.Axis.CHILD) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }

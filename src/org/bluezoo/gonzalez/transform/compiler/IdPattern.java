@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -38,18 +39,14 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  */
 final class IdPattern extends AbstractPattern {
 
-    static final int AXIS_NONE = 0;
-    static final int AXIS_CHILD = 1;
-    static final int AXIS_DESCENDANT = 2;
-
     private final String[] ids;
     private final String idVarName;
     private final String docVarName;
     private final Pattern trailingPattern;
-    private final int trailingAxis;
+    private final Step.Axis trailingAxis;
 
     IdPattern(String patternStr, String[] ids, String docVarName,
-              Pattern trailingPattern, int trailingAxis) {
+              Pattern trailingPattern, Step.Axis trailingAxis) {
         super(patternStr, null);
         this.ids = ids;
         this.idVarName = null;
@@ -59,7 +56,7 @@ final class IdPattern extends AbstractPattern {
     }
 
     IdPattern(String patternStr, String idVarName, String docVarName,
-              Pattern trailingPattern, int trailingAxis) {
+              Pattern trailingPattern, Step.Axis trailingAxis) {
         super(patternStr, null);
         this.ids = null;
         this.idVarName = idVarName;
@@ -107,11 +104,11 @@ final class IdPattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_NONE) {
+        if (trailingAxis == null) {
             return matchesIdElement(node, resolvedIds);
         }
 
-        if (trailingAxis == AXIS_DESCENDANT) {
+        if (trailingAxis == Step.Axis.DESCENDANT) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }
@@ -125,7 +122,7 @@ final class IdPattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_CHILD) {
+        if (trailingAxis == Step.Axis.CHILD) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }

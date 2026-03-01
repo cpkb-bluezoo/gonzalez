@@ -27,6 +27,7 @@ import java.util.List;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -46,7 +47,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class PerformSortNode extends XSLTInstruction {
+public class PerformSortNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;
     private final List<SortSpec> sorts;
     private final XSLTNode content;
@@ -58,6 +59,15 @@ public class PerformSortNode extends XSLTInstruction {
     }
     
     @Override public String getInstructionName() { return "perform-sort"; }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
     
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {

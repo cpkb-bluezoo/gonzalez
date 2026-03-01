@@ -21,8 +21,12 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
@@ -42,7 +46,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class WithParamNode extends XSLTInstruction {
+public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
     private final String namespaceURI;
     private final String localName;
     private final String expandedName; // Clark notation: {uri}localname or just localname
@@ -79,6 +83,16 @@ public class WithParamNode extends XSLTInstruction {
     public boolean isTunnel() { return tunnel; }
     public String getAsType() { return asType; }
     @Override public String getInstructionName() { return "with-param"; }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         // With-param nodes are handled by call-template/apply-templates

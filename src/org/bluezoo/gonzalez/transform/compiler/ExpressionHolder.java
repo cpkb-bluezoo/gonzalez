@@ -1,5 +1,5 @@
 /*
- * PatternStep.java
+ * ExpressionHolder.java
  * Copyright (C) 2026 Chris Burdess
  *
  * This file is part of Gonzalez, a streaming XML parser.
@@ -21,23 +21,27 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
-import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+import java.util.List;
+
+import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 
 /**
- * One step in a path pattern, holding a pre-parsed node test, an axis,
- * and an optional predicate string.
+ * Interface for XSLT AST nodes that contain XPath expressions.
+ *
+ * <p>Used by {@link StreamabilityAnalyzer} to collect all XPath
+ * expressions from a node tree for streaming classification, replacing
+ * the fragile reflection-based approach.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-final class PatternStep {
+public interface ExpressionHolder {
 
-    final NodeTest nodeTest;
-    final Step.Axis axis;
-    final String predicateStr;
+    /**
+     * Returns all XPath expressions used by this XSLT instruction.
+     * Does not recurse into child nodes; the caller handles recursion.
+     *
+     * @return list of expressions (never null, may be empty)
+     */
+    List<XPathExpression> getExpressions();
 
-    PatternStep(NodeTest nodeTest, Step.Axis axis, String predicateStr) {
-        this.nodeTest = nodeTest;
-        this.axis = axis;
-        this.predicateStr = predicateStr;
-    }
 }

@@ -24,12 +24,21 @@ package org.bluezoo.gonzalez.transform.compiler;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.bluezoo.gonzalez.transform.xpath.XPathLexer;
+import org.bluezoo.gonzalez.transform.xpath.XPathToken;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+
 /**
- * Static factory that parses an XSLT match-pattern string once and returns
- * the appropriate {@link Pattern} subclass with all components pre-parsed.
+ * Token-based parser for XSLT match-pattern strings.
  *
- * <p>All string analysis happens here at compile time; the resulting
- * pattern objects perform no string parsing at match time.
+ * <p>Uses {@link XPathLexer} for proper tokenization, consuming tokens
+ * in a single forward pass. The resulting {@link Pattern} objects are
+ * fully pre-parsed for efficient matching at runtime.
+ *
+ * <p>All lexical analysis (comments, string literals, operator
+ * disambiguation) is handled by the lexer. The parser only deals with
+ * grammar-level structure: unions, paths, steps, predicates, and
+ * function patterns.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -51,1121 +60,725 @@ final class PatternParser {
     }
 
     static Pattern parse(String patternStr, double version) {
-        String trimmed = stripXPathComments(patternStr.trim());
+        String trimmed = patternStr.trim();
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException(
+                "XTSE0340: Empty pattern");
+        }
 
-        // XSLT 3.0 atomic value pattern: .[ predicate ]
-        if (version >= 3.0 && trimmed.startsWith(".") &&
-            trimmed.length() > 1) {
-            String afterDot = trimmed.substring(1).trim();
-            if (afterDot.startsWith("[") && afterDot.endsWith("]")) {
-                String pred = afterDot.substring(1,
-                    afterDot.length() - 1).trim();
-                return new AtomicPattern(patternStr, pred);
+        String prepared = prepareForLexer(trimmed);
+        XPathLexer lexer = new XPathLexer(prepared);
+
+        if (lexer.current() == XPathToken.EOF) {
+            throw new IllegalArgumentException(
+                "XTSE0340: Empty pattern: " + patternStr);
+        }
+
+        Pattern result = parseUnion(lexer, patternStr, prepared, version);
+
+        if (lexer.current() != XPathToken.EOF) {
+            throw new IllegalArgumentException(
+                "XTSE0340: Unexpected token '" + lexer.value() +
+                "' in pattern: " + patternStr);
+        }
+        return result;
+    }
+
+    // ---- Precedence levels: union < intersect < except ----
+
+    private static Pattern parseUnion(XPathLexer lexer, String patternStr,
+                                       String prepared, double version) {
+        List<Pattern> alternatives = new ArrayList<>();
+        alternatives.add(parseIntersect(lexer, patternStr, prepared, version));
+
+        while (lexer.current() == XPathToken.PIPE ||
+               lexer.current() == XPathToken.UNION) {
+            if (lexer.current() == XPathToken.UNION && version < 3.0) {
+                break;
             }
+            lexer.advance();
+            alternatives.add(
+                parseIntersect(lexer, patternStr, prepared, version));
         }
 
-        // XTSE0340: namespace axis not allowed in patterns
-        if (trimmed.contains("namespace::")) {
-            throw new IllegalArgumentException("XTSE0340: namespace axis is not allowed in patterns: " + patternStr);
+        if (alternatives.size() == 1) {
+            return alternatives.get(0);
         }
+        Pattern[] arr = alternatives.toArray(new Pattern[0]);
+        return new UnionPattern(patternStr, arr);
+    }
 
-        // XTSE0340: arithmetic expressions are not valid patterns
-        if (isArithmeticExpression(trimmed)) {
-            throw new IllegalArgumentException("XTSE0340: expression is not a valid pattern: " + patternStr);
+    private static Pattern parseIntersect(XPathLexer lexer, String patternStr,
+                                           String prepared, double version) {
+        Pattern left = parseExcept(lexer, patternStr, prepared, version);
+
+        while (version >= 3.0 && lexer.current() == XPathToken.INTERSECT) {
+            lexer.advance();
+            Pattern right = parseExcept(lexer, patternStr, prepared, version);
+            left = new IntersectPattern(patternStr, left, right);
         }
+        return left;
+    }
 
-        // XTSE0340: a bare numeric literal is not a valid pattern
-        if (isNumericLiteral(trimmed)) {
-            throw new IllegalArgumentException("XTSE0340: numeric literal is not a valid pattern: " + patternStr);
+    private static Pattern parseExcept(XPathLexer lexer, String patternStr,
+                                        String prepared, double version) {
+        Pattern left = parseSingle(lexer, patternStr, prepared, version);
+
+        while (version >= 3.0 && lexer.current() == XPathToken.EXCEPT) {
+            lexer.advance();
+            Pattern right = parseSingle(lexer, patternStr, prepared, version);
+            left = new ExceptPattern(patternStr, left, right);
         }
+        return left;
+    }
 
-        // Normalize axis syntax (use comment-stripped string)
-        // child::attribute() is impossible (attributes aren't children)
-        String step1 = stripChildAxis(trimmed);
-        String normalized = step1.replace("attribute::", "@");
+    // ---- Single pattern (one path/function/variable/etc.) ----
 
-        // XSLT 3.0: Check for except, intersect, union keywords
-        if (version >= 3.0) {
-            // Check for except (highest precedence of set operators)
-            int exceptIdx = findKeywordOutsideBrackets(normalized,
-                " except ", true);
-            if (exceptIdx > 0) {
-                String leftPart = normalized.substring(0,
-                    exceptIdx).trim();
-                String rightPart = normalized.substring(
-                    exceptIdx + 8).trim();
-                Pattern left = parse(leftPart, version);
-                Pattern right = parse(rightPart, version);
-                return new ExceptPattern(patternStr, left, right);
-            }
+    private static Pattern parseSingle(XPathLexer lexer, String patternStr,
+                                        String prepared, double version) {
+        XPathToken token = lexer.current();
 
-            // Check for intersect
-            int intersectIdx = findKeywordOutsideBrackets(normalized,
-                " intersect ", true);
-            if (intersectIdx > 0) {
-                String leftPart = normalized.substring(0,
-                    intersectIdx).trim();
-                String rightPart = normalized.substring(
-                    intersectIdx + 11).trim();
-                Pattern left = parse(leftPart, version);
-                Pattern right = parse(rightPart, version);
-                return new IntersectPattern(patternStr, left, right);
-            }
-
-            // Check for "union" keyword
-            int unionKeyIdx = findKeywordOutsideBrackets(normalized,
-                " union ");
-            if (unionKeyIdx > 0) {
-                String leftPart = normalized.substring(0,
-                    unionKeyIdx).trim();
-                String rightPart = normalized.substring(
-                    unionKeyIdx + 7).trim();
-                Pattern left = parse(leftPart, version);
-                Pattern right = parse(rightPart, version);
-                return new UnionPattern(patternStr,
-                    new Pattern[] { left, right });
-            }
-        }
-
-        // Check for | union
-        if (hasTopLevelUnion(normalized)) {
-            String[] parts = splitUnion(normalized);
-            Pattern[] alternatives = new Pattern[parts.length];
-            for (int i = 0; i < parts.length; i++) {
-                alternatives[i] = parse(parts[i].trim(), version);
-            }
-            return new UnionPattern(patternStr, alternatives);
-        }
-
-        // Expand parenthesized union step in path:
-        // path/(A|B)/rest → path/A/rest | path/B/rest
-        if (version >= 3.0) {
-            String expanded = expandParenthesizedPathUnion(normalized);
-            if (expanded != null) {
-                return parse(expanded, version);
-            }
-        }
-
-        // Variable reference patterns (XSLT 3.0): $x, $x/path, $x//path
-        if (normalized.startsWith("$")) {
-            if (version < 3.0) {
+        // XTSE0340: bare numeric literal is not a valid pattern
+        if (token == XPathToken.NUMBER_LITERAL) {
+            XPathToken next = lexer.peek();
+            if (next == XPathToken.EOF || next == XPathToken.PIPE ||
+                next == XPathToken.UNION || next == XPathToken.EXCEPT ||
+                next == XPathToken.INTERSECT) {
                 throw new IllegalArgumentException(
-                    "XTSE0340: Variable references are not allowed " +
-                    "in XSLT " + version + " patterns: " + patternStr);
-            }
-            return parseVariablePattern(patternStr, normalized);
-        }
-
-        // doc() or document() function patterns (XSLT 3.0)
-        if (normalized.startsWith("doc(") ||
-            normalized.startsWith("document(")) {
-            if (version < 3.0) {
-                throw new IllegalArgumentException(
-                    "XTSE0340: doc()/document() are not allowed " +
-                    "in XSLT " + version + " patterns: " + patternStr);
-            }
-            return parseDocPattern(patternStr, normalized);
-        }
-
-        // id() function patterns
-        if (normalized.startsWith("id(")) {
-            return parseIdPattern(patternStr, normalized);
-        }
-
-        // element-with-id() function patterns
-        if (normalized.startsWith("element-with-id(")) {
-            return parseElementWithIdPattern(patternStr, normalized);
-        }
-
-        // key() function patterns
-        if (normalized.startsWith("key(")) {
-            return parseKeyPattern(patternStr, normalized);
-        }
-
-        // Extract predicates from the normalized pattern for base matching
-        String basePattern;
-        String predicateStr;
-
-        if (hasTopLevelUnion(normalized)) {
-            basePattern = normalized;
-            predicateStr = null;
-        } else {
-            int[] bracketRange = findPredicateRange(normalized);
-            if (bracketRange != null) {
-                int firstBracketStart = bracketRange[0];
-                int lastBracketEnd = bracketRange[1];
-
-                String afterFirst = normalized.substring(lastBracketEnd + 1);
-                while (afterFirst.trim().startsWith("[")) {
-                    // Skip whitespace between predicates
-                    int skip = afterFirst.length() - afterFirst.trim().length();
-                    String trimmedAfter = afterFirst.substring(skip);
-                    int[] nextRange = findPredicateRange(trimmedAfter);
-                    if (nextRange != null) {
-                        lastBracketEnd = lastBracketEnd + 1 + skip + nextRange[1];
-                        afterFirst = normalized.substring(
-                            lastBracketEnd + 1);
-                    } else {
-                        break;
-                    }
-                }
-
-                String afterAllPredicates = normalized.substring(
-                    lastBracketEnd + 1).trim();
-                if (afterAllPredicates.isEmpty()) {
-                    basePattern = normalized.substring(0,
-                        firstBracketStart);
-                    String allPreds = normalized.substring(
-                        firstBracketStart, lastBracketEnd + 1);
-                    predicateStr = combinePredicates(allPreds);
-                } else {
-                    basePattern = normalized;
-                    predicateStr = null;
-                }
-            } else {
-                basePattern = normalized;
-                predicateStr = null;
-            }
-        }
-
-        // Parenthesized pattern: (foo|bar) - XSLT 3.0 only
-        if (basePattern.startsWith("(") && basePattern.endsWith(")")) {
-            if (version < 3.0) {
-                throw new IllegalArgumentException(
-                    "XTSE0340: Parenthesized patterns are not " +
-                    "allowed in XSLT " + version + " patterns: " +
+                    "XTSE0340: numeric literal is not a valid pattern: " +
                     patternStr);
             }
-            String inner = basePattern.substring(1,
-                basePattern.length() - 1);
-
-            if (hasTopLevelUnion(inner)) {
-                String[] parts = splitUnion(inner);
-                Pattern[] alternatives = new Pattern[parts.length];
-                for (int i = 0; i < parts.length; i++) {
-                    String alt = parts[i].trim();
-                    if (predicateStr != null) {
-                        alt = alt + "[" + predicateStr + "]";
-                    }
-                    alternatives[i] = parse(alt, version);
-                }
-                return new UnionPattern(patternStr, alternatives);
+            // XTSE0340: arithmetic (e.g. 1 + 2)
+            if (next == XPathToken.PLUS) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: expression is not a valid pattern: " +
+                    patternStr);
             }
-
-            Pattern innerPattern = parse(inner, version);
-            if (predicateStr != null) {
-                return new PredicatedPattern(patternStr, predicateStr,
-                    innerPattern);
-            }
-            return innerPattern;
         }
 
-        // Root pattern: /
-        if ("/".equals(basePattern)) {
-            return RootPattern.INSTANCE;
+        // XTSE0340: arithmetic starting with +
+        if (token == XPathToken.PLUS) {
+            throw new IllegalArgumentException(
+                "XTSE0340: expression is not a valid pattern: " +
+                patternStr);
+        }
+
+        // Atomic/context-item pattern: . or .[pred] (XSLT 3.0)
+        if (token == XPathToken.DOT && version >= 3.0) {
+            lexer.advance(); // consume .
+            if (lexer.current() == XPathToken.LBRACKET) {
+                String pred = extractAllPredicates(lexer, prepared);
+                return new AtomicPattern(patternStr, pred);
+            }
+            return new AtomicPattern(patternStr, null);
+        }
+
+        // Variable reference pattern: $var (XSLT 3.0)
+        if (token == XPathToken.DOLLAR) {
+            if (version < 3.0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: Variable references are not allowed in XSLT " +
+                    version + " patterns: " + patternStr);
+            }
+            return parseVariablePattern(lexer, patternStr, prepared, version);
+        }
+
+        // Root or absolute path
+        if (token == XPathToken.SLASH) {
+            lexer.advance();
+            if (isPatternEnd(lexer)) {
+                return RootPattern.INSTANCE;
+            }
+            return buildAbsolutePath(lexer, patternStr, prepared, version,
+                                     false);
+        }
+
+        // Descendant-or-self path: //rest
+        if (token == XPathToken.DOUBLE_SLASH) {
+            lexer.advance();
+            return buildAbsolutePath(lexer, patternStr, prepared, version,
+                                     true);
+        }
+
+        // Parenthesized pattern: (pattern) (XSLT 3.0)
+        if (token == XPathToken.LPAREN) {
+            if (version < 3.0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: Parenthesized patterns are not allowed " +
+                    "in XSLT " + version + " patterns: " + patternStr);
+            }
+            return parseParenthesized(lexer, patternStr, prepared, version);
         }
 
         // document-node() pattern
-        if (basePattern.startsWith("document-node(")) {
-            int parenEnd = findMatchingParen(basePattern,
-                basePattern.indexOf('('));
-            if (parenEnd >= 0) {
-                String afterDocNode = basePattern.substring(parenEnd + 1);
-                if (afterDocNode.isEmpty()) {
-                    return new DocumentNodePattern(patternStr);
+        if (token == XPathToken.DOCUMENT_NODE) {
+            return parseDocumentNode(lexer, patternStr, prepared, version);
+        }
+
+        // XTSE0340: namespace axis not allowed in patterns
+        if (token == XPathToken.AXIS_NAMESPACE) {
+            throw new IllegalArgumentException(
+                "XTSE0340: namespace axis is not allowed in patterns: " +
+                patternStr);
+        }
+
+        // Function patterns: id(), key(), doc(), document(), element-with-id()
+        if (token == XPathToken.NCNAME || isXPathKeyword(token)) {
+            String name = lexer.value();
+            XPathToken next = lexer.peek();
+            if (next == XPathToken.LPAREN) {
+                if ("id".equals(name)) {
+                    return parseIdPattern(lexer, patternStr, prepared,
+                                          version);
                 }
-                if (afterDocNode.startsWith("//")) {
-                    String rest = afterDocNode.substring(2);
-                    return parsePathFromDoubleSlash(patternStr,
-                        predicateStr, rest);
+                if ("element-with-id".equals(name)) {
+                    return parseElementWithIdPattern(lexer, patternStr,
+                                                     prepared, version);
                 }
-                if (afterDocNode.startsWith("/")) {
-                    String rest = afterDocNode.substring(1);
-                    return parseAbsolutePath(patternStr, predicateStr,
-                        rest);
+                if ("key".equals(name)) {
+                    return parseKeyPattern(lexer, patternStr, prepared,
+                                           version);
                 }
+                if ("root".equals(name)) {
+                    return parseRootFuncPattern(lexer, patternStr,
+                                                prepared, version);
+                }
+                if ("doc".equals(name) || "document".equals(name)) {
+                    if (version < 3.0) {
+                        throw new IllegalArgumentException(
+                            "XTSE0340: " + name +
+                            "() is not allowed in XSLT " + version +
+                            " patterns: " + patternStr);
+                    }
+                    return parseDocFuncPattern(lexer, patternStr, prepared,
+                                               version);
+                }
+            }
+        }
+
+        // Path pattern (single step or multi-step)
+        return parsePathPattern(lexer, patternStr, prepared, version);
+    }
+
+    // ---- Path pattern: step / step // step ----
+
+    private static Pattern parsePathPattern(XPathLexer lexer,
+                                             String patternStr,
+                                             String prepared,
+                                             double version) {
+        List<PatternStep> steps = new ArrayList<>();
+        steps.add(parseStep(lexer, patternStr, prepared, Step.Axis.CHILD));
+
+        boolean hasPath = false;
+        while (lexer.current() == XPathToken.SLASH ||
+               lexer.current() == XPathToken.DOUBLE_SLASH) {
+            hasPath = true;
+            Step.Axis nextAxis;
+            if (lexer.current() == XPathToken.DOUBLE_SLASH) {
+                nextAxis = Step.Axis.DESCENDANT;
+            } else {
+                nextAxis = Step.Axis.CHILD;
+            }
+            lexer.advance();
+            steps.add(parseStep(lexer, patternStr, prepared, nextAxis));
+        }
+
+        if (!hasPath && steps.size() == 1) {
+            PatternStep only = steps.get(0);
+            double priority = computePriority(only);
+            return new NameTestPattern(patternStr, only.predicateStr,
+                                       only.nodeTest, priority);
+        }
+
+        PatternStep[] arr = steps.toArray(new PatternStep[0]);
+        return new PathPattern(patternStr, null, arr, false);
+    }
+
+    private static Pattern buildAbsolutePath(XPathLexer lexer,
+                                              String patternStr,
+                                              String prepared,
+                                              double version,
+                                              boolean isDoubleSlash) {
+        List<PatternStep> steps = new ArrayList<>();
+        Step.Axis firstAxis = isDoubleSlash ?
+            Step.Axis.DESCENDANT : Step.Axis.CHILD;
+        steps.add(parseStep(lexer, patternStr, prepared, firstAxis));
+
+        while (lexer.current() == XPathToken.SLASH ||
+               lexer.current() == XPathToken.DOUBLE_SLASH) {
+            Step.Axis nextAxis;
+            if (lexer.current() == XPathToken.DOUBLE_SLASH) {
+                nextAxis = Step.Axis.DESCENDANT;
+            } else {
+                nextAxis = Step.Axis.CHILD;
+            }
+            lexer.advance();
+            steps.add(parseStep(lexer, patternStr, prepared, nextAxis));
+        }
+
+        if (isDoubleSlash && steps.size() == 1) {
+            PatternStep only = steps.get(0);
+            NodeTest nt = only.nodeTest;
+            String pred = only.predicateStr;
+            return new NameTestPattern(patternStr, pred, nt, 0.5, true);
+        }
+
+        PatternStep[] arr = steps.toArray(new PatternStep[0]);
+        return new PathPattern(patternStr, null, arr, true);
+    }
+
+    // ---- Step parsing: axis + node-test + predicates ----
+
+    private static PatternStep parseStep(XPathLexer lexer, String patternStr,
+                                          String prepared,
+                                          Step.Axis defaultAxis) {
+        Step.Axis axis = defaultAxis;
+        XPathToken token = lexer.current();
+        boolean explicitChild = false;
+
+        // Explicit axis: child::, descendant::, self::, attribute::
+        // child:: is the default and should not override the context axis
+        // (e.g. //child::foo should keep DESCENDANT from //)
+        if (token.isAxis()) {
+            Step.Axis explicitAxis = mapAxis(token, patternStr);
+            if (explicitAxis == Step.Axis.CHILD) {
+                explicitChild = true;
+            } else {
+                axis = explicitAxis;
+            }
+            lexer.advance();
+        } else if (token == XPathToken.AT) {
+            axis = Step.Axis.ATTRIBUTE;
+            lexer.advance();
+        }
+
+        NodeTest nt = parseNodeTest(lexer, patternStr, axis);
+
+        // Impossible axis+kind-test combinations
+        if (explicitChild && nt instanceof AttributeTest) {
+            // child::attribute() — attributes are not on the child axis
+            nt = NeverMatchTest.INSTANCE;
+        }
+        if (axis == Step.Axis.ATTRIBUTE) {
+            // attribute::element(), attribute::text(), etc. can never match
+            if (nt instanceof ElementTest || nt instanceof TextTest ||
+                nt instanceof CommentTest || nt instanceof PITest) {
+                nt = NeverMatchTest.INSTANCE;
+            }
+            if (nt == ChildAxisAnyNodeTest.INSTANCE) {
+                nt = new AttributeTest(null, null, null);
             }
         }
 
-        // Patterns starting with //
-        if (basePattern.startsWith("//")) {
-            String rest = basePattern.substring(2);
-            return parsePathFromDoubleSlash(patternStr, predicateStr, rest);
+        String predStr = null;
+        if (lexer.current() == XPathToken.LBRACKET) {
+            predStr = extractAllPredicates(lexer, prepared);
         }
 
-        // Absolute patterns starting with /
-        if (basePattern.startsWith("/") && !basePattern.startsWith("//")) {
-            return parseAbsolutePath(patternStr, predicateStr,
-                basePattern.substring(1));
-        }
-
-        // Descendant-or-self in the middle: ancestor//descendant
-        int doubleSlash = findDoubleSlashOutsideBraces(basePattern);
-        if (doubleSlash > 0) {
-            return parseDescendantPath(patternStr, predicateStr,
-                basePattern, doubleSlash);
-        }
-
-        // Step pattern: parent/child
-        int slash = findLastSlashOutsideBraces(basePattern);
-        if (slash > 0) {
-            return parseStepPath(patternStr, predicateStr,
-                basePattern, slash);
-        }
-
-        // Simple name/kind tests - delegate to NodeTest
-        return parseSimpleTest(patternStr, predicateStr, basePattern);
+        return new PatternStep(nt, axis, predStr);
     }
 
-    // ---- Path pattern builders ----
-
-    private static Pattern parsePathFromDoubleSlash(String patternStr,
-                                                     String predicateStr,
-                                                     String rest) {
-        // //rest where rest may contain further path steps
-        if (rest.contains("/")) {
-            // //a/b treated as absolute path pattern with descendant axis
-            return parseRelativePath(patternStr, predicateStr, rest,
-                PatternStep.AXIS_DESCENDANT, true);
+    private static Step.Axis mapAxis(XPathToken token, String patternStr) {
+        switch (token) {
+            case AXIS_CHILD:
+                return Step.Axis.CHILD;
+            case AXIS_DESCENDANT:
+                return Step.Axis.DESCENDANT;
+            case AXIS_DESCENDANT_OR_SELF:
+                return Step.Axis.DESCENDANT_OR_SELF;
+            case AXIS_SELF:
+                return Step.Axis.SELF;
+            case AXIS_ATTRIBUTE:
+                return Step.Axis.ATTRIBUTE;
+            case AXIS_NAMESPACE:
+                throw new IllegalArgumentException(
+                    "XTSE0340: namespace axis is not allowed in patterns: " +
+                    patternStr);
+            case AXIS_ANCESTOR:
+            case AXIS_ANCESTOR_OR_SELF:
+            case AXIS_PARENT:
+            case AXIS_PRECEDING:
+            case AXIS_PRECEDING_SIBLING:
+            case AXIS_FOLLOWING:
+            case AXIS_FOLLOWING_SIBLING:
+                throw new IllegalArgumentException(
+                    "XTSE0340: " + token.name().substring(5).toLowerCase()
+                        .replace('_', '-') +
+                    " axis is not allowed in patterns: " + patternStr);
+            default:
+                return Step.Axis.CHILD;
         }
-        // Simple //name - always priority 0.5 because it's a path pattern
-        // Requires a document root ancestor (// is rooted)
-        NodeTest nt;
-        if ("node()".equals(rest)) {
-            nt = ChildAxisAnyNodeTest.INSTANCE;
-        } else {
-            nt = NodeTest.parse(rest);
-        }
-        return new NameTestPattern(patternStr, predicateStr, nt, 0.5, true);
     }
 
-    private static Pattern parseAbsolutePath(String patternStr,
-                                              String predicateStr,
-                                              String rest) {
-        // Build a PathPattern with isAbsolute=true
-        List<PatternStep> steps = new ArrayList<>();
-        parseSteps(rest, steps);
-        PatternStep[] arr = steps.toArray(new PatternStep[0]);
-        return new PathPattern(patternStr, predicateStr, arr, true);
-    }
+    // ---- Node test parsing ----
 
-    private static Pattern parseDescendantPath(String patternStr,
-                                                String predicateStr,
-                                                String basePattern,
-                                                int doubleSlashIdx) {
-        String ancestorPart = basePattern.substring(0, doubleSlashIdx);
-        String descendantPart = basePattern.substring(doubleSlashIdx + 2);
+    private static NodeTest parseNodeTest(XPathLexer lexer, String patternStr,
+                                           Step.Axis axis) {
+        XPathToken token = lexer.current();
+        boolean isAttr = (axis == Step.Axis.ATTRIBUTE);
 
-        List<PatternStep> steps = new ArrayList<>();
-
-        // Parse ancestor steps
-        parseSteps(ancestorPart, steps);
-
-        // The next step after the ancestor has descendant axis
-        List<PatternStep> descSteps = new ArrayList<>();
-        parseSteps(descendantPart, descSteps);
-        if (!descSteps.isEmpty()) {
-            // Mark the first descendant step with DESCENDANT axis
-            PatternStep first = descSteps.get(0);
-            descSteps.set(0, new PatternStep(first.nodeTest,
-                PatternStep.AXIS_DESCENDANT, first.predicateStr));
-        }
-        steps.addAll(descSteps);
-
-        PatternStep[] arr = steps.toArray(new PatternStep[0]);
-        return new PathPattern(patternStr, predicateStr, arr, false);
-    }
-
-    private static Pattern parseStepPath(String patternStr,
-                                          String predicateStr,
-                                          String basePattern,
-                                          int slashIdx) {
-        String parentPart = basePattern.substring(0, slashIdx);
-        String childPart = basePattern.substring(slashIdx + 1);
-
-        // Check for explicit axis in childPart: doc/descendant::foo
-        int axisIdx = childPart.indexOf("::");
-        if (axisIdx > 0) {
-            String axisName = childPart.substring(0, axisIdx);
-            String axisNodeTest = childPart.substring(axisIdx + 2);
-
-            int childAxis = PatternStep.AXIS_CHILD;
-            if ("descendant".equals(axisName)) {
-                childAxis = PatternStep.AXIS_DESCENDANT;
-            } else if ("descendant-or-self".equals(axisName)) {
-                childAxis = PatternStep.AXIS_DESCENDANT_OR_SELF;
-            } else if ("self".equals(axisName)) {
-                childAxis = PatternStep.AXIS_SELF;
-            } else if ("attribute".equals(axisName)) {
-                childAxis = PatternStep.AXIS_ATTRIBUTE;
-            }
-
-            List<PatternStep> steps = new ArrayList<>();
-            parseSteps(parentPart, steps);
-            // Extract predicate from axisNodeTest if present
-            String stepPred = null;
-            String testOnly = axisNodeTest;
-            int[] predRange = findPredicateRange(axisNodeTest);
-            if (predRange != null) {
-                String afterPred = axisNodeTest.substring(
-                    predRange[1] + 1);
-                if (afterPred.isEmpty()) {
-                    testOnly = axisNodeTest.substring(0, predRange[0]);
-                    stepPred = axisNodeTest.substring(
-                        predRange[0] + 1, predRange[1]);
+        // Wildcard: *
+        if (isStar(token)) {
+            lexer.advance();
+            // *:local  (any-namespace wildcard)
+            if (lexer.current() == XPathToken.COLON) {
+                lexer.advance();
+                if (lexer.current() == XPathToken.NCNAME) {
+                    String local = lexer.value();
+                    lexer.advance();
+                    if (isAttr) {
+                        return new AttributeTest(null, local, null);
+                    }
+                    return new ElementTest(null, local, null);
                 }
             }
-            NodeTest nt = NodeTest.parse(testOnly);
-            steps.add(new PatternStep(nt, childAxis, stepPred));
-
-            PatternStep[] arr = steps.toArray(new PatternStep[0]);
-            return new PathPattern(patternStr, predicateStr, arr, false);
+            if (isAttr) {
+                return new AttributeTest(null, null, null);
+            }
+            return new ElementTest(null, null, null);
         }
 
-        // Normal parent/child
-        List<PatternStep> steps = new ArrayList<>();
-        parseSteps(parentPart, steps);
-
-        // Parse child steps (may have predicates)
-        List<PatternStep> childSteps = new ArrayList<>();
-        parseSteps(childPart, childSteps);
-        steps.addAll(childSteps);
-
-        PatternStep[] arr = steps.toArray(new PatternStep[0]);
-        return new PathPattern(patternStr, predicateStr, arr, false);
-    }
-
-    private static Pattern parseRelativePath(String patternStr,
-                                              String predicateStr,
-                                              String rest,
-                                              int firstAxis) {
-        return parseRelativePath(patternStr, predicateStr, rest, firstAxis, false);
-    }
-
-    private static Pattern parseRelativePath(String patternStr,
-                                              String predicateStr,
-                                              String rest,
-                                              int firstAxis,
-                                              boolean isAbsolute) {
-        List<PatternStep> steps = new ArrayList<>();
-        parseSteps(rest, steps);
-        if (!steps.isEmpty() && firstAxis != PatternStep.AXIS_CHILD) {
-            PatternStep first = steps.get(0);
-            steps.set(0, new PatternStep(first.nodeTest, firstAxis,
-                first.predicateStr));
+        // node() kind test
+        if (token == XPathToken.NODE_TYPE_NODE) {
+            lexer.advance();
+            lexer.advance(); // (
+            lexer.advance(); // )
+            if (isAttr) {
+                return new AttributeTest(null, null, null);
+            }
+            return ChildAxisAnyNodeTest.INSTANCE;
         }
-        PatternStep[] arr = steps.toArray(new PatternStep[0]);
-        return new PathPattern(patternStr, predicateStr, arr, isAbsolute);
+
+        // text() kind test
+        if (token == XPathToken.NODE_TYPE_TEXT) {
+            lexer.advance();
+            lexer.advance(); // (
+            lexer.advance(); // )
+            return TextTest.INSTANCE;
+        }
+
+        // comment() kind test
+        if (token == XPathToken.NODE_TYPE_COMMENT) {
+            lexer.advance();
+            lexer.advance(); // (
+            lexer.advance(); // )
+            return CommentTest.INSTANCE;
+        }
+
+        // processing-instruction() kind test
+        if (token == XPathToken.NODE_TYPE_PI) {
+            lexer.advance();
+            lexer.advance(); // (
+            if (lexer.current() == XPathToken.RPAREN) {
+                lexer.advance();
+                return PITest.ANY;
+            }
+            // processing-instruction('target') or processing-instruction(name)
+            String target;
+            if (lexer.current() == XPathToken.STRING_LITERAL) {
+                target = lexer.value();
+            } else {
+                target = lexer.value();
+            }
+            lexer.advance();
+            lexer.advance(); // )
+            if (target.indexOf(':') >= 0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: processing-instruction name must not " +
+                    "contain a colon: " + target);
+            }
+            return new PITest(target);
+        }
+
+        // element() kind test
+        if (token == XPathToken.ELEMENT) {
+            lexer.advance(); // consume "element"
+            return parseElementKindTest(lexer);
+        }
+
+        // attribute() kind test
+        if (token == XPathToken.ATTRIBUTE) {
+            lexer.advance(); // consume "attribute"
+            return parseAttributeKindTest(lexer);
+        }
+
+        // schema-element() and schema-attribute()
+        if (token == XPathToken.SCHEMA_ELEMENT) {
+            lexer.advance();
+            return parseSchemaElementKindTest(lexer);
+        }
+        if (token == XPathToken.SCHEMA_ATTRIBUTE) {
+            lexer.advance();
+            return parseSchemaAttributeKindTest(lexer);
+        }
+
+        // namespace-node() kind test
+        if (token == XPathToken.NAMESPACE_NODE) {
+            lexer.advance();
+            lexer.advance(); // (
+            lexer.advance(); // )
+            return AnyNodeTest.INSTANCE;
+        }
+
+        // URIQualifiedName: Q{uri}local or {uri}local (after prepareForLexer)
+        if (token == XPathToken.URIQNAME) {
+            return parseURIQName(lexer, isAttr);
+        }
+
+        // NCName or prefix:local
+        // XPath keywords (in, if, then, etc.) can be element names in patterns
+        if (token == XPathToken.NCNAME || isXPathKeyword(token)) {
+            String name = lexer.value();
+            lexer.advance();
+
+            // prefix:local or prefix:*
+            if (lexer.current() == XPathToken.COLON) {
+                lexer.advance();
+                if (isStar(lexer.current())) {
+                    lexer.advance();
+                    // prefix:* — namespace wildcard (prefix unresolved here)
+                    if (isAttr) {
+                        return new AttributeTest(null, null, null);
+                    }
+                    return new ElementTest(null, null, null);
+                }
+                if (lexer.current() == XPathToken.NCNAME ||
+                    isXPathKeyword(lexer.current())) {
+                    String local = lexer.value();
+                    lexer.advance();
+                    if (isAttr) {
+                        return new AttributeTest(null, local, null);
+                    }
+                    return new ElementTest(null, local, null);
+                }
+                // Bare prefix: (unusual, treat as name)
+                if (isAttr) {
+                    return new AttributeTest("", name, null);
+                }
+                return new ElementTest("", name, null);
+            }
+
+            // Simple unprefixed name
+            if (isAttr) {
+                return new AttributeTest("", name, null);
+            }
+            return new ElementTest("", name, null);
+        }
+
+        // document-node() in name-test position (unusual)
+        if (token == XPathToken.DOCUMENT_NODE) {
+            lexer.advance();
+            lexer.advance(); // (
+            lexer.advance(); // )
+            return AnyNodeTest.INSTANCE;
+        }
+
+        throw new IllegalArgumentException(
+            "XTSE0340: Expected node test but found '" + lexer.value() +
+            "' in pattern: " + patternStr);
+    }
+
+    private static NodeTest parseURIQName(XPathLexer lexer, boolean isAttr) {
+        String clarkName = lexer.value();
+        lexer.advance();
+
+        int closeBrace = clarkName.indexOf('}');
+        if (closeBrace < 0) {
+            if (isAttr) {
+                return new AttributeTest("", clarkName, null);
+            }
+            return new ElementTest("", clarkName, null);
+        }
+
+        String uri = clarkName.substring(1, closeBrace);
+        String local = clarkName.substring(closeBrace + 1);
+
+        if (local.isEmpty()) {
+            // {uri} followed by * → namespace wildcard
+            if (isStar(lexer.current())) {
+                lexer.advance();
+                if (isAttr) {
+                    return new AttributeTest(uri, null, null);
+                }
+                return new ElementTest(uri, null, null);
+            }
+            // {uri} followed by name
+            if (lexer.current() == XPathToken.NCNAME) {
+                local = lexer.value();
+                lexer.advance();
+            }
+        }
+
+        if (isAttr) {
+            return new AttributeTest(uri, local, null);
+        }
+        return new ElementTest(uri, local, null);
+    }
+
+    // ---- Kind test parsing: element(...), attribute(...) ----
+
+    private static NodeTest parseElementKindTest(XPathLexer lexer) {
+        lexer.advance(); // consume (
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+            return new ElementTest(null, null, null);
+        }
+        return parseKindTestArgs(lexer, false);
+    }
+
+    private static NodeTest parseAttributeKindTest(XPathLexer lexer) {
+        lexer.advance(); // consume (
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+            return new AttributeTest(null, null, null);
+        }
+        return parseKindTestArgs(lexer, true);
+    }
+
+    private static NodeTest parseSchemaElementKindTest(XPathLexer lexer) {
+        lexer.advance(); // consume (
+        // schema-element(name)
+        String nsUri = null;
+        String localName = null;
+        if (lexer.current() != XPathToken.RPAREN) {
+            String[] parts = readQualifiedName(lexer);
+            nsUri = parts[0];
+            localName = parts[1];
+        }
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+        }
+        return new ElementTest(nsUri, localName, null);
+    }
+
+    private static NodeTest parseSchemaAttributeKindTest(XPathLexer lexer) {
+        lexer.advance(); // consume (
+        String nsUri = null;
+        String localName = null;
+        if (lexer.current() != XPathToken.RPAREN) {
+            String[] parts = readQualifiedName(lexer);
+            nsUri = parts[0];
+            localName = parts[1];
+        }
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+        }
+        return new AttributeTest(nsUri, localName, null);
+    }
+
+    private static NodeTest parseKindTestArgs(XPathLexer lexer,
+                                               boolean isAttr) {
+        // Read element/attribute name
+        if (isStar(lexer.current())) {
+            lexer.advance();
+            // element(*) or element(*, type)
+            if (lexer.current() == XPathToken.COMMA) {
+                lexer.advance();
+                String[] typeParts = readQualifiedName(lexer);
+                if (lexer.current() == XPathToken.RPAREN) {
+                    lexer.advance();
+                }
+                if (isAttr) {
+                    return new AttributeTest(null, null,
+                        NodeTest.parseResolvedName(
+                            formatClark(typeParts[0], typeParts[1])));
+                }
+                return new ElementTest(null, null,
+                    NodeTest.parseResolvedName(
+                        formatClark(typeParts[0], typeParts[1])));
+            }
+            if (lexer.current() == XPathToken.RPAREN) {
+                lexer.advance();
+            }
+            if (isAttr) {
+                return new AttributeTest(null, null, null);
+            }
+            return new ElementTest(null, null, null);
+        }
+
+        String[] nameParts = readQualifiedName(lexer);
+        String nsUri = nameParts[0];
+        String localName = nameParts[1];
+
+        // Check for type: element(name, type)
+        if (lexer.current() == XPathToken.COMMA) {
+            lexer.advance();
+            String[] typeParts = readQualifiedName(lexer);
+            if (lexer.current() == XPathToken.RPAREN) {
+                lexer.advance();
+            }
+            if (isAttr) {
+                return new AttributeTest(nsUri, localName,
+                    NodeTest.parseResolvedName(
+                        formatClark(typeParts[0], typeParts[1])));
+            }
+            return new ElementTest(nsUri, localName,
+                NodeTest.parseResolvedName(
+                    formatClark(typeParts[0], typeParts[1])));
+        }
+
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+        }
+        if (isAttr) {
+            return new AttributeTest(nsUri, localName, null);
+        }
+        return new ElementTest(nsUri, localName, null);
     }
 
     /**
-     * Parses a path string like "a/b/c" or "a[pred]/b" into steps.
-     * Handles predicates within individual steps and // operators.
+     * Reads a qualified name from the token stream. Returns [nsUri, local]
+     * where nsUri may be null or empty.
      */
-    private static void parseSteps(String path, List<PatternStep> steps) {
-        String[] rawSteps = splitPathSteps(path);
-        for (int i = 0; i < rawSteps.length; i++) {
-            String raw = rawSteps[i];
-            if (raw.isEmpty()) {
-                // Empty step from // - next step gets descendant axis
-                // The step after an empty step should have descendant axis
-                continue;
+    private static String[] readQualifiedName(XPathLexer lexer) {
+        if (lexer.current() == XPathToken.URIQNAME) {
+            String clark = lexer.value();
+            lexer.advance();
+            int close = clark.indexOf('}');
+            if (close > 0) {
+                String uri = clark.substring(1, close);
+                String local = clark.substring(close + 1);
+                return new String[] { uri, local };
             }
-
-            int axis = PatternStep.AXIS_CHILD;
-            // Check if previous step was empty (from //) meaning this is
-            // descendant
-            if (i > 0 && rawSteps[i - 1].isEmpty()) {
-                axis = PatternStep.AXIS_DESCENDANT;
-            }
-
-            // Extract per-step predicate
-            String stepPred = null;
-            String testOnly = raw;
-            int[] predRange = findPredicateRange(raw);
-            if (predRange != null) {
-                String afterPred = raw.substring(predRange[1] + 1);
-                if (afterPred.isEmpty() || afterPred.startsWith("[")) {
-                    testOnly = raw.substring(0, predRange[0]);
-                    // Combine multiple predicates
-                    int lastEnd = predRange[1];
-                    while (afterPred.startsWith("[")) {
-                        int[] nextRange = findPredicateRange(afterPred);
-                        if (nextRange != null) {
-                            lastEnd = lastEnd + 1 + nextRange[1];
-                            afterPred = raw.substring(lastEnd + 1);
-                        } else {
-                            break;
-                        }
-                    }
-                    String allPreds = raw.substring(predRange[0],
-                        lastEnd + 1);
-                    stepPred = combinePredicates(allPreds);
-                }
-            }
-
-            // Check for explicit axis in step
-            int axisIdx = testOnly.indexOf("::");
-            if (axisIdx > 0) {
-                String axisName = testOnly.substring(0, axisIdx);
-                testOnly = testOnly.substring(axisIdx + 2);
-                if ("descendant".equals(axisName)) {
-                    axis = PatternStep.AXIS_DESCENDANT;
-                } else if ("descendant-or-self".equals(axisName)) {
-                    axis = PatternStep.AXIS_DESCENDANT_OR_SELF;
-                } else if ("self".equals(axisName)) {
-                    axis = PatternStep.AXIS_SELF;
-                } else if ("attribute".equals(axisName)) {
-                    axis = PatternStep.AXIS_ATTRIBUTE;
-                }
-            }
-
-            // XTSE0340: numeric literals are not valid pattern steps
-            if (!testOnly.isEmpty() && isNumericLiteral(testOnly)) {
-                throw new IllegalArgumentException(
-                    "XTSE0340: Invalid pattern step '" + testOnly + "' - numeric literal is not a valid node test");
-            }
-
-            NodeTest nt;
-            if ("node()".equals(testOnly) &&
-                axis != PatternStep.AXIS_ATTRIBUTE) {
-                nt = ChildAxisAnyNodeTest.INSTANCE;
-            } else {
-                nt = NodeTest.parse(testOnly);
-            }
-            steps.add(new PatternStep(nt, axis, stepPred));
+            return new String[] { "", clark };
         }
+        if (lexer.current() == XPathToken.NCNAME) {
+            String name = lexer.value();
+            lexer.advance();
+            if (lexer.current() == XPathToken.COLON &&
+                lexer.peek() == XPathToken.NCNAME) {
+                lexer.advance();
+                String local = lexer.value();
+                lexer.advance();
+                return new String[] { null, local };
+            }
+            return new String[] { "", name };
+        }
+        // Fallback for unexpected tokens
+        String val = lexer.value();
+        lexer.advance();
+        return new String[] { "", val };
     }
 
-    private static Pattern parseSimpleTest(String patternStr,
-                                            String predicateStr,
-                                            String basePattern) {
-        // Handle self:: axis prefix (XSLT 3.0)
-        String testPart = basePattern.trim();
-        if (testPart.startsWith("self::")) {
-            testPart = testPart.substring(6).trim();
+    private static String formatClark(String uri, String local) {
+        if (uri != null && !uri.isEmpty()) {
+            return "{" + uri + "}" + local;
         }
-        // child::attribute() is impossible — attributes aren't children
-        if (testPart.startsWith("child::attribute")) {
-            return new NameTestPattern(patternStr, predicateStr,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-        // Reject patterns with spaces in the name test
-        if (containsTopLevelSpace(testPart)) {
-            throw new IllegalArgumentException(
-                "XTSE0340: Invalid pattern: " + patternStr);
-        }
-        NodeTest nt;
-        if ("node()".equals(testPart)) {
-            nt = ChildAxisAnyNodeTest.INSTANCE;
-        } else {
-            nt = NodeTest.parse(testPart);
-        }
-        double priority = computeNameTestPriority(testPart);
-        return new NameTestPattern(patternStr, predicateStr, nt, priority);
+        return local;
     }
 
-    private static boolean containsTopLevelSpace(String s) {
-        int depth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '(' || c == '[') {
-                    depth++;
-                } else if (c == ')' || c == ']') {
-                    depth--;
-                } else if (c == ' ' && depth == 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
+    // ---- Predicate extraction ----
 
-    // ---- Function pattern parsers ----
-
-    private static Pattern parseVariablePattern(String patternStr,
-                                                 String normalized) {
-        int varEnd = 1;
-        while (varEnd < normalized.length()) {
-            char c = normalized.charAt(varEnd);
-            if (!Character.isLetterOrDigit(c) && c != '_' && c != '-' &&
-                c != '.') {
-                break;
-            }
-            varEnd++;
-        }
-
-        String varName = normalized.substring(1, varEnd);
-        String rest = normalized.substring(varEnd);
-
-        if (rest.isEmpty()) {
-            return new VariablePattern(patternStr, varName, null,
-                VariablePattern.AXIS_NONE);
-        }
-        if (rest.startsWith("//")) {
-            Pattern trailing = parse(rest.substring(2));
-            return new VariablePattern(patternStr, varName, trailing,
-                VariablePattern.AXIS_DESCENDANT);
-        }
-        if (rest.startsWith("/")) {
-            Pattern trailing = parse(rest.substring(1));
-            return new VariablePattern(patternStr, varName, trailing,
-                VariablePattern.AXIS_CHILD);
-        }
-        return new VariablePattern(patternStr, varName, null,
-            VariablePattern.AXIS_NONE);
-    }
-
-    private static Pattern parseDocPattern(String patternStr,
-                                            String normalized) {
-        int parenEnd = findMatchingParen(normalized,
-            normalized.indexOf('('));
-        if (parenEnd < 0) {
-            return new NameTestPattern(patternStr, null,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-
-        String funcCall = normalized.substring(0, parenEnd + 1);
-        String rest = normalized.substring(parenEnd + 1);
-
-        if (rest.isEmpty()) {
-            return new DocPattern(patternStr, funcCall, null,
-                DocPattern.AXIS_NONE);
-        }
-        if (rest.startsWith("//")) {
-            Pattern trailing = parse(rest.substring(2));
-            return new DocPattern(patternStr, funcCall, trailing,
-                DocPattern.AXIS_DESCENDANT);
-        }
-        if (rest.startsWith("/")) {
-            Pattern trailing = parse(rest.substring(1));
-            return new DocPattern(patternStr, funcCall, trailing,
-                DocPattern.AXIS_CHILD);
-        }
-        return new DocPattern(patternStr, funcCall, null,
-            DocPattern.AXIS_NONE);
-    }
-
-    private static Pattern parseIdPattern(String patternStr,
-                                           String normalized) {
-        int parenStart = normalized.indexOf('(');
-        int parenEnd = findMatchingParen(normalized, parenStart);
-        if (parenStart < 0 || parenEnd < 0) {
-            return new NameTestPattern(patternStr, null,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-
-        String args = normalized.substring(parenStart + 1, parenEnd).trim();
-        String rest = normalized.substring(parenEnd + 1);
-
-        String[] argParts = splitArgs(args);
-        if (argParts.length == 0) {
-            return new NameTestPattern(patternStr, null,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-
-        String idArg = argParts[0].trim();
-
-        String docVarName = null;
-        if (argParts.length > 1) {
-            String docArg = argParts[1].trim();
-            if (docArg.startsWith("$")) {
-                docVarName = docArg.substring(1);
-            }
-        }
-
-        // Variable reference as id argument: id($varName)
-        if (idArg.startsWith("$")) {
-            String varName = idArg.substring(1);
-            if (rest.isEmpty()) {
-                return new IdPattern(patternStr, varName, docVarName,
-                    null, IdPattern.AXIS_NONE);
-            }
-            if (rest.startsWith("//")) {
-                Pattern trailing = parse(rest.substring(2));
-                return new IdPattern(patternStr, varName, docVarName,
-                    trailing, IdPattern.AXIS_DESCENDANT);
-            }
-            if (rest.startsWith("/")) {
-                Pattern trailing = parse(rest.substring(1));
-                return new IdPattern(patternStr, varName, docVarName,
-                    trailing, IdPattern.AXIS_CHILD);
-            }
-            return new IdPattern(patternStr, varName, docVarName,
-                null, IdPattern.AXIS_NONE);
-        }
-
-        idArg = stripQuotes(idArg);
-        String[] ids = splitWhitespace(idArg);
-
-        if (rest.isEmpty()) {
-            return new IdPattern(patternStr, ids, docVarName, null,
-                IdPattern.AXIS_NONE);
-        }
-        if (rest.startsWith("//")) {
-            Pattern trailing = parse(rest.substring(2));
-            return new IdPattern(patternStr, ids, docVarName, trailing,
-                IdPattern.AXIS_DESCENDANT);
-        }
-        if (rest.startsWith("/")) {
-            Pattern trailing = parse(rest.substring(1));
-            return new IdPattern(patternStr, ids, docVarName, trailing,
-                IdPattern.AXIS_CHILD);
-        }
-        return new IdPattern(patternStr, ids, docVarName, null,
-            IdPattern.AXIS_NONE);
-    }
-
-    private static Pattern parseElementWithIdPattern(String patternStr,
-                                                      String normalized) {
-        int parenStart = normalized.indexOf('(');
-        int parenEnd = findMatchingParen(normalized, parenStart);
-        if (parenStart < 0 || parenEnd < 0) {
-            return new NameTestPattern(patternStr, null,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-
-        String args = normalized.substring(parenStart + 1, parenEnd).trim();
-        String rest = normalized.substring(parenEnd + 1);
-
-        String[] argParts = splitArgs(args);
-        if (argParts.length == 0) {
-            return new NameTestPattern(patternStr, null,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-
-        String idArg = argParts[0].trim();
-        idArg = stripQuotes(idArg);
-        String[] ids = splitWhitespace(idArg);
-
-        String docVarName = null;
-        if (argParts.length > 1) {
-            String docArg = argParts[1].trim();
-            if (docArg.startsWith("$")) {
-                docVarName = docArg.substring(1);
-            }
-        }
-
-        if (rest.isEmpty()) {
-            return new ElementWithIdPattern(patternStr, ids, docVarName,
-                null, ElementWithIdPattern.AXIS_NONE);
-        }
-        if (rest.startsWith("//")) {
-            Pattern trailing = parse(rest.substring(2));
-            return new ElementWithIdPattern(patternStr, ids, docVarName,
-                trailing, ElementWithIdPattern.AXIS_DESCENDANT);
-        }
-        if (rest.startsWith("/")) {
-            Pattern trailing = parse(rest.substring(1));
-            return new ElementWithIdPattern(patternStr, ids, docVarName,
-                trailing, ElementWithIdPattern.AXIS_CHILD);
-        }
-        return new ElementWithIdPattern(patternStr, ids, docVarName,
-            null, ElementWithIdPattern.AXIS_NONE);
-    }
-
-    private static Pattern parseKeyPattern(String patternStr,
-                                            String normalized) {
-        int parenStart = normalized.indexOf('(');
-        int parenEnd = findMatchingParen(normalized, parenStart);
-        if (parenStart < 0 || parenEnd < 0) {
-            return new NameTestPattern(patternStr, null,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-
-        String args = normalized.substring(parenStart + 1, parenEnd).trim();
-        String rest = normalized.substring(parenEnd + 1);
-
-        String[] argParts = splitArgs(args);
-        if (argParts.length < 2) {
-            return new NameTestPattern(patternStr, null,
-                NeverMatchTest.INSTANCE, -0.5);
-        }
-
-        String keyName = stripQuotes(argParts[0].trim());
-        String keyValueArg = argParts[1].trim();
-
-        boolean isVariable = keyValueArg.startsWith("$");
-        String keyValueExpr;
-        if (isVariable) {
-            keyValueExpr = keyValueArg.substring(1);
-        } else {
-            keyValueExpr = stripQuotes(keyValueArg);
-        }
-
-        if (rest.isEmpty()) {
-            return new KeyPattern(patternStr, keyName, keyValueExpr,
-                isVariable, null, KeyPattern.AXIS_NONE);
-        }
-        if (rest.startsWith("//")) {
-            Pattern trailing = parse(rest.substring(2));
-            return new KeyPattern(patternStr, keyName, keyValueExpr,
-                isVariable, trailing, KeyPattern.AXIS_DESCENDANT);
-        }
-        if (rest.startsWith("/")) {
-            Pattern trailing = parse(rest.substring(1));
-            return new KeyPattern(patternStr, keyName, keyValueExpr,
-                isVariable, trailing, KeyPattern.AXIS_CHILD);
-        }
-        return new KeyPattern(patternStr, keyName, keyValueExpr,
-            isVariable, null, KeyPattern.AXIS_NONE);
-    }
-
-    // ---- Priority computation ----
-
-    private static double computeNameTestPriority(String test) {
-        if ("*".equals(test) || "node()".equals(test) ||
-            "@*".equals(test) || "text()".equals(test) ||
-            "comment()".equals(test) ||
-            "processing-instruction()".equals(test) ||
-            "element()".equals(test) || "attribute()".equals(test) ||
-            "element(*)".equals(test) || "attribute(*)".equals(test) ||
-            "document-node()".equals(test)) {
-            return -0.5;
-        }
-        if (test.startsWith("element(") && test.endsWith(")")) {
-            String inner = test.substring(8, test.length() - 1).trim();
-            if (inner.isEmpty() || "*".equals(inner)) {
-                return -0.5;
-            }
-            return 0.0;
-        }
-        if (test.startsWith("attribute(") && test.endsWith(")")) {
-            String inner = test.substring(10, test.length() - 1).trim();
-            if (inner.isEmpty() || "*".equals(inner)) {
-                return -0.5;
-            }
-            return 0.0;
-        }
-        if (test.contains(":*")) {
-            return -0.25;
-        }
-        return 0.0;
-    }
-
-    // ---- Parsing utility methods ----
-
-    static boolean hasTopLevelUnion(String pattern) {
-        int depth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        for (int i = 0; i < pattern.length(); i++) {
-            char c = pattern.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '[' || c == '(') {
-                    depth++;
-                } else if (c == ']' || c == ')') {
-                    depth--;
-                } else if (c == '|' && depth == 0) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    static String[] splitUnion(String pattern) {
-        List<String> parts = new ArrayList<>();
-        int bracketDepth = 0;
-        int parenDepth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        int start = 0;
-        for (int i = 0; i < pattern.length(); i++) {
-            char c = pattern.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '[') {
-                    bracketDepth++;
-                } else if (c == ']') {
-                    bracketDepth--;
-                } else if (c == '(') {
-                    parenDepth++;
-                } else if (c == ')') {
-                    parenDepth--;
-                } else if (c == '|' && bracketDepth == 0 &&
-                           parenDepth == 0) {
-                    parts.add(pattern.substring(start, i));
-                    start = i + 1;
-                }
-            }
-        }
-        parts.add(pattern.substring(start));
-        return parts.toArray(new String[0]);
-    }
-
-    static int findKeywordOutsideBrackets(String pattern, String keyword) {
-        return findKeywordOutsideBrackets(pattern, keyword, false);
-    }
-
-    static int findKeywordOutsideBrackets(String pattern, String keyword,
-                                           boolean findLast) {
-        int bracketDepth = 0;
-        int braceDepth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        int lastFound = -1;
-
-        for (int i = 0; i <= pattern.length() - keyword.length(); i++) {
-            char c = pattern.charAt(i);
-
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '[' || c == '(') {
-                    bracketDepth++;
-                } else if (c == ']' || c == ')') {
-                    bracketDepth--;
-                } else if (c == '{') {
-                    braceDepth++;
-                } else if (c == '}') {
-                    braceDepth--;
-                } else if (bracketDepth == 0 && braceDepth == 0) {
-                    if (pattern.regionMatches(i, keyword, 0,
-                                              keyword.length())) {
-                        if (!findLast) {
-                            return i;
-                        }
-                        lastFound = i;
-                    }
-                }
-            }
-        }
-        return findLast ? lastFound : -1;
-    }
-
-    static int findDoubleSlashOutsideBraces(String pattern) {
-        int braceDepth = 0;
-        int bracketDepth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        for (int i = 0; i < pattern.length() - 1; i++) {
-            char c = pattern.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '{') {
-                    braceDepth++;
-                } else if (c == '}') {
-                    braceDepth--;
-                } else if (c == '[' || c == '(') {
-                    bracketDepth++;
-                } else if (c == ']' || c == ')') {
-                    bracketDepth--;
-                } else if (braceDepth == 0 && bracketDepth == 0 &&
-                           c == '/' && pattern.charAt(i + 1) == '/') {
-                    return i;
-                }
-            }
-        }
-        return -1;
-    }
-
-    static int findLastSlashOutsideBraces(String pattern) {
-        int braceDepth = 0;
-        int bracketDepth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        int lastSlash = -1;
-        for (int i = 0; i < pattern.length(); i++) {
-            char c = pattern.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '{') {
-                    braceDepth++;
-                } else if (c == '}') {
-                    braceDepth--;
-                } else if (c == '[' || c == '(') {
-                    bracketDepth++;
-                } else if (c == ']' || c == ')') {
-                    bracketDepth--;
-                } else if (braceDepth == 0 && bracketDepth == 0 &&
-                           c == '/') {
-                    lastSlash = i;
-                }
-            }
-        }
-        return lastSlash;
-    }
-
-    static int[] findPredicateRange(String pattern) {
-        int depth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        int start = -1;
-
-        for (int i = 0; i < pattern.length(); i++) {
-            char c = pattern.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '[') {
-                    if (depth == 0) {
-                        start = i;
-                    }
-                    depth++;
-                } else if (c == ']') {
-                    depth--;
-                    if (depth == 0 && start >= 0) {
-                        return new int[] { start, i };
-                    }
-                }
-            }
-        }
-        return null;
-    }
-
-    static int findMatchingParen(String str, int openPos) {
-        if (openPos < 0) {
-            return -1;
-        }
-        int depth = 1;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        for (int i = openPos + 1; i < str.length(); i++) {
-            char c = str.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '(') {
-                    depth++;
-                } else if (c == ')') {
-                    depth--;
-                    if (depth == 0) {
-                        return i;
-                    }
-                }
-            }
-        }
-        return -1;
-    }
-
-    static String[] splitArgs(String args) {
-        List<String> parts = new ArrayList<>();
-        int depth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        int start = 0;
-
-        for (int i = 0; i < args.length(); i++) {
-            char c = args.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '(' || c == '[') {
-                    depth++;
-                } else if (c == ')' || c == ']') {
-                    depth--;
-                } else if (c == ',' && depth == 0) {
-                    parts.add(args.substring(start, i));
-                    start = i + 1;
-                }
-            }
-        }
-        parts.add(args.substring(start));
-        return parts.toArray(new String[0]);
-    }
-
-    static String[] splitPathSteps(String path) {
-        List<String> steps = new ArrayList<>();
-        int braceDepth = 0;
-        int bracketDepth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
-        int start = 0;
-        for (int i = 0; i < path.length(); i++) {
-            char c = path.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '{') {
-                    braceDepth++;
-                } else if (c == '}') {
-                    braceDepth--;
-                } else if (c == '[' || c == '(') {
-                    bracketDepth++;
-                } else if (c == ']' || c == ')') {
-                    bracketDepth--;
-                } else if (c == '/' && braceDepth == 0 &&
-                           bracketDepth == 0) {
-                    steps.add(path.substring(start, i));
-                    start = i + 1;
-                }
-            }
-        }
-        if (start < path.length()) {
-            steps.add(path.substring(start));
-        }
-        return steps.toArray(new String[0]);
-    }
-
-    static String combinePredicates(String allPredicates) {
+    /**
+     * Extracts the content of one or more consecutive predicates as a
+     * single combined expression string. Multiple predicates
+     * {@code [a][b]} become {@code (a) and (b)}.
+     */
+    private static String extractAllPredicates(XPathLexer lexer,
+                                                String prepared) {
         List<String> preds = new ArrayList<>();
-        int depth = 0;
-        int start = -1;
-        boolean inQuote = false;
-        char quoteChar = 0;
-
-        for (int i = 0; i < allPredicates.length(); i++) {
-            char c = allPredicates.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '[') {
-                    if (depth == 0) {
-                        start = i + 1;
-                    }
-                    depth++;
-                } else if (c == ']') {
-                    depth--;
-                    if (depth == 0 && start >= 0) {
-                        preds.add(allPredicates.substring(start, i));
-                        start = -1;
-                    }
-                }
-            }
+        while (lexer.current() == XPathToken.LBRACKET) {
+            preds.add(extractPredicateContent(lexer, prepared));
         }
 
         if (preds.size() == 1) {
@@ -1185,120 +798,556 @@ final class PatternParser {
     }
 
     /**
-     * Strips the child:: axis prefix except before attribute() where
-     * child::attribute() is an impossible combination (attributes are
-     * not on the child axis).
+     * Extracts the content between [ and matching ]. Advances lexer past
+     * the closing bracket.
      */
-    private static String stripChildAxis(String s) {
-        StringBuilder sb = new StringBuilder();
-        int i = 0;
-        while (i < s.length()) {
-            int idx = s.indexOf("child::", i);
-            if (idx < 0) {
-                sb.append(s.substring(i));
-                break;
+    private static String extractPredicateContent(XPathLexer lexer,
+                                                   String prepared) {
+        // lexer.current() == LBRACKET
+        int startPos = lexer.getPosition(); // position right after [
+        lexer.advance(); // consume [
+
+        // The content starts at the current token's position
+        int contentStart = lexer.tokenStart();
+
+        int depth = 1;
+        while (depth > 0 && lexer.current() != XPathToken.EOF) {
+            if (lexer.current() == XPathToken.LBRACKET) {
+                depth++;
+            } else if (lexer.current() == XPathToken.RBRACKET) {
+                depth--;
+                if (depth == 0) {
+                    break;
+                }
             }
-            sb.append(s.substring(i, idx));
-            String after = s.substring(idx + 7);
-            if (after.startsWith("attribute")) {
-                sb.append("child::");
-            }
-            i = idx + 7;
+            lexer.advance();
         }
-        return sb.toString();
+
+        int contentEnd = lexer.tokenStart();
+        if (lexer.current() == XPathToken.RBRACKET) {
+            lexer.advance(); // consume ]
+        }
+
+        return prepared.substring(contentStart, contentEnd).trim();
+    }
+
+    // ---- Function patterns ----
+
+    private static Pattern parseVariablePattern(XPathLexer lexer,
+                                                 String patternStr,
+                                                 String prepared,
+                                                 double version) {
+        lexer.advance(); // consume $
+        String varName = lexer.value();
+        lexer.advance(); // consume variable name
+
+        String predStr = null;
+        if (lexer.current() == XPathToken.LBRACKET) {
+            predStr = extractAllPredicates(lexer, prepared);
+        }
+
+        Step.Axis trailing = parseTrailingAxis(lexer);
+        Pattern base;
+        if (trailing == null) {
+            base = new VariablePattern(patternStr, varName, null, null);
+        } else {
+            Pattern trailingPattern = parsePathPattern(lexer, patternStr,
+                                                        prepared, version);
+            base = new VariablePattern(patternStr, varName, trailingPattern,
+                                       trailing);
+        }
+
+        if (predStr != null) {
+            return new PredicatedPattern(patternStr, predStr, base);
+        }
+        return base;
+    }
+
+    private static Pattern parseRootFuncPattern(XPathLexer lexer,
+                                                String patternStr,
+                                                String prepared,
+                                                double version) {
+        lexer.advance(); // consume "root"
+        lexer.advance(); // consume (
+        if (lexer.current() != XPathToken.RPAREN) {
+            // Skip optional argument
+            int depth = 1;
+            while (depth > 0 && lexer.current() != XPathToken.EOF) {
+                if (lexer.current() == XPathToken.LPAREN) {
+                    depth++;
+                } else if (lexer.current() == XPathToken.RPAREN) {
+                    depth--;
+                }
+                if (depth > 0) {
+                    lexer.advance();
+                }
+            }
+        }
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance(); // consume )
+        }
+
+        String predStr = null;
+        if (lexer.current() == XPathToken.LBRACKET) {
+            predStr = extractAllPredicates(lexer, prepared);
+        }
+
+        if (lexer.current() == XPathToken.DOUBLE_SLASH) {
+            lexer.advance();
+            return buildAbsolutePath(lexer, patternStr, prepared,
+                                     version, true);
+        }
+        if (lexer.current() == XPathToken.SLASH) {
+            lexer.advance();
+            if (isPatternEnd(lexer)) {
+                Pattern base = new DocumentNodePattern(patternStr);
+                if (predStr != null) {
+                    return new PredicatedPattern(patternStr, predStr, base);
+                }
+                return base;
+            }
+            return buildAbsolutePath(lexer, patternStr, prepared,
+                                     version, false);
+        }
+
+        Pattern base = new DocumentNodePattern(patternStr);
+        if (predStr != null) {
+            return new PredicatedPattern(patternStr, predStr, base);
+        }
+        return base;
+    }
+
+    private static Pattern parseDocFuncPattern(XPathLexer lexer,
+                                                String patternStr,
+                                                String prepared,
+                                                double version) {
+        // Extract the full function call as a string for evaluation
+        int funcStart = lexer.tokenStart();
+        lexer.advance(); // consume function name
+        lexer.advance(); // consume (
+        int depth = 1;
+        while (depth > 0 && lexer.current() != XPathToken.EOF) {
+            if (lexer.current() == XPathToken.LPAREN) {
+                depth++;
+            } else if (lexer.current() == XPathToken.RPAREN) {
+                depth--;
+            }
+            if (depth > 0) {
+                lexer.advance();
+            }
+        }
+        int funcEnd = lexer.getPosition();
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance(); // consume )
+        }
+        String docExpr = prepared.substring(funcStart, funcEnd);
+
+        Step.Axis trailing = parseTrailingAxis(lexer);
+        if (trailing == null) {
+            return new DocPattern(patternStr, docExpr, null, null);
+        }
+        Pattern trailingPattern = parsePathPattern(lexer, patternStr,
+                                                    prepared, version);
+        return new DocPattern(patternStr, docExpr, trailingPattern, trailing);
+    }
+
+    private static Pattern parseIdPattern(XPathLexer lexer,
+                                           String patternStr,
+                                           String prepared,
+                                           double version) {
+        lexer.advance(); // consume "id"
+        lexer.advance(); // consume (
+
+        List<String> args = parseFuncArgs(lexer);
+        if (args.isEmpty()) {
+            return new NameTestPattern(patternStr, null,
+                NeverMatchTest.INSTANCE, -0.5);
+        }
+
+        String idArg = args.get(0).trim();
+        String docVarName = null;
+        if (args.size() > 1) {
+            String docArg = args.get(1).trim();
+            if (docArg.startsWith("$")) {
+                docVarName = docArg.substring(1);
+            }
+        }
+
+        Step.Axis trailing = parseTrailingAxis(lexer);
+
+        if (idArg.startsWith("$")) {
+            String varName = idArg.substring(1);
+            if (trailing == null) {
+                return new IdPattern(patternStr, varName, docVarName,
+                                     null, null);
+            }
+            Pattern trailingPat = parsePathPattern(lexer, patternStr,
+                                                    prepared, version);
+            return new IdPattern(patternStr, varName, docVarName,
+                                 trailingPat, trailing);
+        }
+
+        idArg = stripQuotes(idArg);
+        String[] ids = splitWhitespace(idArg);
+        if (trailing == null) {
+            return new IdPattern(patternStr, ids, docVarName, null, null);
+        }
+        Pattern trailingPat = parsePathPattern(lexer, patternStr, prepared,
+                                                version);
+        return new IdPattern(patternStr, ids, docVarName, trailingPat,
+                             trailing);
+    }
+
+    private static Pattern parseElementWithIdPattern(XPathLexer lexer,
+                                                      String patternStr,
+                                                      String prepared,
+                                                      double version) {
+        lexer.advance(); // consume "element-with-id"
+        lexer.advance(); // consume (
+
+        List<String> args = parseFuncArgs(lexer);
+        if (args.isEmpty()) {
+            return new NameTestPattern(patternStr, null,
+                NeverMatchTest.INSTANCE, -0.5);
+        }
+
+        String idArg = stripQuotes(args.get(0).trim());
+        String[] ids = splitWhitespace(idArg);
+
+        String docVarName = null;
+        if (args.size() > 1) {
+            String docArg = args.get(1).trim();
+            if (docArg.startsWith("$")) {
+                docVarName = docArg.substring(1);
+            }
+        }
+
+        Step.Axis trailing = parseTrailingAxis(lexer);
+        if (trailing == null) {
+            return new ElementWithIdPattern(patternStr, ids, docVarName,
+                                            null, null);
+        }
+        Pattern trailingPat = parsePathPattern(lexer, patternStr, prepared,
+                                                version);
+        return new ElementWithIdPattern(patternStr, ids, docVarName,
+                                        trailingPat, trailing);
+    }
+
+    private static Pattern parseKeyPattern(XPathLexer lexer,
+                                            String patternStr,
+                                            String prepared,
+                                            double version) {
+        lexer.advance(); // consume "key"
+        lexer.advance(); // consume (
+
+        List<String> args = parseFuncArgs(lexer);
+        if (args.size() < 2) {
+            return new NameTestPattern(patternStr, null,
+                NeverMatchTest.INSTANCE, -0.5);
+        }
+
+        String keyName = stripQuotes(args.get(0).trim());
+        String keyValueArg = args.get(1).trim();
+
+        boolean isVariable = keyValueArg.startsWith("$");
+        String keyValueExpr;
+        if (isVariable) {
+            keyValueExpr = keyValueArg.substring(1);
+        } else {
+            keyValueExpr = stripQuotes(keyValueArg);
+        }
+
+        Step.Axis trailing = parseTrailingAxis(lexer);
+        if (trailing == null) {
+            return new KeyPattern(patternStr, keyName, keyValueExpr,
+                                  isVariable, null, null);
+        }
+        Pattern trailingPat = parsePathPattern(lexer, patternStr, prepared,
+                                                version);
+        return new KeyPattern(patternStr, keyName, keyValueExpr, isVariable,
+                              trailingPat, trailing);
     }
 
     /**
-     * Expands a parenthesized union step within a path pattern.
-     * Transforms {@code path/(A|B)/rest} into {@code path/A/rest | path/B/rest}.
-     * Handles both / and // before the parenthesized group.
-     *
-     * @return the expanded string, or null if no expansion needed
+     * Parses function arguments between ( and ), returning each as a raw
+     * string. The opening ( must already be consumed.
      */
-    private static String expandParenthesizedPathUnion(String pattern) {
-        int depth = 0;
-        boolean inQuote = false;
-        char quoteChar = 0;
+    private static List<String> parseFuncArgs(XPathLexer lexer) {
+        List<String> args = new ArrayList<>();
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+            return args;
+        }
 
-        for (int i = 0; i < pattern.length() - 1; i++) {
-            char c = pattern.charAt(i);
-            if (!inQuote && (c == '"' || c == '\'')) {
-                inQuote = true;
-                quoteChar = c;
-            } else if (inQuote && c == quoteChar) {
-                inQuote = false;
-            } else if (!inQuote) {
-                if (c == '[' || c == '(') {
+        StringBuilder current = new StringBuilder();
+        int depth = 0;
+        while (lexer.current() != XPathToken.EOF) {
+            if (lexer.current() == XPathToken.LPAREN) {
+                depth++;
+                current.append("(");
+                lexer.advance();
+            } else if (lexer.current() == XPathToken.RPAREN) {
+                if (depth == 0) {
+                    args.add(current.toString());
+                    lexer.advance();
+                    break;
+                }
+                depth--;
+                current.append(")");
+                lexer.advance();
+            } else if (lexer.current() == XPathToken.COMMA && depth == 0) {
+                args.add(current.toString());
+                current.setLength(0);
+                lexer.advance();
+            } else {
+                current.append(lexer.value());
+                lexer.advance();
+            }
+        }
+        return args;
+    }
+
+    // ---- document-node() pattern ----
+
+    private static Pattern parseDocumentNode(XPathLexer lexer,
+                                              String patternStr,
+                                              String prepared,
+                                              double version) {
+        lexer.advance(); // consume "document-node"
+        lexer.advance(); // consume (
+        // May have element() or schema-element() inside
+        if (lexer.current() != XPathToken.RPAREN) {
+            // Skip the inner kind test
+            int depth = 1;
+            while (depth > 0 && lexer.current() != XPathToken.EOF) {
+                if (lexer.current() == XPathToken.LPAREN) {
                     depth++;
-                } else if (c == ']' || c == ')') {
+                } else if (lexer.current() == XPathToken.RPAREN) {
                     depth--;
-                } else if (depth == 0 && c == '/' &&
-                           pattern.charAt(i + 1) == '(') {
-                    int openParen = i + 1;
-                    int closeParen = findMatchingParen(pattern, openParen);
-                    if (closeParen < 0) {
-                        continue;
-                    }
-                    String inner = pattern.substring(openParen + 1,
-                        closeParen);
-                    if (!hasTopLevelUnion(inner)) {
-                        continue;
-                    }
-                    String prefix = pattern.substring(0, i);
-                    String suffix = pattern.substring(closeParen + 1);
-                    String[] parts = splitUnion(inner);
-                    StringBuilder sb = new StringBuilder();
-                    for (int j = 0; j < parts.length; j++) {
-                        if (j > 0) {
-                            sb.append(" | ");
-                        }
-                        sb.append(prefix);
-                        sb.append("/");
-                        sb.append(parts[j].trim());
-                        sb.append(suffix);
-                    }
-                    return sb.toString();
+                }
+                if (depth > 0) {
+                    lexer.advance();
                 }
             }
+        }
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance(); // consume )
+        }
+
+        if (lexer.current() == XPathToken.DOUBLE_SLASH) {
+            lexer.advance();
+            return buildAbsolutePath(lexer, patternStr, prepared, version,
+                                     true);
+        }
+        if (lexer.current() == XPathToken.SLASH) {
+            lexer.advance();
+            if (isPatternEnd(lexer)) {
+                return new DocumentNodePattern(patternStr);
+            }
+            return buildAbsolutePath(lexer, patternStr, prepared, version,
+                                     false);
+        }
+
+        return new DocumentNodePattern(patternStr);
+    }
+
+    // ---- Parenthesized pattern ----
+
+    private static Pattern parseParenthesized(XPathLexer lexer,
+                                               String patternStr,
+                                               String prepared,
+                                               double version) {
+        lexer.advance(); // consume (
+        Pattern inner = parseUnion(lexer, patternStr, prepared, version);
+        if (lexer.current() == XPathToken.RPAREN) {
+            lexer.advance();
+        }
+
+        // Check for predicates after parenthesized pattern
+        if (lexer.current() == XPathToken.LBRACKET) {
+            String predStr = extractAllPredicates(lexer, prepared);
+            return new PredicatedPattern(patternStr, predStr, inner);
+        }
+        return inner;
+    }
+
+    // ---- Trailing axis after function patterns ----
+
+    /**
+     * Checks if the current token is / or // and returns the
+     * corresponding trailing axis. Returns null if no path follows.
+     */
+    private static Step.Axis parseTrailingAxis(XPathLexer lexer) {
+        if (lexer.current() == XPathToken.DOUBLE_SLASH) {
+            lexer.advance();
+            return Step.Axis.DESCENDANT;
+        }
+        if (lexer.current() == XPathToken.SLASH) {
+            lexer.advance();
+            return Step.Axis.CHILD;
         }
         return null;
     }
 
+    // ---- Priority computation ----
+
+    private static double computePriority(PatternStep step) {
+        NodeTest nt = step.nodeTest;
+
+        if (nt instanceof ChildAxisAnyNodeTest || nt == AnyNodeTest.INSTANCE) {
+            return -0.5;
+        }
+        if (nt instanceof TextTest || nt instanceof CommentTest) {
+            return -0.5;
+        }
+        if (nt instanceof PITest) {
+            PITest pi = (PITest) nt;
+            if (pi == PITest.ANY) {
+                return -0.5;
+            }
+            return 0.0;
+        }
+        if (nt instanceof ElementTest) {
+            ElementTest et = (ElementTest) nt;
+            if (et.getLocalName() == null && et.getNamespaceURI() == null) {
+                return -0.5;
+            }
+            if (et.getLocalName() == null && et.getNamespaceURI() != null) {
+                return -0.25;
+            }
+            return 0.0;
+        }
+        if (nt instanceof AttributeTest) {
+            AttributeTest at = (AttributeTest) nt;
+            if (at.getLocalName() == null && at.getNamespaceURI() == null) {
+                return -0.5;
+            }
+            if (at.getLocalName() == null && at.getNamespaceURI() != null) {
+                return -0.25;
+            }
+            return 0.0;
+        }
+        if (nt instanceof NeverMatchTest) {
+            return -0.5;
+        }
+        return 0.0;
+    }
+
+    // ---- Utility methods ----
+
+    private static boolean isPatternEnd(XPathLexer lexer) {
+        XPathToken t = lexer.current();
+        return t == XPathToken.EOF || t == XPathToken.PIPE ||
+               t == XPathToken.UNION || t == XPathToken.EXCEPT ||
+               t == XPathToken.INTERSECT || t == XPathToken.RPAREN;
+    }
+
     /**
-     * Strips XPath 2.0+ comments from a string.
-     * XPath comments are delimited by (: and :) and can be nested.
+     * Returns true if the token is an XPath keyword that could also be
+     * an element name in a pattern. The lexer may tokenize names like
+     * 'in', 'if', 'for' as keywords instead of NCNAME depending on context.
      */
-    static String stripXPathComments(String s) {
-        int idx = s.indexOf("(:");
+    private static boolean isXPathKeyword(XPathToken token) {
+        switch (token) {
+            case IN:
+            case IF:
+            case THEN:
+            case ELSE:
+            case FOR:
+            case LET:
+            case RETURN:
+            case SOME:
+            case EVERY:
+            case SATISFIES:
+            case OF:
+            case AS:
+            case AND:
+            case OR:
+            case DIV:
+            case MOD:
+            case IDIV:
+            case TO:
+            case EQ:
+            case NE:
+            case LT:
+            case LE:
+            case GT:
+            case GE:
+            case IS:
+            case INSTANCE:
+            case CAST:
+            case CASTABLE:
+            case TREAT:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * In pattern context, both STAR and STAR_MULTIPLY represent a wildcard.
+     * The lexer may produce STAR_MULTIPLY when '*' follows a complete
+     * expression token (like URIQNAME), but in patterns it is always
+     * a node-test wildcard.
+     */
+    private static boolean isStar(XPathToken token) {
+        return token == XPathToken.STAR || token == XPathToken.STAR_MULTIPLY;
+    }
+
+    /**
+     * Converts Clark notation {@code {uri}local} to
+     * {@code Q{uri}local} so the XPath lexer can tokenize it as a
+     * URIQualifiedName. Only converts at the top level (outside
+     * predicates and string literals).
+     */
+    static String prepareForLexer(String s) {
+        int idx = s.indexOf('{');
         if (idx < 0) {
             return s;
         }
-        StringBuilder sb = new StringBuilder();
-        int depth = 0;
-        int i = 0;
-        while (i < s.length()) {
-            if (i < s.length() - 1 && s.charAt(i) == '(' &&
-                s.charAt(i + 1) == ':') {
-                depth++;
-                i += 2;
-            } else if (i < s.length() - 1 && s.charAt(i) == ':' &&
-                       s.charAt(i + 1) == ')' && depth > 0) {
-                depth--;
-                i += 2;
-            } else if (depth == 0) {
-                sb.append(s.charAt(i));
-                i++;
+
+        StringBuilder sb = new StringBuilder(s.length() + 10);
+        int bracketDepth = 0;
+        boolean inQuote = false;
+        char quoteChar = 0;
+
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (!inQuote && (c == '\'' || c == '"')) {
+                inQuote = true;
+                quoteChar = c;
+                sb.append(c);
+            } else if (inQuote && c == quoteChar) {
+                inQuote = false;
+                sb.append(c);
+            } else if (!inQuote && c == '[') {
+                bracketDepth++;
+                sb.append(c);
+            } else if (!inQuote && c == ']') {
+                bracketDepth--;
+                sb.append(c);
+            } else if (!inQuote && bracketDepth == 0 && c == '{') {
+                if (i > 0 && s.charAt(i - 1) == 'Q') {
+                    sb.append(c);
+                } else {
+                    sb.append("Q");
+                    sb.append(c);
+                }
             } else {
-                i++;
+                sb.append(c);
             }
         }
-        return sb.toString().trim();
+        return sb.toString();
     }
 
     private static String stripQuotes(String s) {
-        if ((s.startsWith("'") && s.endsWith("'")) ||
-            (s.startsWith("\"") && s.endsWith("\""))) {
-            return s.substring(1, s.length() - 1);
+        if (s.length() >= 2) {
+            char first = s.charAt(0);
+            char last = s.charAt(s.length() - 1);
+            if ((first == '\'' && last == '\'') ||
+                (first == '"' && last == '"')) {
+                return s.substring(1, s.length() - 1);
+            }
         }
         return s;
     }
@@ -1323,47 +1372,5 @@ final class PatternParser {
             parts.add(trimmed.substring(start));
         }
         return parts.toArray(new String[0]);
-    }
-
-    /**
-     * Checks if a string is a numeric literal (integer or decimal).
-     */
-    static boolean isNumericLiteral(String s) {
-        if (s.isEmpty()) {
-            return false;
-        }
-        boolean hasDigit = false;
-        boolean hasDot = false;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c >= '0' && c <= '9') {
-                hasDigit = true;
-            } else if (c == '.' && !hasDot) {
-                hasDot = true;
-            } else {
-                return false;
-            }
-        }
-        return hasDigit;
-    }
-
-    /**
-     * Checks if a pattern string looks like an arithmetic expression rather
-     * than a valid pattern. A '+' between two operands indicates arithmetic;
-     * hyphens in names like 'processing-instruction' are not arithmetic.
-     */
-    static boolean isArithmeticExpression(String s) {
-        int depth = 0;
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            if (c == '(' || c == '[') {
-                depth++;
-            } else if (c == ')' || c == ']') {
-                depth--;
-            } else if (depth == 0 && c == '+' && i > 0) {
-                return true;
-            }
-        }
-        return false;
     }
 }

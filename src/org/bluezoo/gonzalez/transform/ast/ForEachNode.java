@@ -30,6 +30,7 @@ import java.util.Set;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -48,7 +49,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class ForEachNode extends XSLTInstruction {
+public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;
     private final List<SortSpec> sorts;
     private final SequenceNode body;
@@ -58,6 +59,16 @@ public class ForEachNode extends XSLTInstruction {
         this.body = body;
     }
     @Override public String getInstructionName() { return "for-each"; }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         try {

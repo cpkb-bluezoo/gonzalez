@@ -29,6 +29,7 @@ import java.util.Locale;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -46,7 +47,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class NumberNode extends XSLTInstruction {
+public class NumberNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression valueExpr;
     private final XPathExpression selectExpr; // XSLT 2.0+ select attribute
     private final String level;
@@ -81,6 +82,18 @@ public class NumberNode extends XSLTInstruction {
     @Override 
     public String getInstructionName() { 
         return "number"; 
+    }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (valueExpr != null) {
+            exprs.add(valueExpr);
+        }
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
     }
     
     @Override 

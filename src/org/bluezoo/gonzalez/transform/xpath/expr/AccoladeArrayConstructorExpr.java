@@ -52,6 +52,15 @@ public final class AccoladeArrayConstructorExpr implements Expr {
         this.bodyExpr = bodyExpr;
     }
 
+    /**
+     * Returns the body expression.
+     *
+     * @return the body expression
+     */
+    public Expr getBodyExpr() {
+        return bodyExpr;
+    }
+
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         XPathValue result = bodyExpr.evaluate(context);

@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
@@ -35,16 +36,12 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  */
 final class VariablePattern extends AbstractPattern {
 
-    static final int AXIS_NONE = 0;
-    static final int AXIS_CHILD = 1;
-    static final int AXIS_DESCENDANT = 2;
-
     private final String varName;
     private final Pattern trailingPattern;
-    private final int trailingAxis;
+    private final Step.Axis trailingAxis;
 
     VariablePattern(String patternStr, String varName,
-                    Pattern trailingPattern, int trailingAxis) {
+                    Pattern trailingPattern, Step.Axis trailingAxis) {
         super(patternStr, null);
         this.varName = varName;
         this.trailingPattern = trailingPattern;
@@ -74,7 +71,7 @@ final class VariablePattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_NONE) {
+        if (trailingAxis == null) {
             for (XPathNode varNode : varNodes) {
                 if (node.isSameNode(varNode)) {
                     return true;
@@ -83,7 +80,7 @@ final class VariablePattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_DESCENDANT) {
+        if (trailingAxis == Step.Axis.DESCENDANT) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }
@@ -99,7 +96,7 @@ final class VariablePattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_CHILD) {
+        if (trailingAxis == Step.Axis.CHILD) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }

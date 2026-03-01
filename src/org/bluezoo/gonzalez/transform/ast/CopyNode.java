@@ -22,7 +22,9 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 import java.util.StringTokenizer;
 
@@ -30,6 +32,7 @@ import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.compiler.AttributeSet;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -46,7 +49,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class CopyNode extends XSLTInstruction {
+public class CopyNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;          // XSLT 3.0 - select items to copy (null = context item)
     private final String useAttrSets;
     private final SequenceNode content;
@@ -101,6 +104,16 @@ public class CopyNode extends XSLTInstruction {
     }
     
     @Override public String getInstructionName() { return "copy"; }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         // XSLT 3.0: if select attribute is present, copy selected items

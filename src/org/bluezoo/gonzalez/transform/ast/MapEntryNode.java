@@ -21,11 +21,14 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
@@ -41,7 +44,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class MapEntryNode extends XSLTInstruction {
+public final class MapEntryNode extends XSLTInstruction implements ExpressionHolder {
 
     private final XPathExpression keyExpr;
     private final XPathExpression selectExpr;
@@ -63,6 +66,18 @@ public final class MapEntryNode extends XSLTInstruction {
     @Override
     public String getInstructionName() {
         return "map-entry";
+    }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (keyExpr != null) {
+            exprs.add(keyExpr);
+        }
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
     }
 
     @Override

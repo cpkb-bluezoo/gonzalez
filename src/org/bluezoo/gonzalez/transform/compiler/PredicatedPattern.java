@@ -41,6 +41,10 @@ final class PredicatedPattern extends AbstractPattern {
         this.inner = inner;
     }
 
+    Pattern getInner() {
+        return inner;
+    }
+
     @Override
     boolean matchesBase(XPathNode node, TransformContext context,
                         XPathNode targetNode) {

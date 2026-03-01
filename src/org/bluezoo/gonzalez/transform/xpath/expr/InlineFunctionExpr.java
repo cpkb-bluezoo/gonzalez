@@ -52,6 +52,15 @@ public final class InlineFunctionExpr implements Expr {
         this.body = body;
     }
 
+    /**
+     * Returns the function body expression.
+     *
+     * @return the body
+     */
+    public Expr getBody() {
+        return body;
+    }
+
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         return new InlineFunctionItem(paramNames, body, context);

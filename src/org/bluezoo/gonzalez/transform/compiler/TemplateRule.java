@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.compiler;
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
+import org.bluezoo.gonzalez.transform.runtime.BufferingStrategy;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -56,6 +57,7 @@ public final class TemplateRule {
     private final XSLTNode body;
     private final String asType;  // XSLT 2.0+ return type declaration
     private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
+    private volatile BufferingStrategy bufferingStrategy;  // set by StreamabilityAnalyzer
 
     /**
      * Creates a template rule.
@@ -253,6 +255,27 @@ public final class TemplateRule {
      */
     public StreamingCapability getStreamingCapability() {
         return body.getStreamingCapability();
+    }
+
+    /**
+     * Returns the buffering strategy determined by the streaming classifier.
+     * Returns {@link BufferingStrategy#NONE} if not yet analyzed.
+     *
+     * @return the buffering strategy
+     */
+    public BufferingStrategy getBufferingStrategy() {
+        BufferingStrategy bs = bufferingStrategy;
+        return bs != null ? bs : BufferingStrategy.NONE;
+    }
+
+    /**
+     * Sets the buffering strategy (called by StreamabilityAnalyzer during
+     * stylesheet compilation).
+     *
+     * @param strategy the computed buffering strategy
+     */
+    public void setBufferingStrategy(BufferingStrategy strategy) {
+        this.bufferingStrategy = strategy;
     }
 
     /**

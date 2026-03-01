@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 /**
@@ -50,6 +51,10 @@ final class PathPattern extends AbstractPattern {
         this.isAbsolute = isAbsolute;
     }
 
+    PatternStep[] getSteps() {
+        return steps;
+    }
+
     @Override
     boolean matchesBase(XPathNode node, TransformContext context,
                         XPathNode targetNode) {
@@ -57,12 +62,10 @@ final class PathPattern extends AbstractPattern {
             return false;
         }
 
-        // The last step must match the candidate node
         PatternStep last = steps[steps.length - 1];
         if (!last.nodeTest.matches(node)) {
             return false;
         }
-        // Evaluate per-step predicate on the candidate
         if (last.predicateStr != null) {
             if (!evaluateStepPredicate(node, context, targetNode,
                                        last.predicateStr, last.nodeTest)) {
@@ -70,17 +73,15 @@ final class PathPattern extends AbstractPattern {
             }
         }
 
-        // Walk backwards through remaining steps checking ancestor chain
         XPathNode current = node;
         for (int i = steps.length - 2; i >= 0; i--) {
             PatternStep step = steps[i];
-            int nextAxis = steps[i + 1].axis;
+            Step.Axis nextAxis = steps[i + 1].axis;
 
-            if (nextAxis == PatternStep.AXIS_DESCENDANT ||
-                nextAxis == PatternStep.AXIS_DESCENDANT_OR_SELF) {
-                // Must find a matching ancestor anywhere above current
+            if (nextAxis == Step.Axis.DESCENDANT ||
+                nextAxis == Step.Axis.DESCENDANT_OR_SELF) {
                 boolean found = false;
-                if (nextAxis != PatternStep.AXIS_DESCENDANT_OR_SELF) {
+                if (nextAxis != Step.Axis.DESCENDANT_OR_SELF) {
                     current = current.getParent();
                 }
                 while (current != null) {
@@ -90,23 +91,20 @@ final class PathPattern extends AbstractPattern {
                                                   step.predicateStr,
                                                   step.nodeTest)) {
                             if (isAbsolute && i == 0) {
-                                if (step.axis == PatternStep.AXIS_DESCENDANT ||
-                                    step.axis == PatternStep.AXIS_DESCENDANT_OR_SELF) {
-                                    // // pattern: just verify a document root exists above
+                                if (step.axis == Step.Axis.DESCENDANT ||
+                                    step.axis == Step.Axis.DESCENDANT_OR_SELF) {
                                     XPathNode r = current.getRoot();
                                     if (r != null && r.isRoot()) {
                                         found = true;
                                         break;
                                     }
                                 } else {
-                                    // / pattern: ancestor must be direct child of root
                                     XPathNode root = current.getParent();
                                     if (root != null && root.getParent() == null && root.isRoot()) {
                                         found = true;
                                         break;
                                     }
                                 }
-                                // Not under root - keep searching ancestors
                             } else {
                                 found = true;
                                 break;
@@ -118,8 +116,7 @@ final class PathPattern extends AbstractPattern {
                 if (!found) {
                     return false;
                 }
-            } else if (nextAxis == PatternStep.AXIS_SELF) {
-                // Self axis - same node must match the step
+            } else if (nextAxis == Step.Axis.SELF) {
                 if (!step.nodeTest.matches(current)) {
                     return false;
                 }
@@ -130,7 +127,6 @@ final class PathPattern extends AbstractPattern {
                     return false;
                 }
             } else {
-                // CHILD or ATTRIBUTE axis => step up to parent
                 current = current.getParent();
                 if (current == null) {
                     return false;
@@ -147,16 +143,13 @@ final class PathPattern extends AbstractPattern {
             }
         }
 
-        // If absolute, verify a document root exists in the ancestor chain
         if (isAbsolute) {
             if (steps.length > 0 &&
-                (steps[0].axis == PatternStep.AXIS_DESCENDANT ||
-                 steps[0].axis == PatternStep.AXIS_DESCENDANT_OR_SELF)) {
-                // // pattern: document root must exist somewhere above
+                (steps[0].axis == Step.Axis.DESCENDANT ||
+                 steps[0].axis == Step.Axis.DESCENDANT_OR_SELF)) {
                 XPathNode root = current.getRoot();
                 return root != null && root.isRoot();
             }
-            // / pattern: parent must be the document root
             XPathNode root = current.getParent();
             return root != null && root.getParent() == null && root.isRoot();
         }

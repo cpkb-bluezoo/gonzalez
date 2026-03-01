@@ -22,16 +22,22 @@
 package org.bluezoo.gonzalez.transform.runtime;
 
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
+import org.bluezoo.gonzalez.transform.compiler.StreamingClassifier;
+import org.bluezoo.gonzalez.transform.compiler.StreamabilityAnalyzer.ExpressionStreamability;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
+import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
+import org.bluezoo.gonzalez.transform.xpath.expr.FunctionCall;
+import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -68,96 +74,42 @@ public final class InternalAccumulatorFactory {
      * @return list of internal accumulators
      */
     public List<InternalAccumulator> createFor(CompiledStylesheet stylesheet) {
-        List<InternalAccumulator> accumulators = new ArrayList<>();
+        List<InternalAccumulator> accumulators = new ArrayList<InternalAccumulator>();
 
-        // Analyze templates for accumulator opportunities
         for (TemplateRule template : stylesheet.getTemplateRules()) {
-            List<InternalAccumulator> templateAccumulators = analyzeForAccumulators(template);
-            accumulators.addAll(templateAccumulators);
+            List<InternalAccumulator> templateAccs =
+                analyzeForAccumulators(template);
+            accumulators.addAll(templateAccs);
         }
 
         return accumulators;
     }
 
     /**
-     * Analyzes a single template for accumulator opportunities.
+     * Analyzes a single template for accumulator opportunities using
+     * the expression AST.
      */
-    private List<InternalAccumulator> analyzeForAccumulators(TemplateRule template) {
-        List<InternalAccumulator> result = new ArrayList<>();
+    private List<InternalAccumulator> analyzeForAccumulators(
+            TemplateRule template) {
+        List<InternalAccumulator> result = new ArrayList<InternalAccumulator>();
 
-        // Get the template body and analyze expressions
-        // For now, we focus on the match pattern context
-        
         Pattern matchPattern = template.getMatchPattern();
-        if (matchPattern != null) {
-            String patternStr = matchPattern.toString();
-            
-            // Check if this is a pattern that commonly uses position()
-            // For example, templates matching "item" often use position()
-            if (isSimpleElementPattern(patternStr)) {
-                // Create a position counter for this element type
-                InternalAccumulator positionAcc = InternalAccumulator.createCounter(
-                    generateId("position", patternStr),
-                    matchPattern,
-                    null  // Original expression will be linked later
-                );
-                result.add(positionAcc);
-            }
-        }
-
-        return result;
-    }
-
-    /**
-     * Analyzes an expression string and returns accumulators if applicable.
-     *
-     * @param expression the XPath expression string
-     * @param contextPattern the context pattern (what element this is evaluated in)
-     * @return list of internal accumulators
-     */
-    public List<InternalAccumulator> analyzeExpression(String expression, Pattern contextPattern) {
-        List<InternalAccumulator> result = new ArrayList<>();
-
-        if (expression == null || expression.isEmpty()) {
+        if (matchPattern == null) {
             return result;
         }
 
-        // Check for position() - can be replaced with counter accumulator
-        if (expression.contains("position()")) {
-            result.add(InternalAccumulator.createCounter(
-                generateId("position", "context"),
-                contextPattern,
-                null
-            ));
+        XSLTNode body = template.getBody();
+        if (body == null) {
+            return result;
         }
 
-        // Check for count(preceding-sibling::...)
-        if (expression.contains("count(preceding-sibling::")) {
-            // Extract the node test from preceding-sibling
-            String nodeTest = extractNodeTest(expression, "preceding-sibling");
-            if (nodeTest != null) {
-                Pattern siblingPattern = createSimplePattern(nodeTest);
-                result.add(InternalAccumulator.createCounter(
-                    generateId("sibling-count", nodeTest),
-                    siblingPattern,
-                    null
-                ));
-            }
-        }
-
-        // Check for sum(preceding-sibling::.../@attr)
-        if (expression.contains("sum(preceding-sibling::")) {
-            // This is more complex - we'd need to parse the full expression
-            // For now, mark as a candidate but don't fully implement
-            String nodeTest = extractNodeTest(expression, "preceding-sibling");
-            if (nodeTest != null) {
-                Pattern siblingPattern = createSimplePattern(nodeTest);
-                result.add(InternalAccumulator.createSum(
-                    generateId("sibling-sum", nodeTest),
-                    siblingPattern,
-                    null,  // Value expression would need to be parsed
-                    null
-                ));
+        // Collect all XPath expressions from the template body
+        if (body instanceof ExpressionHolder) {
+            List<XPathExpression> expressions =
+                ((ExpressionHolder) body).getExpressions();
+            for (int i = 0; i < expressions.size(); i++) {
+                XPathExpression xpe = expressions.get(i);
+                analyzeExprForAccumulators(xpe, matchPattern, result);
             }
         }
 
@@ -165,15 +117,88 @@ public final class InternalAccumulatorFactory {
     }
 
     /**
-     * Creates an internal accumulator for position tracking within a select expression.
+     * Analyzes a single XPath expression for accumulator opportunities
+     * by walking the AST.
+     */
+    private void analyzeExprForAccumulators(XPathExpression xpe,
+                                             Pattern contextPattern,
+                                             List<InternalAccumulator> result) {
+        if (xpe == null) {
+            return;
+        }
+        Expr expr = xpe.getCompiledExpr();
+        if (expr == null) {
+            return;
+        }
+
+        // Check for position() calls
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String name = fc.getLocalName();
+            if ("position".equals(name)) {
+                result.add(InternalAccumulator.createCounter(
+                    generateId("position", contextPattern.toString()),
+                    contextPattern,
+                    xpe
+                ));
+            }
+        }
+
+        // Check for count(preceding-sibling::*) patterns
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String name = fc.getLocalName();
+            if ("count".equals(name) || "sum".equals(name)) {
+                List<Expr> args = fc.getArguments();
+                if (args.size() == 1) {
+                    Expr arg = args.get(0);
+                    if (arg instanceof LocationPath) {
+                        LocationPath lp = (LocationPath) arg;
+                        List<Step> steps = lp.getSteps();
+                        if (steps.size() > 0) {
+                            Step first = steps.get(0);
+                            Step.Axis axis = first.getAxis();
+                            if (axis == Step.Axis.PRECEDING_SIBLING) {
+                                if ("count".equals(name)) {
+                                    result.add(
+                                        InternalAccumulator.createCounter(
+                                            generateId("sibling-count",
+                                                contextPattern.toString()),
+                                            contextPattern,
+                                            xpe
+                                        ));
+                                } else {
+                                    result.add(
+                                        InternalAccumulator.createSum(
+                                            generateId("sibling-sum",
+                                                contextPattern.toString()),
+                                            contextPattern,
+                                            xpe,
+                                            null
+                                        ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Creates an internal accumulator for position tracking within a
+     * select expression.
      *
      * @param selectExpr the select expression being iterated
      * @return a position counter accumulator
      */
-    public InternalAccumulator createPositionAccumulator(XPathExpression selectExpr) {
+    public InternalAccumulator createPositionAccumulator(
+            XPathExpression selectExpr) {
+        String context = selectExpr != null ?
+            selectExpr.toString() : "default";
         return InternalAccumulator.createCounter(
-            generateId("position", selectExpr != null ? selectExpr.toString() : "default"),
-            null,  // Pattern will be inferred from iteration
+            generateId("position", context),
+            null,
             selectExpr
         );
     }
@@ -182,7 +207,9 @@ public final class InternalAccumulatorFactory {
      * Generates a unique synthetic ID for an accumulator.
      */
     private String generateId(String type, String context) {
-        return "__" + type + "_" + sanitize(context) + "_" + ID_COUNTER.incrementAndGet();
+        String sanitized = sanitize(context);
+        long id = ID_COUNTER.incrementAndGet();
+        return "__" + type + "_" + sanitized + "_" + id;
     }
 
     /**
@@ -195,86 +222,16 @@ public final class InternalAccumulatorFactory {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+            boolean isLetter = (c >= 'a' && c <= 'z') ||
+                               (c >= 'A' && c <= 'Z');
+            boolean isDigit = (c >= '0' && c <= '9');
+            if (isLetter || isDigit) {
                 sb.append(Character.toLowerCase(c));
             } else {
                 sb.append('_');
             }
         }
         return sb.toString();
-    }
-
-    /**
-     * Checks if a pattern is a simple element match (no predicates).
-     */
-    private boolean isSimpleElementPattern(String patternStr) {
-        if (patternStr == null) {
-            return false;
-        }
-        // Simple patterns don't contain predicates or complex paths
-        return !patternStr.contains("[") && 
-               !patternStr.contains("/") && 
-               !patternStr.contains("|");
-    }
-
-    /**
-     * Extracts a node test from an axis expression.
-     * E.g., from "count(preceding-sibling::item)" extracts "item"
-     */
-    private String extractNodeTest(String expr, String axis) {
-        String search = axis + "::";
-        int idx = expr.indexOf(search);
-        if (idx < 0) {
-            return null;
-        }
-        
-        int start = idx + search.length();
-        int end = start;
-        while (end < expr.length()) {
-            char c = expr.charAt(end);
-            if (!Character.isLetterOrDigit(c) && c != ':' && c != '*' && c != '_') {
-                break;
-            }
-            end++;
-        }
-        
-        if (end > start) {
-            return expr.substring(start, end);
-        }
-        return null;
-    }
-
-    /**
-     * Creates a simple pattern for a node test.
-     */
-    private Pattern createSimplePattern(String nodeTest) {
-        // Return a placeholder pattern
-        // In a full implementation, this would parse the node test
-        return new Pattern() {
-            @Override
-            public boolean matches(XPathNode node, TransformContext context) {
-                if (node == null) {
-                    return false;
-                }
-                if ("*".equals(nodeTest)) {
-                    return node.getNodeType() == NodeType.ELEMENT;
-                }
-                return nodeTest.equals(node.getLocalName());
-            }
-
-            @Override
-            public double getDefaultPriority() {
-                if ("*".equals(nodeTest)) {
-                    return -0.5;
-                }
-                return 0.0;
-            }
-
-            @Override
-            public String toString() {
-                return nodeTest;
-            }
-        };
     }
 
 }

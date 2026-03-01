@@ -52,6 +52,14 @@ final class IntersectPattern extends AbstractPattern {
         return left.matches(node, context) && right.matches(node, context);
     }
 
+    Pattern getLeft() {
+        return left;
+    }
+
+    Pattern getRight() {
+        return right;
+    }
+
     @Override
     public double getDefaultPriority() {
         return 0.5;

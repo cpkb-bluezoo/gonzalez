@@ -49,6 +49,14 @@ final class ElementTest implements NodeTest {
         this.type = type;
     }
 
+    String getNamespaceURI() {
+        return namespaceURI;
+    }
+
+    String getLocalName() {
+        return localName;
+    }
+
     @Override
     public boolean matches(XPathNode node) {
         if (!node.isElement()) {

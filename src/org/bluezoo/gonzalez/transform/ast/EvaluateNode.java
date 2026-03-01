@@ -21,6 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.util.ArrayList;
+
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -66,7 +69,7 @@ import java.util.Map;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class EvaluateNode implements XSLTNode {
+public final class EvaluateNode implements XSLTNode, ExpressionHolder {
 
     private final XPathExpression xpathExpr;        // Expression for xpath attribute
     private final XPathExpression contextItemExpr;  // Expression for context-item
@@ -119,6 +122,24 @@ public final class EvaluateNode implements XSLTNode {
         this.namespaceContextExpr = namespaceContextExpr;
         this.asType = asType;
         this.params = params;
+    }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (xpathExpr != null) {
+            exprs.add(xpathExpr);
+        }
+        if (contextItemExpr != null) {
+            exprs.add(contextItemExpr);
+        }
+        if (baseUriExpr != null) {
+            exprs.add(baseUriExpr);
+        }
+        if (namespaceContextExpr != null) {
+            exprs.add(namespaceContextExpr);
+        }
+        return exprs;
     }
 
     @Override

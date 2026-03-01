@@ -25,6 +25,7 @@ import java.util.Iterator;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
@@ -38,16 +39,12 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  */
 final class DocPattern extends AbstractPattern {
 
-    static final int AXIS_NONE = 0;
-    static final int AXIS_CHILD = 1;
-    static final int AXIS_DESCENDANT = 2;
-
     private final String docExpr;
     private final Pattern trailingPattern;
-    private final int trailingAxis;
+    private final Step.Axis trailingAxis;
 
     DocPattern(String patternStr, String docExpr, Pattern trailingPattern,
-               int trailingAxis) {
+               Step.Axis trailingAxis) {
         super(patternStr, null);
         this.docExpr = docExpr;
         this.trailingPattern = trailingPattern;
@@ -84,7 +81,7 @@ final class DocPattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_NONE) {
+        if (trailingAxis == null) {
             for (XPathNode docNode : docNodes) {
                 if (node.isSameNode(docNode)) {
                     return true;
@@ -93,7 +90,7 @@ final class DocPattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_DESCENDANT) {
+        if (trailingAxis == Step.Axis.DESCENDANT) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }
@@ -109,7 +106,7 @@ final class DocPattern extends AbstractPattern {
             return false;
         }
 
-        if (trailingAxis == AXIS_CHILD) {
+        if (trailingAxis == Step.Axis.CHILD) {
             if (!trailingPattern.matches(node, context)) {
                 return false;
             }

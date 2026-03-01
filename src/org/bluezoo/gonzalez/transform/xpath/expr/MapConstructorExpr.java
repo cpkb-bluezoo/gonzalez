@@ -58,6 +58,24 @@ public final class MapConstructorExpr implements Expr {
         this.valueExprs = new ArrayList<Expr>(valueExprs);
     }
 
+    /**
+     * Returns the key expressions.
+     *
+     * @return the key expression list
+     */
+    public List<Expr> getKeyExprs() {
+        return keyExprs;
+    }
+
+    /**
+     * Returns the value expressions.
+     *
+     * @return the value expression list
+     */
+    public List<Expr> getValueExprs() {
+        return valueExprs;
+    }
+
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         Map<String, XPathValue> entries = new LinkedHashMap<String, XPathValue>();

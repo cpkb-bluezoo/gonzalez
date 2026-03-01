@@ -21,8 +21,12 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -34,7 +38,7 @@ import org.bluezoo.gonzalez.transform.compiler.AccumulatorDefinition;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class AccumulatorRuleNode implements XSLTNode {
+public class AccumulatorRuleNode implements XSLTNode, ExpressionHolder {
     private final Pattern pattern;
     private final AccumulatorDefinition.Phase phase;
     private final XPathExpression newValue;
@@ -62,7 +66,16 @@ public class AccumulatorRuleNode implements XSLTNode {
         }
         return new AccumulatorDefinition.AccumulatorRule(pattern, phase, newValue);
     }
-    
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (newValue != null) {
+            exprs.add(newValue);
+        }
+        return exprs;
+    }
+
     @Override
     public void execute(TransformContext context, OutputHandler output) 
             throws SAXException {

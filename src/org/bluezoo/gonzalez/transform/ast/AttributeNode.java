@@ -22,7 +22,9 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -31,6 +33,7 @@ import org.xml.sax.SAXException;
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
@@ -46,7 +49,7 @@ import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class AttributeNode extends XSLTInstruction {
+public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
     private static final String XSD_NAMESPACE = "http://www.w3.org/2001/XMLSchema";
     private final AttributeValueTemplate nameAvt;
     private final AttributeValueTemplate nsAvt;
@@ -86,6 +89,16 @@ public class AttributeNode extends XSLTInstruction {
     }
     
     @Override public String getInstructionName() { return "attribute"; }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         try {

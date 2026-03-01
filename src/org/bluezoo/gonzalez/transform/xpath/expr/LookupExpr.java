@@ -74,6 +74,15 @@ public final class LookupExpr implements Expr {
         this.wildcard = wildcard;
     }
 
+    /**
+     * Returns the base expression.
+     *
+     * @return the base expression
+     */
+    public Expr getBase() {
+        return base;
+    }
+
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         XPathValue baseValue = base.evaluate(context);

@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.DocumentLoader;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -78,7 +79,7 @@ import java.util.Map;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class MergeNode implements XSLTNode {
+public final class MergeNode implements XSLTNode, ExpressionHolder {
 
     private final List<MergeSource> sources;
     private final XSLTNode action;
@@ -92,6 +93,30 @@ public final class MergeNode implements XSLTNode {
     public MergeNode(List<MergeSource> sources, XSLTNode action) {
         this.sources = sources;
         this.action = action;
+    }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        for (int i = 0; i < sources.size(); i++) {
+            MergeSource src = sources.get(i);
+            if (src.select != null) {
+                exprs.add(src.select);
+            }
+            if (src.forEachItem != null) {
+                exprs.add(src.forEachItem);
+            }
+            if (src.forEachSource != null) {
+                exprs.add(src.forEachSource);
+            }
+            for (int j = 0; j < src.keys.size(); j++) {
+                MergeKey mk = src.keys.get(j);
+                if (mk.select != null) {
+                    exprs.add(mk.select);
+                }
+            }
+        }
+        return exprs;
     }
 
     @Override

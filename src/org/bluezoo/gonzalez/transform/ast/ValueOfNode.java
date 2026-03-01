@@ -22,10 +22,13 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import java.net.URI;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
@@ -40,7 +43,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class ValueOfNode extends XSLTInstruction {
+public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;
     private final boolean disableEscaping;
     private final String separator;  // null means use default (space for sequences in XSLT 2.0+)
@@ -54,7 +57,16 @@ public class ValueOfNode extends XSLTInstruction {
     }
     
     @Override public String getInstructionName() { return "value-of"; }
-    
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override
     public void execute(TransformContext context, 
                        OutputHandler output) throws SAXException {

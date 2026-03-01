@@ -854,6 +854,14 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Execute template body, with optional return type validation
         XSLTNode body = rule.getBody();
         if (body != null) {
+            // If the template requires grounded execution, run through
+            // GroundedExecutor so that reverse-axis navigation works.
+            BufferingStrategy strategy = rule.getBufferingStrategy();
+            if (strategy == BufferingStrategy.GROUNDED && node.isFullyNavigable() == false) {
+                executeGroundedTemplate(body, node, templateContext, output, rule);
+                return;
+            }
+
             String asType = rule.getAsType();
             if (asType != null && !asType.isEmpty()) {
                 SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
@@ -875,6 +883,17 @@ public class GonzalezTransformHandler extends DefaultHandler
                 body.execute(templateContext, output);
             }
         }
+    }
+
+    /**
+     * Executes a template body through the GroundedExecutor, which buffers
+     * the context node's subtree to allow reverse-axis navigation.
+     */
+    private void executeGroundedTemplate(XSLTNode body, XPathNode node,
+            TransformContext templateContext, OutputHandler output,
+            TemplateRule rule) throws SAXException {
+        GroundedExecutor grounded = new GroundedExecutor(templateContext, output);
+        grounded.executeGrounded(body, node);
     }
 
     /**

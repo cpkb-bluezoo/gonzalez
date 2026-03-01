@@ -21,8 +21,12 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
@@ -32,7 +36,7 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class ParamNode extends XSLTInstruction {
+public class ParamNode extends XSLTInstruction implements ExpressionHolder {
     private final String namespaceURI;
     private final String localName;
     private final XPathExpression selectExpr;
@@ -76,7 +80,16 @@ public class ParamNode extends XSLTInstruction {
     public boolean isRequired() { return required; }
     
     @Override public String getInstructionName() { return "param"; }
-    
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override
     public void execute(TransformContext context, 
                        OutputHandler output) throws SAXException {

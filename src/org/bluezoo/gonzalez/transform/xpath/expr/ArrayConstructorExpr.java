@@ -49,6 +49,15 @@ public final class ArrayConstructorExpr implements Expr {
         this.memberExprs = new ArrayList<Expr>(memberExprs);
     }
 
+    /**
+     * Returns the member expressions.
+     *
+     * @return the member expression list
+     */
+    public List<Expr> getMemberExprs() {
+        return memberExprs;
+    }
+
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         List<XPathValue> members = new ArrayList<XPathValue>(memberExprs.size());

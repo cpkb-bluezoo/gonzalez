@@ -167,7 +167,7 @@ public final class XPathExpression {
      *
      * @return the expression AST
      */
-    Expr getCompiledExpr() {
+    public Expr getCompiledExpr() {
         return compiledExpr;
     }
 

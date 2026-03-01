@@ -32,6 +32,7 @@ import java.util.Set;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
@@ -62,7 +63,7 @@ import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class ApplyTemplatesNode extends XSLTInstruction {
+public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;
     private final String mode;
     private final List<SortSpec> sorts;
@@ -74,6 +75,16 @@ public class ApplyTemplatesNode extends XSLTInstruction {
         this.params = params;
     }
     @Override public String getInstructionName() { return "apply-templates"; }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         try {

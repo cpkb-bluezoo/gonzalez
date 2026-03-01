@@ -63,6 +63,9 @@ final class AtomicPattern extends AbstractPattern {
     @Override
     public boolean matchesAtomicValue(XPathValue value,
                                       TransformContext context) {
+        if (atomicPredicate == null) {
+            return true;
+        }
         try {
             XPathContext xpathContext = context.withContextItem(value)
                 .withPositionAndSize(1, 1);

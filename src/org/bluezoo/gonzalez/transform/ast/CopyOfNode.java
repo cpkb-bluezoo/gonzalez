@@ -22,12 +22,15 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Set;
 
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.ValidationMode;
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -44,7 +47,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class CopyOfNode extends XSLTInstruction {
+public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;
     private final String typeNamespaceURI;
     private final String typeLocalName;
@@ -80,6 +83,16 @@ public class CopyOfNode extends XSLTInstruction {
     }
     
     @Override public String getInstructionName() { return "copy-of"; }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (selectExpr != null) {
+            exprs.add(selectExpr);
+        }
+        return exprs;
+    }
+
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         try {

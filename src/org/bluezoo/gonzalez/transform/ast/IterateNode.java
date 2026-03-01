@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.VariableScope;
@@ -69,7 +70,7 @@ import java.util.Map;
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class IterateNode implements XSLTNode {
+public final class IterateNode implements XSLTNode, ExpressionHolder {
 
     /**
      * Parameter declaration for xsl:iterate.
@@ -189,6 +190,15 @@ public final class IterateNode implements XSLTNode {
         this.params = params != null ? new ArrayList<>(params) : new ArrayList<>();
         this.body = body;
         this.onCompletion = onCompletion;
+    }
+
+    @Override
+    public List<XPathExpression> getExpressions() {
+        List<XPathExpression> exprs = new ArrayList<XPathExpression>();
+        if (select != null) {
+            exprs.add(select);
+        }
+        return exprs;
     }
 
     @Override
