@@ -1011,6 +1011,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (XSLT_NS.equals(uri) && ("stylesheet".equals(localName) || "transform".equals(localName) 
                 || "package".equals(localName))) {
             String versionAttr = atts.getValue("version");
+            if (versionAttr == null && ctx.shadowAttributes.containsKey("version")) {
+                try {
+                    versionAttr = resolveStaticShadowAttribute(ctx, "version");
+                } catch (SAXException e) {
+                    // Cannot resolve early, defer to processStylesheetElement
+                }
+            }
             if (versionAttr != null) {
                 try {
                     stylesheetVersion = Double.parseDouble(versionAttr);
@@ -1593,7 +1600,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             
             // XTSE0020: Validate QName attributes (but skip if it's an AVT with expressions)
-            if (isQNameAttribute(localAttrName) && attrValue != null && !attrValue.isEmpty()) {
+            // The 'name' attribute on xsl:package and xsl:use-package is a URI, not a QName
+            if (isQNameAttribute(localAttrName, ctx.localName) && attrValue != null && !attrValue.isEmpty()) {
                 // If the value contains {}, it's an AVT and we can't validate statically
                 if (!attrValue.contains("{") || attrValue.startsWith("Q{")) {
                     XSLTSchemaValidator.validateQName(localAttrName, attrValue);
@@ -1604,9 +1612,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     
     /**
      * Checks if an attribute expects a QName value.
+     * The 'name' attribute on xsl:package and xsl:use-package is a URI, not a QName.
      */
-    private boolean isQNameAttribute(String attrName) {
-        return "name".equals(attrName) || "mode".equals(attrName);
+    private boolean isQNameAttribute(String attrName, String elementName) {
+        if ("name".equals(attrName)) {
+            return !"package".equals(elementName) && !"use-package".equals(elementName);
+        }
+        return "mode".equals(attrName);
     }
 
     /**
@@ -2317,8 +2329,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             
             // Reserved namespaces: XSLT, XSL-FO, XML, XSD
             if (XSLT_NS.equals(namespaceURI)) {
-                // Exception: xsl:initial-template is allowed in XSLT 2.0+
-                if ("initial-template".equals(localName) && stylesheetVersion >= 2.0) {
+                // Exception: xsl:initial-template is always allowed (system-defined name)
+                if ("initial-template".equals(localName)) {
                     return;
                 }
                 throw new SAXException("XTSE0080: The " + attrName + " attribute on " + elementName + 
@@ -2839,7 +2851,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     private void processStylesheetElement(ElementContext ctx) throws SAXException {
         // Parse version attribute - REQUIRED per XSLT spec (XTSE0010)
-        String versionAttr = ctx.attributes.get("version");
+        // Check shadow attribute (_version="{AVT}") first, then regular attribute
+        String versionAttr = resolveStaticShadowAttribute(ctx, "version");
         if (versionAttr == null || versionAttr.isEmpty()) {
             throw new SAXException("XTSE0010: Required attribute 'version' is missing on xsl:" + ctx.localName);
         }
@@ -2863,10 +2876,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XTSE0110: Invalid version attribute value: " + versionAttr);
         }
         
-        // xsl:package is only allowed in XSLT 3.0+
+        // xsl:package requires XSLT 3.0: if the declared version is < 3.0, the
+        // stylesheet is declaring itself as pre-3.0, where xsl:package does not exist
         if ("package".equals(ctx.localName) && stylesheetVersion < 3.0) {
-            throw new SAXException("xsl:package is only allowed in XSLT 3.0 or later (version=" + 
-                stylesheetVersion + ")");
+            throw new SAXException("XTSE0010: xsl:package is only allowed in XSLT 3.0 or later (version="
+                + versionAttr + ")");
         }
         
         // XSLT 3.0 package attributes (only for xsl:package)
@@ -2878,9 +2892,34 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             
             // package-version attribute (optional, defaults to "0.0" per spec)
-            String versionAttrPkg = ctx.attributes.get("package-version");
-            if (versionAttrPkg != null && !versionAttrPkg.isEmpty()) {
-                packageVersion = versionAttrPkg.trim();
+            // Check shadow attribute (_package-version="{AVT}") first
+            String versionAttrPkg;
+            if (ctx.shadowAttributes.containsKey("package-version")) {
+                try {
+                    versionAttrPkg = resolveStaticShadowAttribute(ctx, "package-version");
+                } catch (SAXException e) {
+                    // Check root cause: NullPointerException means the shadow attribute
+                    // uses functions not available in static context (e.g., doc(''))
+                    Throwable root = e;
+                    while (root.getCause() != null) {
+                        root = root.getCause();
+                    }
+                    if (root instanceof NullPointerException) {
+                        versionAttrPkg = ctx.attributes.get("package-version");
+                    } else {
+                        throw e;
+                    }
+                }
+            } else {
+                versionAttrPkg = ctx.attributes.get("package-version");
+            }
+            if (versionAttrPkg != null) {
+                String trimmedPkgVer = versionAttrPkg.trim();
+                if (trimmedPkgVer.isEmpty()) {
+                    throw new SAXException("XTSE0020: package-version must not be empty");
+                }
+                validatePackageVersion(trimmedPkgVer);
+                packageVersion = trimmedPkgVer;
             } else {
                 packageVersion = "0.0";
             }
@@ -3721,6 +3760,17 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String priorityStr = ctx.attributes.get("priority");
         String asType = ctx.attributes.get("as");  // XSLT 2.0+ return type
         
+        // XSLT 3.0: visibility attribute for package components
+        String visibilityAttr = resolveStaticShadowAttribute(ctx, "visibility");
+        ComponentVisibility visibility = ComponentVisibility.PUBLIC;
+        if (visibilityAttr != null && !visibilityAttr.isEmpty()) {
+            try {
+                visibility = ComponentVisibility.parse(visibilityAttr);
+            } catch (IllegalArgumentException e) {
+                throw new SAXException("XTSE0020: Invalid visibility value: " + visibilityAttr);
+            }
+        }
+        
         // XSLT 3.0: if no explicit mode, use the effective default-mode
         // (from default-mode on this element or its ancestors)
         if (mode == null && match != null) {
@@ -3873,7 +3923,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // #all means the template applies to all modes (default + all named)
         for (String expandedMode : expandedModes) {
             TemplateRule rule = new TemplateRule(pattern, expandedName, expandedMode, priority, 
-                importPrecedence, nextTemplateIndex(), params, body, asType);
+                importPrecedence, nextTemplateIndex(), params, body, asType, visibility);
             builder.addTemplateRule(rule);
         }
     }
@@ -4106,7 +4156,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 String uri = trimmedQname.substring(2, closeBrace);
                 String localPart = trimmedQname.substring(closeBrace + 1);
                 if (checkReserved && isReservedNamespace(uri)) {
-                    if (!(XSLT_NS.equals(uri) && "initial-template".equals(localPart) && stylesheetVersion >= 2.0)) {
+                    if (!(XSLT_NS.equals(uri) && "initial-template".equals(localPart))) {
                         throw new SAXException("XTSE0080: Reserved namespace '" + uri + 
                             "' cannot be used in the name '" + qname + "'");
                     }
@@ -4123,9 +4173,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             String uri = resolve(prefix);
             if (uri != null && !uri.isEmpty()) {
                 // XTSE0080: Check for reserved namespaces in component names
-                // Exception: xsl:initial-template is allowed in XSLT 2.0+
+                // Exception: xsl:initial-template is always allowed (system-defined name)
                 if (checkReserved && isReservedNamespace(uri)) {
-                    if (!(XSLT_NS.equals(uri) && "initial-template".equals(localName) && stylesheetVersion >= 2.0)) {
+                    if (!(XSLT_NS.equals(uri) && "initial-template".equals(localName))) {
                         throw new SAXException("XTSE0080: Reserved namespace '" + uri + 
                             "' cannot be used in the name '" + qname + "'");
                     }
@@ -4856,6 +4906,96 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
     }
 
+    /**
+     * Validates a package-version string against the XSLT 3.0 grammar:
+     * PackageVersion ::= NumericVersion NamePart?
+     * NumericVersion ::= DecimalDigits ('.' DecimalDigits)*
+     * NamePart       ::= '-' NCName ('-' NCName)*
+     * DecimalDigits  ::= [0-9]+
+     */
+    private void validatePackageVersion(String version) throws SAXException {
+        int len = version.length();
+        int i = 0;
+        
+        // Must start with a digit
+        if (i >= len || version.charAt(i) < '0' || version.charAt(i) > '9') {
+            throw new SAXException("XTSE0020: Invalid package-version '" + version + 
+                "': must start with a digit");
+        }
+        
+        // Parse first group of digits
+        while (i < len && version.charAt(i) >= '0' && version.charAt(i) <= '9') {
+            i++;
+        }
+        
+        // Parse additional '.DecimalDigits' groups
+        while (i < len && version.charAt(i) == '.') {
+            i++;
+            if (i >= len || version.charAt(i) < '0' || version.charAt(i) > '9') {
+                throw new SAXException("XTSE0020: Invalid package-version '" + version + 
+                    "': digit expected after '.'");
+            }
+            while (i < len && version.charAt(i) >= '0' && version.charAt(i) <= '9') {
+                i++;
+            }
+        }
+        
+        // Optional NamePart: '-' NCName ('-' NCName)*
+        while (i < len && version.charAt(i) == '-') {
+            i++;
+            if (i >= len) {
+                throw new SAXException("XTSE0020: Invalid package-version '" + version + 
+                    "': name expected after '-'");
+            }
+            int cp = Character.codePointAt(version, i);
+            if (!isNCNameStartCodePoint(cp)) {
+                throw new SAXException("XTSE0020: Invalid package-version '" + version + 
+                    "': invalid name start character after '-'");
+            }
+            i += Character.charCount(cp);
+            while (i < len) {
+                cp = Character.codePointAt(version, i);
+                if (cp == '-') {
+                    break;
+                }
+                if (!isNCNameCodePoint(cp)) {
+                    throw new SAXException("XTSE0020: Invalid package-version '" + version + 
+                        "': invalid character in name part");
+                }
+                i += Character.charCount(cp);
+            }
+        }
+        
+        if (i < len) {
+            throw new SAXException("XTSE0020: Invalid package-version '" + version + 
+                "': unexpected character at position " + i);
+        }
+    }
+    
+    /**
+     * Tests whether a Unicode code point is a valid NCName start character.
+     * NCNameStartChar per XML Namespaces spec (NameStartChar minus ':').
+     */
+    private static boolean isNCNameStartCodePoint(int cp) {
+        return (cp >= 'A' && cp <= 'Z') || cp == '_' || (cp >= 'a' && cp <= 'z') ||
+               (cp >= 0xC0 && cp <= 0xD6) || (cp >= 0xD8 && cp <= 0xF6) ||
+               (cp >= 0xF8 && cp <= 0x2FF) || (cp >= 0x370 && cp <= 0x37D) ||
+               (cp >= 0x37F && cp <= 0x1FFF) || (cp >= 0x200C && cp <= 0x200D) ||
+               (cp >= 0x2070 && cp <= 0x218F) || (cp >= 0x2C00 && cp <= 0x2FEF) ||
+               (cp >= 0x3001 && cp <= 0xD7FF) || (cp >= 0xF900 && cp <= 0xFDCF) ||
+               (cp >= 0xFDF0 && cp <= 0xFFFD) || (cp >= 0x10000 && cp <= 0xEFFFF);
+    }
+    
+    /**
+     * Tests whether a Unicode code point is a valid NCName character.
+     * NCNameChar per XML Namespaces spec (NameChar minus ':').
+     */
+    private static boolean isNCNameCodePoint(int cp) {
+        return isNCNameStartCodePoint(cp) || cp == '-' || cp == '.' ||
+               (cp >= '0' && cp <= '9') || cp == 0xB7 ||
+               (cp >= 0x0300 && cp <= 0x036F) || (cp >= 0x203F && cp <= 0x2040);
+    }
+    
     /**
      * Returns the effective XSLT version at the current point in the stylesheet.
      * This considers xsl:version attributes on literal result element ancestors

@@ -53,6 +53,7 @@ import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.XMLReaderFactory;
 
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.PackageResolver;
 import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 import org.bluezoo.gonzalez.transform.compiler.StylesheetResolver;
 
@@ -102,6 +103,9 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
 
     /** Allowed protocols for external stylesheet access (default: empty = none). */
     private String accessExternalStylesheet = "";
+
+    /** Package resolver for xsl:use-package support (XSLT 3.0). */
+    private PackageResolver packageResolver;
 
     /**
      * Creates a new transformer factory.
@@ -172,6 +176,12 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         
         // Create compiler with resolver and base URI
         StylesheetCompiler compiler = new StylesheetCompiler(resolver, baseUri);
+        
+        // Configure package resolver for xsl:use-package support
+        if (packageResolver != null) {
+            packageResolver.setCompiler(compiler);
+            compiler.setPackageResolver(packageResolver);
+        }
         
         if (source instanceof StreamSource) {
             StreamSource ss = (StreamSource) source;
@@ -326,6 +336,15 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     @Override
     public void setURIResolver(URIResolver resolver) {
         this.uriResolver = resolver;
+    }
+
+    /**
+     * Sets the package resolver for xsl:use-package support (XSLT 3.0).
+     *
+     * @param resolver the package resolver, or null to disable package support
+     */
+    public void setPackageResolver(PackageResolver resolver) {
+        this.packageResolver = resolver;
     }
 
     /**

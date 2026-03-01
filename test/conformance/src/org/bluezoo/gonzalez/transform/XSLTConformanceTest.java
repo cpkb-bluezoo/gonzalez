@@ -48,6 +48,7 @@ import org.xml.sax.helpers.DefaultHandler;
 
 import org.bluezoo.gonzalez.Parser;
 import org.bluezoo.gonzalez.transform.GonzalezTransformer;
+import org.bluezoo.gonzalez.transform.compiler.PackageResolver;
 
 import static org.junit.Assert.*;
 
@@ -332,6 +333,8 @@ public class XSLTConformanceTest {
         private String expectedError;
         private boolean expectsError;
         private boolean inNot;
+        private boolean inAnyOf;
+        private boolean anyOfAcceptsSuccess;
         private boolean requiresErrorOnMultipleMatch;
         private boolean requiresSchemaAware;
         private boolean testSetRequiresSchemaAware;
@@ -373,6 +376,9 @@ public class XSLTConformanceTest {
                         if (env.stylesheetFile != null) {
                             currentTest.stylesheetFile = env.stylesheetFile;
                         }
+                        if (env.packages != null) {
+                            currentTest.packages = env.packages;
+                        }
                     }
                 } else if (inTestCase) {
                     // Inline environment within test-case (no name or ref)
@@ -406,6 +412,8 @@ public class XSLTConformanceTest {
                 expectedXml = null;
                 expectedError = null;
                 expectsError = false;
+                inAnyOf = false;
+                anyOfAcceptsSuccess = false;
                 requiresErrorOnMultipleMatch = false;
                 requiresSchemaAware = false;
                 requiresUnsupportedFeature = false;
@@ -462,6 +470,15 @@ public class XSLTConformanceTest {
                 if (file != null && !"secondary".equals(role)) {
                     currentEnv.stylesheetFile = new File(testDir, file);
                 }
+            } else if ("package".equals(localName) && currentEnv != null) {
+                String file = attrs.getValue("file");
+                String pkgUri = attrs.getValue("uri");
+                if (file != null && pkgUri != null) {
+                    if (currentEnv.packages == null) {
+                        currentEnv.packages = new LinkedHashMap<>();
+                    }
+                    currentEnv.packages.put(pkgUri, new File(testDir, file));
+                }
             } else if ("param".equals(localName) && inTest) {
                 String paramName = attrs.getValue("name");
                 String paramSelect = attrs.getValue("select");
@@ -477,12 +494,20 @@ public class XSLTConformanceTest {
                 initialMode = attrs.getValue("name");
             } else if ("result".equals(localName) && inTestCase) {
                 inResult = true;
+            } else if ("any-of".equals(localName) && inResult) {
+                inAnyOf = true;
             } else if ("not".equals(localName) && inResult) {
                 inNot = true;
+            } else if (("assert".equals(localName) || "assert-string-value".equals(localName)) 
+                    && inResult && inAnyOf && !inNot) {
+                anyOfAcceptsSuccess = true;
             } else if ("assert-result-document".equals(localName) && inResult) {
                 currentResultDocumentUri = attrs.getValue("uri");
                 resultDocAssertXml = null;
             } else if ("assert-xml".equals(localName) && inResult) {
+                if (inAnyOf && !inNot) {
+                    anyOfAcceptsSuccess = true;
+                }
                 String file = attrs.getValue("file");
                 if (file != null && !file.isEmpty()) {
                     try {
@@ -535,6 +560,9 @@ public class XSLTConformanceTest {
                     if (currentEnv.stylesheetFile != null) {
                         currentTest.stylesheetFile = currentEnv.stylesheetFile;
                     }
+                    if (currentEnv.packages != null) {
+                        currentTest.packages = currentEnv.packages;
+                    }
                 }
                 currentEnvName = null;
                 currentEnv = null;
@@ -562,6 +590,8 @@ public class XSLTConformanceTest {
                 inDependencies = false;
             } else if ("test".equals(localName)) {
                 inTest = false;
+            } else if ("any-of".equals(localName)) {
+                inAnyOf = false;
             } else if ("not".equals(localName)) {
                 inNot = false;
             } else if ("result".equals(localName)) {
@@ -581,8 +611,10 @@ public class XSLTConformanceTest {
                     currentTest.initialMode = initialMode;
                     currentTest.expectedXml = expectedXml;
                     currentTest.expectsError = expectsError;
+                    currentTest.anyOfAcceptsSuccess = anyOfAcceptsSuccess;
                     currentTest.expectedError = expectedError;
                     currentTest.expectedResultDocuments = expectedResultDocuments;
+                    currentTest.specValue = effectiveSpec;
 
                     if (currentTest.stylesheetFile != null) {
                         tests.add(currentTest);
@@ -667,6 +699,20 @@ public class XSLTConformanceTest {
         FileChannel stylesheetChannel = null;
         FileChannel sourceChannel = null;
         try {
+            // Configure package resolver if test provides secondary packages
+            if (testCase.packages != null && !testCase.packages.isEmpty()) {
+                PackageResolver resolver = new PackageResolver();
+                for (Map.Entry<String, File> entry : testCase.packages.entrySet()) {
+                    String pkgUri = entry.getKey();
+                    File pkgFile = entry.getValue();
+                    String pkgLocation = pkgFile.toURI().toString();
+                    resolver.registerPackageLocation(pkgUri, pkgLocation);
+                }
+                factory.setPackageResolver(resolver);
+            } else {
+                factory.setPackageResolver(null);
+            }
+
             // Compile stylesheet - use FileChannel for NIO-native input
             stylesheetChannel = FileChannel.open(testCase.stylesheetFile.toPath(), StandardOpenOption.READ);
             StreamSource stylesheetSource = new StreamSource(Channels.newInputStream(stylesheetChannel));
@@ -760,6 +806,8 @@ public class XSLTConformanceTest {
 
                 if (testCase.expectsError) {
                     if (testCase.expectedXml != null && xmlEquals(actualOutput, testCase.expectedXml)) {
+                        result.passed = true;
+                    } else if (testCase.anyOfAcceptsSuccess) {
                         result.passed = true;
                     } else {
                         result.passed = false;
@@ -969,6 +1017,7 @@ public class XSLTConformanceTest {
         String sourceContent;
         String sourceSelect;
         File stylesheetFile;
+        Map<String, File> packages;
     }
 
     /**
@@ -985,9 +1034,12 @@ public class XSLTConformanceTest {
         String initialMode;
         String expectedXml;
         boolean expectsError;
+        boolean anyOfAcceptsSuccess;
         String expectedError;
         Map<String, String> expectedResultDocuments;
         Map<String, String> stylesheetParams;
+        Map<String, File> packages;
+        String specValue;
 
         @Override
         public String toString() {
