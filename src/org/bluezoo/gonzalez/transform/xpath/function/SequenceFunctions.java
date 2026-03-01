@@ -536,8 +536,10 @@ public final class SequenceFunctions {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue relArg = args.get(0);
             
-            // Handle empty sequence
-            if (relArg == null || (relArg instanceof XPathSequence && ((XPathSequence) relArg).isEmpty())) {
+            // Handle empty sequence / empty node-set
+            if (relArg == null || 
+                (relArg instanceof XPathSequence && ((XPathSequence) relArg).isEmpty()) ||
+                (relArg.isNodeSet() && ((XPathNodeSet) relArg).isEmpty())) {
                 return XPathSequence.EMPTY;
             }
             
@@ -548,7 +550,6 @@ public final class SequenceFunctions {
                 if (args.size() > 1) {
                     return XPathAnyURI.of(args.get(1).asString());
                 }
-                // Return static base URI if available
                 String staticBase = context.getStaticBaseURI();
                 return staticBase != null ? XPathAnyURI.of(staticBase) : XPathAnyURI.of("");
             }
@@ -565,12 +566,13 @@ public final class SequenceFunctions {
                 String base;
                 if (args.size() > 1) {
                     XPathValue baseArg = args.get(1);
-                    if (baseArg == null || (baseArg instanceof XPathSequence && ((XPathSequence) baseArg).isEmpty())) {
+                    if (baseArg == null || 
+                        (baseArg instanceof XPathSequence && ((XPathSequence) baseArg).isEmpty()) ||
+                        (baseArg.isNodeSet() && ((XPathNodeSet) baseArg).isEmpty())) {
                         throw new XPathException("FONS0005: Base URI is empty");
                     }
                     base = baseArg.asString();
                 } else {
-                    // Use static base URI
                     base = context.getStaticBaseURI();
                     if (base == null || base.isEmpty()) {
                         throw new XPathException("FONS0005: No base URI available");
@@ -608,14 +610,41 @@ public final class SequenceFunctions {
                 if (arg == null || (arg instanceof XPathSequence && ((XPathSequence) arg).isEmpty())) {
                     return XPathSequence.EMPTY;
                 }
-                if (!arg.isNodeSet()) {
+                // Handle RTF (result tree fragment) — convert to node tree
+                if (arg instanceof XPathResultTreeFragment) {
+                    XPathResultTreeFragment rtf = (XPathResultTreeFragment) arg;
+                    XPathNodeSet nodeSet = rtf.asNodeSet();
+                    if (nodeSet.isEmpty()) {
+                        return XPathSequence.EMPTY;
+                    }
+                    node = nodeSet.first();
+                    String baseUri = getNodeBaseUri(node);
+                    if (baseUri == null || baseUri.isEmpty()) {
+                        return XPathSequence.EMPTY;
+                    }
+                    return XPathAnyURI.of(baseUri);
+                }
+                // Handle values that are directly XPathNode (e.g., SequenceAttributeItem)
+                if (arg instanceof XPathNode) {
+                    node = (XPathNode) arg;
+                } else if (arg.isNodeSet()) {
+                    if (arg instanceof XPathNodeSet) {
+                        XPathNodeSet ns = (XPathNodeSet) arg;
+                        if (ns.isEmpty()) {
+                            return XPathSequence.EMPTY;
+                        }
+                        node = ns.first();
+                    } else {
+                        // Convert to node-set via asNodeSet()
+                        XPathNodeSet ns = arg.asNodeSet();
+                        if (ns == null || ns.isEmpty()) {
+                            return XPathSequence.EMPTY;
+                        }
+                        node = ns.first();
+                    }
+                } else {
                     throw new XPathException("XPTY0004: Argument to base-uri must be a node");
                 }
-                XPathNodeSet ns = (XPathNodeSet) arg;
-                if (ns.isEmpty()) {
-                    return XPathSequence.EMPTY;
-                }
-                node = ns.first();
             }
             
             // Get base URI from node (traverse up if needed)
@@ -627,33 +656,121 @@ public final class SequenceFunctions {
         }
         
         private String getNodeBaseUri(XPathNode node) {
-            // For documents loaded via doc(), the base URI is stored
-            // For other nodes, we need to find xml:base or use document URI
-            // Walk up the tree looking for xml:base attribute
+            // Per XML Base spec, base URIs are computed by resolving xml:base values
+            // against ancestor base URIs. Walk up the tree composing the URI.
+            //
+            // For attribute nodes, use the owning element's base URI.
+            // For namespace nodes, base-uri returns empty per XDM spec.
+            if (node.getNodeType() == NodeType.NAMESPACE) {
+                return null;
+            }
+            if (node.getNodeType() == NodeType.ATTRIBUTE) {
+                XPathNode parent = node.getParent();
+                if (parent != null) {
+                    return getNodeBaseUri(parent);
+                }
+                return null;
+            }
+            
+            // Walk up the tree collecting xml:base values
+            // xml:base on elements provides the base URI for that element.
+            // Relative xml:base values are resolved against the parent's base URI.
+            // The document root's stored base URI serves as the terminal resolution base.
+            String resolved = null;
             XPathNode current = node;
             while (current != null) {
-                // Check if the node implements XPathNodeWithBaseURI
-                if (current instanceof XPathNodeWithBaseURI) {
-                    String baseUri = ((XPathNodeWithBaseURI) current).getBaseURI();
-                    if (baseUri != null && !baseUri.isEmpty()) {
-                        return baseUri;
+                String localBase = null;
+                
+                if (current.isElement()) {
+                    XPathNode xmlBase = current.getAttribute(
+                        "http://www.w3.org/XML/1998/namespace", "base");
+                    if (xmlBase == null) {
+                        xmlBase = current.getAttribute("", "xml:base");
+                    }
+                    if (xmlBase != null) {
+                        localBase = xmlBase.getStringValue();
                     }
                 }
                 
-                if (current.isElement()) {
-                    // Check for xml:base attribute
-                    XPathNode xmlBase = current.getAttribute("http://www.w3.org/XML/1998/namespace", "base");
-                    if (xmlBase != null) {
-                        return xmlBase.getStringValue();
+                if (localBase != null && !localBase.isEmpty()) {
+                    if (isAbsoluteUri(localBase)) {
+                        if (resolved != null) {
+                            return resolveBaseUri(resolved, localBase);
+                        }
+                        return localBase;
+                    }
+                    if (resolved == null) {
+                        resolved = localBase;
+                    } else {
+                        resolved = resolveBaseUri(resolved, localBase);
                     }
                 }
+                
                 if (current.getNodeType() == NodeType.ROOT) {
-                    // Reached document root - check for stored base URI
+                    // Use stored base URI on root nodes as terminal resolution base
+                    if (current instanceof XPathNodeWithBaseURI) {
+                        String storedBase = ((XPathNodeWithBaseURI) current).getBaseURI();
+                        if (storedBase != null && !storedBase.isEmpty()) {
+                            if (resolved != null) {
+                                return resolveBaseUri(resolved, storedBase);
+                            }
+                            return storedBase;
+                        }
+                    }
                     break;
                 }
                 current = current.getParent();
             }
-            return null;
+            return resolved;
+        }
+        
+        private boolean isAbsoluteUri(String uri) {
+            // Check for scheme (e.g., http:, file:, urn:)
+            int len = uri.length();
+            for (int i = 0; i < len; i++) {
+                char c = uri.charAt(i);
+                if (c == ':') {
+                    return i > 0;
+                }
+                if (c == '/' || c == '?' || c == '#') {
+                    return false;
+                }
+                if (i == 0 && !Character.isLetter(c)) {
+                    return false;
+                }
+                if (i > 0 && !Character.isLetterOrDigit(c) && c != '+' && c != '-' && c != '.') {
+                    return false;
+                }
+            }
+            return false;
+        }
+        
+        private String resolveBaseUri(String relative, String base) {
+            if (relative == null || relative.isEmpty()) {
+                return base;
+            }
+            if (base == null || base.isEmpty()) {
+                return relative;
+            }
+            if (isAbsoluteUri(relative)) {
+                return relative;
+            }
+            // Resolve relative URI against base URI
+            try {
+                java.net.URI baseURI = new java.net.URI(base);
+                java.net.URI resolved = baseURI.resolve(relative);
+                return resolved.toString();
+            } catch (java.net.URISyntaxException e) {
+                // Fallback: simple concatenation
+                if (base.endsWith("/")) {
+                    return base + relative;
+                }
+                int lastSlash = base.lastIndexOf('/');
+                if (lastSlash >= 0) {
+                    return base.substring(0, lastSlash + 1) + relative;
+                }
+                return relative;
+            }
         }
     };
 

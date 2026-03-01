@@ -45,6 +45,7 @@ public final class GlobalVariable {
     private final String asType;           // XSLT 2.0 type annotation (e.g., "element()*")
     private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
     private final boolean required;         // XSLT 2.0+ required="yes" for parameters (XTDE0050)
+    private final String baseUri;           // Static base URI for RTF base-uri() computation
 
     /**
      * Creates a global variable or parameter.
@@ -124,6 +125,17 @@ public final class GlobalVariable {
                          XPathExpression selectExpr, SequenceNode content,
                          int importPrecedence, String asType,
                          ComponentVisibility visibility, boolean required) {
+        this(name, isParam, selectExpr, content, importPrecedence, asType, visibility, required, null);
+    }
+
+    /**
+     * Creates a global variable or parameter with all options including base URI.
+     */
+    public GlobalVariable(QName name, boolean isParam, 
+                         XPathExpression selectExpr, SequenceNode content,
+                         int importPrecedence, String asType,
+                         ComponentVisibility visibility, boolean required,
+                         String baseUri) {
         this.name = name;
         this.isParam = isParam;
         this.selectExpr = selectExpr;
@@ -133,6 +145,7 @@ public final class GlobalVariable {
         this.asType = asType;
         this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
         this.required = required && isParam;  // Only params can be required
+        this.baseUri = baseUri;
     }
 
     /**
@@ -178,6 +191,7 @@ public final class GlobalVariable {
         this.asType = null;
         this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
         this.required = false;  // Static variables cannot be required
+        this.baseUri = null;
     }
 
     /**
@@ -310,6 +324,15 @@ public final class GlobalVariable {
     }
 
     /**
+     * Returns the static base URI for this variable.
+     *
+     * @return the base URI, or null if not set
+     */
+    public String getBaseUri() {
+        return baseUri;
+    }
+
+    /**
      * Creates a copy of this global variable with a different visibility.
      *
      * @param newVisibility the new visibility
@@ -320,7 +343,7 @@ public final class GlobalVariable {
             return new GlobalVariable(name, isParam, staticValue, importPrecedence, newVisibility);
         } else {
             return new GlobalVariable(name, isParam, selectExpr, content, 
-                                      importPrecedence, asType, newVisibility, required);
+                                      importPrecedence, asType, newVisibility, required, baseUri);
         }
     }
 

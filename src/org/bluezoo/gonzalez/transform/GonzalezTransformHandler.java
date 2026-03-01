@@ -685,7 +685,11 @@ public class GonzalezTransformHandler extends DefaultHandler
                 SAXEventBuffer buffer = new SAXEventBuffer();
                 BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
                 var.getContent().execute(context, bufferOutput);
-                return new XPathResultTreeFragment(buffer);
+                String varBaseUri = var.getBaseUri();
+                if (varBaseUri == null) {
+                    varBaseUri = context.getStaticBaseURI();
+                }
+                return new XPathResultTreeFragment(buffer, varBaseUri);
             } else {
                 return XPathString.of("");
             }

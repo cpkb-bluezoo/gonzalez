@@ -4660,7 +4660,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         if (isTopLevel) {
             try {
-                builder.addGlobalVariable(new GlobalVariable(varName, false, selectExpr, content, importPrecedence, asType));
+                builder.addGlobalVariable(new GlobalVariable(varName, false, selectExpr, content, 
+                    importPrecedence, asType, ComponentVisibility.PUBLIC, false, ctx.baseURI));
             } catch (javax.xml.transform.TransformerConfigurationException e) {
                 throw new SAXException(e.getMessage(), e);
             }
@@ -4766,7 +4767,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // XTDE0050: A required parameter must have a value supplied during transformation
             try {
                 builder.addGlobalVariable(new GlobalVariable(paramName, true, selectExpr, content, 
-                    importPrecedence, asType, ComponentVisibility.PUBLIC, required));
+                    importPrecedence, asType, ComponentVisibility.PUBLIC, required, ctx.baseURI));
             } catch (javax.xml.transform.TransformerConfigurationException e) {
                 throw new SAXException(e.getMessage(), e);
             }

@@ -416,7 +416,12 @@ public final class LiteralResultElement implements XSLTNode {
                 attrLocalName = name.substring(colonPos + 1);
                 
                 // Look up the namespace URI for this prefix (use full context)
-                attrUri = namespaceContext.getOrDefault(attrPrefix, "");
+                // The xml prefix is always implicitly bound
+                if ("xml".equals(attrPrefix)) {
+                    attrUri = "http://www.w3.org/XML/1998/namespace";
+                } else {
+                    attrUri = namespaceContext.getOrDefault(attrPrefix, "");
+                }
                 
                 // Check for alias
                 CompiledStylesheet.NamespaceAlias attrAlias = stylesheet.getNamespaceAlias(attrUri);

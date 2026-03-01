@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.runtime;
 
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeWithBaseURI;
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
@@ -503,7 +504,7 @@ public final class DocumentLoader {
     /**
      * Internal node class for building document trees.
      */
-    public static class DocumentNode implements XPathNode {
+    public static class DocumentNode implements XPathNode, XPathNodeWithBaseURI {
         final NodeType type;
         final String namespaceURI;
         final String localName;
@@ -540,6 +541,11 @@ public final class DocumentLoader {
         @Override public String getNamespaceURI() { return namespaceURI; }
         @Override public String getLocalName() { return localName; }
         @Override public String getPrefix() { return prefix; }
+        
+        @Override
+        public String getBaseURI() {
+            return baseUri;
+        }
         
         @Override 
         public String getStringValue() {
