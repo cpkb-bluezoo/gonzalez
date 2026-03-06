@@ -29,6 +29,7 @@ import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -51,6 +52,8 @@ public class TryNode extends XSLTInstruction {
     }
     
     @Override public String getInstructionName() { return "try"; }
+    public XSLTNode getTryContent() { return tryContent; }
+    public List<CatchNode> getCatchBlocks() { return catchBlocks; }
     
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
@@ -69,16 +72,24 @@ public class TryNode extends XSLTInstruction {
     
     /**
      * Extracts the error code from an exception, walking the cause chain.
-     * SAXExceptions often wrap the real exception with the error code.
+     * Checks XPathException.getErrorCode() first, then falls back to
+     * parsing error codes from exception messages.
+     * Returns codes in prefixed form (e.g. "err:FOAR0001") for standard
+     * XPath/XSLT error codes so that namespace-aware matching works correctly.
      */
     private String extractErrorCode(Throwable e) {
         Throwable current = e;
         while (current != null) {
+            if (current instanceof XPathException) {
+                String xpCode = ((XPathException) current).getErrorCode();
+                if (xpCode != null && !xpCode.isEmpty()) {
+                    return prefixStandardCode(xpCode);
+                }
+            }
             String code = extractCodeFromMessage(current.getMessage());
             if (code != null) {
-                return code;
+                return prefixStandardCode(code);
             }
-            // SAXException uses getException() rather than getCause()
             Throwable next = null;
             if (current instanceof SAXException) {
                 next = ((SAXException) current).getException();
@@ -92,6 +103,36 @@ public class TryNode extends XSLTInstruction {
             current = next;
         }
         return null;
+    }
+
+    /**
+     * Adds the "err:" prefix to standard XSLT/XPath error codes (4 letters + 4 digits)
+     * since they belong to the http://www.w3.org/2005/xqt-errors namespace.
+     * Non-standard codes are returned as-is.
+     */
+    private String prefixStandardCode(String code) {
+        if (code.startsWith("err:") || code.startsWith("Q{")) {
+            return code;
+        }
+        if (isErrorCode(code)) {
+            return "err:" + code;
+        }
+        return code;
+    }
+
+    /**
+     * Returns the local part of an error code for binding to $err:code.
+     * Strips namespace prefixes like "err:" from the code.
+     */
+    private String errorCodeLocalPart(String errorCode) {
+        if (errorCode == null) {
+            return "";
+        }
+        int colonIdx = errorCode.indexOf(':');
+        if (colonIdx > 0) {
+            return errorCode.substring(colonIdx + 1);
+        }
+        return errorCode;
     }
 
     /**
@@ -168,7 +209,7 @@ public class TryNode extends XSLTInstruction {
                 // Bind XSLT 3.0 error variables in the err namespace
                 TransformContext catchContext = context.pushVariableScope();
                 String errNs = "http://www.w3.org/2005/xqt-errors";
-                String code = (errorCode != null) ? errorCode : "";
+                String code = errorCodeLocalPart(errorCode);
                 String desc = (e.getMessage() != null) ? e.getMessage() : "";
                 catchContext.getVariableScope().bind(errNs, "code", new XPathString(code));
                 catchContext.getVariableScope().bind(errNs, "description", new XPathString(desc));

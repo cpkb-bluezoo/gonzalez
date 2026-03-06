@@ -51,4 +51,14 @@ public interface XPathNodeWithBaseURI extends XPathNode {
     default String getDocumentURI() {
         return null;
     }
+
+    /**
+     * Returns the entity base URI if this node originates from an external
+     * entity expansion whose system ID differs from the document's.
+     *
+     * @return the entity base URI, or null if the node is from the main document
+     */
+    default String getEntityBaseURI() {
+        return null;
+    }
 }

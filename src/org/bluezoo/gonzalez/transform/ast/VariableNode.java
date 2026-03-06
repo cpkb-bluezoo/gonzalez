@@ -31,6 +31,7 @@ import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
+import org.bluezoo.gonzalez.transform.compiler.TemplateParameter;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -43,6 +44,9 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
@@ -73,6 +77,7 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     @Override public String getInstructionName() { return "variable"; }
+    public SequenceNode getContent() { return content; }
 
     @Override
     public List<XPathExpression> getExpressions() {
@@ -208,22 +213,30 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
             }
             
             // XTTE0570: Check value against declared 'as' type
-            // Skip atomic type checks when value contains elements or attributes (atomization needed)
             if (parsedAsType != null && value != null) {
                 boolean shouldValidate = true;
                 SequenceType.ItemKind kind = parsedAsType.getItemKind();
-                if (kind == SequenceType.ItemKind.ATOMIC) {
-                    shouldValidate = !containsAtomizableNodes(value);
+                if (kind == SequenceType.ItemKind.ATOMIC && containsAtomizableNodes(value)) {
+                    String targetLocal = parsedAsType.getLocalName();
+                    value = atomizeNodesToType(value, targetLocal);
+                    shouldValidate = false;
+                } else if (kind == SequenceType.ItemKind.ATOMIC && containsTextNodes(value)) {
+                    // Sequence of text nodes from fork/sequence buffering - atomize each item
+                    String targetLocal = parsedAsType.getLocalName();
+                    value = atomizeTextNodeSequence(value, targetLocal);
+                    shouldValidate = false;
                 } else if (kind == SequenceType.ItemKind.DOCUMENT_NODE) {
                     // RTFs are document-node equivalents but don't implement XPathNode,
                     // so strict matching fails. Skip for document-node types.
                     shouldValidate = false;
                 }
                 if (shouldValidate && !parsedAsType.matches(value, SchemaContext.NONE)) {
-                    // XSLT function conversion rules: xs:untypedAtomic is promotable
-                    // to any atomic type via casting
                     if (value instanceof XPathUntypedAtomic) {
                         value = coerceUntypedAtomic((XPathUntypedAtomic) value, parsedAsType);
+                    } else if (kind == SequenceType.ItemKind.ATOMIC &&
+                               "string".equals(parsedAsType.getLocalName()) &&
+                               value instanceof org.bluezoo.gonzalez.transform.xpath.type.XPathAnyURI) {
+                        value = org.bluezoo.gonzalez.transform.xpath.type.XPathString.of(value.asString());
                     } else {
                         throw new XPathException("XTTE0570: Variable $" + localName +
                             ": required type is " + asType +
@@ -234,7 +247,22 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
             
             context.getVariableScope().bind(namespaceURI, localName, value);
         } catch (XPathException e) {
+            // Per spec, circular references are only errors when the variable
+            // is actually used. Bind a deferred-error sentinel so execution
+            // continues; the error will surface only if the variable is accessed.
+            if (containsCircularReference(e)) {
+                context.getVariableScope().bind(namespaceURI, localName, 
+                    new DeferredErrorValue("XTDE0640: Circular reference in variable: $" + localName));
+                return;
+            }
             throw new SAXException("Error evaluating variable " + localName, e);
+        } catch (SAXException e) {
+            if (containsCircularReference(e)) {
+                context.getVariableScope().bind(namespaceURI, localName, 
+                    new DeferredErrorValue("XTDE0640: Circular reference in variable: $" + localName));
+                return;
+            }
+            throw e;
         }
     }
     
@@ -246,6 +274,112 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
      * We mark item boundaries between instructions to ensure text nodes
      * from different instructions don't get merged.
      */
+    /**
+     * Returns true if the value contains only text nodes (SequenceTextItem instances),
+     * which are produced when fork branch output is buffered and replayed as characters.
+     */
+    private static boolean containsTextNodes(XPathValue value) {
+        if (value instanceof XPathNode) {
+            return ((XPathNode) value).getNodeType() == NodeType.TEXT;
+        }
+        if (value instanceof XPathSequence) {
+            for (XPathValue item : (XPathSequence) value) {
+                boolean isText = (item instanceof XPathNode)
+                    && ((XPathNode) item).getNodeType() == NodeType.TEXT;
+                boolean isAtomic = !(item instanceof XPathNode)
+                    && !(item instanceof XPathNodeSet)
+                    && !(item instanceof XPathResultTreeFragment);
+                if (!isText && !isAtomic) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Atomizes a value containing nodes (elements, attributes, RTFs) to the
+     * target atomic type. For sequences or node sets with multiple items,
+     * each item is atomized individually rather than concatenating all text.
+     * Per XSLT function conversion rules, xs:untypedAtomic values are also
+     * cast to the target type.
+     */
+    private static XPathValue atomizeNodesToType(XPathValue value,
+                                                  String targetLocal) throws XPathException {
+        if (value instanceof XPathSequence) {
+            List<XPathValue> atomized = new ArrayList<XPathValue>();
+            for (XPathValue item : (XPathSequence) value) {
+                atomized.add(atomizeSingleItem(item, targetLocal));
+            }
+            if (atomized.size() == 1) {
+                return atomized.get(0);
+            }
+            return new XPathSequence(atomized);
+        }
+        if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            List<XPathNode> nodes = ns.getNodes();
+            if (nodes.size() > 1) {
+                List<XPathValue> atomized = new ArrayList<XPathValue>();
+                for (XPathNode node : nodes) {
+                    String text = node.getStringValue();
+                    atomized.add(castStringToAtomicType(text, targetLocal));
+                }
+                return new XPathSequence(atomized);
+            }
+        }
+        return atomizeSingleItem(value, targetLocal);
+    }
+
+    /**
+     * Atomizes or casts a single item to the target atomic type.
+     * Nodes are atomized to string and cast. xs:untypedAtomic values are
+     * cast to the target type. Other atomic values are preserved as-is.
+     */
+    private static XPathValue atomizeSingleItem(XPathValue item,
+                                                 String targetLocal) throws XPathException {
+        if (item instanceof XPathNode || item.isNodeSet()
+                || item instanceof XPathResultTreeFragment) {
+            String text = item.asString();
+            return castStringToAtomicType(text, targetLocal);
+        }
+        if (item instanceof XPathUntypedAtomic) {
+            String text = item.asString();
+            return castStringToAtomicType(text, targetLocal);
+        }
+        return item;
+    }
+
+    /**
+     * Atomizes a sequence of text nodes, converting each to the target atomic type.
+     * This is used when fork branch output was buffered as characters and needs
+     * to be reconstituted as a sequence of atomic values.
+     */
+    private static XPathValue atomizeTextNodeSequence(XPathValue value,
+                                                       String targetLocal) throws XPathException {
+        if (value instanceof XPathNode) {
+            String text = ((XPathNode) value).getStringValue();
+            return castStringToAtomicType(text, targetLocal);
+        }
+        if (value instanceof XPathSequence) {
+            List<XPathValue> items = new ArrayList<XPathValue>();
+            for (XPathValue item : (XPathSequence) value) {
+                if (item instanceof XPathNode) {
+                    String text = ((XPathNode) item).getStringValue();
+                    items.add(castStringToAtomicType(text, targetLocal));
+                } else {
+                    items.add(item);
+                }
+            }
+            if (items.size() == 1) {
+                return items.get(0);
+            }
+            return new XPathSequence(items);
+        }
+        return value;
+    }
+
     /**
      * Returns true if the value contains element or attribute nodes that would
      * need atomization before being compared to an atomic type.
@@ -306,6 +440,14 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
      * function conversion rules (XSLT 2.0 §5.4.3). xs:untypedAtomic is
      * promotable to xs:string and castable to most other atomic types.
      */
+    private static XPathValue castStringToAtomicType(String textContent, 
+                                                      String targetLocal) throws XPathException {
+        if (targetLocal == null) {
+            return new XPathUntypedAtomic(textContent);
+        }
+        return TemplateParameter.castStringToAtomicType(textContent, targetLocal);
+    }
+    
     private static XPathValue coerceUntypedAtomic(XPathUntypedAtomic value,
                                                    SequenceType targetType) {
         String targetLocal = targetType.getLocalName();
@@ -334,5 +476,58 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
             }
         }
         return seqBuilder.getSequence();
+    }
+
+    private static boolean containsCircularReference(Throwable t) {
+        while (t != null) {
+            String msg = t.getMessage();
+            if (msg != null && msg.contains("XTDE0640")) {
+                return true;
+            }
+            t = t.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * Sentinel value bound to a variable whose evaluation hit a circular
+     * reference. Any attempt to read the value raises the deferred error.
+     * If the variable is never accessed, the error is silently ignored.
+     */
+    private static class DeferredErrorValue implements XPathValue {
+        private final String message;
+
+        DeferredErrorValue(String message) {
+            this.message = message;
+        }
+
+        private RuntimeException error() {
+            return new RuntimeException(message);
+        }
+
+        @Override
+        public Type getType() {
+            return Type.STRING;
+        }
+
+        @Override
+        public String asString() {
+            throw error();
+        }
+
+        @Override
+        public double asNumber() {
+            throw error();
+        }
+
+        @Override
+        public boolean asBoolean() {
+            throw error();
+        }
+
+        @Override
+        public XPathNodeSet asNodeSet() {
+            throw error();
+        }
     }
 }

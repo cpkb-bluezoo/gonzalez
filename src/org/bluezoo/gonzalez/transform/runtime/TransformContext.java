@@ -69,6 +69,14 @@ public interface TransformContext extends XPathContext, SchemaContext {
     String getCurrentMode();
 
     /**
+     * Returns the URI of the current output destination, or null
+     * if absent (e.g., during global variable evaluation).
+     *
+     * @return the current output URI, or null
+     */
+    String getCurrentOutputUri();
+
+    /**
      * Returns the variable scope for binding and lookup.
      *
      * @return the variable scope

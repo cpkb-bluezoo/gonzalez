@@ -34,10 +34,17 @@ final class PatternStep {
     final NodeTest nodeTest;
     final Step.Axis axis;
     final String predicateStr;
+    final boolean explicitDescendantAxis;
 
     PatternStep(NodeTest nodeTest, Step.Axis axis, String predicateStr) {
+        this(nodeTest, axis, predicateStr, false);
+    }
+
+    PatternStep(NodeTest nodeTest, Step.Axis axis, String predicateStr,
+                boolean explicitDescendantAxis) {
         this.nodeTest = nodeTest;
         this.axis = axis;
         this.predicateStr = predicateStr;
+        this.explicitDescendantAxis = explicitDescendantAxis;
     }
 }

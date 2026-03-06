@@ -89,13 +89,20 @@ public final class PathExpr implements Expr {
                 }
             }
         } else if (filterResult.isSequence()) {
-            // XPath 2.0+: sequences may contain nodes or node-sets
+            // XPath 2.0+: sequences may contain nodes, node-sets, or RTFs
             for (XPathValue item : (XPathSequence) filterResult) {
                 if (item instanceof XPathNode) {
                     contextNodes.add((XPathNode) item);
                 } else if (item instanceof XPathNodeSet) {
                     for (XPathNode n : ((XPathNodeSet) item).getNodes()) {
                         contextNodes.add(n);
+                    }
+                } else if (item.isNodeSet()) {
+                    XPathNodeSet ns = item.asNodeSet();
+                    if (ns != null) {
+                        for (XPathNode n : ns.getNodes()) {
+                            contextNodes.add(n);
+                        }
                     }
                 }
             }
@@ -104,6 +111,24 @@ public final class PathExpr implements Expr {
         }
 
         if (contextNodes.isEmpty()) {
+            // XPTY0019: if the filter produced non-empty atomic values and we have
+            // a relative path with axis steps, the context item is not a node
+            if (context.getXsltVersion() >= 2.0 && filterResult != null) {
+                boolean isAtomicResult = false;
+                if (!filterResult.isNodeSet() && !(filterResult instanceof XPathNode)) {
+                    if (filterResult instanceof XPathSequence) {
+                        if (((XPathSequence) filterResult).size() > 0) {
+                            isAtomicResult = true;
+                        }
+                    } else {
+                        isAtomicResult = true;
+                    }
+                }
+                if (isAtomicResult) {
+                    throw new XPathException("XPTY0019: The required item type " +
+                        "of the context item for an axis step is node()");
+                }
+            }
             return XPathNodeSet.EMPTY;
         }
 
@@ -128,6 +153,10 @@ public final class PathExpr implements Expr {
                 for (XPathValue item : (XPathSequence) pathResult) {
                     if (item instanceof XPathNode) {
                         nodeResults.add((XPathNode) item);
+                    } else if (item.isNodeSet()) {
+                        for (XPathNode n : item.asNodeSet()) {
+                            nodeResults.add(n);
+                        }
                     } else {
                         atomicResults.add(item);
                         hasAtomicResults = true;

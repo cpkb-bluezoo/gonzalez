@@ -45,6 +45,7 @@ public class IfNode extends XSLTInstruction implements ExpressionHolder {
         this.content = content;
     }
     @Override public String getInstructionName() { return "if"; }
+    public SequenceNode getContent() { return content; }
 
     @Override
     public List<XPathExpression> getExpressions() {

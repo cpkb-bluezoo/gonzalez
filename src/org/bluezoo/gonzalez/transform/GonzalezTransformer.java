@@ -85,6 +85,11 @@ public class GonzalezTransformer extends Transformer {
     private String initialTemplate;
     private String initialMode;
 
+    /** Initial function for XSLT 3.0 initial-function support. */
+    private String initialFunctionNsUri;
+    private String initialFunctionLocalName;
+    private java.util.List<String> initialFunctionParams;
+
     /** XPath expression to select the initial context node from the source. */
     private String initialContextSelect;
 
@@ -166,6 +171,12 @@ public class GonzalezTransformer extends Transformer {
         // Set initial template if specified (XSLT 2.0+ feature)
         if (initialTemplate != null) {
             transformHandler.setInitialTemplate(initialTemplate);
+        }
+        
+        // Set initial function if specified (XSLT 3.0 feature)
+        if (initialFunctionLocalName != null) {
+            transformHandler.setInitialFunction(initialFunctionNsUri,
+                initialFunctionLocalName, initialFunctionParams);
         }
         
         // Set initial mode if specified
@@ -414,9 +425,12 @@ public class GonzalezTransformer extends Transformer {
                 case "xhtml":
                 default:
                     // XML/XHTML output: use XMLWriter for optimal serialization
+                    // Note: adaptive/json also use XMLWriter but must not raise SENR0001 for maps
+                    boolean strictXmlSerialization = !"adaptive".equals(method) && !"json".equals(method);
                     OutputProperties props = stylesheet != null ? 
                         stylesheet.getOutputProperties() : new OutputProperties();
                     XMLWriterOutputHandler xmlHandler = new XMLWriterOutputHandler(channel, props);
+                    xmlHandler.setStrictXmlSerialization(strictXmlSerialization);
                     
                     // Set up character mappings if specified
                     if (stylesheet != null && !props.getUseCharacterMaps().isEmpty()) {
@@ -601,6 +615,22 @@ public class GonzalezTransformer extends Transformer {
      */
     public String getInitialTemplate() {
         return initialTemplate;
+    }
+
+    /**
+     * Sets the initial function for XSLT 3.0 support.
+     * If set, the transformation starts by calling this function with the
+     * supplied parameter expressions instead of applying templates.
+     *
+     * @param nsUri the function namespace URI
+     * @param localName the function local name
+     * @param paramSelects XPath expressions for each parameter
+     */
+    public void setInitialFunction(String nsUri, String localName,
+                                   java.util.List<String> paramSelects) {
+        this.initialFunctionNsUri = nsUri;
+        this.initialFunctionLocalName = localName;
+        this.initialFunctionParams = paramSelects;
     }
 
     /**

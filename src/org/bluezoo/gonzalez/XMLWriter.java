@@ -106,6 +106,12 @@ public class XMLWriter {
     private Charset charset;
     private boolean xml11;
     private boolean standalone;
+    private byte[] pendingBOM;
+
+    // Pre-encoded ASCII bytes for the current charset.
+    // For UTF-8 each entry is a single byte; for UTF-16 two bytes; etc.
+    private byte[][] encodedAscii;
+    private int maxAsciiBytes;
 
     // Element stack for tracking open elements
     private final Deque<ElementInfo> elementStack = new ArrayDeque<ElementInfo>();
@@ -189,6 +195,7 @@ public class XMLWriter {
         this.buffer = ByteBuffer.allocate(bufferCapacity);
         this.sendThreshold = (int) (bufferCapacity * SEND_THRESHOLD);
         this.charset = StandardCharsets.UTF_8;
+        initEncodedAscii();
         namespaceStack.push(new HashMap<String, String>());
     }
 
@@ -224,8 +231,33 @@ public class XMLWriter {
      * @param charset the character encoding, or null for UTF-8
      * @since 1.1
      */
+    private static final byte[] BOM_UTF16_BE = { (byte) 0xFE, (byte) 0xFF };
+    private static final byte[] BOM_UTF16_LE = { (byte) 0xFF, (byte) 0xFE };
+    private static final byte[] BOM_UTF32_BE = { (byte) 0x00, (byte) 0x00, (byte) 0xFE, (byte) 0xFF };
+    private static final byte[] BOM_UTF32_LE = { (byte) 0xFF, (byte) 0xFE, (byte) 0x00, (byte) 0x00 };
+
     public void setCharset(Charset charset) {
-        this.charset = charset != null ? charset : StandardCharsets.UTF_8;
+        if (charset == null) {
+            charset = StandardCharsets.UTF_8;
+        }
+        String csName = charset.name().toUpperCase();
+        if ("UTF-16".equals(csName) || "UTF-16BE".equals(csName)) {
+            this.charset = StandardCharsets.UTF_16BE;
+            this.pendingBOM = BOM_UTF16_BE;
+        } else if ("UTF-16LE".equals(csName)) {
+            this.charset = StandardCharsets.UTF_16LE;
+            this.pendingBOM = BOM_UTF16_LE;
+        } else if ("UTF-32".equals(csName) || "UTF-32BE".equals(csName)) {
+            this.charset = Charset.forName("UTF-32BE");
+            this.pendingBOM = BOM_UTF32_BE;
+        } else if ("UTF-32LE".equals(csName)) {
+            this.charset = Charset.forName("UTF-32LE");
+            this.pendingBOM = BOM_UTF32_LE;
+        } else {
+            this.charset = charset;
+            this.pendingBOM = null;
+        }
+        initEncodedAscii();
     }
 
     /**
@@ -274,8 +306,7 @@ public class XMLWriter {
         }
         atDocumentStart = false;
 
-        ensureCapacity(1);
-        buffer.put((byte) '<');
+        writeRawString("<");
         writeRawString(localName);
 
         namespaceStack.push(new HashMap<String, String>());
@@ -319,8 +350,7 @@ public class XMLWriter {
             qName = localName;
         }
 
-        ensureCapacity(1);
-        buffer.put((byte) '<');
+        writeRawString("<");
         writeRawString(qName);
 
         namespaceStack.push(new HashMap<String, String>());
@@ -367,8 +397,7 @@ public class XMLWriter {
             qName = localName;
         }
 
-        ensureCapacity(1);
-        buffer.put((byte) '<');
+        writeRawString("<");
         writeRawString(qName);
 
         namespaceStack.push(new HashMap<String, String>());
@@ -400,9 +429,7 @@ public class XMLWriter {
         namespaceStack.pop();
 
         if (pendingStartTag && !hasContent) {
-            ensureCapacity(2);
-            buffer.put((byte) '/');
-            buffer.put((byte) '>');
+            writeRawString("/>");
             pendingStartTag = false;
         } else {
             closePendingStartTag(false);
@@ -411,12 +438,9 @@ public class XMLWriter {
                 writeIndent();
             }
 
-            ensureCapacity(2);
-            buffer.put((byte) '<');
-            buffer.put((byte) '/');
+            writeRawString("</");
             writeRawString(element.qName);
-            ensureCapacity(1);
-            buffer.put((byte) '>');
+            writeRawString(">");
         }
 
         hasContent = element.hadContent;
@@ -624,16 +648,7 @@ public class XMLWriter {
     public void writeStartCDATA() throws IOException {
         closePendingStartTag(true);
         inCDATA = true;
-        ensureCapacity(9);
-        buffer.put((byte) '<');
-        buffer.put((byte) '!');
-        buffer.put((byte) '[');
-        buffer.put((byte) 'C');
-        buffer.put((byte) 'D');
-        buffer.put((byte) 'A');
-        buffer.put((byte) 'T');
-        buffer.put((byte) 'A');
-        buffer.put((byte) '[');
+        writeRawString("<![CDATA[");
         sendIfNeeded();
     }
 
@@ -645,10 +660,7 @@ public class XMLWriter {
      */
     public void writeEndCDATA() throws IOException {
         inCDATA = false;
-        ensureCapacity(3);
-        buffer.put((byte) ']');
-        buffer.put((byte) ']');
-        buffer.put((byte) '>');
+        writeRawString("]]>");
         sendIfNeeded();
     }
 
@@ -674,21 +686,13 @@ public class XMLWriter {
         }
         atDocumentStart = false;
 
-        ensureCapacity(4);
-        buffer.put((byte) '<');
-        buffer.put((byte) '!');
-        buffer.put((byte) '-');
-        buffer.put((byte) '-');
+        writeRawString("<!--");
         char[] ch = text.toCharArray();
         writeCommentContent(ch, 0, ch.length);
-        ensureCapacity(3);
-        buffer.put((byte) '-');
-        buffer.put((byte) '-');
-        buffer.put((byte) '>');
+        writeRawString("-->");
 
         if (inDTD) {
-            ensureCapacity(1);
-            buffer.put((byte) '\n');
+            writeRawString("\n");
         }
 
         sendIfNeeded();
@@ -719,18 +723,13 @@ public class XMLWriter {
         }
         atDocumentStart = false;
 
-        ensureCapacity(2);
-        buffer.put((byte) '<');
-        buffer.put((byte) '?');
+        writeRawString("<?");
         writeRawString(target);
         if (data != null && !data.isEmpty()) {
-            ensureCapacity(1);
-            buffer.put((byte) ' ');
+            writeRawString(" ");
             writePIData(data);
         }
-        ensureCapacity(2);
-        buffer.put((byte) '?');
-        buffer.put((byte) '>');
+        writeRawString("?>");
 
         sendIfNeeded();
     }
@@ -743,10 +742,9 @@ public class XMLWriter {
      */
     public void writeEntityRef(String name) throws IOException {
         closePendingStartTag(true);
-        ensureCapacity(2 + name.length());
-        buffer.put((byte) '&');
+        writeRawString("&");
         writeRawString(name);
-        buffer.put((byte) ';');
+        writeRawString(";");
         sendIfNeeded();
     }
 
@@ -792,17 +790,7 @@ public class XMLWriter {
         dtdInternalSubsetOpen = false;
         inExternalSubset = false;
 
-        ensureCapacity(10);
-        buffer.put((byte) '<');
-        buffer.put((byte) '!');
-        buffer.put((byte) 'D');
-        buffer.put((byte) 'O');
-        buffer.put((byte) 'C');
-        buffer.put((byte) 'T');
-        buffer.put((byte) 'Y');
-        buffer.put((byte) 'P');
-        buffer.put((byte) 'E');
-        buffer.put((byte) ' ');
+        writeRawString("<!DOCTYPE ");
         writeRawString(name);
 
         if (!standalone) {
@@ -813,13 +801,11 @@ public class XMLWriter {
                 if (systemId != null) {
                     writeEscapedId(systemId);
                 }
-                ensureCapacity(1);
-                buffer.put((byte) '"');
+                writeRawString("\"");
             } else if (systemId != null) {
                 writeRawString(" SYSTEM \"");
                 writeEscapedId(systemId);
-                ensureCapacity(1);
-                buffer.put((byte) '"');
+                writeRawString("\"");
             }
         }
 
@@ -834,16 +820,12 @@ public class XMLWriter {
      */
     public void writeEndDTD() throws IOException {
         if (dtdInternalSubsetOpen) {
-            ensureCapacity(2);
-            buffer.put((byte) ']');
-            buffer.put((byte) '>');
+            writeRawString("]>");
         } else {
-            ensureCapacity(1);
-            buffer.put((byte) '>');
+            writeRawString(">");
         }
         if (indentConfig != null) {
-            ensureCapacity(1);
-            buffer.put((byte) '\n');
+            writeRawString("\n");
         }
         inDTD = false;
         dtdInternalSubsetOpen = false;
@@ -867,12 +849,9 @@ public class XMLWriter {
 
         writeRawString("  <!ELEMENT ");
         writeRawString(name);
-        ensureCapacity(1);
-        buffer.put((byte) ' ');
+        writeRawString(" ");
         writeRawString(model);
-        ensureCapacity(2);
-        buffer.put((byte) '>');
-        buffer.put((byte) '\n');
+        writeRawString(">\n");
         sendIfNeeded();
     }
 
@@ -896,26 +875,20 @@ public class XMLWriter {
 
         writeRawString("  <!ATTLIST ");
         writeRawString(eName);
-        ensureCapacity(1);
-        buffer.put((byte) ' ');
+        writeRawString(" ");
         writeRawString(aName);
-        ensureCapacity(1);
-        buffer.put((byte) ' ');
+        writeRawString(" ");
         writeRawString(type);
         if (mode != null && !mode.isEmpty()) {
-            ensureCapacity(1);
-            buffer.put((byte) ' ');
+            writeRawString(" ");
             writeRawString(mode);
         }
         if (value != null) {
             writeRawString(" \"");
             writeEscapedAttributeValue(value);
-            ensureCapacity(1);
-            buffer.put((byte) '"');
+            writeRawString("\"");
         }
-        ensureCapacity(2);
-        buffer.put((byte) '>');
-        buffer.put((byte) '\n');
+        writeRawString(">\n");
         sendIfNeeded();
     }
 
@@ -942,10 +915,7 @@ public class XMLWriter {
         }
         writeRawString(" \"");
         writeEscapedEntityValue(value);
-        ensureCapacity(3);
-        buffer.put((byte) '"');
-        buffer.put((byte) '>');
-        buffer.put((byte) '\n');
+        writeRawString("\">\n");
         sendIfNeeded();
     }
 
@@ -977,17 +947,13 @@ public class XMLWriter {
             writeEscapedId(publicId);
             writeRawString("\" \"");
             writeEscapedId(systemId);
-            ensureCapacity(1);
-            buffer.put((byte) '"');
+            writeRawString("\"");
         } else {
             writeRawString(" SYSTEM \"");
             writeEscapedId(systemId);
-            ensureCapacity(1);
-            buffer.put((byte) '"');
+            writeRawString("\"");
         }
-        ensureCapacity(2);
-        buffer.put((byte) '>');
-        buffer.put((byte) '\n');
+        writeRawString(">\n");
         sendIfNeeded();
     }
 
@@ -1012,23 +978,18 @@ public class XMLWriter {
         if (publicId != null) {
             writeRawString(" PUBLIC \"");
             writeEscapedId(publicId);
-            ensureCapacity(1);
-            buffer.put((byte) '"');
+            writeRawString("\"");
             if (systemId != null) {
                 writeRawString(" \"");
                 writeEscapedId(systemId);
-                ensureCapacity(1);
-                buffer.put((byte) '"');
+                writeRawString("\"");
             }
         } else if (systemId != null) {
             writeRawString(" SYSTEM \"");
             writeEscapedId(systemId);
-            ensureCapacity(1);
-            buffer.put((byte) '"');
+            writeRawString("\"");
         }
-        ensureCapacity(2);
-        buffer.put((byte) '>');
-        buffer.put((byte) '\n');
+        writeRawString(">\n");
         sendIfNeeded();
     }
 
@@ -1056,19 +1017,15 @@ public class XMLWriter {
             writeEscapedId(publicId);
             writeRawString("\" \"");
             writeEscapedId(systemId);
-            ensureCapacity(1);
-            buffer.put((byte) '"');
+            writeRawString("\"");
         } else {
             writeRawString(" SYSTEM \"");
             writeEscapedId(systemId);
-            ensureCapacity(1);
-            buffer.put((byte) '"');
+            writeRawString("\"");
         }
         writeRawString(" NDATA ");
         writeRawString(notationName);
-        ensureCapacity(2);
-        buffer.put((byte) '>');
-        buffer.put((byte) '\n');
+        writeRawString(">\n");
         sendIfNeeded();
     }
 
@@ -1273,28 +1230,21 @@ public class XMLWriter {
             }
             writeRawString(" xmlns:");
             writeRawString(prefix);
-            ensureCapacity(2);
-            buffer.put((byte) '=');
-            buffer.put((byte) '"');
+            writeRawString("=\"");
         }
         writeEscapedNamespaceURI(uri);
-        ensureCapacity(1);
-        buffer.put((byte) '"');
+        writeRawString("\"");
     }
 
     /**
      * Writes an attribute name="value" pair.
      */
     private void writeAttributeOutput(String qName, String value) throws IOException {
-        ensureCapacity(1);
-        buffer.put((byte) ' ');
+        writeRawString(" ");
         writeRawString(qName);
-        ensureCapacity(2);
-        buffer.put((byte) '=');
-        buffer.put((byte) '"');
+        writeRawString("=\"");
         writeEscapedAttributeValue(value);
-        ensureCapacity(1);
-        buffer.put((byte) '"');
+        writeRawString("\"");
     }
 
     /**
@@ -1304,8 +1254,7 @@ public class XMLWriter {
      */
     private void closePendingStartTag(boolean markContent) throws IOException {
         if (pendingStartTag) {
-            ensureCapacity(1);
-            buffer.put((byte) '>');
+            writeRawString(">");
             pendingStartTag = false;
         }
         if (markContent) {
@@ -1319,11 +1268,52 @@ public class XMLWriter {
     private void writeIndent() throws IOException {
         int depth = elementStack.size();
         int indentSize = indentConfig.getIndentCount() * depth;
-        ensureCapacity(1 + indentSize);
-        buffer.put((byte) '\n');
-        byte indentByte = (byte) indentConfig.getIndentChar();
+        byte[] nlBytes = encodedAscii['\n'];
+        byte[] indentBytes = encodedAscii[indentConfig.getIndentChar()];
+        ensureCapacity(nlBytes.length + indentSize * indentBytes.length);
+        for (int n = 0; n < nlBytes.length; n++) {
+            buffer.put(nlBytes[n]);
+        }
         for (int i = 0; i < indentSize; i++) {
-            buffer.put(indentByte);
+            for (int b = 0; b < indentBytes.length; b++) {
+                buffer.put(indentBytes[b]);
+            }
+        }
+    }
+
+    /**
+     * Builds the pre-encoded byte arrays for each ASCII code point (0-127)
+     * in the current charset. Called once at construction and whenever
+     * the charset is changed via {@link #setCharset}.
+     */
+    private void initEncodedAscii() {
+        encodedAscii = new byte[128][];
+        for (int i = 0; i < 128; i++) {
+            char[] ch = { (char) i };
+            String s = new String(ch);
+            encodedAscii[i] = s.getBytes(charset);
+        }
+        maxAsciiBytes = encodedAscii['<'].length;
+    }
+
+    /**
+     * Writes a single ASCII-range character (0-127) using the pre-encoded
+     * byte sequence for the current charset. Caller must ensure sufficient
+     * buffer capacity before calling.
+     */
+    private void writeAscii(int c) {
+        byte[] encoded = encodedAscii[c];
+        int len = encoded.length;
+        for (int i = 0; i < len; i++) {
+            buffer.put(encoded[i]);
+        }
+    }
+
+    private void emitBOMIfNeeded() throws IOException {
+        if (pendingBOM != null) {
+            ensureCapacity(pendingBOM.length);
+            buffer.put(pendingBOM);
+            pendingBOM = null;
         }
     }
 
@@ -1331,6 +1321,7 @@ public class XMLWriter {
      * Writes a raw string as bytes without escaping, using the configured charset.
      */
     private void writeRawString(String s) throws IOException {
+        emitBOMIfNeeded();
         byte[] bytes = s.getBytes(charset);
         ensureCapacity(bytes.length);
         buffer.put(bytes);
@@ -1445,31 +1436,18 @@ public class XMLWriter {
             int codePoint = Character.codePointAt(ch, i);
             int charCount = Character.charCount(codePoint);
 
-            if (buffer.remaining() < 12) {
-                growBuffer(buffer.capacity() * 2);
-            }
-
             if (codePoint == '<') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'l');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&lt;");
             } else if (codePoint == '>') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'g');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&gt;");
             } else if (codePoint == '&') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'a');
-                buffer.put((byte) 'm');
-                buffer.put((byte) 'p');
-                buffer.put((byte) ';');
+                writeRawString("&amp;");
             } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
                        && (codePoint != '\r' || xml11)) {
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
-                buffer.put((byte) codePoint);
+                ensureCapacity(maxAsciiBytes);
+                writeAscii(codePoint);
             } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
                 writeCharacterReference(codePoint);
             } else if (xml11 && codePoint == 0x2028) {
@@ -1490,33 +1468,14 @@ public class XMLWriter {
             int codePoint = s.codePointAt(i);
             int charCount = Character.charCount(codePoint);
 
-            if (buffer.remaining() < 12) {
-                growBuffer(buffer.capacity() * 2);
-            }
-
             if (codePoint == '<') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'l');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&lt;");
             } else if (codePoint == '>') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'g');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&gt;");
             } else if (codePoint == '&') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'a');
-                buffer.put((byte) 'm');
-                buffer.put((byte) 'p');
-                buffer.put((byte) ';');
+                writeRawString("&amp;");
             } else if (codePoint == '"') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'q');
-                buffer.put((byte) 'u');
-                buffer.put((byte) 'o');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&quot;");
             } else if (codePoint == '\t') {
                 writeDecimalCharacterReference(codePoint);
             } else if (codePoint == '\n') {
@@ -1526,7 +1485,8 @@ public class XMLWriter {
             } else if (codePoint < 0x20) {
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
-                buffer.put((byte) codePoint);
+                ensureCapacity(maxAsciiBytes);
+                writeAscii(codePoint);
             } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
                 writeCharacterReference(codePoint);
             } else if (xml11 && codePoint == 0x2028) {
@@ -1548,34 +1508,18 @@ public class XMLWriter {
             int codePoint = s.codePointAt(i);
             int charCount = Character.charCount(codePoint);
 
-            if (buffer.remaining() < 12) {
-                growBuffer(buffer.capacity() * 2);
-            }
-
             if (codePoint == '&') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'a');
-                buffer.put((byte) 'm');
-                buffer.put((byte) 'p');
-                buffer.put((byte) ';');
+                writeRawString("&amp;");
             } else if (codePoint == '%') {
-                buffer.put((byte) '&');
-                buffer.put((byte) '#');
-                buffer.put((byte) '3');
-                buffer.put((byte) '7');
-                buffer.put((byte) ';');
+                writeRawString("&#37;");
             } else if (codePoint == '"') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'q');
-                buffer.put((byte) 'u');
-                buffer.put((byte) 'o');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&quot;");
             } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
                        && codePoint != '\r') {
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
-                buffer.put((byte) codePoint);
+                ensureCapacity(maxAsciiBytes);
+                writeAscii(codePoint);
             } else {
                 writeEncodedCodePoint(codePoint);
             }
@@ -1594,38 +1538,20 @@ public class XMLWriter {
             int codePoint = s.codePointAt(i);
             int charCount = Character.charCount(codePoint);
 
-            if (buffer.remaining() < 12) {
-                growBuffer(buffer.capacity() * 2);
-            }
-
             if (codePoint == '<') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'l');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&lt;");
             } else if (codePoint == '>') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'g');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&gt;");
             } else if (codePoint == '&') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'a');
-                buffer.put((byte) 'm');
-                buffer.put((byte) 'p');
-                buffer.put((byte) ';');
+                writeRawString("&amp;");
             } else if (codePoint == '"') {
-                buffer.put((byte) '&');
-                buffer.put((byte) 'q');
-                buffer.put((byte) 'u');
-                buffer.put((byte) 'o');
-                buffer.put((byte) 't');
-                buffer.put((byte) ';');
+                writeRawString("&quot;");
             } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
                        && codePoint != '\r') {
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
-                buffer.put((byte) codePoint);
+                ensureCapacity(maxAsciiBytes);
+                writeAscii(codePoint);
             } else if (xml11) {
                 writeHexCharacterReference(codePoint);
             } else {
@@ -1681,26 +1607,16 @@ public class XMLWriter {
     }
 
     private void writeDecimalCharacterReference(int codePoint) throws IOException {
-        ensureCapacity(12);
-        buffer.put((byte) '&');
-        buffer.put((byte) '#');
         String decimal = Integer.toString(codePoint);
-        for (int i = 0; i < decimal.length(); i++) {
-            buffer.put((byte) decimal.charAt(i));
-        }
-        buffer.put((byte) ';');
+        String ref = "&#" + decimal + ";";
+        writeRawString(ref);
     }
 
     private void writeHexCharacterReference(int codePoint) throws IOException {
-        ensureCapacity(12);
-        buffer.put((byte) '&');
-        buffer.put((byte) '#');
-        buffer.put((byte) 'x');
-        String hex = Integer.toHexString(codePoint).toUpperCase();
-        for (int i = 0; i < hex.length(); i++) {
-            buffer.put((byte) hex.charAt(i));
-        }
-        buffer.put((byte) ';');
+        String hex = Integer.toHexString(codePoint);
+        String hexUpper = hex.toUpperCase();
+        String ref = "&#x" + hexUpper + ";";
+        writeRawString(ref);
     }
 
     /**

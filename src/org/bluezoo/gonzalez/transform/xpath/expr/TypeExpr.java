@@ -238,11 +238,19 @@ public class TypeExpr implements Expr {
     private XPathValue castToType(String value, SequenceType type, XPathContext context, 
                                     XPathValue sourceValue) throws XPathException {
         if (type.getItemKind() != SequenceType.ItemKind.ATOMIC) {
-            throw new XPathException("Cannot cast to non-atomic type: " + type);
+            throw new XPathException("XPST0051: Cannot cast to non-atomic type: " + type);
         }
         
         String typeName = type.getLocalName();
         String typeNs = type.getNamespaceURI();
+        
+        // XPST0051: Cannot cast to abstract or non-atomic built-in types
+        if (typeName != null && SequenceType.XS_NAMESPACE.equals(typeNs)) {
+            if ("anyType".equals(typeName) || "anySimpleType".equals(typeName)
+                    || "anyAtomicType".equals(typeName) || "untyped".equals(typeName)) {
+                throw new XPathException("XPST0051: Cannot cast to xs:" + typeName);
+            }
+        }
         
         if (typeName == null) {
             throw new XPathException("Cannot cast to unspecified atomic type");
@@ -269,6 +277,11 @@ public class TypeExpr implements Expr {
                     return new XPathString(value);
                     
                 case "boolean":
+                    // Numeric-to-boolean: 0, +0, -0, NaN → false; all others → true
+                    if (sourceValue instanceof XPathNumber) {
+                        double numVal = sourceValue.asNumber();
+                        return XPathBoolean.of(numVal != 0.0 && !Double.isNaN(numVal));
+                    }
                     if ("true".equals(value) || "1".equals(value)) {
                         return XPathBoolean.TRUE;
                     } else if ("false".equals(value) || "0".equals(value)) {
@@ -289,33 +302,61 @@ public class TypeExpr implements Expr {
                 case "unsignedInt":
                 case "unsignedShort":
                 case "unsignedByte":
-                    // Parse and return as XPathNumber (integer)
-                    long intVal = Long.parseLong(value.trim());
-                    return new XPathNumber(intVal);
+                    if (sourceValue instanceof XPathBoolean) {
+                        return XPathNumber.ofInteger(sourceValue.asBoolean() ? 1L : 0L);
+                    }
+                    if (sourceValue instanceof XPathNumber) {
+                        BigDecimal bd = new BigDecimal(value.trim());
+                        return XPathNumber.ofInteger(bd.toBigInteger());
+                    }
+                    String intStr = value.trim();
+                    if (intStr.indexOf('.') >= 0) {
+                        BigDecimal bd = new BigDecimal(intStr);
+                        if (bd.stripTrailingZeros().scale() > 0) {
+                            throw new XPathException(
+                                "FORG0001: Cannot cast '" + value +
+                                "' to xs:" + typeName + ": non-integer value");
+                        }
+                        return XPathNumber.ofInteger(bd.toBigInteger());
+                    }
+                    try {
+                        return XPathNumber.ofInteger(Long.parseLong(intStr));
+                    } catch (NumberFormatException nfe) {
+                        return XPathNumber.ofInteger(new BigInteger(intStr));
+                    }
                     
                 case "decimal":
-                    BigDecimal decVal = new BigDecimal(value.trim());
-                    return new XPathNumber(decVal.doubleValue());
+                    if (sourceValue instanceof XPathBoolean) {
+                        return new XPathNumber(sourceValue.asBoolean()
+                            ? BigDecimal.ONE : BigDecimal.ZERO);
+                    }
+                    return new XPathNumber(new BigDecimal(value.trim()));
                     
                 case "float":
-                    if ("INF".equals(value)) {
-                        return new XPathNumber(Float.POSITIVE_INFINITY);
-                    } else if ("-INF".equals(value)) {
-                        return new XPathNumber(Float.NEGATIVE_INFINITY);
-                    } else if ("NaN".equals(value)) {
-                        return new XPathNumber(Float.NaN);
+                    if (sourceValue instanceof XPathBoolean) {
+                        return new XPathNumber(sourceValue.asBoolean() ? 1.0f : 0.0f, true);
                     }
-                    return new XPathNumber(Float.parseFloat(value.trim()));
+                    if ("INF".equals(value)) {
+                        return new XPathNumber(Float.POSITIVE_INFINITY, true);
+                    } else if ("-INF".equals(value)) {
+                        return new XPathNumber(Float.NEGATIVE_INFINITY, true);
+                    } else if ("NaN".equals(value)) {
+                        return new XPathNumber(Float.NaN, true);
+                    }
+                    return new XPathNumber(Float.parseFloat(value.trim()), true);
                     
                 case "double":
-                    if ("INF".equals(value)) {
-                        return new XPathNumber(Double.POSITIVE_INFINITY);
-                    } else if ("-INF".equals(value)) {
-                        return new XPathNumber(Double.NEGATIVE_INFINITY);
-                    } else if ("NaN".equals(value)) {
-                        return new XPathNumber(Double.NaN);
+                    if (sourceValue instanceof XPathBoolean) {
+                        return new XPathNumber(sourceValue.asBoolean() ? 1.0d : 0.0d, false, true);
                     }
-                    return new XPathNumber(Double.parseDouble(value.trim()));
+                    if ("INF".equals(value)) {
+                        return new XPathNumber(Double.POSITIVE_INFINITY, false, true);
+                    } else if ("-INF".equals(value)) {
+                        return new XPathNumber(Double.NEGATIVE_INFINITY, false, true);
+                    } else if ("NaN".equals(value)) {
+                        return new XPathNumber(Double.NaN, false, true);
+                    }
+                    return new XPathNumber(Double.parseDouble(value.trim()), false, true);
                     
                 case "dateTime":
                     if (sourceValue instanceof XPathDateTime) {
@@ -351,10 +392,37 @@ public class TypeExpr implements Expr {
                     }
                     return XPathDateTime.parseTime(value);
                 case "duration":
+                    if (sourceValue instanceof XPathDateTime) {
+                        XPathDateTime srcDt = (XPathDateTime) sourceValue;
+                        XPathDateTime.DateTimeType sdt = srcDt.getDateTimeType();
+                        if (sdt == XPathDateTime.DateTimeType.DURATION
+                                || sdt == XPathDateTime.DateTimeType.YEAR_MONTH_DURATION
+                                || sdt == XPathDateTime.DateTimeType.DAY_TIME_DURATION) {
+                            return XPathDateTime.castToDuration(srcDt);
+                        }
+                    }
                     return XPathDateTime.parseDuration(value);
                 case "yearMonthDuration":
+                    if (sourceValue instanceof XPathDateTime) {
+                        XPathDateTime srcDt = (XPathDateTime) sourceValue;
+                        XPathDateTime.DateTimeType sdt = srcDt.getDateTimeType();
+                        if (sdt == XPathDateTime.DateTimeType.DURATION
+                                || sdt == XPathDateTime.DateTimeType.YEAR_MONTH_DURATION
+                                || sdt == XPathDateTime.DateTimeType.DAY_TIME_DURATION) {
+                            return XPathDateTime.castToYearMonthDuration(srcDt);
+                        }
+                    }
                     return XPathDateTime.parseYearMonthDuration(value);
                 case "dayTimeDuration":
+                    if (sourceValue instanceof XPathDateTime) {
+                        XPathDateTime srcDt = (XPathDateTime) sourceValue;
+                        XPathDateTime.DateTimeType sdt = srcDt.getDateTimeType();
+                        if (sdt == XPathDateTime.DateTimeType.DURATION
+                                || sdt == XPathDateTime.DateTimeType.YEAR_MONTH_DURATION
+                                || sdt == XPathDateTime.DateTimeType.DAY_TIME_DURATION) {
+                            return XPathDateTime.castToDayTimeDuration(srcDt);
+                        }
+                    }
                     return XPathDateTime.parseDayTimeDuration(value);
                 case "gYear":
                     return castToGType(sourceValue, value, "gYear");
@@ -374,7 +442,12 @@ public class TypeExpr implements Expr {
                     if (colonPos > 0) {
                         String prefix = value.substring(0, colonPos);
                         String local = value.substring(colonPos + 1);
-                        return new XPathQName("", prefix, local);
+                        String nsUri = context.resolveNamespacePrefix(prefix);
+                        if (nsUri == null) {
+                            throw new XPathException("FONS0004: Namespace prefix '" + prefix +
+                                "' is not declared");
+                        }
+                        return new XPathQName(nsUri, prefix, local);
                     }
                     return XPathQName.of(value);
                 }
@@ -479,14 +552,34 @@ public class TypeExpr implements Expr {
                 case "unsignedInt":
                 case "unsignedShort":
                 case "unsignedByte":
-                    return new XPathNumber(Long.parseLong(value.trim()));
+                    String iStr = value.trim();
+                    if (iStr.indexOf('.') >= 0) {
+                        BigDecimal ibd = new BigDecimal(iStr);
+                        return XPathNumber.ofInteger(ibd.toBigInteger());
+                    }
+                    try {
+                        return XPathNumber.ofInteger(Long.parseLong(iStr));
+                    } catch (NumberFormatException nfe) {
+                        return XPathNumber.ofInteger(new BigInteger(iStr));
+                    }
                     
                 case "decimal":
-                    return new XPathNumber(new BigDecimal(value.trim()).doubleValue());
+                    return new XPathNumber(new BigDecimal(value.trim()));
                     
                 case "float":
-                case "double":
-                    return new XPathNumber(Double.parseDouble(value.trim()));
+                case "double": {
+                    String dval = value.trim();
+                    if ("INF".equals(dval)) {
+                        return new XPathNumber(Double.POSITIVE_INFINITY);
+                    }
+                    if ("-INF".equals(dval)) {
+                        return new XPathNumber(Double.NEGATIVE_INFINITY);
+                    }
+                    if ("NaN".equals(dval)) {
+                        return new XPathNumber(Double.NaN);
+                    }
+                    return new XPathNumber(Double.parseDouble(dval));
+                }
                     
                 case "boolean":
                     if ("true".equals(value) || "1".equals(value)) {

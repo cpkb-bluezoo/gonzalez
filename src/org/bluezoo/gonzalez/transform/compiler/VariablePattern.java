@@ -21,6 +21,10 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -62,18 +66,14 @@ final class VariablePattern extends AbstractPattern {
             return false;
         }
 
-        XPathNodeSet varNodes;
-        if (varValue instanceof XPathNodeSet) {
-            varNodes = (XPathNodeSet) varValue;
-        } else if (varValue instanceof XPathResultTreeFragment) {
-            varNodes = ((XPathResultTreeFragment) varValue).asNodeSet();
-        } else {
+        List<XPathNode> varNodes = resolveVariableNodes(varValue);
+        if (varNodes.isEmpty()) {
             return false;
         }
 
         if (trailingAxis == null) {
-            for (XPathNode varNode : varNodes) {
-                if (node.isSameNode(varNode)) {
+            for (int i = 0; i < varNodes.size(); i++) {
+                if (node.isSameNode(varNodes.get(i))) {
                     return true;
                 }
             }
@@ -86,8 +86,8 @@ final class VariablePattern extends AbstractPattern {
             }
             XPathNode ancestor = node.getParent();
             while (ancestor != null) {
-                for (XPathNode varNode : varNodes) {
-                    if (ancestor.isSameNode(varNode)) {
+                for (int i = 0; i < varNodes.size(); i++) {
+                    if (ancestor.isSameNode(varNodes.get(i))) {
                         return true;
                     }
                 }
@@ -102,8 +102,8 @@ final class VariablePattern extends AbstractPattern {
             }
             XPathNode parent = node.getParent();
             if (parent != null) {
-                for (XPathNode varNode : varNodes) {
-                    if (parent.isSameNode(varNode)) {
+                for (int i = 0; i < varNodes.size(); i++) {
+                    if (parent.isSameNode(varNodes.get(i))) {
                         return true;
                     }
                 }
@@ -112,6 +112,39 @@ final class VariablePattern extends AbstractPattern {
         }
 
         return false;
+    }
+
+    /**
+     * Resolves a variable value to a list of nodes. For RTFs that contain
+     * a single document root, expands to the element children so that
+     * node identity checks work against individual elements.
+     */
+    private List<XPathNode> resolveVariableNodes(XPathValue varValue) {
+        if (varValue instanceof XPathNodeSet) {
+            XPathNodeSet ns = (XPathNodeSet) varValue;
+            List<XPathNode> result = new ArrayList<>();
+            for (XPathNode n : ns) {
+                result.add(n);
+            }
+            return result;
+        }
+        if (varValue instanceof XPathResultTreeFragment) {
+            XPathNodeSet ns =
+                ((XPathResultTreeFragment) varValue).asNodeSet();
+            List<XPathNode> result = new ArrayList<>();
+            for (XPathNode n : ns) {
+                if (n.isRoot()) {
+                    Iterator<XPathNode> children = n.getChildren();
+                    while (children.hasNext()) {
+                        result.add(children.next());
+                    }
+                } else {
+                    result.add(n);
+                }
+            }
+            return result;
+        }
+        return new ArrayList<>();
     }
 
     @Override

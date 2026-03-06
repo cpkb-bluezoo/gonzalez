@@ -53,6 +53,6 @@ final class PredicatedPattern extends AbstractPattern {
 
     @Override
     public double getDefaultPriority() {
-        return inner.getDefaultPriority();
+        return 0.5;
     }
 }

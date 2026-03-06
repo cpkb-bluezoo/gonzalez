@@ -31,6 +31,7 @@ import java.util.Set;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -41,7 +42,9 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -59,6 +62,7 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
         this.body = body;
     }
     @Override public String getInstructionName() { return "for-each"; }
+    public SequenceNode getBody() { return body; }
 
     @Override
     public List<XPathExpression> getExpressions() {
@@ -115,7 +119,8 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                 output.itemBoundary();
             }
             
-            TransformContext iterContext = context.pushVariableScope();
+            TransformContext iterContext = context.pushVariableScope()
+                .withCurrentTemplateRule(null);
             
             if (iterContext instanceof BasicTransformContext) {
                 iterContext = ((BasicTransformContext) iterContext)
@@ -148,7 +153,8 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                 output.itemBoundary();
             }
             
-            TransformContext iterContext = context.pushVariableScope();
+            TransformContext iterContext = context.pushVariableScope()
+                .withCurrentTemplateRule(null);
             
             // For node items, set context node; for atomic values, set context item
             if (item instanceof XPathNode) {
@@ -173,10 +179,12 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                     }
                 }
             } else {
-                // Atomic value - set as context item
+                // Atomic value - set as context item and XSLT current item
                 if (iterContext instanceof BasicTransformContext) {
-                    iterContext = ((BasicTransformContext) iterContext)
-                        .withContextItem(item).withPositionAndSize(position, size);
+                    BasicTransformContext btc = ((BasicTransformContext) iterContext)
+                        .withContextItem(item);
+                    btc.setXsltCurrentItem(item);
+                    iterContext = btc.withPositionAndSize(position, size);
                 } else {
                     iterContext = iterContext.withPositionAndSize(position, size);
                 }
@@ -190,10 +198,13 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
     private void executeAtomicValue(XPathValue value, TransformContext context,
                                    OutputHandler output) throws SAXException, XPathException {
         // Single atomic value - iterate once
-        TransformContext iterContext = context.pushVariableScope();
+        TransformContext iterContext = context.pushVariableScope()
+            .withCurrentTemplateRule(null);
         if (iterContext instanceof BasicTransformContext) {
-            iterContext = ((BasicTransformContext) iterContext)
-                .withContextItem(value).withPositionAndSize(1, 1);
+            BasicTransformContext btc = ((BasicTransformContext) iterContext)
+                .withContextItem(value);
+            btc.setXsltCurrentItem(value);
+            iterContext = btc.withPositionAndSize(1, 1);
         } else {
             iterContext = iterContext.withPositionAndSize(1, 1);
         }
@@ -219,6 +230,10 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
             dataTypes[j] = spec.getDataType(context);
             orders[j] = spec.getOrder(context);
             caseOrders[j] = spec.getCaseOrder(context);
+            String lang = spec.getLang(context);
+            if (lang != null) {
+                validateLang(lang);
+            }
             // Get collation - use explicit collation, or default collation from context
             String collationUri = spec.getCollation(context);
             if (collationUri == null) {
@@ -245,7 +260,12 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
             }
             for (int j = 0; j < sortCount; j++) {
                 SortSpec spec = sorts.get(j);
-                XPathValue val = spec.getSelectExpr().evaluate(nodeCtx);
+                XPathValue val;
+                if (spec.getSelectExpr() != null) {
+                    val = spec.getSelectExpr().evaluate(nodeCtx);
+                } else {
+                    val = evaluateSortBody(spec, nodeCtx);
+                }
                 // XTDE1030: xs:duration is not orderable (mixed months/seconds)
                 // xs:yearMonthDuration and xs:dayTimeDuration ARE orderable
                 if (val instanceof XPathDateTime && ((XPathDateTime) val).getDateTimeType() == XPathDateTime.DateTimeType.DURATION) {
@@ -256,6 +276,8 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                     sortKeys[i][j] = Double.valueOf(val.asNumber());
                 } else if (val instanceof XPathDateTime) {
                     sortKeys[i][j] = val;
+                } else if (dataTypes[j] == null && val instanceof XPathNumber) {
+                    sortKeys[i][j] = Double.valueOf(val.asNumber());
                 } else {
                     sortKeys[i][j] = val.asString();
                 }
@@ -354,7 +376,7 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
      * Sorts a list of atomic values (XPathValue) according to sort specifications.
      * Similar to sortNodesStatic but handles sequences of non-node values.
      */
-    private static void sortSequence(List<XPathValue> items, List<SortSpec> sorts,
+    static void sortSequence(List<XPathValue> items, List<SortSpec> sorts,
                                      TransformContext context) throws XPathException {
         final int itemCount = items.size();
         if (itemCount <= 1) {
@@ -371,6 +393,10 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
             dataTypes[j] = spec.getDataType(context);
             orders[j] = spec.getOrder(context);
             caseOrders[j] = spec.getCaseOrder(context);
+            String lang = spec.getLang(context);
+            if (lang != null) {
+                validateLang(lang);
+            }
             String collationUri = spec.getCollation(context);
             if (collationUri == null) {
                 collationUri = context.getDefaultCollation();
@@ -394,15 +420,22 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                 }
             } else {
                 if (context instanceof BasicTransformContext) {
-                    iterCtx = ((BasicTransformContext) context)
-                        .withContextItem(item).withPositionAndSize(i + 1, itemCount);
+                    BasicTransformContext btc = ((BasicTransformContext) context)
+                        .withContextItem(item);
+                    btc.setXsltCurrentItem(item);
+                    iterCtx = btc.withPositionAndSize(i + 1, itemCount);
                 } else {
                     iterCtx = context.withPositionAndSize(i + 1, itemCount);
                 }
             }
             for (int j = 0; j < sortCount; j++) {
                 SortSpec spec = sorts.get(j);
-                XPathValue val = spec.getSelectExpr().evaluate(iterCtx);
+                XPathValue val;
+                if (spec.getSelectExpr() != null) {
+                    val = spec.getSelectExpr().evaluate(iterCtx);
+                } else {
+                    val = evaluateSortBody(spec, iterCtx);
+                }
                 if (val instanceof XPathDateTime && ((XPathDateTime) val).getDateTimeType() == XPathDateTime.DateTimeType.DURATION) {
                     throw new XPathException(
                         "XTDE1030: Cannot sort by xs:duration values (durations have no total order)");
@@ -411,6 +444,8 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                     sortKeys[i][j] = Double.valueOf(val.asNumber());
                 } else if (val instanceof XPathDateTime) {
                     sortKeys[i][j] = val;
+                } else if (dataTypes[j] == null && val instanceof XPathNumber) {
+                    sortKeys[i][j] = Double.valueOf(val.asNumber());
                 } else {
                     sortKeys[i][j] = val.asString();
                 }
@@ -447,7 +482,32 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                         String sa = (String) keyA;
                         String sb = (String) keyB;
                         Collation collation = collations[j];
-                        cmp = collation.compare(sa, sb);
+                        String caseOrder = caseOrders[j];
+                        
+                        if (caseOrder != null) {
+                            cmp = sa.compareToIgnoreCase(sb);
+                            if (cmp == 0) {
+                                int len = Math.min(sa.length(), sb.length());
+                                for (int k = 0; k < len; k++) {
+                                    char ca = sa.charAt(k);
+                                    char cb = sb.charAt(k);
+                                    if (ca != cb) {
+                                        boolean aIsLower = Character.isLowerCase(ca);
+                                        boolean bIsLower = Character.isLowerCase(cb);
+                                        if (aIsLower != bIsLower) {
+                                            if ("lower-first".equals(caseOrder)) {
+                                                cmp = aIsLower ? -1 : 1;
+                                            } else {
+                                                cmp = aIsLower ? 1 : -1;
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            cmp = collation.compare(sa, sb);
+                        }
                     }
                     
                     if ("descending".equals(orders[j])) {
@@ -468,5 +528,38 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
         }
         items.clear();
         items.addAll(sorted);
+    }
+
+    /**
+     * Evaluates the sequence constructor body of an xsl:sort as the sort key.
+     */
+    private static XPathValue evaluateSortBody(SortSpec spec, TransformContext context)
+            throws XPathException {
+        Object body = spec.getContentBody();
+        if (body instanceof XSLTNode) {
+            try {
+                SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
+                ((XSLTNode) body).execute(context, seqBuilder);
+                XPathValue result = seqBuilder.getSequence();
+                return result != null ? result : new XPathString("");
+            } catch (SAXException e) {
+                throw new XPathException("Error evaluating xsl:sort content: " + e.getMessage());
+            }
+        }
+        return new XPathString("");
+    }
+
+    /**
+     * XTDE0030: Validates that a lang attribute value is a valid BCP 47 language tag.
+     */
+    private static void validateLang(String lang) throws XPathException {
+        for (int i = 0; i < lang.length(); i++) {
+            char c = lang.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                    || (c >= '0' && c <= '9') || c == '-')) {
+                throw new XPathException(
+                    "XTDE0030: Invalid language tag on xsl:sort: '" + lang + "'");
+            }
+        }
     }
 }

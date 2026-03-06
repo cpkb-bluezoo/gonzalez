@@ -47,6 +47,7 @@ public final class AttributeSet {
     private final String name;
     private final List<Definition> definitions;
     private final ComponentVisibility visibility;
+    private final boolean streamable;
 
     /**
      * A single xsl:attribute-set definition with its own use-attribute-sets
@@ -72,30 +73,35 @@ public final class AttributeSet {
      * @param attributes the attribute instructions
      */
     public AttributeSet(String name, List<String> useAttributeSets, SequenceNode attributes) {
-        this(name, useAttributeSets, attributes, ComponentVisibility.PUBLIC);
+        this(name, useAttributeSets, attributes, ComponentVisibility.PUBLIC, false);
     }
 
     /**
-     * Creates an attribute set with a single definition and visibility.
+     * Creates an attribute set with a single definition, visibility, and
+     * streamability flag.
      *
      * @param name the attribute set name
      * @param useAttributeSets names of other attribute sets to include
      * @param attributes the attribute instructions
      * @param visibility the package visibility (XSLT 3.0)
+     * @param streamable whether the attribute set is declared streamable
      */
     public AttributeSet(String name, List<String> useAttributeSets, SequenceNode attributes,
-                       ComponentVisibility visibility) {
+                       ComponentVisibility visibility, boolean streamable) {
         this.name = name;
         List<Definition> defs = new ArrayList<>();
         defs.add(new Definition(useAttributeSets, attributes));
         this.definitions = Collections.unmodifiableList(defs);
         this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
+        this.streamable = streamable;
     }
 
-    private AttributeSet(String name, List<Definition> definitions, ComponentVisibility visibility) {
+    private AttributeSet(String name, List<Definition> definitions,
+                         ComponentVisibility visibility, boolean streamable) {
         this.name = name;
         this.definitions = Collections.unmodifiableList(new ArrayList<>(definitions));
         this.visibility = visibility != null ? visibility : ComponentVisibility.PUBLIC;
+        this.streamable = streamable;
     }
 
     /**
@@ -157,8 +163,17 @@ public final class AttributeSet {
      * @param newVisibility the new visibility
      * @return a new AttributeSet with the specified visibility
      */
+    /**
+     * Returns whether this attribute set is declared streamable.
+     *
+     * @return true if streamable="yes"
+     */
+    public boolean isStreamable() {
+        return streamable;
+    }
+
     public AttributeSet withVisibility(ComponentVisibility newVisibility) {
-        return new AttributeSet(name, definitions, newVisibility);
+        return new AttributeSet(name, definitions, newVisibility, streamable);
     }
 
     /**
@@ -174,7 +189,9 @@ public final class AttributeSet {
         mergedDefs.addAll(other.definitions);
         ComponentVisibility mergedVisibility = other.visibility != null ?
             other.visibility : this.visibility;
-        return new AttributeSet(name, mergedDefs, mergedVisibility);
+        boolean mergedStreamable = this.streamable || other.streamable;
+        return new AttributeSet(name, mergedDefs, mergedVisibility,
+                                mergedStreamable);
     }
 
     /**

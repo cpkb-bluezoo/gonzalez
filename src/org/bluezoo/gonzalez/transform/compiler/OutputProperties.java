@@ -43,7 +43,11 @@ public final class OutputProperties {
         /** HTML output method - uses HTML-specific serialization rules. */
         HTML,
         /** Text output method - outputs only text content. */
-        TEXT
+        TEXT,
+        /** JSON output method - serializes sequences as JSON. */
+        JSON,
+        /** Adaptive output method - serializes sequences using XPath-like notation. */
+        ADAPTIVE
     }
 
     private Method method = Method.XML;
@@ -93,6 +97,10 @@ public final class OutputProperties {
             this.method = Method.HTML;
         } else if ("text".equalsIgnoreCase(method)) {
             this.method = Method.TEXT;
+        } else if ("json".equalsIgnoreCase(method)) {
+            this.method = Method.JSON;
+        } else if ("adaptive".equalsIgnoreCase(method)) {
+            this.method = Method.ADAPTIVE;
         }
     }
 

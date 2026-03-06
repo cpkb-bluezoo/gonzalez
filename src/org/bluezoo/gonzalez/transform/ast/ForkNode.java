@@ -294,6 +294,7 @@ public final class ForkNode implements XSLTNode {
         private String pendingLocalName;
         private String pendingQName;
         private final AttributesImpl pendingAttrs = new AttributesImpl();
+        private final List<String[]> pendingNs = new ArrayList<>();
         private final List<String[]> parentAttrs = new ArrayList<>();
         private final List<String[]> parentNamespaces = new ArrayList<>();
         private boolean hadElement = false;
@@ -327,6 +328,7 @@ public final class ForkNode implements XSLTNode {
             pendingLocalName = localName;
             pendingQName = qName != null ? qName : localName;
             pendingAttrs.clear();
+            pendingNs.clear();
         }
 
         public void endElement(String uri, String localName, String qName) throws SAXException {
@@ -359,13 +361,20 @@ public final class ForkNode implements XSLTNode {
         }
 
         public void namespace(String prefix, String uri) throws SAXException {
-            if (!hadElement && !inStartTag) {
+            if (inStartTag) {
+                pendingNs.add(new String[]{
+                    prefix != null ? prefix : "",
+                    uri != null ? uri : ""
+                });
+            } else if (!hadElement) {
                 parentNamespaces.add(new String[]{
-                    prefix != null ? prefix : "", uri
+                    prefix != null ? prefix : "",
+                    uri != null ? uri : ""
                 });
             } else {
-                flush();
-                buffer.startPrefixMapping(prefix != null ? prefix : "", uri);
+                buffer.startPrefixMapping(
+                    prefix != null ? prefix : "",
+                    uri != null ? uri : "");
             }
         }
 
@@ -373,6 +382,15 @@ public final class ForkNode implements XSLTNode {
             flush();
             if (text != null && !text.isEmpty()) {
                 buffer.characters(text.toCharArray(), 0, text.length());
+            }
+        }
+
+        @Override
+        public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
+                throws SAXException {
+            flush();
+            if (value != null) {
+                buffer.xpathValue(value);
             }
         }
 
@@ -392,6 +410,11 @@ public final class ForkNode implements XSLTNode {
 
         public void flush() throws SAXException {
             if (inStartTag) {
+                for (int i = 0; i < pendingNs.size(); i++) {
+                    String[] ns = pendingNs.get(i);
+                    buffer.startPrefixMapping(ns[0], ns[1]);
+                }
+                pendingNs.clear();
                 buffer.startElement(pendingUri, pendingLocalName, pendingQName, pendingAttrs);
                 inStartTag = false;
                 pendingAttrs.clear();
@@ -406,7 +429,7 @@ public final class ForkNode implements XSLTNode {
      * expects namespace() AFTER startElement. This adapter buffers pending
      * namespace declarations and emits them after each startElement call.
      */
-    private static class SAXEventAdapter implements org.xml.sax.ContentHandler {
+    private static class SAXEventAdapter implements org.xml.sax.ContentHandler, SAXEventBuffer.XPathValueHandler {
         private final OutputHandler output;
         private final List<String[]> pendingNamespaces = new ArrayList<>();
 
@@ -464,6 +487,10 @@ public final class ForkNode implements XSLTNode {
         }
 
         public void skippedEntity(String name) throws SAXException {
+        }
+
+        public void xpathValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) throws SAXException {
+            output.atomicValue(value);
         }
     }
 

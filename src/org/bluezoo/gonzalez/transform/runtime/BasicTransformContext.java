@@ -42,6 +42,7 @@ import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.function.XSLTFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -81,6 +82,7 @@ public class BasicTransformContext implements TransformContext {
     private final java.util.Set<String> usedResultUris;  // Track URIs for XTDE1490
     private final org.bluezoo.gonzalez.transform.ErrorHandlingMode errorHandlingMode;  // Error handling mode
     private boolean contextItemUndefined;  // XPDY0002: true inside xsl:function bodies
+    private XPathValue xsltCurrentItem;   // The XSLT current() item for atomic for-each
 
     /**
      * Creates a new transform context.
@@ -253,6 +255,12 @@ public class BasicTransformContext implements TransformContext {
     }
 
     @Override
+    public String getCurrentOutputUri() {
+        // Not yet tracked; return null (absent) by default
+        return null;
+    }
+
+    @Override
     public VariableScope getVariableScope() {
         return variableScope;
     }
@@ -322,7 +330,24 @@ public class BasicTransformContext implements TransformContext {
      * @return a new context with the specified current node
      */
     public TransformContext withXsltCurrentNode(XPathNode node) {
-        return inherit(new BasicTransformContext(stylesheet, node, node, null, position, size,
+        BasicTransformContext result = inherit(new BasicTransformContext(stylesheet, node, node, null, position, size,
+            currentMode, variableScope, functionLibrary, templateMatcher, 
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
+        result.xsltCurrentItem = null;
+        return result;
+    }
+    
+    /**
+     * Creates a new context where the given node is both the context node and the context item.
+     * Used by xsl:apply-templates so that xsl:context-item type checks see the matched node.
+     *
+     * @param node the node to set as both context node and context item
+     * @return new context with the node as context node and context item
+     */
+    public TransformContext withXsltCurrentNodeAndContextItem(XPathNode node) {
+        XPathNodeSet nodeItem = new XPathNodeSet(java.util.Collections.singletonList(node));
+        return inherit(new BasicTransformContext(stylesheet, node, node, nodeItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
             runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
@@ -353,8 +378,16 @@ public class BasicTransformContext implements TransformContext {
      * @return a new context with the specified context item
      */
     public BasicTransformContext withContextItem(XPathValue item) {
-        // If item is a node, also set it as context node
-        XPathNode node = (item instanceof XPathNode) ? (XPathNode) item : contextNode;
+        // If item is a node or a single-node node-set, set it as context node
+        XPathNode node;
+        if (item instanceof XPathNode) {
+            node = (XPathNode) item;
+        } else if (item.isNodeSet()) {
+            XPathNodeSet ns = item.asNodeSet();
+            node = ns.isEmpty() ? contextNode : ns.iterator().next();
+        } else {
+            node = contextNode;
+        }
         return inherit(new BasicTransformContext(stylesheet, node, xsltCurrentNode, item, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
@@ -369,6 +402,26 @@ public class BasicTransformContext implements TransformContext {
      */
     public XPathValue getContextItem() {
         return contextItem;
+    }
+
+    /**
+     * Sets the XSLT current item for atomic for-each iterations.
+     * Unlike contextItem, this survives predicate evaluation (withContextNode
+     * does not clear it), paralleling xsltCurrentNode for node-based iterations.
+     *
+     * @param item the current atomic item
+     */
+    public void setXsltCurrentItem(XPathValue item) {
+        this.xsltCurrentItem = item;
+    }
+
+    /**
+     * Returns the XSLT current item set during atomic for-each iterations.
+     *
+     * @return the current item, or null if not in an atomic for-each
+     */
+    public XPathValue getXsltCurrentItem() {
+        return xsltCurrentItem;
     }
 
     @Override
@@ -869,7 +922,10 @@ public class BasicTransformContext implements TransformContext {
      */
     private BasicTransformContext inherit(BasicTransformContext derived) {
         derived.defaultCollationOverride = this.defaultCollationOverride;
-        derived.contextItemUndefined = this.contextItemUndefined;
+        derived.xsltCurrentItem = this.xsltCurrentItem;
+        if (this.contextItemUndefined && derived.contextNode == null && derived.contextItem == null) {
+            derived.contextItemUndefined = true;
+        }
         return derived;
     }
 

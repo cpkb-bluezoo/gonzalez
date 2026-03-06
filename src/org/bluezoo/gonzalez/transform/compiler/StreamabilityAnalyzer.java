@@ -21,6 +21,23 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.bluezoo.gonzalez.transform.ast.AttributeNode;
+import org.bluezoo.gonzalez.transform.ast.CatchNode;
+import org.bluezoo.gonzalez.transform.ast.ChooseNode;
+import org.bluezoo.gonzalez.transform.ast.CopyNode;
+import org.bluezoo.gonzalez.transform.ast.ElementNode;
+import org.bluezoo.gonzalez.transform.ast.ForEachGroupNode;
+import org.bluezoo.gonzalez.transform.ast.ForEachNode;
+import org.bluezoo.gonzalez.transform.ast.ForkNode;
+import org.bluezoo.gonzalez.transform.ast.NumberNode;
+import org.bluezoo.gonzalez.transform.ast.IfNode;
+import org.bluezoo.gonzalez.transform.ast.IterateNode;
+import org.bluezoo.gonzalez.transform.ast.LiteralResultElement;
+import org.bluezoo.gonzalez.transform.ast.MessageNode;
+import org.bluezoo.gonzalez.transform.ast.ResultDocumentNode;
+import org.bluezoo.gonzalez.transform.ast.TryNode;
+import org.bluezoo.gonzalez.transform.ast.VariableNode;
+import org.bluezoo.gonzalez.transform.ast.WhenNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.runtime.BufferingStrategy;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
@@ -303,8 +320,14 @@ public final class StreamabilityAnalyzer {
      * expressions via the {@link ExpressionHolder} interface and
      * classifying each through the AST.
      */
-    private ExpressionStreamability analyzeNode(XSLTNode node,
-                                                 List<String> reasons) {
+    ExpressionStreamability analyzeNode(XSLTNode node,
+                                        List<String> reasons) {
+        // xsl:number requires sibling counting, making it at least GROUNDED
+        if (containsNumberInstruction(node, 0)) {
+            reasons.add("xsl:number requires access to preceding siblings");
+            return ExpressionStreamability.GROUNDED;
+        }
+
         List<XPathExpression> expressions = new ArrayList<XPathExpression>();
         collectExpressions(node, expressions, 0);
 
@@ -323,6 +346,18 @@ public final class StreamabilityAnalyzer {
             }
         }
         return result;
+    }
+
+    /**
+     * Collects all XPath expressions from a template body.
+     *
+     * @param body the template body node
+     * @return list of compiled XPath expressions found in the body
+     */
+    public List<XPathExpression> collectBodyExpressions(XSLTNode body) {
+        List<XPathExpression> expressions = new ArrayList<XPathExpression>();
+        collectExpressions(body, expressions, 0);
+        return expressions;
     }
 
     /**
@@ -352,6 +387,89 @@ public final class StreamabilityAnalyzer {
                 for (int i = 0; i < children.size(); i++) {
                     collectExpressions(children.get(i), expressions,
                                        depth + 1);
+                }
+            }
+        }
+
+        // Recurse into instruction bodies
+        if (node instanceof ForEachNode) {
+            collectExpressions(((ForEachNode) node).getBody(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof IfNode) {
+            collectExpressions(((IfNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                collectExpressions(when, expressions, depth + 1);
+            }
+            collectExpressions(choose.getOtherwise(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof WhenNode) {
+            collectExpressions(((WhenNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            collectExpressions(((VariableNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof CopyNode) {
+            collectExpressions(((CopyNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof ForEachGroupNode) {
+            collectExpressions(((ForEachGroupNode) node).getBody(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof IterateNode) {
+            IterateNode iterate = (IterateNode) node;
+            collectExpressions(iterate.getBody(), expressions, depth + 1);
+            collectExpressions(iterate.getOnCompletion(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof TryNode) {
+            TryNode tryNode = (TryNode) node;
+            collectExpressions(tryNode.getTryContent(),
+                               expressions, depth + 1);
+            for (CatchNode catchNode : tryNode.getCatchBlocks()) {
+                collectExpressions(catchNode, expressions, depth + 1);
+            }
+        }
+        if (node instanceof CatchNode) {
+            collectExpressions(((CatchNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof MessageNode) {
+            collectExpressions(((MessageNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            collectExpressions(((ElementNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof AttributeNode) {
+            collectExpressions(((AttributeNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof ResultDocumentNode) {
+            collectExpressions(((ResultDocumentNode) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            collectExpressions(((LiteralResultElement) node).getContent(),
+                               expressions, depth + 1);
+        }
+        if (node instanceof ForkNode) {
+            ForkNode fork = (ForkNode) node;
+            List<ForkNode.ForkBranch> branches = fork.getBranches();
+            for (int i = 0; i < branches.size(); i++) {
+                ForkNode.ForkBranch branch = branches.get(i);
+                if (branch.getContent() != null) {
+                    collectExpressions(branch.getContent(),
+                                       expressions, depth + 1);
                 }
             }
         }
@@ -427,6 +545,32 @@ public final class StreamabilityAnalyzer {
             default:
                 return BufferingStrategy.NONE;
         }
+    }
+
+    /**
+     * Checks if the node tree contains an xsl:number instruction,
+     * which requires access to preceding siblings and is not streamable.
+     */
+    private boolean containsNumberInstruction(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof NumberNode) {
+            return true;
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.SequenceNode) {
+            org.bluezoo.gonzalez.transform.ast.SequenceNode seq =
+                (org.bluezoo.gonzalez.transform.ast.SequenceNode) node;
+            List<XSLTNode> children = seq.getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (containsNumberInstruction(children.get(i), depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     // ---- String-based fallback heuristics ----

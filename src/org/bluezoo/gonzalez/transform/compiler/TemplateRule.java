@@ -25,6 +25,7 @@ import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
 import org.bluezoo.gonzalez.transform.runtime.BufferingStrategy;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -56,6 +57,7 @@ public final class TemplateRule {
     private final List<TemplateParameter> parameters;
     private final XSLTNode body;
     private final String asType;  // XSLT 2.0+ return type declaration
+    private SequenceType parsedAsType;  // Pre-parsed from asType with namespace resolution
     private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
     private volatile BufferingStrategy bufferingStrategy;  // set by StreamabilityAnalyzer
 
@@ -229,6 +231,25 @@ public final class TemplateRule {
     }
 
     /**
+     * Returns the pre-parsed SequenceType for the return type declaration.
+     * This is resolved at compile time with namespace bindings available.
+     *
+     * @return the parsed SequenceType, or null if not declared or not parseable
+     */
+    public SequenceType getParsedAsType() {
+        return parsedAsType;
+    }
+
+    /**
+     * Sets the pre-parsed SequenceType (called at compile time).
+     *
+     * @param parsedAsType the parsed SequenceType
+     */
+    public void setParsedAsType(SequenceType parsedAsType) {
+        this.parsedAsType = parsedAsType;
+    }
+
+    /**
      * Returns the package visibility (XSLT 3.0).
      *
      * @return the visibility, never null (defaults to PUBLIC)
@@ -244,8 +265,10 @@ public final class TemplateRule {
      * @return a new TemplateRule with the specified visibility
      */
     public TemplateRule withVisibility(ComponentVisibility newVisibility) {
-        return new TemplateRule(matchPattern, name, mode, priority, importPrecedence,
+        TemplateRule copy = new TemplateRule(matchPattern, name, mode, priority, importPrecedence,
                                declarationIndex, parameters, body, asType, newVisibility);
+        copy.parsedAsType = this.parsedAsType;
+        return copy;
     }
 
     /**

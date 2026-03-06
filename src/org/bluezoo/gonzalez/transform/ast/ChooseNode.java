@@ -42,6 +42,8 @@ public class ChooseNode extends XSLTInstruction {
         this.otherwise = otherwise;
     }
     @Override public String getInstructionName() { return "choose"; }
+    public List<WhenNode> getWhens() { return whens; }
+    public SequenceNode getOtherwise() { return otherwise; }
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         try {

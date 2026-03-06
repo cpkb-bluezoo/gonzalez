@@ -134,17 +134,41 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     
     @Override 
     public void startDocument() throws SAXException {
-        // No-op for sequence construction
+        flushPendingText();
+        flushPendingAttribute();
+        if (documentBuffer == null) {
+            documentBuffer = new SAXEventBuffer();
+            documentHandler = new CompilerBufferOutputHandler(documentBuffer);
+        }
+        documentHandler.startDocument();
+        documentDepth++;
     }
     
     @Override 
     public void endDocument() throws SAXException {
-        flushPendingText();
-        flushPendingAttribute();
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.endDocument();
+            documentDepth--;
+            if (documentDepth == 0) {
+                documentHandler.flush();
+                XPathResultTreeFragment rtf = new XPathResultTreeFragment(documentBuffer);
+                items.add(rtf);
+                documentBuffer = null;
+                documentHandler = null;
+            }
+        } else {
+            flushPendingText();
+            flushPendingAttribute();
+        }
     }
     
     @Override 
     public void startElement(String uri, String localName, String qName) throws SAXException {
+        
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.startElement(uri, localName, qName);
+            return;
+        }
         flushPendingText();
         flushPendingAttribute();
         
@@ -159,6 +183,11 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     
     @Override 
     public void endElement(String uri, String localName, String qName) throws SAXException {
+        
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.endElement(uri, localName, qName);
+            return;
+        }
         if (elementHandler != null) {
             elementHandler.endElement(uri, localName, qName);
             elementDepth--;
@@ -166,6 +195,7 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
             if (elementDepth == 0) {
                 // Element complete - create node and add to sequence
                 elementHandler.flush();
+                
                 XPathResultTreeFragment rtf = new XPathResultTreeFragment(elementBuffer, null);
                 // Convert RTF to node-set and extract the actual element node (not the root)
                 XPathNodeSet nodeSet = rtf.asNodeSet();
@@ -196,6 +226,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     
     @Override
     public void attribute(String uri, String localName, String qName, String value) throws SAXException {
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.attribute(uri, localName, qName, value);
+            return;
+        }
         if (elementHandler != null && elementDepth > 0) {
             // Attribute inside an element - pass to element builder
             elementHandler.attribute(uri, localName, qName, value);
@@ -203,6 +237,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
             // Standalone attribute in sequence
             flushPendingText();
             flushPendingAttribute();
+            // Remove any preceding namespace node that was generated as
+            // infrastructure for this attribute's prefix.  The namespace
+            // URI is already encoded in the attribute item itself.
+            removeTrailingNamespaceForAttribute(uri);
             pendingAttrUri = uri;
             pendingAttrLocal = localName;
             pendingAttrQName = qName;
@@ -210,8 +248,27 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
         }
     }
     
+    private void removeTrailingNamespaceForAttribute(String attrUri) {
+        if (attrUri == null || attrUri.isEmpty()) {
+            return;
+        }
+        if (!items.isEmpty()) {
+            XPathValue last = items.get(items.size() - 1);
+            if (last instanceof SequenceNamespaceItem) {
+                SequenceNamespaceItem nsItem = (SequenceNamespaceItem) last;
+                if (attrUri.equals(nsItem.getUri())) {
+                    items.remove(items.size() - 1);
+                }
+            }
+        }
+    }
+    
     @Override
     public void namespace(String prefix, String uri) throws SAXException {
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.namespace(prefix, uri);
+            return;
+        }
         if (elementHandler != null && elementDepth > 0) {
             // Namespace inside an element - pass to element builder
             elementHandler.namespace(prefix, uri);
@@ -225,6 +282,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     
     @Override
     public void characters(String text) throws SAXException {
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.characters(text);
+            return;
+        }
         flushPendingAttribute();
         if (elementHandler != null && elementDepth > 0) {
             elementHandler.characters(text);
@@ -241,6 +302,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     
     @Override
     public void comment(String text) throws SAXException {
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.comment(text);
+            return;
+        }
         flushPendingText();
         flushPendingAttribute();
         if (elementHandler != null && elementDepth > 0) {
@@ -253,6 +318,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     
     @Override
     public void processingInstruction(String target, String data) throws SAXException {
+        if (documentDepth > 0 && documentHandler != null) {
+            documentHandler.processingInstruction(target, data);
+            return;
+        }
         flushPendingText();
         flushPendingAttribute();
         if (elementHandler != null && elementDepth > 0) {

@@ -648,6 +648,54 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
         }
     }
     
+    /**
+     * Casts a duration value to xs:duration, preserving all components.
+     */
+    public static XPathDateTime castToDuration(XPathDateTime src) throws XPathException {
+        Integer y = src.durationYears;
+        Integer mo = src.durationMonths;
+        Integer d = src.durationDays;
+        Integer h = src.durationHours;
+        Integer mi = src.durationMinutes;
+        BigDecimal s = src.durationSeconds;
+        XPathDateTime result = new XPathDateTime(DateTimeType.DURATION, null, null, null,
+            null, null, null, null,
+            src.negative, y, mo, d, h, mi, s, null);
+        return new XPathDateTime(DateTimeType.DURATION, null, null, null,
+            null, null, null, null,
+            src.negative, y, mo, d, h, mi, s, result.asString());
+    }
+
+    /**
+     * Casts a duration value to xs:yearMonthDuration, keeping only the
+     * year and month components.
+     */
+    public static XPathDateTime castToYearMonthDuration(XPathDateTime src) throws XPathException {
+        Integer y = src.durationYears != null ? src.durationYears : 0;
+        Integer mo = src.durationMonths != null ? src.durationMonths : 0;
+        String lex = formatYearMonthDuration(src.negative, y, mo);
+        return new XPathDateTime(DateTimeType.YEAR_MONTH_DURATION, null, null, null,
+            null, null, null, null,
+            src.negative, y, mo, null, null, null, null, lex);
+    }
+
+    /**
+     * Casts a duration value to xs:dayTimeDuration, keeping only the
+     * day, hour, minute, and second components.
+     */
+    public static XPathDateTime castToDayTimeDuration(XPathDateTime src) throws XPathException {
+        int d = src.durationDays != null ? src.durationDays : 0;
+        int h = src.durationHours != null ? src.durationHours : 0;
+        int mi = src.durationMinutes != null ? src.durationMinutes : 0;
+        BigDecimal s = src.durationSeconds != null ? src.durationSeconds : BigDecimal.ZERO;
+        XPathDateTime result = new XPathDateTime(DateTimeType.DAY_TIME_DURATION, null, null, null,
+            null, null, null, null,
+            src.negative, null, null, d, h, mi, s, null);
+        return new XPathDateTime(DateTimeType.DAY_TIME_DURATION, null, null, null,
+            null, null, null, null,
+            src.negative, null, null, d, h, mi, s, result.asString());
+    }
+
     // ========== Accessor methods ==========
     
     /**
@@ -1228,9 +1276,53 @@ public final class XPathDateTime implements XPathValue, Comparable<XPathDateTime
             case YEAR_MONTH_DURATION:
             case DAY_TIME_DURATION:
                 return compareDuration(other);
+            case G_YEAR:
+            case G_YEAR_MONTH:
+            case G_MONTH:
+            case G_MONTH_DAY:
+            case G_DAY:
+                return compareGType(other);
             default:
                 return 0;
         }
+    }
+
+    private int compareGType(XPathDateTime other) {
+        int c = compareNullableInt(this.year, other.year);
+        if (c != 0) {
+            return c;
+        }
+        c = compareNullableInt(this.month, other.month);
+        if (c != 0) {
+            return c;
+        }
+        c = compareNullableInt(this.day, other.day);
+        if (c != 0) {
+            return c;
+        }
+        // Timezone-aware: values with different timezone presence are unequal
+        if (this.timezone != null && other.timezone != null) {
+            int thisSecs = this.timezone.getTotalSeconds();
+            int otherSecs = other.timezone.getTotalSeconds();
+            return Integer.compare(thisSecs, otherSecs);
+        }
+        if ((this.timezone != null) != (other.timezone != null)) {
+            return this.timezone != null ? 1 : -1;
+        }
+        return 0;
+    }
+
+    private static int compareNullableInt(Integer a, Integer b) {
+        if (a == null && b == null) {
+            return 0;
+        }
+        if (a == null) {
+            return -1;
+        }
+        if (b == null) {
+            return 1;
+        }
+        return Integer.compare(a, b);
     }
     
     private int compareDateTime(XPathDateTime other) {

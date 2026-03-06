@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import java.util.Iterator;
+
 import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
@@ -98,7 +100,9 @@ public class SequenceType {
         /** XPath 3.1 map type: map(*) or map(K, V) */
         MAP,
         /** XPath 3.1 array type: array(*) or array(T) */
-        ARRAY
+        ARRAY,
+        /** XPath 3.1 function type: function(*) or function(T1, T2) as R */
+        FUNCTION
     }
     
     private final ItemKind itemKind;
@@ -106,6 +110,8 @@ public class SequenceType {
     private final String localName;      // For atomic types or named element/attribute
     private final QName typeName;        // Resolved type for element(*, type) or attribute(*, type)
     private final Occurrence occurrence;
+    private final SequenceType[] parameterTypes;  // For FUNCTION: parameter types (null for function(*))
+    private final SequenceType returnType;        // For FUNCTION: return type (null for function(*))
     
     // Common predefined types
     public static final SequenceType ITEM = new SequenceType(ItemKind.ITEM, null, null, null, Occurrence.ONE);
@@ -139,6 +145,32 @@ public class SequenceType {
         this.localName = localName;
         this.typeName = typeName;
         this.occurrence = occurrence;
+        this.parameterTypes = null;
+        this.returnType = null;
+    }
+
+    private SequenceType(ItemKind itemKind, SequenceType[] parameterTypes,
+                         SequenceType returnType, Occurrence occurrence) {
+        this.itemKind = itemKind;
+        this.namespaceURI = null;
+        this.localName = null;
+        this.typeName = null;
+        this.occurrence = occurrence;
+        this.parameterTypes = parameterTypes;
+        this.returnType = returnType;
+    }
+
+    /**
+     * Creates a function type: function(T1, T2, ...) as R.
+     * Use null parameterTypes and returnType for function(*).
+     *
+     * @param parameterTypes parameter types (null for function(*))
+     * @param returnType return type (null for function(*))
+     * @param occurrence the occurrence indicator
+     */
+    public static SequenceType functionType(SequenceType[] parameterTypes,
+                                            SequenceType returnType, Occurrence occurrence) {
+        return new SequenceType(ItemKind.FUNCTION, parameterTypes, returnType, occurrence);
     }
     
     /**
@@ -337,6 +369,24 @@ public class SequenceType {
     public Occurrence getOccurrence() {
         return occurrence;
     }
+
+    /**
+     * Returns the parameter types for function types.
+     *
+     * @return array of parameter types, or null for function(*)
+     */
+    public SequenceType[] getParameterTypes() {
+        return parameterTypes;
+    }
+
+    /**
+     * Returns the return type for function types.
+     *
+     * @return the return type, or null for function(*)
+     */
+    public SequenceType getReturnType() {
+        return returnType;
+    }
     
     /**
      * Returns true if this type allows empty sequences.
@@ -447,10 +497,13 @@ public class SequenceType {
                 return matchesNodeKind(value);
 
             case MAP:
-                return value instanceof XPathMap;
+                return matchesMapType(value);
 
             case ARRAY:
                 return value instanceof XPathSequence;
+
+            case FUNCTION:
+                return matchesFunctionType(value);
 
             default:
                 return true;
@@ -542,16 +595,19 @@ public class SequenceType {
                 return matchesNodeKind(value);
 
             case MAP:
-                return value instanceof XPathMap;
+                return matchesMapType(value);
 
             case ARRAY:
                 return value instanceof XPathSequence;
+
+            case FUNCTION:
+                return matchesFunctionType(value);
 
             default:
                 return true;
         }
     }
-    
+
     /**
      * Checks if a value matches element(name?, type?).
      */
@@ -925,13 +981,27 @@ public class SequenceType {
         String expectedNs = expectedType.getURI();
         String expectedLocal = expectedType.getLocalName();
 
-        // xs:untyped / xs:untypedAtomic match nodes WITHOUT type annotations
-        boolean expectsUntyped = XS_NAMESPACE.equals(expectedNs) &&
-            ("untyped".equals(expectedLocal) || "untypedAtomic".equals(expectedLocal));
+        // xs:anyType matches everything
+        if (XS_NAMESPACE.equals(expectedNs) && "anyType".equals(expectedLocal)) {
+            return true;
+        }
 
         String nodeTypeLocal = node.getTypeLocalName();
         if (nodeTypeLocal == null) {
-            return expectsUntyped;
+            // Node has no explicit type annotation.
+            // Per XPath: unvalidated elements have type xs:untyped,
+            // unvalidated attributes have type xs:untypedAtomic.
+            boolean isAttribute = (node.getNodeType() == NodeType.ATTRIBUTE);
+            String implicitType = isAttribute ? "untypedAtomic" : "untyped";
+
+            if (!XS_NAMESPACE.equals(expectedNs)) {
+                return false;
+            }
+            if (expectedLocal.equals(implicitType)) {
+                return true;
+            }
+            // Check if the implicit type is a subtype of the expected type
+            return isTypeSubtypeOf(implicitType, expectedLocal);
         }
 
         String nodeTypeNs = node.getTypeNamespaceURI();
@@ -973,9 +1043,14 @@ public class SequenceType {
         }
         
         // Fallback: hardcoded type hierarchy checks
-        // anyAtomicType is the root of all atomic types
-        if ("anyAtomicType".equals(expectedType) || "anySimpleType".equals(expectedType)) {
+        // anyType is the root of ALL types (including xs:untyped)
+        if ("anyType".equals(expectedType)) {
             return true;
+        }
+        // anyAtomicType and anySimpleType are the roots of all atomic/simple types,
+        // but NOT xs:untyped which is a complex type deriving from xs:anyType
+        if ("anyAtomicType".equals(expectedType) || "anySimpleType".equals(expectedType)) {
+            return !"untyped".equals(actualType);
         }
         
         // String type hierarchy: string > normalizedString > token > language/NMTOKEN/Name > NCName > ID/IDREF/ENTITY
@@ -1085,9 +1160,264 @@ public class SequenceType {
         return 1;
     }
     
+    /**
+     * Checks if a value matches this function type.
+     * For function(*): any function item matches.
+     * For function(T1, T2, ...) as R: arity must match, each test parameter type
+     * must be subtype of the actual parameter type (contravariant), and the actual
+     * return type must be subtype of the test return type (covariant).
+     */
+    private boolean matchesFunctionType(XPathValue value) {
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            if (seq.size() != 1) {
+                return false;
+            }
+            return matchesFunctionType(seq.iterator().next());
+        }
+        int arity;
+        SequenceType[] actualParamTypes = null;
+        SequenceType actualReturnType = null;
+        if (value instanceof XPathFunctionItem) {
+            XPathFunctionItem funcItem = (XPathFunctionItem) value;
+            arity = funcItem.getArity();
+            actualParamTypes = funcItem.getParameterTypes();
+            actualReturnType = funcItem.getReturnType();
+        } else if (value instanceof org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem) {
+            arity = ((org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem) value).getArity();
+        } else {
+            return false;
+        }
+        if (parameterTypes == null) {
+            return true;
+        }
+        if (arity != parameterTypes.length) {
+            return false;
+        }
+        if (actualParamTypes == null || actualReturnType == null) {
+            return true;
+        }
+        for (int i = 0; i < parameterTypes.length; i++) {
+            if (!isSubtypeOf(parameterTypes[i], actualParamTypes[i])) {
+                return false;
+            }
+        }
+        if (returnType != null) {
+            if (!isSubtypeOf(actualReturnType, returnType)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Checks if type A is a subtype of type B according to XPath 3.1 rules.
+     * This covers occurrence compatibility, atomic type hierarchy, and node type hierarchy.
+     */
+    static boolean isSubtypeOf(SequenceType a, SequenceType b) {
+        if (a == null || b == null) {
+            return true;
+        }
+        if (b.itemKind == ItemKind.ITEM) {
+            return occurrenceSubtype(a.occurrence, b.occurrence);
+        }
+        if (!occurrenceSubtype(a.occurrence, b.occurrence)) {
+            return false;
+        }
+        if (a.itemKind == b.itemKind) {
+            if (a.itemKind == ItemKind.ATOMIC) {
+                return isAtomicSubtype(a.localName, b.localName);
+            }
+            if (a.itemKind == ItemKind.ELEMENT) {
+                return isElementSubtype(a, b);
+            }
+            if (a.itemKind == ItemKind.FUNCTION) {
+                return isFunctionSubtype(a, b);
+            }
+            return true;
+        }
+        if (b.itemKind == ItemKind.NODE) {
+            return a.itemKind == ItemKind.ELEMENT || a.itemKind == ItemKind.ATTRIBUTE
+                || a.itemKind == ItemKind.TEXT || a.itemKind == ItemKind.COMMENT
+                || a.itemKind == ItemKind.PROCESSING_INSTRUCTION
+                || a.itemKind == ItemKind.DOCUMENT_NODE || a.itemKind == ItemKind.NAMESPACE_NODE;
+        }
+        return false;
+    }
+
+    /**
+     * Checks if occurrence A is compatible as a subtype of occurrence B.
+     * ONE is the most restrictive; ZERO_OR_MORE is the least.
+     */
+    private static boolean occurrenceSubtype(Occurrence a, Occurrence b) {
+        if (a == b) {
+            return true;
+        }
+        if (b == Occurrence.ZERO_OR_MORE) {
+            return true;
+        }
+        if (b == Occurrence.ZERO_OR_ONE) {
+            return a == Occurrence.ONE;
+        }
+        if (b == Occurrence.ONE_OR_MORE) {
+            return a == Occurrence.ONE;
+        }
+        return false;
+    }
+
+    /**
+     * Checks if atomic type A is a subtype of atomic type B using XSD hierarchy.
+     */
+    private static boolean isAtomicSubtype(String aLocal, String bLocal) {
+        if (aLocal == null || bLocal == null) {
+            return true;
+        }
+        if (aLocal.equals(bLocal)) {
+            return true;
+        }
+        if ("anyAtomicType".equals(bLocal)) {
+            return true;
+        }
+        if (isIntegerDerived(aLocal) && isIntegerOrAncestor(bLocal)) {
+            return getIntegerRank(aLocal) <= getIntegerRank(bLocal);
+        }
+        if ("float".equals(aLocal) && "double".equals(bLocal)) {
+            return true;
+        }
+        if ("NCName".equals(aLocal) && ("Name".equals(bLocal) || "token".equals(bLocal)
+                || "normalizedString".equals(bLocal) || "string".equals(bLocal))) {
+            return true;
+        }
+        if ("Name".equals(aLocal) && ("token".equals(bLocal)
+                || "normalizedString".equals(bLocal) || "string".equals(bLocal))) {
+            return true;
+        }
+        if ("token".equals(aLocal) && ("normalizedString".equals(bLocal)
+                || "string".equals(bLocal))) {
+            return true;
+        }
+        if ("normalizedString".equals(aLocal) && "string".equals(bLocal)) {
+            return true;
+        }
+        return false;
+    }
+
+    private static boolean isIntegerDerived(String name) {
+        return "byte".equals(name) || "short".equals(name) || "int".equals(name)
+                || "long".equals(name) || "integer".equals(name) || "decimal".equals(name)
+                || "nonNegativeInteger".equals(name) || "positiveInteger".equals(name)
+                || "nonPositiveInteger".equals(name) || "negativeInteger".equals(name)
+                || "unsignedByte".equals(name) || "unsignedShort".equals(name)
+                || "unsignedInt".equals(name) || "unsignedLong".equals(name);
+    }
+
+    private static boolean isIntegerOrAncestor(String name) {
+        return isIntegerDerived(name) || "double".equals(name) || "float".equals(name)
+                || "anyAtomicType".equals(name);
+    }
+
+    private static int getIntegerRank(String name) {
+        if ("byte".equals(name)) { return 1; }
+        if ("short".equals(name)) { return 2; }
+        if ("int".equals(name)) { return 3; }
+        if ("long".equals(name)) { return 4; }
+        if ("integer".equals(name)) { return 5; }
+        if ("decimal".equals(name)) { return 6; }
+        if ("nonNegativeInteger".equals(name) || "positiveInteger".equals(name)
+                || "nonPositiveInteger".equals(name) || "negativeInteger".equals(name)) { return 5; }
+        if ("unsignedByte".equals(name)) { return 1; }
+        if ("unsignedShort".equals(name)) { return 2; }
+        if ("unsignedInt".equals(name)) { return 3; }
+        if ("unsignedLong".equals(name)) { return 4; }
+        if ("double".equals(name)) { return 7; }
+        if ("float".equals(name)) { return 7; }
+        if ("anyAtomicType".equals(name)) { return 10; }
+        return 10;
+    }
+
+    /**
+     * Checks if element type A is a subtype of element type B.
+     */
+    private static boolean isElementSubtype(SequenceType a, SequenceType b) {
+        if (b.localName != null && a.localName != null && !a.localName.equals(b.localName)) {
+            return false;
+        }
+        if (b.typeName != null) {
+            if (a.typeName == null) {
+                return false;
+            }
+            String aTypeLocal = a.typeName.getLocalName();
+            String bTypeLocal = b.typeName.getLocalName();
+            if (!aTypeLocal.equals(bTypeLocal)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Checks if function type A is a subtype of function type B.
+     */
+    private static boolean isFunctionSubtype(SequenceType a, SequenceType b) {
+        if (b.parameterTypes == null) {
+            return true;
+        }
+        if (a.parameterTypes == null) {
+            return true;
+        }
+        if (a.parameterTypes.length != b.parameterTypes.length) {
+            return false;
+        }
+        for (int i = 0; i < a.parameterTypes.length; i++) {
+            if (!isSubtypeOf(b.parameterTypes[i], a.parameterTypes[i])) {
+                return false;
+            }
+        }
+        if (b.returnType != null && a.returnType != null) {
+            if (!isSubtypeOf(a.returnType, b.returnType)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean matchesMapType(XPathValue value) {
+        if (value instanceof XPathMap) {
+            return true;
+        }
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (!(item instanceof XPathMap)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
     private boolean matchesNodeKind(XPathValue value) {
         if (value instanceof XPathResultTreeFragment) {
-            return itemKind == ItemKind.DOCUMENT_NODE || itemKind == ItemKind.NODE;
+            if (itemKind == ItemKind.NODE) {
+                return true;
+            }
+            if (itemKind == ItemKind.DOCUMENT_NODE) {
+                if (localName != null) {
+                    // document-node(element(...)) — check the document element
+                    XPathResultTreeFragment rtf = (XPathResultTreeFragment) value;
+                    XPathNodeSet ns = rtf.asNodeSet();
+                    if (ns != null && !ns.isEmpty()) {
+                        XPathNode root = ns.iterator().next();
+                        if (root.getNodeType() == NodeType.ROOT) {
+                            return matchesDocumentElement(root);
+                        }
+                    }
+                    return false;
+                }
+                return true;
+            }
+            return false;
         }
         if (value instanceof XPathNode) {
             return matchesSingleNodeKind((XPathNode) value);
@@ -1104,7 +1434,25 @@ public class SequenceType {
         if (value instanceof XPathSequence) {
             for (XPathValue item : (XPathSequence) value) {
                 if (item instanceof XPathResultTreeFragment) {
-                    if (itemKind != ItemKind.DOCUMENT_NODE && itemKind != ItemKind.NODE) {
+                    if (itemKind == ItemKind.NODE) {
+                        // any node kind matches
+                    } else if (itemKind == ItemKind.DOCUMENT_NODE) {
+                        if (localName != null) {
+                            XPathResultTreeFragment seqRtf =
+                                (XPathResultTreeFragment) item;
+                            XPathNodeSet seqNs = seqRtf.asNodeSet();
+                            boolean docMatch = false;
+                            if (seqNs != null && !seqNs.isEmpty()) {
+                                XPathNode seqRoot = seqNs.iterator().next();
+                                if (seqRoot.getNodeType() == NodeType.ROOT) {
+                                    docMatch = matchesDocumentElement(seqRoot);
+                                }
+                            }
+                            if (!docMatch) {
+                                return false;
+                            }
+                        }
+                    } else {
                         return false;
                     }
                 } else if (item instanceof XPathNode) {
@@ -1154,12 +1502,52 @@ public class SequenceType {
             case PROCESSING_INSTRUCTION:
                 return node.getNodeType() == NodeType.PROCESSING_INSTRUCTION;
             case DOCUMENT_NODE:
-                return node.getNodeType() == NodeType.ROOT;
+                if (node.getNodeType() != NodeType.ROOT) {
+                    return false;
+                }
+                // If an inner element test is specified, check document element
+                if (localName != null) {
+                    return matchesDocumentElement(node);
+                }
+                return true;
             case NAMESPACE_NODE:
                 return node.getNodeType() == NodeType.NAMESPACE;
             default:
                 return true;
         }
+    }
+    
+    /**
+     * Checks if the document element of a ROOT node matches the inner
+     * element test from document-node(element(name, type)).
+     * The localName field holds the element name (or "*" for wildcard).
+     */
+    private boolean matchesDocumentElement(XPathNode docNode) {
+        Iterator<XPathNode> children = docNode.getChildren();
+        XPathNode docElem = null;
+        while (children.hasNext()) {
+            XPathNode child = children.next();
+            if (child.getNodeType() == NodeType.ELEMENT) {
+                docElem = child;
+                break;
+            }
+        }
+        if (docElem == null) {
+            return false;
+        }
+        if (!"*".equals(localName) && !localName.equals(docElem.getLocalName())) {
+            return false;
+        }
+        if (namespaceURI != null && !namespaceURI.isEmpty()) {
+            String elemNs = docElem.getNamespaceURI();
+            if (elemNs == null) {
+                elemNs = "";
+            }
+            if (!namespaceURI.equals(elemNs)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean matchesAtomicType(XPathValue value) {
@@ -1342,13 +1730,13 @@ public class SequenceType {
         
         // Parse occurrence indicator (at end, with optional space)
         Occurrence occ = Occurrence.ONE;
-        if (type.endsWith("?")) {
+        if (type.endsWith("?") && !endsInsideParens(type)) {
             occ = Occurrence.ZERO_OR_ONE;
             type = type.substring(0, type.length() - 1).trim();
-        } else if (type.endsWith("*")) {
+        } else if (type.endsWith("*") && !endsInsideParens(type)) {
             occ = Occurrence.ZERO_OR_MORE;
             type = type.substring(0, type.length() - 1).trim();
-        } else if (type.endsWith("+")) {
+        } else if (type.endsWith("+") && !endsInsideParens(type)) {
             occ = Occurrence.ONE_OR_MORE;
             type = type.substring(0, type.length() - 1).trim();
         }
@@ -1475,6 +1863,14 @@ public class SequenceType {
         if (type.equals("array(*)") || type.startsWith("array(")) {
             return new SequenceType(ItemKind.ARRAY, null, null, null, occ);
         }
+
+        // Parse function(*) or function(T1, T2, ...) as R
+        if (type.equals("function(*)")) {
+            return functionType(null, null, occ);
+        }
+        if (type.startsWith("function(")) {
+            return parseFunctionType(type, occ, namespaceResolver);
+        }
         
         // Parse atomic type (e.g., xs:integer, xs:string)
         String[] resolved = resolvePrefixedName(type, namespaceResolver);
@@ -1495,6 +1891,96 @@ public class SequenceType {
      * Resolves a prefixed name (prefix:local) to [namespaceURI, localName]
      * using the provided namespace resolver.
      */
+    /**
+     * Parses a function type string like "function(xs:integer, xs:string) as xs:boolean".
+     * Handles nested parentheses for complex types.
+     */
+    private static SequenceType parseFunctionType(String type, Occurrence occ,
+            java.util.function.Function<String, String> namespaceResolver) {
+        int openParen = type.indexOf('(');
+        int closeParen = findMatchingParen(type, openParen);
+        if (closeParen < 0) {
+            return functionType(null, null, occ);
+        }
+        String inner = type.substring(openParen + 1, closeParen).trim();
+        String afterParen = type.substring(closeParen + 1).trim();
+
+        SequenceType returnType = null;
+        if (afterParen.startsWith("as ") || afterParen.startsWith("as\t")) {
+            String retStr = afterParen.substring(3).trim();
+            returnType = parse(retStr, namespaceResolver);
+        }
+
+        if (inner.equals("*")) {
+            return functionType(null, null, occ);
+        }
+        if (inner.isEmpty()) {
+            SequenceType[] paramTypes = new SequenceType[0];
+            return functionType(paramTypes, returnType, occ);
+        }
+
+        java.util.List paramList = new java.util.ArrayList();
+        int start = 0;
+        int depth = 0;
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                String paramStr = inner.substring(start, i).trim();
+                SequenceType pt = parse(paramStr, namespaceResolver);
+                if (pt != null) {
+                    paramList.add(pt);
+                }
+                start = i + 1;
+            }
+        }
+        String lastParam = inner.substring(start).trim();
+        if (!lastParam.isEmpty()) {
+            SequenceType pt = parse(lastParam, namespaceResolver);
+            if (pt != null) {
+                paramList.add(pt);
+            }
+        }
+        SequenceType[] paramTypes = new SequenceType[paramList.size()];
+        paramList.toArray(paramTypes);
+        return functionType(paramTypes, returnType, occ);
+    }
+
+    /**
+     * Checks if the last character of a type string is inside parentheses.
+     * Used to distinguish occurrence indicators from type content like map(*).
+     */
+    private static boolean endsInsideParens(String str) {
+        int depth = 0;
+        int lastIdx = str.length() - 1;
+        for (int i = 0; i < lastIdx; i++) {
+            if (str.charAt(i) == '(') {
+                depth++;
+            } else if (str.charAt(i) == ')') {
+                depth--;
+            }
+        }
+        return depth > 0;
+    }
+
+    private static int findMatchingParen(String str, int openPos) {
+        int depth = 0;
+        for (int i = openPos; i < str.length(); i++) {
+            if (str.charAt(i) == '(') {
+                depth++;
+            } else if (str.charAt(i) == ')') {
+                depth--;
+                if (depth == 0) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
     private static String[] resolvePrefixedName(String name,
             java.util.function.Function<String, String> namespaceResolver) {
         int colonIdx = name.indexOf(':');

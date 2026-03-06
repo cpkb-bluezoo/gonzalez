@@ -131,6 +131,18 @@ public final class LocationPath implements Expr {
             }
         }
         
+        // XPTY0020: absolute path on non-node context item (XPath 2.0+)
+        // An absolute path (e.g., //a or /) starts from the document root, which
+        // requires the context item to be a node. Check only for absolute paths
+        // to avoid false positives in instructions that handle atomic items.
+        if (absolute && context.getXsltVersion() >= 2.0) {
+            XPathValue ctxItem = context.getContextItem();
+            if (ctxItem != null && !(ctxItem instanceof XPathNode) && !ctxItem.isNodeSet()) {
+                throw new XPathException("XPTY0020: An axis step was used when the " +
+                    "context item is not a node");
+            }
+        }
+
         // Start with the initial node set
         List<XPathNode> currentNodes = new ArrayList<>();
         
@@ -167,12 +179,23 @@ public final class LocationPath implements Expr {
         List<XPathValue> atomicResults = new ArrayList<>();
         
         // Apply each step
-        for (Step step : steps) {
+        int stepCount = steps.size();
+        for (int s = 0; s < stepCount; s++) {
+            Step step = steps.get(s);
             atomicResults.clear();
             currentNodes = evaluateStep(step, currentNodes, context, atomicResults);
             
             // Check if the step produced atomic (non-node) results
             if (!atomicResults.isEmpty()) {
+                // XPTY0019: if subsequent steps are axis steps, the context item
+                // for those steps would be atomic, which is a type error
+                if (context.getXsltVersion() >= 2.0 && s + 1 < stepCount) {
+                    Step nextStep = steps.get(s + 1);
+                    if (nextStep.getNodeTestType() != Step.NodeTestType.EXPR) {
+                        throw new XPathException("XPTY0019: The required item type " +
+                            "of the context item for an axis step is node()");
+                    }
+                }
                 // Return the atomic results as a sequence
                 if (atomicResults.size() == 1) {
                     return atomicResults.get(0);
@@ -214,9 +237,12 @@ public final class LocationPath implements Expr {
             Expr stepExpr = step.getStepExpr();
             List<XPathValue> atomicResults = new ArrayList<>();
             boolean hasAtomicResults = false;
+            int inputSize = inputNodes.size();
             
-            for (XPathNode node : inputNodes) {
-                XPathContext nodeContext = context.withContextNode(node);
+            for (int pos = 0; pos < inputSize; pos++) {
+                XPathNode node = inputNodes.get(pos);
+                XPathContext nodeContext = context.withContextNode(node)
+                        .withPositionAndSize(pos + 1, inputSize);
                 XPathValue value = stepExpr.evaluate(nodeContext);
                 
                 // Collect results - can be nodes or atomic values
@@ -225,10 +251,13 @@ public final class LocationPath implements Expr {
                         result.add(resultNode);
                     }
                 } else if (value.isSequence()) {
-                    // Sequence - iterate and collect
                     for (XPathValue item : (XPathSequence) value) {
                         if (item instanceof XPathNode) {
                             result.add((XPathNode) item);
+                        } else if (item.isNodeSet()) {
+                            for (XPathNode n : item.asNodeSet()) {
+                                result.add(n);
+                            }
                         } else {
                             atomicResults.add(item);
                             hasAtomicResults = true;
@@ -237,7 +266,6 @@ public final class LocationPath implements Expr {
                 } else if (value instanceof XPathNode) {
                     result.add((XPathNode) value);
                 } else {
-                    // Atomic value (string, number, etc.)
                     atomicResults.add(value);
                     hasAtomicResults = true;
                 }
@@ -245,14 +273,8 @@ public final class LocationPath implements Expr {
             
             // If we have atomic results, populate output parameter
             if (hasAtomicResults) {
-                // Populate the output parameter with all results
-                // Convert nodes to node-sets and add atomic values
                 atomicResultsOut.clear();
-                for (XPathNode node : result) {
-                    atomicResultsOut.add(new XPathNodeSet(Collections.singletonList(node)));
-                }
                 atomicResultsOut.addAll(atomicResults);
-                // Return empty nodes to signal that atomic results are available
                 return Collections.emptyList();
             }
             
@@ -262,6 +284,7 @@ public final class LocationPath implements Expr {
             }
             
             result = removeDuplicates(result);
+            XPathNodeSet.sortByDocumentOrder(result);
             return result;
         }
 
@@ -273,6 +296,7 @@ public final class LocationPath implements Expr {
             List<XPathNode> stepResult = new ArrayList<>();
             while (axisNodes.hasNext()) {
                 XPathNode candidate = axisNodes.next();
+                
                 if (matchesNodeTest(step, candidate, context)) {
                     stepResult.add(candidate);
                 }
@@ -288,9 +312,10 @@ public final class LocationPath implements Expr {
             result.addAll(stepResult);
         }
 
-        // Remove duplicates from the combined result (nodes can appear multiple times
-        // if the input nodes had overlapping axes)
+        // Remove duplicates and sort by document order (XPath 2.0 requires
+        // path expression results to be in document order without duplicates)
         result = removeDuplicates(result);
+        XPathNodeSet.sortByDocumentOrder(result);
 
         return result;
     }

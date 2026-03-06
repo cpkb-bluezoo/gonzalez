@@ -21,9 +21,14 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import java.util.Iterator;
+
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
  * Pattern representing a multi-step path (e.g. a/b, //a/b, /a/b/c).
@@ -66,7 +71,13 @@ final class PathPattern extends AbstractPattern {
         if (!last.nodeTest.matches(node)) {
             return false;
         }
-        if (last.predicateStr != null) {
+
+        boolean deferLastPredicate = last.predicateStr != null &&
+            steps.length >= 2 &&
+            last.axis == Step.Axis.DESCENDANT &&
+            last.explicitDescendantAxis;
+
+        if (last.predicateStr != null && !deferLastPredicate) {
             if (!evaluateStepPredicate(node, context, targetNode,
                                        last.predicateStr, last.nodeTest)) {
                 return false;
@@ -115,6 +126,14 @@ final class PathPattern extends AbstractPattern {
                 }
                 if (!found) {
                     return false;
+                }
+
+                if (deferLastPredicate && i == steps.length - 2) {
+                    if (!evaluateDescendantPredicate(node, current,
+                            context, targetNode, last.predicateStr,
+                            last.nodeTest)) {
+                        return false;
+                    }
                 }
             } else if (nextAxis == Step.Axis.SELF) {
                 if (!step.nodeTest.matches(current)) {
@@ -170,6 +189,76 @@ final class PathPattern extends AbstractPattern {
         NameTestPattern stepPattern =
             new NameTestPattern(predStr, predStr, stepNodeTest, 0.0);
         return stepPattern.evaluatePredicate(node, context, targetNode);
+    }
+
+    /**
+     * Evaluates a predicate for a descendant-axis step, computing
+     * position/size relative to ALL descendants of the ancestor node
+     * that match the node test (not just siblings).
+     */
+    private boolean evaluateDescendantPredicate(XPathNode node,
+                                                XPathNode ancestor,
+                                                TransformContext context,
+                                                XPathNode targetNode,
+                                                String predStr,
+                                                NodeTest nodeTest) {
+        try {
+            int[] posSize = new int[]{0, 0};
+            countMatchingDescendants(ancestor, node, nodeTest, posSize);
+            int position = posSize[0];
+            int size = posSize[1];
+
+            if (position == 0) {
+                return false;
+            }
+
+            TransformContext predContext;
+            if (context instanceof BasicTransformContext) {
+                BasicTransformContext btc = (BasicTransformContext) context;
+                predContext = btc.withContextAndCurrentNodes(node, targetNode)
+                    .withPositionAndSize(position, size);
+            } else {
+                predContext = context.withContextNode(node)
+                    .withPositionAndSize(position, size);
+            }
+
+            XPathExpression predExpr = xpathCache.get(predStr);
+            if (predExpr == null) {
+                predExpr = XPathExpression.compile(predStr, null);
+                xpathCache.put(predStr, predExpr);
+            }
+            XPathValue result = predExpr.evaluate(predContext);
+
+            if (result.getType() == XPathValue.Type.NUMBER) {
+                double d = result.asNumber();
+                return !Double.isNaN(d) &&
+                       Math.abs(d - position) < 0.0001;
+            } else {
+                return result.asBoolean();
+            }
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Walks all descendants of root in document order, counting those
+     * matching nodeTest. Sets posSize[0] to the position of target
+     * and posSize[1] to the total count.
+     */
+    private void countMatchingDescendants(XPathNode root, XPathNode target,
+                                          NodeTest nodeTest, int[] posSize) {
+        Iterator<XPathNode> children = root.getChildren();
+        while (children.hasNext()) {
+            XPathNode child = children.next();
+            if (nodeTest.matches(child)) {
+                posSize[1]++;
+                if (child == target || child.isSameNode(target)) {
+                    posSize[0] = posSize[1];
+                }
+            }
+            countMatchingDescendants(child, target, nodeTest, posSize);
+        }
     }
 
     @Override

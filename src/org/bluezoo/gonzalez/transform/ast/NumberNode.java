@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -31,6 +32,7 @@ import org.xml.sax.SAXException;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
@@ -39,7 +41,9 @@ import org.bluezoo.gonzalez.transform.xpath.function.locale.DateTimeLocale;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -54,29 +58,42 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
     private final Pattern countPattern;
     private final Pattern fromPattern;
     private final AttributeValueTemplate formatAVT;
-    private final String groupingSeparator;
-    private final int groupingSize;
-    private final String lang;
+    private final AttributeValueTemplate groupingSepAVT;
+    private final AttributeValueTemplate groupingSizeAVT;
+    private final AttributeValueTemplate langAVT;
     private final String letterValue;
     private final String ordinal;
     private final AttributeValueTemplate startAtAVT; // XSLT 3.0
+    private final boolean backwardsCompatible; // XSLT 1.0 BC mode
     
     public NumberNode(XPathExpression valueExpr, XPathExpression selectExpr, String level, 
-              Pattern countPattern, Pattern fromPattern, AttributeValueTemplate formatAVT, String groupingSeparator,
-              int groupingSize, String lang, String letterValue, String ordinal,
+              Pattern countPattern, Pattern fromPattern, AttributeValueTemplate formatAVT,
+              AttributeValueTemplate groupingSepAVT, AttributeValueTemplate groupingSizeAVT,
+              AttributeValueTemplate langAVT, String letterValue, String ordinal,
               AttributeValueTemplate startAtAVT) {
+        this(valueExpr, selectExpr, level, countPattern, fromPattern, formatAVT,
+             groupingSepAVT, groupingSizeAVT, langAVT, letterValue, ordinal,
+             startAtAVT, false);
+    }
+    
+    public NumberNode(XPathExpression valueExpr, XPathExpression selectExpr, String level, 
+              Pattern countPattern, Pattern fromPattern, AttributeValueTemplate formatAVT,
+              AttributeValueTemplate groupingSepAVT, AttributeValueTemplate groupingSizeAVT,
+              AttributeValueTemplate langAVT, String letterValue, String ordinal,
+              AttributeValueTemplate startAtAVT, boolean backwardsCompatible) {
         this.valueExpr = valueExpr;
         this.selectExpr = selectExpr;
         this.level = level;
         this.countPattern = countPattern;
         this.fromPattern = fromPattern;
         this.formatAVT = formatAVT;
-        this.groupingSeparator = groupingSeparator;
-        this.groupingSize = groupingSize;
-        this.lang = lang;
+        this.groupingSepAVT = groupingSepAVT;
+        this.groupingSizeAVT = groupingSizeAVT;
+        this.langAVT = langAVT;
         this.letterValue = letterValue;
         this.ordinal = ordinal;
         this.startAtAVT = startAtAVT;
+        this.backwardsCompatible = backwardsCompatible;
     }
     
     @Override 
@@ -98,14 +115,41 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
     
     @Override 
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
-        // Handle NaN/Infinity before sequence processing
         if (valueExpr != null) {
             try {
                 XPathValue val = valueExpr.evaluate(context);
+                
+                // In BC mode, apply the first-item rule to sequences
+                if (backwardsCompatible && val instanceof XPathSequence) {
+                    XPathSequence seq = (XPathSequence) val;
+                    if (seq.isEmpty()) {
+                        output.characters("NaN");
+                        return;
+                    }
+                    val = seq.getItems().get(0);
+                }
+                
                 if (!(val instanceof XPathSequence) || ((XPathSequence) val).size() == 1) {
                     double d = val.asNumber();
                     if (Double.isNaN(d)) {
-                        output.characters("NaN");
+                        if (backwardsCompatible) {
+                            output.characters("NaN");
+                            return;
+                        }
+                        if (val instanceof XPathString) {
+                            String s = val.asString();
+                            if (!s.isEmpty()) {
+                                try {
+                                    Double.parseDouble(s);
+                                } catch (NumberFormatException e) {
+                                    throw new SAXException(
+                                        "XTDE0980: xsl:number value is not a valid number: " + s);
+                                }
+                            }
+                        }
+                        String format = formatAVT.evaluate(context);
+                        ParsedFormat parsed = parseFormatString(format);
+                        output.characters(parsed.prefix + parsed.suffix);
                         return;
                     }
                     if (Double.isInfinite(d)) {
@@ -119,7 +163,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         }
         
         // Get the numbers to format
-        List<Long> numbers = getNumbers(context);
+        List<Number> numbers = getNumbers(context);
         
         // Handle special case: empty result from value expression
         if (valueExpr != null && numbers.isEmpty()) {
@@ -138,7 +182,16 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
                 } else {
                     offset = 1;
                 }
-                numbers.set(i, numbers.get(i) + (offset - 1));
+                int adjustment = offset - 1;
+                if (adjustment != 0) {
+                    Number current = numbers.get(i);
+                    if (current instanceof BigInteger) {
+                        BigInteger bi = (BigInteger) current;
+                        numbers.set(i, bi.add(BigInteger.valueOf(adjustment)));
+                    } else {
+                        numbers.set(i, Long.valueOf(current.longValue() + adjustment));
+                    }
+                }
             }
         }
         
@@ -150,17 +203,49 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
             throw new SAXException("Error evaluating xsl:number format: " + e.getMessage(), e);
         }
         
+        // Evaluate grouping AVTs at runtime
+        String groupingSeparator = null;
+        int groupingSize = 0;
+        try {
+            if (groupingSepAVT != null) {
+                groupingSeparator = groupingSepAVT.evaluate(context);
+            }
+            if (groupingSizeAVT != null) {
+                String sizeStr = groupingSizeAVT.evaluate(context);
+                try {
+                    groupingSize = Integer.parseInt(sizeStr.trim());
+                } catch (NumberFormatException nfe) {
+                    // Invalid grouping-size; no grouping
+                }
+            }
+        } catch (XPathException e) {
+            throw new SAXException("Error evaluating xsl:number grouping: " + e.getMessage(), e);
+        }
+        
+        // Validate lang eagerly (XTDE0030 even if not used by the format token)
+        if (langAVT != null) {
+            resolveLocale(context);
+        }
+        
         // Format and output
-        String result = formatNumbers(numbers, format);
+        String result = formatNumbers(numbers, format, groupingSeparator, groupingSize, context);
         output.characters(result);
     }
     
-    private List<Long> getNumbers(TransformContext context) throws SAXException {
-        List<Long> numbers = new ArrayList<>();
+    private List<Number> getNumbers(TransformContext context) throws SAXException {
+        List<Number> numbers = new ArrayList<>();
         
         if (valueExpr != null) {
             try {
                 XPathValue val = valueExpr.evaluate(context);
+                // In BC mode, apply the first-item rule to sequences
+                if (backwardsCompatible && val instanceof XPathSequence) {
+                    XPathSequence seq = (XPathSequence) val;
+                    if (seq.isEmpty()) {
+                        return numbers;
+                    }
+                    val = seq.getItems().get(0);
+                }
                 addValueNumbers(val, numbers);
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating xsl:number value: " + e.getMessage(), e);
@@ -174,19 +259,55 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
                     if (selectResult instanceof XPathNodeSet) {
                         XPathNodeSet ns = (XPathNodeSet) selectResult;
                         if (ns.isEmpty()) {
-                            return numbers;
+                            throw new SAXException("XTTE1000: " +
+                                "xsl:number select expression returned empty sequence");
+                        }
+                        if (ns.size() > 1) {
+                            throw new SAXException("XTTE1000: " +
+                                "xsl:number select must return at most one node, got " +
+                                ns.size());
                         }
                         node = ns.iterator().next();
                     } else if (selectResult instanceof XPathNode) {
                         node = (XPathNode) selectResult;
+                    } else if (selectResult instanceof XPathSequence) {
+                        XPathSequence seq = (XPathSequence) selectResult;
+                        if (seq.isEmpty()) {
+                            throw new SAXException("XTTE1000: " +
+                                "xsl:number select expression returned empty sequence");
+                        }
+                        if (seq.size() > 1) {
+                            throw new SAXException("XTTE1000: " +
+                                "xsl:number select must return at most one node, got " +
+                                seq.size());
+                        }
+                        XPathValue first = seq.iterator().next();
+                        if (first instanceof XPathNode) {
+                            node = (XPathNode) first;
+                        } else {
+                            throw new SAXException("XTTE1000: " +
+                                "xsl:number select expression must return a single node");
+                        }
                     } else {
-                        return numbers;
+                        throw new SAXException("XTTE1000: " +
+                            "xsl:number select expression must return a single node");
                     }
                 } catch (XPathException e) {
                     throw new SAXException("Error evaluating xsl:number select: " + e.getMessage(), e);
                 }
             } else {
                 node = context.getContextNode();
+                if (node == null) {
+                    throw new SAXException("XTTE0990: " +
+                        "Context item for xsl:number is absent or is not a node");
+                }
+                if (context instanceof BasicTransformContext) {
+                    XPathValue ci = ((BasicTransformContext) context).getContextItem();
+                    if (ci != null && !(ci instanceof XPathNode) && !ci.isNodeSet()) {
+                        throw new SAXException("XTTE0990: " +
+                            "Context item for xsl:number is not a node");
+                    }
+                }
             }
             
             if (node == null) {
@@ -194,19 +315,19 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
             }
             
             if ("single".equals(level)) {
-                int count = countSingle(node, context);
+                int count = countSingle(node, node, context);
                 if (count > 0) {
-                    numbers.add((long) count);
+                    numbers.add(Long.valueOf(count));
                 }
             } else if ("multiple".equals(level)) {
-                List<Integer> counts = countMultiple(node, context);
+                List<Integer> counts = countMultiple(node, node, context);
                 for (int c : counts) {
-                    numbers.add((long) c);
+                    numbers.add(Long.valueOf(c));
                 }
             } else if ("any".equals(level)) {
-                int count = countAny(node, context);
+                int count = countAny(node, node, context);
                 if (count > 0) {
-                    numbers.add((long) count);
+                    numbers.add(Long.valueOf(count));
                 }
             }
         }
@@ -214,7 +335,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return numbers;
     }
     
-    private void addValueNumbers(XPathValue val, List<Long> numbers) throws SAXException {
+    private void addValueNumbers(XPathValue val, List<Number> numbers) throws SAXException {
         if (val instanceof XPathSequence) {
             XPathSequence seq = (XPathSequence) val;
             if (seq.isEmpty()) {
@@ -225,15 +346,49 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
             }
             return;
         }
+        if (val instanceof XPathString) {
+            String s = val.asString();
+            if (s.isEmpty()) {
+                return;
+            }
+            try {
+                Double.parseDouble(s);
+            } catch (NumberFormatException e) {
+                throw new SAXException("XTDE0980: xsl:number value is not a valid number: " + s);
+            }
+        }
+        if (val instanceof XPathNumber) {
+            XPathNumber xn = (XPathNumber) val;
+            if (xn.isExactInteger()) {
+                BigInteger bi = xn.toBigInteger();
+                if (bi.signum() < 0) {
+                    throw new SAXException("XTDE0980: xsl:number value must not be negative: " + bi);
+                }
+                long longBits = bi.longValue();
+                BigInteger roundTrip = BigInteger.valueOf(longBits);
+                if (bi.equals(roundTrip) && longBits >= 0) {
+                    numbers.add(Long.valueOf(longBits));
+                } else {
+                    numbers.add(bi);
+                }
+                return;
+            }
+        }
         double d = val.asNumber();
         if (Double.isNaN(d) || Double.isInfinite(d)) {
             return;
         }
-        long rounded = Math.round(d);
-        if (rounded < 0) {
+        if (d < 0) {
             throw new SAXException("XTDE0980: xsl:number value must not be negative: " + d);
         }
-        numbers.add(rounded);
+        if (d > Long.MAX_VALUE || d < Long.MIN_VALUE) {
+            java.math.BigDecimal bd = java.math.BigDecimal.valueOf(d);
+            BigInteger bi = bd.setScale(0, java.math.RoundingMode.HALF_UP).toBigInteger();
+            numbers.add(bi);
+        } else {
+            long rounded = Math.round(d);
+            numbers.add(Long.valueOf(rounded));
+        }
     }
     
     /**
@@ -310,7 +465,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return c == ' ' || c == '\t' || c == '\n' || c == '\r';
     }
     
-    private int countSingle(XPathNode node, TransformContext context) {
+    private int countSingle(XPathNode node, XPathNode referenceNode, TransformContext context) {
         // Per XSLT spec: "starting from the focus node, go upwards to find 
         // the first node n that matches the count pattern"
         
@@ -334,12 +489,12 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         XPathNode current = node;
         while (current != null) {
             // Check if current matches the count pattern
-            if (matchesCount(current, context)) {
+            if (matchesCount(current, referenceNode, context)) {
                 // Found a matching node - count it and its preceding siblings
                 int count = 1;
                 XPathNode sibling = current.getPrecedingSibling();
                 while (sibling != null) {
-                    if (matchesCount(sibling, context)) {
+                    if (matchesCount(sibling, referenceNode, context)) {
                         count++;
                     }
                     sibling = sibling.getPrecedingSibling();
@@ -358,18 +513,21 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return 0;
     }
     
-    private List<Integer> countMultiple(XPathNode node, TransformContext context) {
+    private List<Integer> countMultiple(XPathNode node, XPathNode referenceNode, TransformContext context) {
         // Build list of counts at each ancestor level
         List<Integer> counts = new ArrayList<>();
         XPathNode current = node;
         
-        while (current != null && current.getNodeType() != NodeType.ROOT) {
+        while (current != null) {
+            if (current.getNodeType() == NodeType.ROOT && countPattern == null) {
+                break;
+            }
             // First check if current matches count pattern and count it
-            if (matchesCount(current, context)) {
+            if (matchesCount(current, referenceNode, context)) {
                 int count = 1;
                 XPathNode sibling = current.getPrecedingSibling();
                 while (sibling != null) {
-                    if (matchesCount(sibling, context)) {
+                    if (matchesCount(sibling, referenceNode, context)) {
                         count++;
                     }
                     sibling = sibling.getPrecedingSibling();
@@ -388,7 +546,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return counts;
     }
     
-    private int countAny(XPathNode node, TransformContext context) {
+    private int countAny(XPathNode node, XPathNode referenceNode, TransformContext context) {
         // Count all matching nodes before this one in document order
         // starting from the most recent node matching 'from' pattern
         
@@ -412,10 +570,10 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         }
         
         // Count all matching nodes from start (or from boundary)
-        int count = countNodesAfterBoundary(root, node, fromBoundary, context);
+        int count = countNodesAfterBoundary(root, node, fromBoundary, referenceNode, context);
         
         // Include current node if it matches
-        if (matchesCount(node, context)) {
+        if (matchesCount(node, referenceNode, context)) {
             count++;
         }
         
@@ -454,7 +612,8 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     private int countNodesAfterBoundary(XPathNode current, XPathNode target,
-                                        XPathNode fromBoundary, TransformContext context) {
+                                        XPathNode fromBoundary, XPathNode referenceNode,
+                                        TransformContext context) {
         // Count nodes matching 'count' pattern that are after fromBoundary and before target
         if (current.isSameNode(target)) {
             return 0;
@@ -472,15 +631,13 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         // The boundary node itself is included if it matches the count pattern
         if (useDocOrder) {
             if (currentOrder >= boundaryOrder && currentOrder < targetOrder) {
-                if (matchesCount(current, context)) {
+                if (matchesCount(current, referenceNode, context)) {
                     count++;
                 }
             }
         } else {
             // For RTF nodes without document order, use recursive tree walk
-            // Count this node if it matches and comes before target in document order
-            // In document order, ancestors come before descendants, so count them
-            if (matchesCount(current, context)) {
+            if (matchesCount(current, referenceNode, context)) {
                 count++;
             }
         }
@@ -491,12 +648,10 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
             XPathNode child = children.next();
             if (useDocOrder) {
                 if (child.getDocumentOrder() < targetOrder) {
-                    count += countNodesAfterBoundary(child, target, fromBoundary, context);
+                    count += countNodesAfterBoundary(child, target, fromBoundary, referenceNode, context);
                 }
             } else {
-                // For RTF without doc order, continue recursive walk
-                // We'll stop when we hit the target (checked at start of method)
-                count += countNodesAfterBoundary(child, target, fromBoundary, context);
+                count += countNodesAfterBoundary(child, target, fromBoundary, referenceNode, context);
             }
         }
         
@@ -504,12 +659,12 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     
-    private boolean matchesCount(XPathNode node, TransformContext context) {
+    private boolean matchesCount(XPathNode node, XPathNode referenceNode, TransformContext context) {
         if (countPattern != null) {
             return countPattern.matches(node, context);
         }
-        // Default: match nodes with same name and type as context node
-        XPathNode contextNode = context.getContextNode();
+        // Default: match nodes with same name and type as the node being numbered
+        XPathNode contextNode = referenceNode;
         if (contextNode == null) {
             return false;
         }
@@ -534,7 +689,9 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return true;
     }
     
-    private String formatNumbers(List<Long> numbers, String format) {
+    private String formatNumbers(List<Number> numbers, String format,
+                                 String groupingSeparator, int groupingSize,
+                                 TransformContext context) throws SAXException {
         ParsedFormat parsed = parseFormatString(format);
         
         if (numbers.isEmpty()) {
@@ -545,7 +702,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         result.append(parsed.prefix);
         
         for (int i = 0; i < numbers.size(); i++) {
-            long num = numbers.get(i);
+            Number num = numbers.get(i);
             
             if (i > 0) {
                 int sepIdx = i - 1;
@@ -567,7 +724,12 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
                 specifier = "1";
             }
             
-            String formatted = formatSingleNumber(num, specifier);
+            String formatted;
+            if (num instanceof BigInteger) {
+                formatted = formatBigInteger((BigInteger) num, specifier, context);
+            } else {
+                formatted = formatSingleNumber(num.longValue(), specifier, context);
+            }
             
             if (groupingSeparator != null && groupingSize > 0) {
                 formatted = applyGrouping(formatted, groupingSeparator, groupingSize);
@@ -626,9 +788,11 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
             }
         }
         
-        // Default specifier if none found
+        // Default specifier if none found; per XSLT spec, the format string
+        // acts as both prefix and suffix when it contains no format tokens
         if (specifiers.isEmpty()) {
             specifiers.add("1");
+            suffix = prefix;
         }
         
         return new ParsedFormat(prefix, specifiers, separators, suffix);
@@ -651,12 +815,11 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     private boolean isFormatChar(char c) {
-        return (c >= '0' && c <= '9') || 
-               (c >= 'a' && c <= 'z') || 
-               (c >= 'A' && c <= 'Z');
+        return Character.isLetterOrDigit(c);
     }
     
-    private String formatSingleNumber(long num, String specifier) {
+    private String formatSingleNumber(long num, String specifier,
+                                      TransformContext context) throws SAXException {
         if (specifier.isEmpty()) {
             specifier = "1";
         }
@@ -665,7 +828,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         char first = specifier.charAt(0);
         
         if (specifier.equals("Ww") || specifier.equals("w") || specifier.equals("W")) {
-            result = toWords(num, specifier);
+            result = toWords(num, specifier, context);
         } else if (first == 'a') {
             result = toAlphabetic(num, false);
         } else if (first == 'A') {
@@ -677,19 +840,68 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         } else if (first >= '0' && first <= '9') {
             int minWidth = specifier.length();
             result = zeroPad(num, minWidth);
+        } else if (Character.isDigit(first)) {
+            int digitZero = first - Character.getNumericValue(first);
+            int minWidth = specifier.length();
+            result = zeroPadWithDigitBase(num, minWidth, (char) digitZero);
+        } else if (Character.isLetter(first)) {
+            result = toUnicodeAlphabetic(num, first);
         } else {
             result = String.valueOf(num);
         }
         
         if ("yes".equals(ordinal)) {
-            result = appendOrdinal(result, num, specifier);
+            result = appendOrdinal(result, num, specifier, context);
         }
         
         return result;
     }
     
-    private String appendOrdinal(String formatted, long num, String specifier) {
-        Locale locale = resolveLocale();
+    private String formatBigInteger(BigInteger num, String specifier,
+                                    TransformContext context) throws SAXException {
+        if (specifier.isEmpty()) {
+            specifier = "1";
+        }
+        char first = specifier.charAt(0);
+        if (first >= '0' && first <= '9') {
+            String decimal = num.toString();
+            int minWidth = specifier.length();
+            if (decimal.length() >= minWidth) {
+                return decimal;
+            }
+            StringBuilder sb = new StringBuilder();
+            int padding = minWidth - decimal.length();
+            for (int i = 0; i < padding; i++) {
+                sb.append('0');
+            }
+            sb.append(decimal);
+            return sb.toString();
+        }
+        if (Character.isDigit(first)) {
+            int digitZero = first - Character.getNumericValue(first);
+            String decimal = num.toString();
+            int minWidth = specifier.length();
+            StringBuilder sb = new StringBuilder();
+            int padding = minWidth - decimal.length();
+            for (int i = 0; i < padding; i++) {
+                sb.append((char) digitZero);
+            }
+            for (int i = 0; i < decimal.length(); i++) {
+                char digit = decimal.charAt(i);
+                if (digit >= '0' && digit <= '9') {
+                    sb.append((char) (digitZero + (digit - '0')));
+                } else {
+                    sb.append(digit);
+                }
+            }
+            return sb.toString();
+        }
+        return num.toString();
+    }
+
+    private String appendOrdinal(String formatted, long num, String specifier,
+                                 TransformContext context) throws SAXException {
+        Locale locale = resolveLocale(context);
         DateTimeLocale dtl = DateTimeLocale.forLocale(locale);
         char first = specifier.charAt(0);
         
@@ -706,8 +918,23 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return formatted;
     }
     
-    private Locale resolveLocale() {
+    private Locale resolveLocale(TransformContext context) throws SAXException {
+        String lang = null;
+        if (langAVT != null) {
+            try {
+                lang = langAVT.evaluate(context);
+            } catch (XPathException e) {
+                throw new SAXException("Error evaluating xsl:number lang: " + e.getMessage(), e);
+            }
+        }
         if (lang != null && !lang.isEmpty()) {
+            for (int i = 0; i < lang.length(); i++) {
+                char c = lang.charAt(i);
+                if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '-')) {
+                    throw new SAXException(
+                            "XTDE0030: Invalid language tag on xsl:number: '" + lang + "'");
+                }
+            }
             int dashIdx = lang.indexOf('-');
             if (dashIdx > 0) {
                 String language = lang.substring(0, dashIdx);
@@ -719,8 +946,8 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return Locale.ENGLISH;
     }
     
-    private String toWords(long num, String format) {
-        Locale locale = resolveLocale();
+    private String toWords(long num, String format, TransformContext context) throws SAXException {
+        Locale locale = resolveLocale(context);
         DateTimeLocale dtl = DateTimeLocale.forLocale(locale);
         
         if (num == 0) {
@@ -749,22 +976,39 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
             return word.toUpperCase();
         } else if ("Ww".equals(format)) {
             StringBuilder sb = new StringBuilder();
-            boolean capitalizeNext = true;
-            for (int i = 0; i < word.length(); i++) {
-                char c = word.charAt(i);
-                if (Character.isWhitespace(c) || c == '-') {
-                    capitalizeNext = true;
-                    sb.append(c);
-                } else if (capitalizeNext) {
-                    sb.append(Character.toUpperCase(c));
-                    capitalizeNext = false;
-                } else {
-                    sb.append(c);
+            boolean firstWord = true;
+            int i = 0;
+            int len = word.length();
+            while (i < len) {
+                // Skip whitespace/hyphens
+                while (i < len && (Character.isWhitespace(word.charAt(i)) || word.charAt(i) == '-')) {
+                    sb.append(word.charAt(i));
+                    i++;
                 }
+                if (i >= len) {
+                    break;
+                }
+                // Extract the word
+                int wordStart = i;
+                while (i < len && !Character.isWhitespace(word.charAt(i)) && word.charAt(i) != '-') {
+                    i++;
+                }
+                String w = word.substring(wordStart, i);
+                if (firstWord || !isTitleCaseMinor(w)) {
+                    sb.append(Character.toUpperCase(w.charAt(0)));
+                    sb.append(w.substring(1));
+                } else {
+                    sb.append(w);
+                }
+                firstWord = false;
             }
             return sb.toString();
         }
         return word;
+    }
+    
+    private static boolean isTitleCaseMinor(String w) {
+        return "and".equals(w) || "of".equals(w);
     }
     
     private String zeroPad(long num, int minWidth) {
@@ -831,6 +1075,65 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return result;
     }
     
+    private static final char GREEK_LOWER_ALPHA = '\u03B1';
+    private static final char GREEK_LOWER_OMEGA = '\u03C9';
+    private static final char GREEK_UPPER_ALPHA = '\u0391';
+    private static final char GREEK_UPPER_OMEGA = '\u03A9';
+
+    private int getAlphabetSize(char base) {
+        if (base >= GREEK_LOWER_ALPHA && base <= GREEK_LOWER_OMEGA) {
+            return GREEK_LOWER_OMEGA - GREEK_LOWER_ALPHA + 1;
+        }
+        if (base >= GREEK_UPPER_ALPHA && base <= GREEK_UPPER_OMEGA) {
+            return GREEK_UPPER_OMEGA - GREEK_UPPER_ALPHA + 1;
+        }
+        Character.UnicodeBlock block = Character.UnicodeBlock.of(base);
+        if (block != null) {
+            if (base >= 'a' && base <= 'z') {
+                return 26;
+            }
+            if (base >= 'A' && base <= 'Z') {
+                return 26;
+            }
+        }
+        return 26;
+    }
+
+    private String toUnicodeAlphabetic(long num, char base) {
+        if (num <= 0) {
+            return String.valueOf(num);
+        }
+        int alphabetSize = getAlphabetSize(base);
+        StringBuilder sb = new StringBuilder();
+        long n = num;
+        while (n > 0) {
+            n--;
+            int remainder = (int) (n % alphabetSize);
+            char c = (char) (base + remainder);
+            sb.insert(0, c);
+            n = n / alphabetSize;
+        }
+        return sb.toString();
+    }
+
+    private String zeroPadWithDigitBase(long num, int minWidth, char digitZero) {
+        String decimal = String.valueOf(num);
+        StringBuilder sb = new StringBuilder();
+        int padding = minWidth - decimal.length();
+        for (int i = 0; i < padding; i++) {
+            sb.append(digitZero);
+        }
+        for (int i = 0; i < decimal.length(); i++) {
+            char digit = decimal.charAt(i);
+            if (digit >= '0' && digit <= '9') {
+                sb.append((char) (digitZero + (digit - '0')));
+            } else {
+                sb.append(digit);
+            }
+        }
+        return sb.toString();
+    }
+
     private String applyGrouping(String numStr, String separator, int size) {
         if (size <= 0 || numStr.length() <= size) {
             return numStr;

@@ -108,6 +108,18 @@ public final class DocumentLoader {
             List<String> stripSpace, List<String> preserveSpace,
             String allowedProtocols) {
         try {
+            // Strip fragment identifiers before resolving
+            // Per XSLT spec, fragments are stripped when determining document identity
+            int fragIndex = uri.indexOf('#');
+            if (fragIndex >= 0) {
+                uri = uri.substring(0, fragIndex);
+            }
+            
+            // Encode unescaped spaces in URIs (common in XSLT document() calls)
+            if (uri.indexOf(' ') >= 0) {
+                uri = uri.replace(" ", "%20");
+            }
+            
             // Resolve the URI against the base URI
             URI resolved;
             if (baseUri != null && !baseUri.isEmpty()) {
@@ -364,6 +376,7 @@ public final class DocumentLoader {
                     attrs.getURI(i), attrs.getLocalName(i), null, baseUri);
                 attr.documentOrder = documentOrder++;
                 attr.value = attrs.getValue(i);
+                attr.dtdType = attrs.getType(i);
                 attr.parent = element;
                 element.addAttribute(attr);
             }
@@ -511,6 +524,7 @@ public final class DocumentLoader {
         final String prefix;
         final String baseUri;
         String value;
+        String dtdType;
         DocumentNode parent;
         int documentOrder;
         private final List<DocumentNode> children = new ArrayList<>();
@@ -581,9 +595,20 @@ public final class DocumentLoader {
         
         @Override
         public Iterator<XPathNode> getNamespaces() {
-            // Return namespaces declared on this element and inherited from ancestors
+            // Only element nodes have namespace nodes
+            if (type != NodeType.ELEMENT) {
+                return Collections.<XPathNode>emptyList().iterator();
+            }
             List<XPathNode> result = new ArrayList<>();
-            collectNamespaces(result, new ArrayList<>());
+            List<String> seenPrefixes = new ArrayList<>();
+            collectNamespaces(result, seenPrefixes);
+            // Always include the xml namespace per the data model
+            if (!seenPrefixes.contains("xml")) {
+                DocumentNode xmlNs = new DocumentNode(NodeType.NAMESPACE, null, "xml", null, baseUri);
+                xmlNs.value = "http://www.w3.org/XML/1998/namespace";
+                xmlNs.parent = this;
+                result.add(xmlNs);
+            }
             return result.iterator();
         }
         
@@ -591,8 +616,11 @@ public final class DocumentLoader {
             for (DocumentNode ns : namespaces) {
                 String nsPrefix = ns.localName != null ? ns.localName : "";
                 if (!seenPrefixes.contains(nsPrefix)) {
-                    result.add(ns);
                     seenPrefixes.add(nsPrefix);
+                    String uri = ns.value;
+                    if (uri != null && !uri.isEmpty()) {
+                        result.add(ns);
+                    }
                 }
             }
             if (parent != null && parent.type == NodeType.ELEMENT) {
@@ -655,12 +683,28 @@ public final class DocumentLoader {
 
         @Override
         public String getTypeNamespaceURI() {
-            return null; // No type annotation
+            if (dtdType != null && isDtdTypedAttribute()) {
+                return "http://www.w3.org/2001/XMLSchema";
+            }
+            return null;
         }
 
         @Override
         public String getTypeLocalName() {
-            return null; // No type annotation
+            if (dtdType != null && isDtdTypedAttribute()) {
+                return dtdType;
+            }
+            return null;
+        }
+
+        private boolean isDtdTypedAttribute() {
+            return "ID".equals(dtdType) ||
+                   "IDREF".equals(dtdType) ||
+                   "IDREFS".equals(dtdType) ||
+                   "NMTOKEN".equals(dtdType) ||
+                   "NMTOKENS".equals(dtdType) ||
+                   "ENTITY".equals(dtdType) ||
+                   "ENTITIES".equals(dtdType);
         }
     }
 }

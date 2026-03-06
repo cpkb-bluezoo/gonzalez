@@ -776,7 +776,8 @@ public final class XPathParser {
         }
 
         // Skip occurrence indicator: ?, *, +
-        if (lexer.current() == XPathToken.QUESTION || lexer.current() == XPathToken.STAR) {
+        if (lexer.current() == XPathToken.QUESTION || lexer.current() == XPathToken.STAR
+                || lexer.current() == XPathToken.STAR_MULTIPLY) {
             lexer.advance();
         } else if (lexer.current() == XPathToken.PLUS) {
             lexer.advance();
@@ -2505,6 +2506,8 @@ public final class XPathParser {
         String namespaceURI = null;
         String localName = null;
         QName typeName = null;  // For element(name, type) or attribute(name, type)
+        java.util.List funcParamTypes = null;  // For function(T1, T2, ...) as R
+        SequenceType funcReturnType = null;
         
         XPathToken token = lexer.current();
         
@@ -2676,14 +2679,35 @@ public final class XPathParser {
             case NCNAME:
                 // Check for function(...), map(...), or array(...) type tests
                 if ("function".equals(lexer.value()) && lexer.peek() == XPathToken.LPAREN) {
-                    itemKind = SequenceType.ItemKind.ITEM;
+                    itemKind = SequenceType.ItemKind.FUNCTION;
                     lexer.advance();
                     expectToken(XPathToken.LPAREN, "(");
-                    skipParenthesizedContent();
-                    // Optional return type: function(...) as ReturnType
-                    if (lexer.current() == XPathToken.AS) {
+                    if (lexer.current() == XPathToken.STAR 
+                            || lexer.current() == XPathToken.STAR_MULTIPLY) {
+                        // function(*)
                         lexer.advance();
-                        skipSequenceType();
+                        expectToken(XPathToken.RPAREN, ")");
+                    } else if (lexer.current() == XPathToken.RPAREN) {
+                        // function() as R - zero-arity typed function
+                        funcParamTypes = new java.util.ArrayList();
+                        lexer.advance();
+                        if (lexer.current() == XPathToken.AS) {
+                            lexer.advance();
+                            funcReturnType = parseSequenceType();
+                        }
+                    } else {
+                        // function(T1, T2, ...) as R
+                        funcParamTypes = new java.util.ArrayList();
+                        funcParamTypes.add(parseSequenceType());
+                        while (lexer.current() == XPathToken.COMMA) {
+                            lexer.advance();
+                            funcParamTypes.add(parseSequenceType());
+                        }
+                        expectToken(XPathToken.RPAREN, ")");
+                        if (lexer.current() == XPathToken.AS) {
+                            lexer.advance();
+                            funcReturnType = parseSequenceType();
+                        }
                     }
                     break;
                 }
@@ -2736,6 +2760,14 @@ public final class XPathParser {
                 break;
         }
         
+        if (itemKind == SequenceType.ItemKind.FUNCTION) {
+            SequenceType[] paramArray = null;
+            if (funcParamTypes != null) {
+                paramArray = new SequenceType[funcParamTypes.size()];
+                funcParamTypes.toArray(paramArray);
+            }
+            return SequenceType.functionType(paramArray, funcReturnType, occurrence);
+        }
         return new SequenceType(itemKind, namespaceURI, localName, typeName, occurrence);
     }
     

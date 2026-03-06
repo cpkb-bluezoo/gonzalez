@@ -113,6 +113,15 @@ final class PatternParser {
         if (alternatives.size() == 1) {
             return alternatives.get(0);
         }
+
+        for (int i = 0; i < alternatives.size(); i++) {
+            if (alternatives.get(i) instanceof AtomicPattern) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: Predicate pattern cannot be combined " +
+                    "with '|' union operator: " + patternStr);
+            }
+        }
+
         Pattern[] arr = alternatives.toArray(new Pattern[0]);
         return new UnionPattern(patternStr, arr);
     }
@@ -188,8 +197,8 @@ final class PatternParser {
         if (token == XPathToken.DOT && version >= 2.0) {
             lexer.advance(); // consume .
             if (lexer.current() == XPathToken.LBRACKET) {
-                String pred = extractAllPredicates(lexer, prepared);
-                return new AtomicPattern(patternStr, pred);
+                List<String> preds = extractPredicateList(lexer, prepared);
+                return new AtomicPattern(patternStr, preds);
             }
             return new AtomicPattern(patternStr, null);
         }
@@ -236,11 +245,30 @@ final class PatternParser {
             return parseDocumentNode(lexer, patternStr, prepared, version);
         }
 
-        // XTSE0340: namespace axis not allowed in patterns
+        // XTSE0340: namespace axis not allowed in pre-3.0 patterns
         if (token == XPathToken.AXIS_NAMESPACE) {
-            throw new IllegalArgumentException(
-                "XTSE0340: namespace axis is not allowed in patterns: " +
-                patternStr);
+            if (version < 3.0) {
+                throw new IllegalArgumentException(
+                    "XTSE0340: namespace axis is not allowed in patterns: " +
+                    patternStr);
+            }
+            lexer.advance(); // consume namespace::
+            XPathToken nameToken = lexer.current();
+            if (nameToken == XPathToken.STAR) {
+                lexer.advance(); // consume *
+                return new NameTestPattern(patternStr, null,
+                                           AnyNodeTest.INSTANCE, -0.5);
+            }
+            if (nameToken == XPathToken.NCNAME || isXPathKeyword(nameToken)) {
+                String nsName = lexer.value();
+                lexer.advance(); // consume name
+                return new NameTestPattern(patternStr, null,
+                                           new ElementTest(null, nsName, null),
+                                           -0.5);
+            }
+            // Fallback: treat as wildcard
+            return new NameTestPattern(patternStr, null,
+                                       AnyNodeTest.INSTANCE, -0.5);
         }
 
         // Function patterns: id(), key(), doc(), document(), element-with-id()
@@ -614,6 +642,7 @@ final class PatternParser {
         Step.Axis axis = defaultAxis;
         XPathToken token = lexer.current();
         boolean explicitChild = false;
+        boolean explicitDescendant = false;
 
         // Explicit axis: child::, descendant::, self::, attribute::
         // child:: and self:: should not override the context axis from
@@ -627,6 +656,10 @@ final class PatternParser {
                 // self:: keeps the path axis; it's just a node test filter
             } else {
                 axis = explicitAxis;
+                if (explicitAxis == Step.Axis.DESCENDANT ||
+                    explicitAxis == Step.Axis.DESCENDANT_OR_SELF) {
+                    explicitDescendant = true;
+                }
             }
             lexer.advance();
         } else if (token == XPathToken.AT) {
@@ -657,7 +690,7 @@ final class PatternParser {
             predStr = extractAllPredicates(lexer, prepared);
         }
 
-        return new PatternStep(nt, axis, predStr);
+        return new PatternStep(nt, axis, predStr, explicitDescendant);
     }
 
     private static Step.Axis mapAxis(XPathToken token, String patternStr) {
@@ -673,9 +706,7 @@ final class PatternParser {
             case AXIS_ATTRIBUTE:
                 return Step.Axis.ATTRIBUTE;
             case AXIS_NAMESPACE:
-                throw new IllegalArgumentException(
-                    "XTSE0340: namespace axis is not allowed in patterns: " +
-                    patternStr);
+                return Step.Axis.NAMESPACE;
             case AXIS_ANCESTOR:
             case AXIS_ANCESTOR_OR_SELF:
             case AXIS_PARENT:
@@ -1080,6 +1111,20 @@ final class PatternParser {
     }
 
     /**
+     * Extracts all predicates as individual strings without joining.
+     * Used by AtomicPattern to evaluate each predicate independently
+     * (preserving numeric predicate semantics).
+     */
+    private static List<String> extractPredicateList(XPathLexer lexer,
+                                                     String prepared) {
+        List<String> preds = new ArrayList<>();
+        while (lexer.current() == XPathToken.LBRACKET) {
+            preds.add(extractPredicateContent(lexer, prepared));
+        }
+        return preds;
+    }
+
+    /**
      * Extracts the content between [ and matching ]. Advances lexer past
      * the closing bracket.
      */
@@ -1448,6 +1493,12 @@ final class PatternParser {
         Pattern inner = parseUnion(lexer, patternStr, prepared, version);
         if (lexer.current() == XPathToken.RPAREN) {
             lexer.advance();
+        }
+
+        if (inner instanceof AtomicPattern) {
+            throw new IllegalArgumentException(
+                "XTSE0340: Predicate pattern cannot be " +
+                "parenthesized: " + patternStr);
         }
 
         // Check for predicates after parenthesized pattern

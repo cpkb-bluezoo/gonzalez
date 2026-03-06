@@ -132,10 +132,8 @@ public class Collation {
             return createUcaCollation(uri);
         }
 
-        // Try to interpret as a locale-based collation (e.g., http://example.com/collation/en)
-        // For now, fall back to codepoint for unknown URIs (lenient behavior)
-        // Some processors throw FOCH0002 for unsupported collations, but we'll be lenient
-        return new Collation(uri, String::compareTo);
+        throw new XPathException(
+            "FOCH0002: Unknown collation '" + uri + "'");
     }
 
     /**

@@ -22,62 +22,48 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
+import org.xml.sax.SAXException;
+
+import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
-import org.xml.sax.SAXException;
-
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 
 /**
  * XSLT 3.0 xsl:evaluate instruction.
  *
- * <p>The xsl:evaluate instruction dynamically evaluates an XPath expression
- * that is provided as a string at runtime. This enables powerful dynamic
- * query capabilities but cannot be used in streaming mode.
- *
- * <p>Example:
- * <pre>
- * &lt;xsl:evaluate xpath="concat('/', $path)"/&gt;
- * 
- * &lt;xsl:evaluate xpath="$expr" context-item="."&gt;
- *   &lt;xsl:with-param name="x" select="5"/&gt;
- * &lt;/xsl:evaluate&gt;
- * </pre>
- *
- * <p>Key attributes:
- * <ul>
- *   <li><b>xpath</b> (required) - Expression returning the XPath to evaluate</li>
- *   <li><b>as</b> - Expected return type</li>
- *   <li><b>base-uri</b> - Base URI for the dynamic expression</li>
- *   <li><b>context-item</b> - Context item for evaluation</li>
- *   <li><b>namespace-context</b> - Node providing namespace bindings</li>
- *   <li><b>schema-aware</b> - Whether evaluation is schema-aware</li>
- *   <li><b>with-params</b> - Variable bindings from xsl:with-param children</li>
- * </ul>
+ * <p>Dynamically evaluates an XPath expression provided as a string at runtime.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class EvaluateNode implements XSLTNode, ExpressionHolder {
 
-    private final XPathExpression xpathExpr;        // Expression for xpath attribute
-    private final XPathExpression contextItemExpr;  // Expression for context-item
-    private final XPathExpression baseUriExpr;      // Expression for base-uri
-    private final XPathExpression namespaceContextExpr; // Expression for namespace-context
-    private final String asType;                    // Expected return type
-    private final List<WithParamNode> params;       // xsl:with-param children
-    private String lastXPathString;                  // Single-entry compile cache
+    private final XPathExpression xpathExpr;
+    private final XPathExpression contextItemExpr;
+    private final AttributeValueTemplate baseUriAvt;
+    private final XPathExpression namespaceContextExpr;
+    private final XPathExpression withParamsExpr;
+    private final String asType;
+    private final List<WithParamNode> params;
+    private String lastXPathString;
     private XPathExpression lastCompiledExpr;
 
     /**
@@ -108,18 +94,21 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
      *
      * @param xpathExpr expression for the xpath attribute (required)
      * @param contextItemExpr expression for context-item attribute (may be null)
-     * @param baseUriExpr expression for base-uri attribute (may be null)
+     * @param baseUriAvt AVT for base-uri attribute (may be null)
      * @param namespaceContextExpr expression for namespace-context (may be null)
+     * @param withParamsExpr expression for with-params attribute (may be null)
      * @param asType expected return type (may be null)
      * @param params list of xsl:with-param nodes (may be empty)
      */
     public EvaluateNode(XPathExpression xpathExpr, XPathExpression contextItemExpr,
-                       XPathExpression baseUriExpr, XPathExpression namespaceContextExpr,
-                       String asType, List<WithParamNode> params) {
+                       AttributeValueTemplate baseUriAvt, XPathExpression namespaceContextExpr,
+                       XPathExpression withParamsExpr, String asType,
+                       List<WithParamNode> params) {
         this.xpathExpr = xpathExpr;
         this.contextItemExpr = contextItemExpr;
-        this.baseUriExpr = baseUriExpr;
+        this.baseUriAvt = baseUriAvt;
         this.namespaceContextExpr = namespaceContextExpr;
+        this.withParamsExpr = withParamsExpr;
         this.asType = asType;
         this.params = params;
     }
@@ -133,11 +122,11 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
         if (contextItemExpr != null) {
             exprs.add(contextItemExpr);
         }
-        if (baseUriExpr != null) {
-            exprs.add(baseUriExpr);
-        }
         if (namespaceContextExpr != null) {
             exprs.add(namespaceContextExpr);
+        }
+        if (withParamsExpr != null) {
+            exprs.add(withParamsExpr);
         }
         return exprs;
     }
@@ -145,12 +134,10 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         try {
-            // Evaluate the xpath attribute to get the XPath expression string
             XPathValue xpathValue = xpathExpr.evaluate(context);
             String xpathString = xpathValue.asString();
             
             if (xpathString == null || xpathString.isEmpty()) {
-                // Empty expression - return empty sequence
                 return;
             }
             
@@ -169,51 +156,50 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                 }
             }
             
-            // Determine the evaluation context
+            // Check for disallowed functions (XTDE3160)
+            String exprLower = xpathString.toLowerCase();
+            if (containsDisallowedFunction(exprLower)) {
+                throw new SAXException("XTDE3160: Expression in xsl:evaluate " +
+                    "contains a disallowed function call: " + xpathString);
+            }
+            
             TransformContext evalContext = context;
             
             // Handle context-item
+            // Per XSLT 3.0 26.6: when context-item is absent, the context item
+            // for the dynamically evaluated expression is absent (undefined)
             if (contextItemExpr != null) {
                 XPathValue ctxValue = contextItemExpr.evaluate(context);
-                if (ctxValue != null) {
-                    if (ctxValue instanceof XPathNode) {
-                        evalContext = evalContext.withContextNode((XPathNode) ctxValue);
-                    } else if (ctxValue.isNodeSet()) {
-                        XPathNodeSet ns = ctxValue.asNodeSet();
-                        if (!ns.isEmpty()) {
-                            evalContext = evalContext.withContextNode(ns.iterator().next());
-                        }
-                    }
-                    // For atomic values, set as context item (XPath 2.0+)
-                    if (evalContext instanceof BasicTransformContext) {
-                        evalContext = ((BasicTransformContext) evalContext).withContextItem(ctxValue);
-                    }
+                evalContext = applyContextItem(evalContext, ctxValue);
+            } else {
+                // No context-item attribute: context is absent for xsl:evaluate
+                evalContext = evalContext.withContextNode(null);
+                if (evalContext instanceof BasicTransformContext) {
+                    ((BasicTransformContext) evalContext).setContextItemUndefined(true);
                 }
             }
             
-            // Handle base-uri
-            if (baseUriExpr != null) {
-                XPathValue baseValue = baseUriExpr.evaluate(context);
-                String baseUri = baseValue.asString();
+            // Handle base-uri (AVT, evaluates to string)
+            if (baseUriAvt != null) {
+                String baseUri = baseUriAvt.evaluate(context);
                 if (baseUri != null && !baseUri.isEmpty()) {
                     evalContext = evalContext.withStaticBaseURI(baseUri);
                 }
             }
             
-            // Evaluate xsl:with-param children and add to context
+            // Bind variables from xsl:with-param children first
             if (params != null && !params.isEmpty()) {
                 for (WithParamNode param : params) {
                     XPathValue paramValue;
                     if (param.getSelect() != null) {
                         paramValue = param.getSelect().evaluate(context);
                     } else if (param.getContent() != null) {
-                        // Execute content and capture as RTF
                         org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer buffer = 
                             new org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer();
                         org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler bufOut =
                             new org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler(buffer);
                         param.getContent().execute(context, bufOut);
-                        paramValue = new org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment(buffer);
+                        paramValue = new XPathResultTreeFragment(buffer);
                     } else {
                         paramValue = XPathString.of("");
                     }
@@ -223,10 +209,29 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                 }
             }
             
+            // Bind variables from with-params attribute (map expression)
+            // Per XSLT 3.0 spec, with-params map values override xsl:with-param children
+            if (withParamsExpr != null) {
+                XPathValue wpValue = withParamsExpr.evaluate(context);
+                if (wpValue instanceof XPathMap) {
+                    XPathMap map = (XPathMap) wpValue;
+                    for (Map.Entry<String, XPathValue> entry : map.entries()) {
+                        String key = entry.getKey();
+                        XPathValue val = entry.getValue();
+                        evalContext = (TransformContext) evalContext.withVariable(null, key, val);
+                    }
+                }
+            }
+            
             // Evaluate the dynamic expression
             XPathValue result = dynamicExpr.evaluate(evalContext);
             
-            // Output the result
+            // Validate result type against 'as' attribute if present
+            if (asType != null && !asType.isEmpty() && result != null) {
+                validateResultType(result, asType);
+            }
+            
+            // Output the result, preserving typed values
             outputResult(result, output);
             
         } catch (XPathException e) {
@@ -235,88 +240,242 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
     }
     
     /**
-     * Outputs the result of evaluation to the output handler.
+     * Applies the context-item to the evaluation context.
+     * Validates per XSLT 3.0: XPDY0002 if absent, XTTE3210 if multi-item.
+     */
+    private TransformContext applyContextItem(TransformContext evalContext, 
+                                              XPathValue ctxValue) throws SAXException {
+        if (ctxValue == null) {
+            throw new SAXException("XPDY0002: Context item for xsl:evaluate is absent");
+        }
+
+        // Check for empty sequence: context-item="()" or expression returning nothing
+        if (ctxValue instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) ctxValue;
+            if (seq.isEmpty()) {
+                throw new SAXException("XPDY0002: Context item for xsl:evaluate is an empty sequence");
+            }
+            if (seq.size() > 1) {
+                throw new SAXException("XTTE3210: Context item for xsl:evaluate " +
+                    "must be a single item, got sequence of " + seq.size() + " items");
+            }
+            ctxValue = seq.iterator().next();
+        }
+
+        if (ctxValue.isNodeSet()) {
+            XPathNodeSet ns = ctxValue.asNodeSet();
+            if (ns.isEmpty()) {
+                throw new SAXException("XPDY0002: Context item for xsl:evaluate is an empty sequence");
+            }
+            if (ns.size() > 1) {
+                throw new SAXException("XTTE3210: Context item for xsl:evaluate " +
+                    "must be a single item, got node-set of " + ns.size() + " nodes");
+            }
+            evalContext = evalContext.withContextNode(ns.iterator().next());
+        } else if (ctxValue instanceof XPathNode) {
+            evalContext = evalContext.withContextNode((XPathNode) ctxValue);
+        }
+
+        if (evalContext instanceof BasicTransformContext) {
+            evalContext = ((BasicTransformContext) evalContext).withContextItem(ctxValue);
+        }
+        return evalContext;
+    }
+    
+    /**
+     * Validates the result type against the 'as' attribute.
+     * Raises XPTY0004 if the result clearly does not match the declared type.
+     * Nodes pass string-type checks because they atomize to xs:untypedAtomic.
+     */
+    private void validateResultType(XPathValue result, String type) throws SAXException {
+        if ("xs:string".equals(type)) {
+            // Nodes atomize to xs:untypedAtomic which is promotable to xs:string
+            if (result instanceof XPathNode || result.isNodeSet() 
+                    || result instanceof XPathString
+                    || result instanceof XPathResultTreeFragment) {
+                return;
+            }
+            throw new SAXException("XPTY0004: Required item type of xsl:evaluate result " +
+                "is xs:string; supplied value is " + result.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * Checks for functions disallowed in xsl:evaluate (XTDE3160).
+     */
+    private boolean containsDisallowedFunction(String exprLower) {
+        if (exprLower.contains("current(") || exprLower.contains("current ()")) {
+            return true;
+        }
+        if (exprLower.contains("document(") || exprLower.contains("document ()")) {
+            return true;
+        }
+        if (exprLower.contains("unparsed-text(") || exprLower.contains("unparsed-text-lines(")
+                || exprLower.contains("unparsed-text-available(")) {
+            return true;
+        }
+        return false;
+    }
+    
+    /**
+     * Outputs the evaluation result, preserving typed values.
+     * Follows the same pattern as SequenceOutputNode for proper type handling.
      */
     private void outputResult(XPathValue result, OutputHandler output) throws SAXException {
         if (result == null) {
             return;
         }
         
-        if (result.isNodeSet()) {
-            // Copy nodes to output
-            XPathNodeSet ns = result.asNodeSet();
-            for (XPathNode node : ns) {
-                copyNodeToOutput(node, output);
+        // When building a sequence, add items directly to preserve type identity
+        if (output instanceof SequenceBuilderOutputHandler) {
+            SequenceBuilderOutputHandler seqBuilder = (SequenceBuilderOutputHandler) output;
+            if (!seqBuilder.isInsideElement()) {
+                if (result instanceof XPathSequence) {
+                    for (XPathValue item : (XPathSequence) result) {
+                        seqBuilder.addItem(item);
+                    }
+                } else if (result instanceof XPathNodeSet) {
+                    for (XPathNode node : ((XPathNodeSet) result).getNodes()) {
+                        seqBuilder.addItem(new XPathNodeSet(Collections.singletonList(node)));
+                    }
+                } else {
+                    seqBuilder.addItem(result);
+                }
+                return;
             }
+        }
+        
+        if (result instanceof XPathResultTreeFragment) {
+            ((XPathResultTreeFragment) result).replayToOutput(output);
+            output.setAtomicValuePending(false);
+        } else if (result instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) result;
+            boolean first = true;
+            for (XPathValue item : seq) {
+                if (!first) {
+                    output.itemBoundary();
+                }
+                outputSequenceItem(item, output);
+                first = false;
+            }
+        } else if (result instanceof XPathNode) {
+            outputNode((XPathNode) result, output);
+            output.setAtomicValuePending(false);
+        } else if (result.isNodeSet()) {
+            XPathNodeSet nodeSet = result.asNodeSet();
+            boolean first = true;
+            for (XPathNode node : nodeSet) {
+                if (!first) {
+                    output.itemBoundary();
+                }
+                outputNode(node, output);
+                first = false;
+            }
+            output.setAtomicValuePending(false);
         } else {
-            // Output atomic value as text
-            String text = result.asString();
-            if (text != null && !text.isEmpty()) {
-                output.characters(text);
+            output.atomicValue(result);
+        }
+    }
+    
+    private void outputSequenceItem(XPathValue item, OutputHandler output) throws SAXException {
+        if (item instanceof XPathNodeSet) {
+            for (XPathNode node : ((XPathNodeSet) item).getNodes()) {
+                outputNode(node, output);
             }
+            output.setAtomicValuePending(false);
+        } else if (item instanceof XPathResultTreeFragment) {
+            ((XPathResultTreeFragment) item).replayToOutput(output);
+            output.setAtomicValuePending(false);
+        } else if (item instanceof XPathNode) {
+            outputNode((XPathNode) item, output);
+            output.setAtomicValuePending(false);
+        } else {
+            output.atomicValue(item);
         }
     }
     
     /**
-     * Copies a node to the output handler.
+     * Outputs a single node to the output handler.
      */
-    private void copyNodeToOutput(XPathNode node, OutputHandler output) throws SAXException {
-        org.bluezoo.gonzalez.transform.xpath.type.NodeType nodeType = node.getNodeType();
-        
-        if (nodeType == org.bluezoo.gonzalez.transform.xpath.type.NodeType.ELEMENT) {
-            // Copy element and its contents
-            String uri = node.getNamespaceURI();
-            String local = node.getLocalName();
-            String prefix = node.getPrefix();
-            String qName = (prefix != null && !prefix.isEmpty()) ? prefix + ":" + local : local;
-            
-            output.startElement(uri != null ? uri : "", local, qName);
-            
-            // Copy attributes
-            java.util.Iterator<XPathNode> attrIter = node.getAttributes();
-            while (attrIter.hasNext()) {
-                XPathNode attr = attrIter.next();
-                String attrPrefix = attr.getPrefix();
-                String attrLocal = attr.getLocalName();
-                String attrQName = (attrPrefix != null && !attrPrefix.isEmpty()) ? 
-                    attrPrefix + ":" + attrLocal : attrLocal;
-                output.attribute(
-                    attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "",
-                    attrLocal,
-                    attrQName,
-                    attr.getStringValue()
-                );
-            }
-            
-            // Copy children
-            java.util.Iterator<XPathNode> children = node.getChildren();
-            while (children.hasNext()) {
-                copyNodeToOutput(children.next(), output);
-            }
-            
-            output.endElement(uri != null ? uri : "", local, qName);
-        } else if (nodeType == org.bluezoo.gonzalez.transform.xpath.type.NodeType.TEXT) {
-            String text = node.getStringValue();
-            if (text != null && !text.isEmpty()) {
-                output.characters(text);
-            }
-        } else if (nodeType == org.bluezoo.gonzalez.transform.xpath.type.NodeType.COMMENT) {
-            output.comment(node.getStringValue());
-        } else if (nodeType == org.bluezoo.gonzalez.transform.xpath.type.NodeType.PROCESSING_INSTRUCTION) {
-            output.processingInstruction(node.getLocalName(), node.getStringValue());
-        } else if (nodeType == org.bluezoo.gonzalez.transform.xpath.type.NodeType.ROOT) {
-            // Copy document children
-            java.util.Iterator<XPathNode> docChildren = node.getChildren();
-            while (docChildren.hasNext()) {
-                copyNodeToOutput(docChildren.next(), output);
-            }
+    private void outputNode(XPathNode node, OutputHandler output) throws SAXException {
+        switch (node.getNodeType()) {
+            case ELEMENT:
+                String uri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
+                String localName = node.getLocalName();
+                String prefix = node.getPrefix();
+                String qName = (prefix != null && !prefix.isEmpty()) 
+                    ? prefix + ":" + localName : localName;
+                
+                output.startElement(uri, localName, qName);
+                
+                Iterator<XPathNode> namespaces = node.getNamespaces();
+                while (namespaces.hasNext()) {
+                    XPathNode ns = namespaces.next();
+                    String nsPrefix = ns.getLocalName();
+                    String nsUri = ns.getStringValue();
+                    if (!"xml".equals(nsPrefix) && nsUri != null) {
+                        output.namespace(nsPrefix, nsUri);
+                    }
+                }
+                
+                Iterator<XPathNode> attrs = node.getAttributes();
+                while (attrs.hasNext()) {
+                    XPathNode attr = attrs.next();
+                    String attrUri = attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "";
+                    String attrLocal = attr.getLocalName();
+                    String attrPrefix = attr.getPrefix();
+                    String attrQName = (attrPrefix != null && !attrPrefix.isEmpty()) 
+                        ? attrPrefix + ":" + attrLocal : attrLocal;
+                    output.attribute(attrUri, attrLocal, attrQName, attr.getStringValue());
+                }
+                
+                Iterator<XPathNode> children = node.getChildren();
+                while (children.hasNext()) {
+                    outputNode(children.next(), output);
+                }
+                
+                output.endElement(uri, localName, qName);
+                break;
+                
+            case TEXT:
+                output.characters(node.getStringValue());
+                break;
+                
+            case COMMENT:
+                output.comment(node.getStringValue());
+                break;
+                
+            case PROCESSING_INSTRUCTION:
+                output.processingInstruction(node.getLocalName(), node.getStringValue());
+                break;
+                
+            case ROOT:
+                Iterator<XPathNode> rootChildren = node.getChildren();
+                while (rootChildren.hasNext()) {
+                    outputNode(rootChildren.next(), output);
+                }
+                break;
+                
+            case ATTRIBUTE:
+                String atUri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
+                String atLocal = node.getLocalName();
+                String atPrefix = node.getPrefix();
+                String atQName = (atPrefix != null && !atPrefix.isEmpty()) 
+                    ? atPrefix + ":" + atLocal : atLocal;
+                output.attribute(atUri, atLocal, atQName, node.getStringValue());
+                break;
+                
+            case NAMESPACE:
+                output.namespace(node.getLocalName(), node.getStringValue());
+                break;
+                
+            default:
+                break;
         }
-        // ATTRIBUTE and NAMESPACE nodes are skipped (handled as part of element)
     }
 
     @Override
     public StreamingCapability getStreamingCapability() {
-        // xsl:evaluate cannot stream - requires full access to context
         return StreamingCapability.NONE;
     }
 

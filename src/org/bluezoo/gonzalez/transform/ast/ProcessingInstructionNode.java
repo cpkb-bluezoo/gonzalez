@@ -82,10 +82,11 @@ public class ProcessingInstructionNode extends XSLTInstruction implements Expres
                 XPathValue result = selectExpr.evaluate(context);
                 data = result != null ? result.asString() : "";
             } else if (content != null) {
-                SAXEventBuffer buffer = 
-                    new SAXEventBuffer();
-                content.execute(context, new BufferOutputHandler(buffer));
-                data = buffer.getTextContent();
+                // Sequence constructor: collect items and join with space
+                org.bluezoo.gonzalez.transform.runtime.ItemCollectorOutputHandler collector =
+                    new org.bluezoo.gonzalez.transform.runtime.ItemCollectorOutputHandler();
+                content.execute(context, collector);
+                data = collector.getContentAsString(" ");
             }
             // Per XSLT spec: insert space in "?>" sequence to ensure well-formed XML
             data = sanitizePIData(data);

@@ -392,7 +392,7 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Ensures the nodes are sorted in document order.
      */
-    private void ensureSorted() {
+    private synchronized void ensureSorted() {
         if (!sorted && nodes.size() > 1) {
             nodes.sort(DOCUMENT_ORDER);
             sorted = true;

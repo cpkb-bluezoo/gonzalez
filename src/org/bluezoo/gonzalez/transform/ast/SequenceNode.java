@@ -95,8 +95,11 @@ public final class SequenceNode implements XSLTNode {
 
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
-        // Normal execution
-        executeNormal(context, output);
+        if (hasOnEmptyOrOnNonEmpty()) {
+            executeWithOnEmptySupport(context, output, true);
+        } else {
+            executeNormal(context, output);
+        }
     }
     
     /**
@@ -146,8 +149,9 @@ public final class SequenceNode implements XSLTNode {
             splitter.flush();
             
             // Track whether regular content was produced (either attributes or buffered content)
+            // Use hasNonEmptyContent() to ignore zero-length text and empty doc nodes
             if (!isOnEmptyNode && !isOnNonEmptyNode) {
-                if (splitter.hasAttributeOrNamespace() || !buffer.isEmpty()) {
+                if (splitter.hasAttributeOrNamespace() || buffer.hasNonEmptyContent()) {
                     hasRegularContent = true;
                 }
                 if (splitter.hasAttributeOrNamespace()) {

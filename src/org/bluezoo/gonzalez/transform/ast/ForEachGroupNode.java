@@ -35,6 +35,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.SAXException;
@@ -170,6 +171,36 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
         this.sorts = sorts != null ? sorts : Collections.emptyList();
         this.composite = composite;
     }
+
+    public XSLTNode getBody() { return body; }
+
+    /**
+     * Returns the select expression.
+     *
+     * @return the select expression
+     */
+    public XPathExpression getSelect() { return select; }
+
+    /**
+     * Returns the group-by expression, if any.
+     *
+     * @return the group-by expression, or null
+     */
+    public XPathExpression getGroupByExpr() { return groupByExpr; }
+
+    /**
+     * Returns the grouping method.
+     *
+     * @return the grouping method
+     */
+    public GroupingMethod getMethod() { return method; }
+
+    /**
+     * Returns the sort specifications, if any.
+     *
+     * @return the sort list (never null, may be empty)
+     */
+    public List<SortSpec> getSorts() { return sorts; }
 
     @Override
     public List<XPathExpression> getExpressions() {
@@ -387,12 +418,8 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
             case GROUP_ADJACENT:
                 return groupAdjacent(items, groupAdjacentExpr, context, collation);
             case GROUP_STARTING_WITH:
-                // XTTE1120: items must be nodes for pattern matching
-                validateItemsAreNodes(items, "group-starting-with");
                 return groupStartingWith(items, groupStartingPattern, context);
             case GROUP_ENDING_WITH:
-                // XTTE1120: items must be nodes for pattern matching
-                validateItemsAreNodes(items, "group-ending-with");
                 return groupEndingWith(items, groupEndingPattern, context);
             default:
                 return groupByKey(items, groupByExpr, context, collation);
@@ -427,7 +454,7 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
                     keyValues.add(XPathString.of(""));
                 }
                 for (XPathValue kv : keyValues) {
-                    String key = kv.asString();
+                    String key = canonicalKeyString(kv);
                     addToGroup(groupKeyStrings, groupKeyValues, groupItemLists,
                                key, kv, item, collation);
                 }
@@ -460,6 +487,23 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
         List<XPathValue> newGroup = new ArrayList<>();
         newGroup.add(item);
         itemLists.add(newGroup);
+    }
+
+    /**
+     * Returns a canonical string for key comparison. QNames use Clark notation
+     * ({namespaceURI}localName) so that different prefixes for the same
+     * expanded name compare equal.
+     */
+    private String canonicalKeyString(XPathValue value) {
+        if (value instanceof XPathQName) {
+            XPathQName qn = (XPathQName) value;
+            String ns = qn.getNamespaceURI();
+            if (ns != null && !ns.isEmpty()) {
+                return "{" + ns + "}" + qn.getLocalName();
+            }
+            return qn.getLocalName();
+        }
+        return value.asString();
     }
 
     /**
@@ -528,8 +572,14 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
                         throw new XPathException("XTTE1100: The group-adjacent key expression " +
                             "evaluates to a sequence of " + count + " items (expected exactly one)");
                     }
+                } else if (keyResult instanceof XPathNodeSet) {
+                    int count = ((XPathNodeSet) keyResult).getNodes().size();
+                    if (count == 0 || count > 1) {
+                        throw new XPathException("XTTE1100: The group-adjacent key expression " +
+                            "evaluates to " + count + " nodes (expected exactly one item)");
+                    }
                 }
-                key = keyResult.asString();
+                key = canonicalKeyString(keyResult);
             }
 
             boolean keyChanged = (currentKey == null) || !collation.equals(key, currentKey);
@@ -754,14 +804,27 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
         return cmp;
     }
 
-    private static void validateItemsAreNodes(List<XPathValue> items, String method)
-            throws XPathException {
+    private static boolean hasAtomicItems(List<XPathValue> items) {
         for (XPathValue item : items) {
             if (!(item instanceof XPathNode) && !item.isNodeSet()) {
-                throw new XPathException("XTTE1120: Population for " + method +
-                    " must consist of nodes, but found " + item.getClass().getSimpleName());
+                return true;
             }
         }
+        return false;
+    }
+
+    /**
+     * When group-starting-with or group-ending-with has atomic items,
+     * each atomic value forms a singleton group (pattern matching is inapplicable).
+     */
+    private static List<GroupEntry> groupAtomicSingletons(List<XPathValue> items) {
+        List<GroupEntry> groups = new ArrayList<GroupEntry>();
+        for (XPathValue item : items) {
+            List<XPathValue> group = new ArrayList<XPathValue>();
+            group.add(item);
+            groups.add(new GroupEntry(item.asString(), item, group));
+        }
+        return groups;
     }
 
     @Override

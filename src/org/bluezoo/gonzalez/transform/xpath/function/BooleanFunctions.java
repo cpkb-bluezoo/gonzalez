@@ -25,6 +25,7 @@ import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.List;
@@ -119,33 +120,47 @@ public final class BooleanFunctions {
     };
 
     /**
-     * XPath 1.0 lang() function.
+     * XPath lang() function.
      * 
-     * <p>Returns true if the context node's xml:lang attribute matches the argument,
+     * <p>Returns true if the specified node's xml:lang attribute matches the argument,
      * or if a parent element's xml:lang matches. Language matching is case-insensitive
      * and supports language subtags (e.g., "en" matches "en-US").
      * 
-     * <p>Signature: lang(string) → boolean
-     * 
-     * @see <a href="https://www.w3.org/TR/xpath/#function-lang">XPath 1.0 lang()</a>
+     * <p>XPath 1.0 signature: lang(string) → boolean
+     * <p>XPath 2.0+ signature: lang(string, node?) → boolean
      */
     public static final Function LANG = new Function() {
         @Override public String getName() { return "lang"; }
         @Override public int getMinArgs() { return 1; }
-        @Override public int getMaxArgs() { return 1; }
+        @Override public int getMaxArgs() { return 2; }
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             String testLang = args.get(0).asString().toLowerCase();
             
-            // Walk up the tree looking for xml:lang attribute
-            XPathNode node = context.getContextNode();
+            XPathNode node;
+            if (args.size() >= 2) {
+                XPathValue arg2 = args.get(1);
+                if (arg2.isNodeSet()) {
+                    XPathNodeSet ns = arg2.asNodeSet();
+                    if (ns.isEmpty()) {
+                        return XPathBoolean.FALSE;
+                    }
+                    node = ns.iterator().next();
+                } else if (arg2 instanceof XPathNode) {
+                    node = (XPathNode) arg2;
+                } else {
+                    throw new XPathException("XPTY0004: Second argument to lang() must be a node");
+                }
+            } else {
+                node = context.getContextNode();
+            }
+            
             while (node != null) {
                 if (node.isElement()) {
                     XPathNode langAttr = node.getAttribute("http://www.w3.org/XML/1998/namespace", "lang");
                     if (langAttr != null) {
                         String lang = langAttr.getStringValue().toLowerCase();
-                        // Match if equal or if lang starts with testLang followed by '-'
                         if (lang.equals(testLang) || lang.startsWith(testLang + "-")) {
                             return XPathBoolean.TRUE;
                         }

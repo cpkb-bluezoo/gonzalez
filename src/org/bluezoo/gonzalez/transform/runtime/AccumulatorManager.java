@@ -85,6 +85,7 @@ public final class AccumulatorManager {
     private final TransformContext transformContext;
     private final Map<String, AccumulatorState> accumulators;
     private boolean initialized;
+    private boolean streamingMode;
 
     /**
      * Pre-computed before/after values keyed by accumulator name then node
@@ -404,6 +405,46 @@ public final class AccumulatorManager {
         }
     }
 
+    /**
+     * Notifies the manager of a text (or other leaf) node (streaming mode).
+     * Fires both pre-descent and post-descent rules since leaf nodes have no children.
+     * No push/pop is needed because there is no nested element processing.
+     *
+     * @param node the text/leaf node
+     * @throws SAXException if rule evaluation fails
+     */
+    public void notifyTextNode(XPathNode node) throws SAXException {
+        if (!initialized) {
+            initialize();
+        }
+
+        for (AccumulatorState state : accumulators.values()) {
+            AccumulatorDefinition def = state.getDefinition();
+
+            if (!(state.getCurrentValue() instanceof DeferredError)) {
+                for (AccumulatorRule rule : def.getPreDescentRules()) {
+                    boolean matches = matchesPattern(rule.getMatchPattern(), node);
+                    if (matches) {
+                        XPathValue newValue = evaluateRule(state, rule, node);
+                        newValue = coerceWithDeferral(newValue, def);
+                        state.setCurrentValue(newValue);
+                    }
+                }
+            }
+
+            if (!(state.getCurrentValue() instanceof DeferredError)) {
+                for (AccumulatorRule rule : def.getPostDescentRules()) {
+                    boolean matches = matchesPattern(rule.getMatchPattern(), node);
+                    if (matches) {
+                        XPathValue newValue = evaluateRule(state, rule, node);
+                        newValue = coerceWithDeferral(newValue, def);
+                        state.setCurrentValue(newValue);
+                    }
+                }
+            }
+        }
+    }
+
     private boolean matchesPattern(Pattern pattern, XPathNode node) {
         if (pattern == null) {
             return false;
@@ -545,6 +586,9 @@ public final class AccumulatorManager {
         }
         try {
             TransformContext ruleContext = transformContext.withContextNode(node);
+            if (ruleContext instanceof BasicTransformContext) {
+                ((BasicTransformContext) ruleContext).setAccumulatorManager(this);
+            }
             ruleContext.getVariableScope().bind("value", state.getCurrentValue());
 
             XPathExpression newValueExpr = rule.getNewValue();
@@ -607,7 +651,7 @@ public final class AccumulatorManager {
             throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
                 "evaluating accumulator '" + name + "'");
         }
-        if (node != null) {
+        if (node != null && !streamingMode) {
             ensureDocumentTraversed(node);
             Map<XPathNode, XPathValue> nodeMap = beforeValues.get(name);
             if (nodeMap != null) {
@@ -640,7 +684,7 @@ public final class AccumulatorManager {
             throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
                 "evaluating accumulator '" + name + "'");
         }
-        if (node != null) {
+        if (node != null && !streamingMode) {
             ensureDocumentTraversed(node);
             Map<XPathNode, XPathValue> nodeMap = afterValues.get(name);
             if (nodeMap != null) {
@@ -754,6 +798,18 @@ public final class AccumulatorManager {
      */
     public boolean isInitialized() {
         return initialized;
+    }
+
+    /**
+     * Sets streaming mode. When true, accumulator-before/after return the
+     * current flowing value without attempting tree traversal. This is
+     * essential for streaming transforms where the document tree is not
+     * fully materialized.
+     *
+     * @param streaming true to enable streaming mode
+     */
+    public void setStreamingMode(boolean streaming) {
+        this.streamingMode = streaming;
     }
 
     /**

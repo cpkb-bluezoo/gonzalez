@@ -111,6 +111,8 @@ public final class SequenceFunctions {
         // XPath 3.0 higher-order function introspection
         functions.add(FUNCTION_NAME);
         functions.add(FUNCTION_ARITY);
+        // XPath 2.0/3.0 error function
+        functions.add(ERROR);
         return functions;
     }
 
@@ -581,6 +583,9 @@ public final class SequenceFunctions {
                 }
                 
                 URI baseUri = new URI(base);
+                if (!baseUri.isAbsolute()) {
+                    throw new XPathException("FORG0002: Base URI is not an absolute URI: " + base);
+                }
                 URI resolved = baseUri.resolve(relativeUri);
                 return XPathAnyURI.of(resolved.toString());
                 
@@ -707,6 +712,18 @@ public final class SequenceFunctions {
                     }
                 }
                 
+                // Check for per-node base URI (e.g., from external entity expansion)
+                // Must check before root node since entity base URIs take priority
+                if (current instanceof XPathNodeWithBaseURI) {
+                    String entityBase = ((XPathNodeWithBaseURI) current).getEntityBaseURI();
+                    if (entityBase != null && !entityBase.isEmpty()) {
+                        if (resolved != null) {
+                            return resolveBaseUri(resolved, entityBase);
+                        }
+                        return entityBase;
+                    }
+                }
+                
                 if (current.getNodeType() == NodeType.ROOT) {
                     // Use stored base URI on root nodes as terminal resolution base
                     if (current instanceof XPathNodeWithBaseURI) {
@@ -720,6 +737,7 @@ public final class SequenceFunctions {
                     }
                     break;
                 }
+                
                 current = current.getParent();
             }
             return resolved;
@@ -851,7 +869,17 @@ public final class SequenceFunctions {
             XPathValue seq2 = args.get(1);
             checkNoFunctionItems(seq1);
             checkNoFunctionItems(seq2);
-            return XPathBoolean.of(deepEqual(seq1, seq2));
+            Collation collation = null;
+            if (args.size() > 2) {
+                String collUri = args.get(2).asString();
+                collation = Collation.forUri(collUri);
+            } else if (context != null) {
+                String defaultUri = context.getDefaultCollation();
+                if (defaultUri != null) {
+                    collation = Collation.forUri(defaultUri);
+                }
+            }
+            return XPathBoolean.of(deepEqual(seq1, seq2, collation));
         }
 
         private void checkNoFunctionItems(XPathValue value) throws XPathException {
@@ -868,7 +896,7 @@ public final class SequenceFunctions {
             }
         }
         
-        private boolean deepEqual(XPathValue v1, XPathValue v2) {
+        private boolean deepEqual(XPathValue v1, XPathValue v2, Collation collation) {
             // Handle null/empty
             if (v1 == null && v2 == null) {
                 return true;
@@ -886,7 +914,7 @@ public final class SequenceFunctions {
             
             // Compare each pair
             for (int i = 0; i < list1.size(); i++) {
-                if (!itemsDeepEqual(list1.get(i), list2.get(i))) {
+                if (!itemsDeepEqual(list1.get(i), list2.get(i), collation)) {
                     return false;
                 }
             }
@@ -909,21 +937,36 @@ public final class SequenceFunctions {
             return result;
         }
         
-        private boolean itemsDeepEqual(XPathValue item1, XPathValue item2) {
+        private boolean itemsDeepEqual(XPathValue item1, XPathValue item2, Collation collation) {
             // Both nodes
             XPathNode node1 = getNode(item1);
             XPathNode node2 = getNode(item2);
             
             if (node1 != null && node2 != null) {
-                return nodesDeepEqual(node1, node2);
+                return nodesDeepEqual(node1, node2, collation);
             }
             if (node1 != null || node2 != null) {
                 return false; // One is node, one isn't
             }
             
-            // Both atomic values - compare by string value
-            // (For a full implementation, would need type-aware comparison)
-            return item1.asString().equals(item2.asString());
+            // Both atomic values - types must be comparable per XPath 2.0 eq
+            XPathValue.Type type1 = item1.getType();
+            XPathValue.Type type2 = item2.getType();
+            
+            if (type1 == XPathValue.Type.NUMBER && type2 == XPathValue.Type.NUMBER) {
+                return item1.asNumber() == item2.asNumber();
+            }
+            if (type1 == XPathValue.Type.BOOLEAN && type2 == XPathValue.Type.BOOLEAN) {
+                return item1.asBoolean() == item2.asBoolean();
+            }
+            if (type1 == XPathValue.Type.STRING && type2 == XPathValue.Type.STRING) {
+                return stringsEqual(item1.asString(), item2.asString(), collation);
+            }
+            if (type1 == type2) {
+                return stringsEqual(item1.asString(), item2.asString(), collation);
+            }
+            // Incompatible types (e.g., number vs string) are not deep-equal
+            return false;
         }
         
         private XPathNode getNode(XPathValue value) {
@@ -939,7 +982,14 @@ public final class SequenceFunctions {
             return null;
         }
         
-        private boolean nodesDeepEqual(XPathNode n1, XPathNode n2) {
+        private boolean stringsEqual(String a, String b, Collation collation) {
+            if (collation != null) {
+                return collation.compare(a, b) == 0;
+            }
+            return a.equals(b);
+        }
+
+        private boolean nodesDeepEqual(XPathNode n1, XPathNode n2, Collation collation) {
             // Different node types
             if (n1.getNodeType() != n2.getNodeType()) {
                 return false;
@@ -960,7 +1010,7 @@ public final class SequenceFunctions {
                         return false;
                     }
                     
-                    // Same attributes (ignoring order)
+                    // Same attributes (ignoring order) — use collation for value comparison
                     Iterator<XPathNode> attrs1 = n1.getAttributes();
                     Iterator<XPathNode> attrs2 = n2.getAttributes();
                     Map<String, String> attrMap1 = new HashMap<>();
@@ -975,13 +1025,18 @@ public final class SequenceFunctions {
                         String key = "{" + (attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "") + "}" + attr.getLocalName();
                         attrMap2.put(key, attr.getStringValue());
                     }
-                    if (!attrMap1.equals(attrMap2)) return false;
+                    if (attrMap1.size() != attrMap2.size()) return false;
+                    for (Map.Entry<String, String> entry : attrMap1.entrySet()) {
+                        String val2 = attrMap2.get(entry.getKey());
+                        if (val2 == null) return false;
+                        if (!stringsEqual(entry.getValue(), val2, collation)) return false;
+                    }
                     
                     // Same children (in order)
                     Iterator<XPathNode> children1 = n1.getChildren();
                     Iterator<XPathNode> children2 = n2.getChildren();
                     while (children1.hasNext() && children2.hasNext()) {
-                        if (!nodesDeepEqual(children1.next(), children2.next())) {
+                        if (!nodesDeepEqual(children1.next(), children2.next(), collation)) {
                             return false;
                         }
                     }
@@ -993,7 +1048,6 @@ public final class SequenceFunctions {
                     String localName1 = n1.getLocalName() != null ? n1.getLocalName() : "";
                     String localName2 = n2.getLocalName() != null ? n2.getLocalName() : "";
                     if (!localName1.equals(localName2)) return false;
-                    // Compare namespace URIs
                     return n1.getStringValue().equals(n2.getStringValue());
                     
                 case ATTRIBUTE:
@@ -1010,31 +1064,28 @@ public final class SequenceFunctions {
                     if (!attrNs1.equals(attrNs2)) {
                         return false;
                     }
-                    return n1.getStringValue().equals(n2.getStringValue());
+                    return stringsEqual(n1.getStringValue(), n2.getStringValue(), collation);
                     
                 case TEXT:
                 case COMMENT:
-                    // Compare by string value
-                    return n1.getStringValue().equals(n2.getStringValue());
+                    return stringsEqual(n1.getStringValue(), n2.getStringValue(), collation);
                     
                 case PROCESSING_INSTRUCTION:
-                    // PIs are equal if same target and same content
                     if (!n1.getLocalName().equals(n2.getLocalName())) return false;
-                    return n1.getStringValue().equals(n2.getStringValue());
+                    return stringsEqual(n1.getStringValue(), n2.getStringValue(), collation);
                     
                 case ROOT:
-                    // Compare document children
                     Iterator<XPathNode> docChildren1 = n1.getChildren();
                     Iterator<XPathNode> docChildren2 = n2.getChildren();
                     while (docChildren1.hasNext() && docChildren2.hasNext()) {
-                        if (!nodesDeepEqual(docChildren1.next(), docChildren2.next())) {
+                        if (!nodesDeepEqual(docChildren1.next(), docChildren2.next(), collation)) {
                             return false;
                         }
                     }
                     return !docChildren1.hasNext() && !docChildren2.hasNext();
                     
                 default:
-                    return n1.getStringValue().equals(n2.getStringValue());
+                    return stringsEqual(n1.getStringValue(), n2.getStringValue(), collation);
             }
         }
         
@@ -1181,27 +1232,25 @@ public final class SequenceFunctions {
             // xml prefix is always in scope
             prefixes.add(XPathString.of("xml"));
             
-            // Collect namespace prefixes from this element and ancestors
-            XPathNode current = node;
+            // Collect namespace prefixes from namespace nodes
+            // getNamespaces() already returns inherited namespaces, no need to walk ancestors
+            Iterator<XPathNode> nsNodes = node.getNamespaces();
             Set<String> seen = new HashSet<>();
             seen.add("xml");
             
-            while (current != null) {
-                Iterator<XPathNode> nsNodes = current.getNamespaces();
-                if (nsNodes != null) {
-                    while (nsNodes.hasNext()) {
-                        XPathNode nsNode = nsNodes.next();
-                        String prefix = nsNode.getLocalName();
-                        if (prefix == null) {
-                            prefix = "";
-                        }
-                        if (!seen.contains(prefix)) {
-                            seen.add(prefix);
-                            prefixes.add(XPathString.of(prefix));
-                        }
+            if (nsNodes != null) {
+                while (nsNodes.hasNext()) {
+                    XPathNode nsNode = nsNodes.next();
+                    String prefix = nsNode.getLocalName();
+                    if (prefix == null) {
+                        prefix = "";
+                    }
+                    String uri = nsNode.getStringValue();
+                    if (!seen.contains(prefix) && uri != null && !uri.isEmpty()) {
+                        seen.add(prefix);
+                        prefixes.add(XPathString.of(prefix));
                     }
                 }
-                current = current.getParent();
             }
             
             return new XPathSequence(prefixes);
@@ -1238,30 +1287,24 @@ public final class SequenceFunctions {
                 return XPathAnyURI.of("http://www.w3.org/XML/1998/namespace");
             }
             
-            // Search for the namespace binding
-            XPathNode current = element;
-            while (current != null) {
-                Iterator<XPathNode> nsNodes = current.getNamespaces();
-                if (nsNodes != null) {
-                    while (nsNodes.hasNext()) {
-                        XPathNode nsNode = nsNodes.next();
-                        String nsPrefix = nsNode.getLocalName();
-                        if (nsPrefix == null) {
-                            nsPrefix = "";
+            // Search for the namespace binding using getNamespaces() which
+            // already returns inherited namespaces with undeclarations filtered out
+            Iterator<XPathNode> nsNodes = element.getNamespaces();
+            if (nsNodes != null) {
+                while (nsNodes.hasNext()) {
+                    XPathNode nsNode = nsNodes.next();
+                    String nsPrefix = nsNode.getLocalName();
+                    if (nsPrefix == null) {
+                        nsPrefix = "";
+                    }
+                    if (prefix.equals(nsPrefix)) {
+                        String uri = nsNode.getStringValue();
+                        if (uri != null && !uri.isEmpty()) {
+                            return XPathAnyURI.of(uri);
                         }
-                        if (prefix.equals(nsPrefix)) {
-                            String uri = nsNode.getStringValue();
-                            if (uri != null && !uri.isEmpty()) {
-                                return XPathAnyURI.of(uri);
-                            }
-                            if (nsPrefix.isEmpty()) {
-                                return XPathAnyURI.of("");
-                            }
-                            return XPathSequence.EMPTY;
-                        }
+                        return XPathSequence.EMPTY;
                     }
                 }
-                current = current.getParent();
             }
             
             // Prefix not found
@@ -1357,6 +1400,11 @@ public final class SequenceFunctions {
                 throw new XPathException("XPTY0004: resolve-QName requires an element argument");
             }
             
+            // FOCA0002: Validate the lexical QName
+            if (!isValidLexicalQName(lexicalQName)) {
+                throw new XPathException("FOCA0002: Invalid lexical QName: " + lexicalQName);
+            }
+            
             // Parse the lexical QName
             int colonPos = lexicalQName.indexOf(':');
             String prefix = "";
@@ -1366,57 +1414,28 @@ public final class SequenceFunctions {
                 localName = lexicalQName.substring(colonPos + 1);
             }
             
-            // Resolve namespace URI
+            // Resolve using the element's in-scope namespace nodes.
+            // getNamespaces() already handles inheritance and xmlns="" undeclarations,
+            // so no manual ancestor walk is needed.
             String namespaceURI = "";
-            if (!prefix.isEmpty()) {
-                // Look up prefix in element's in-scope namespaces
-                XPathNode current = element;
-                while (current != null) {
-                    Iterator<XPathNode> nsNodes = current.getNamespaces();
-                    if (nsNodes != null) {
-                        while (nsNodes.hasNext()) {
-                            XPathNode nsNode = nsNodes.next();
-                            String nsPrefix = nsNode.getLocalName();
-                            if (nsPrefix == null) {
-                            nsPrefix = "";
-                        }
-                            if (prefix.equals(nsPrefix)) {
-                                namespaceURI = nsNode.getStringValue();
-                                if (namespaceURI == null) {
-                                    namespaceURI = "";
-                                }
-                                break;
-                            }
-                        }
+            Iterator<XPathNode> nsNodes = element.getNamespaces();
+            while (nsNodes.hasNext()) {
+                XPathNode nsNode = nsNodes.next();
+                String nsPrefix = nsNode.getLocalName();
+                if (nsPrefix == null) {
+                    nsPrefix = "";
+                }
+                if (prefix.equals(nsPrefix)) {
+                    namespaceURI = nsNode.getStringValue();
+                    if (namespaceURI == null) {
+                        namespaceURI = "";
                     }
-                    if (!namespaceURI.isEmpty()) break;
-                    current = current.getParent();
+                    break;
                 }
-                
-                if (namespaceURI.isEmpty()) {
-                    throw new XPathException("FONS0004: Prefix '" + prefix + "' is not bound to a namespace");
-                }
-            } else {
-                // No prefix - use default namespace (empty prefix)
-                XPathNode current = element;
-                while (current != null) {
-                    Iterator<XPathNode> nsNodes = current.getNamespaces();
-                    if (nsNodes != null) {
-                        while (nsNodes.hasNext()) {
-                            XPathNode nsNode = nsNodes.next();
-                            String nsPrefix = nsNode.getLocalName();
-                            if (nsPrefix == null || nsPrefix.isEmpty()) {
-                                namespaceURI = nsNode.getStringValue();
-                                if (namespaceURI == null) {
-                                    namespaceURI = "";
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    if (!namespaceURI.isEmpty()) break;
-                    current = current.getParent();
-                }
+            }
+            
+            if (!prefix.isEmpty() && namespaceURI.isEmpty()) {
+                throw new XPathException("FONS0004: Prefix '" + prefix + "' is not bound to a namespace");
             }
             
             return XPathQName.of(namespaceURI, prefix, localName);
@@ -1463,6 +1482,54 @@ public final class SequenceFunctions {
     }
 
     // ========== Helper methods ==========
+
+    /**
+     * Validates a lexical QName string per XML Namespaces.
+     * A valid QName is either an NCName or NCName:NCName.
+     * NCName chars: letter, digit, '.', '-', '_' (no ':').
+     * Must start with letter or '_'.
+     */
+    private static boolean isValidLexicalQName(String qname) {
+        if (qname == null || qname.isEmpty()) {
+            return false;
+        }
+        int colonPos = qname.indexOf(':');
+        if (colonPos >= 0) {
+            // Check for multiple colons
+            if (qname.indexOf(':', colonPos + 1) >= 0) {
+                return false;
+            }
+            String prefix = qname.substring(0, colonPos);
+            String local = qname.substring(colonPos + 1);
+            return isValidNCName(prefix) && isValidNCName(local);
+        }
+        return isValidNCName(qname);
+    }
+
+    private static boolean isValidNCName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        char first = name.charAt(0);
+        if (!Character.isLetter(first) && first != '_') {
+            return false;
+        }
+        for (int i = 1; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (!Character.isLetterOrDigit(c) && c != '.' && c != '-' && c != '_'
+                    && !isCombiningOrExtender(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isCombiningOrExtender(char c) {
+        int type = Character.getType(c);
+        return type == Character.COMBINING_SPACING_MARK
+            || type == Character.NON_SPACING_MARK
+            || type == Character.MODIFIER_LETTER;
+    }
 
     private static boolean isEmpty(XPathValue value) {
         if (value == null) {
@@ -1759,18 +1826,8 @@ public final class SequenceFunctions {
                 return XPathSequence.EMPTY;
             }
             
-            // Check for xsi:nil attribute
-            Iterator<XPathNode> attrs = node.getAttributes();
-            if (attrs != null) {
-                while (attrs.hasNext()) {
-                    XPathNode attr = attrs.next();
-                    if ("nil".equals(attr.getLocalName()) && 
-                        "http://www.w3.org/2001/XMLSchema-instance".equals(attr.getNamespaceURI())) {
-                        String value = attr.getStringValue();
-                        return XPathBoolean.of("true".equals(value) || "1".equals(value));
-                    }
-                }
-            }
+            // In Basic XSLT (no schema validation), all elements are untyped
+            // and nilled() always returns false per the XPath 2.0 spec.
             return XPathBoolean.FALSE;
         }
     };
@@ -2272,6 +2329,64 @@ public final class SequenceFunctions {
                 return new XPathNumber(((InlineFunctionItem) arg).getArity());
             }
             throw new XPathException("XPTY0004: Argument to function-arity is not a function item");
+        }
+    };
+
+    /**
+     * XPath 2.0/3.0 error() function.
+     *
+     * <p>Raises a dynamic error. The function never returns.
+     *
+     * <p>Signatures:
+     * <ul>
+     *   <li>error() as none</li>
+     *   <li>error(xs:QName?) as none</li>
+     *   <li>error(xs:QName?, xs:string) as none</li>
+     *   <li>error(xs:QName?, xs:string, item()*) as none</li>
+     * </ul>
+     */
+    public static final Function ERROR = new Function() {
+        @Override public String getName() { return "error"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 3; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            String errorCode = "FOER0000";
+            String description = null;
+
+            if (!args.isEmpty()) {
+                XPathValue codeArg = args.get(0);
+                if (codeArg != null && !isEmpty(codeArg)) {
+                    if (codeArg instanceof XPathQName) {
+                        XPathQName qname = (XPathQName) codeArg;
+                        String nsUri = qname.getNamespaceURI();
+                        String local = qname.getLocalName();
+                        if (nsUri == null || nsUri.isEmpty()) {
+                            errorCode = local;
+                        } else if ("http://www.w3.org/2005/xqt-errors".equals(nsUri)) {
+                            errorCode = local;
+                        } else {
+                            errorCode = "Q{" + nsUri + "}" + local;
+                        }
+                    } else {
+                        errorCode = codeArg.asString();
+                    }
+                }
+            }
+
+            if (args.size() >= 2) {
+                XPathValue descArg = args.get(1);
+                if (descArg != null) {
+                    description = descArg.asString();
+                }
+            }
+
+            if (description != null && !description.isEmpty()) {
+                throw new XPathException(errorCode, description);
+            }
+            throw new XPathException(errorCode, "error() called");
         }
     };
 }

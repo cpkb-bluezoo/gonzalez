@@ -58,7 +58,7 @@ public final class CompiledStylesheet {
     private final List<GlobalVariable> globalVariables;
     private final Map<String, AttributeSet> attributeSets;
     private final OutputProperties outputProperties;
-    private final Map<String, KeyDefinition> keyDefinitions;
+    private final Map<String, List<KeyDefinition>> keyDefinitions;
     private final Map<String, NamespaceAlias> namespaceAliases;  // keyed by stylesheet URI
     private final List<SpaceDeclaration> stripSpaceDeclarations;
     private final List<SpaceDeclaration> preserveSpaceDeclarations;
@@ -96,6 +96,7 @@ public final class CompiledStylesheet {
     private final StreamingCapability streamingCapability;
     private final Map<String, DecimalFormatInfo> decimalFormats;
     private final Map<String, CharacterMap> characterMaps;
+    private final Map<String, Map<String, String>> outputAttributeValues;
     private final Map<String, AccumulatorDefinition> accumulators;
     private final Map<String, ModeDeclaration> modeDeclarations;
     private final Map<String, String> namespaceBindings;  // prefix -> URI from stylesheet
@@ -134,32 +135,81 @@ public final class CompiledStylesheet {
         public final char zeroDigit;
         public final char digit;
         public final char patternSeparator;
+        public final char exponentSeparator;
+        
+        // Code point values (support non-BMP characters)
+        public final int decimalSeparatorCp;
+        public final int groupingSeparatorCp;
+        public final int minusSignCp;
+        public final int percentCp;
+        public final int perMilleCp;
+        public final int zeroDigitCp;
+        public final int digitCp;
+        public final int patternSeparatorCp;
+        public final int exponentSeparatorCp;
         
         public DecimalFormatInfo(String name, String decimalSeparator, String groupingSeparator,
                 String infinity, String minusSign, String nan, String percent,
                 String perMille, String zeroDigit, String digit, String patternSeparator) {
-            this.name = name;
-            this.decimalSeparator = firstChar(decimalSeparator, '.');
-            this.groupingSeparator = firstChar(groupingSeparator, ',');
-            this.infinity = infinity != null ? infinity : "Infinity";
-            this.minusSign = firstChar(minusSign, '-');
-            this.nan = nan != null ? nan : "NaN";
-            this.percent = firstChar(percent, '%');
-            this.perMille = firstChar(perMille, '\u2030');
-            this.zeroDigit = firstChar(zeroDigit, '0');
-            this.digit = firstChar(digit, '#');
-            this.patternSeparator = firstChar(patternSeparator, ';');
+            this(name, decimalSeparator, groupingSeparator, infinity, minusSign, nan,
+                percent, perMille, zeroDigit, digit, patternSeparator, null);
         }
         
-        private static char firstChar(String s, char defaultChar) {
+        public DecimalFormatInfo(String name, String decimalSeparator, String groupingSeparator,
+                String infinity, String minusSign, String nan, String percent,
+                String perMille, String zeroDigit, String digit, String patternSeparator,
+                String exponentSeparator) {
+            this.name = name;
+            this.decimalSeparatorCp = firstCodePoint(decimalSeparator, '.');
+            this.groupingSeparatorCp = firstCodePoint(groupingSeparator, ',');
+            this.infinity = infinity != null ? infinity : "Infinity";
+            this.minusSignCp = firstCodePoint(minusSign, '-');
+            this.nan = nan != null ? nan : "NaN";
+            this.percentCp = firstCodePoint(percent, '%');
+            this.perMilleCp = firstCodePoint(perMille, '\u2030');
+            this.zeroDigitCp = firstCodePoint(zeroDigit, '0');
+            this.digitCp = firstCodePoint(digit, '#');
+            this.patternSeparatorCp = firstCodePoint(patternSeparator, ';');
+            this.exponentSeparatorCp = firstCodePoint(exponentSeparator, 'e');
+            // BMP-safe char values for backward compatibility
+            this.decimalSeparator = toBmpChar(this.decimalSeparatorCp, '.');
+            this.groupingSeparator = toBmpChar(this.groupingSeparatorCp, ',');
+            this.minusSign = toBmpChar(this.minusSignCp, '-');
+            this.percent = toBmpChar(this.percentCp, '%');
+            this.perMille = toBmpChar(this.perMilleCp, '\u2030');
+            this.zeroDigit = toBmpChar(this.zeroDigitCp, '0');
+            this.digit = toBmpChar(this.digitCp, '#');
+            this.patternSeparator = toBmpChar(this.patternSeparatorCp, ';');
+            this.exponentSeparator = toBmpChar(this.exponentSeparatorCp, 'e');
+        }
+        
+        /**
+         * Returns true if any symbol is a non-BMP (supplementary) code point.
+         */
+        public boolean hasNonBmpSymbols() {
+            return Character.isSupplementaryCodePoint(decimalSeparatorCp)
+                || Character.isSupplementaryCodePoint(groupingSeparatorCp)
+                || Character.isSupplementaryCodePoint(minusSignCp)
+                || Character.isSupplementaryCodePoint(percentCp)
+                || Character.isSupplementaryCodePoint(perMilleCp)
+                || Character.isSupplementaryCodePoint(zeroDigitCp)
+                || Character.isSupplementaryCodePoint(digitCp)
+                || Character.isSupplementaryCodePoint(patternSeparatorCp)
+                || Character.isSupplementaryCodePoint(exponentSeparatorCp);
+        }
+        
+        private static int firstCodePoint(String s, int defaultCp) {
             if (s == null || s.isEmpty()) {
-                return defaultChar;
+                return defaultCp;
             }
-            int cp = s.codePointAt(0);
+            return s.codePointAt(0);
+        }
+        
+        private static char toBmpChar(int cp, char defaultChar) {
             if (Character.isSupplementaryCodePoint(cp)) {
                 return defaultChar;
             }
-            return s.charAt(0);
+            return (char) cp;
         }
     }
 
@@ -262,6 +312,8 @@ public final class CompiledStylesheet {
         public final String resultUri;
         /** The suggested prefix to use in output (may be empty for default namespace). */
         public final String resultPrefix;
+        /** Import precedence level (higher = higher precedence). */
+        public final int importPrecedence;
         
         /**
          * Creates a namespace alias.
@@ -270,8 +322,20 @@ public final class CompiledStylesheet {
          * @param resultPrefix the prefix to use in output
          */
         public NamespaceAlias(String resultUri, String resultPrefix) {
+            this(resultUri, resultPrefix, 0);
+        }
+        
+        /**
+         * Creates a namespace alias with import precedence.
+         *
+         * @param resultUri the result namespace URI (replacement)
+         * @param resultPrefix the prefix to use in output
+         * @param importPrecedence the import precedence level
+         */
+        public NamespaceAlias(String resultUri, String resultPrefix, int importPrecedence) {
             this.resultUri = resultUri != null ? resultUri : "";
             this.resultPrefix = resultPrefix != null ? resultPrefix : "";
+            this.importPrecedence = importPrecedence;
         }
         
         @Override
@@ -295,15 +359,19 @@ public final class CompiledStylesheet {
         private final List<GlobalVariable> globalVariables = new ArrayList<>();
         private final Map<String, AttributeSet> attributeSets = new HashMap<>();
         private OutputProperties outputProperties = new OutputProperties();
-        private final Map<String, KeyDefinition> keyDefinitions = new HashMap<>();
+        private final Map<String, List<KeyDefinition>> keyDefinitions = new HashMap<>();
         private final Map<String, NamespaceAlias> namespaceAliases = new HashMap<>();  // keyed by stylesheet URI
         private final List<SpaceDeclaration> stripSpaceDeclarations = new ArrayList<>();
         private final List<SpaceDeclaration> preserveSpaceDeclarations = new ArrayList<>();
         private int currentImportPrecedence = 0;  // Tracks current import precedence level
         private final Map<String, DecimalFormatInfo> decimalFormats = new HashMap<>();
         private final Map<String, String[]> decimalFormatRaw = new HashMap<>();
+        // Tracks decimal-format conflicts (XTSE1290) that may be resolved by higher-precedence overrides
+        private final Map<String, String> decimalFormatConflicts = new HashMap<>();
         private final Map<String, CharacterMap> characterMaps = new HashMap<>();
+        private final Map<String, Integer> characterMapPrecedence = new HashMap<>();
         private final Map<String, AccumulatorDefinition> accumulators = new HashMap<>();
+        private final java.util.Set<String> ambiguousAccumulators = new java.util.HashSet<>();
         private final Map<String, ModeDeclaration> modeDeclarations = new HashMap<>();
         private final Map<String, String> namespaceBindings = new HashMap<>();
         private final Set<String> attributeSetReferences = new HashSet<>();  // All use-attribute-sets references
@@ -322,6 +390,9 @@ public final class CompiledStylesheet {
         // Tracks output attributes per named output definition for XTSE1560 conflict detection
         // Key: output-name (empty string for unnamed), Value: map of attr-name -> attr-value
         private final Map<String, Map<String, String>> outputAttributeValues = new HashMap<>();
+        // Tracks import precedence per output attribute for XTSE1560 conflict detection
+        // Key: "outputName\0attrName", Value: import precedence at which the value was set
+        private final Map<String, Integer> outputAttributePrecedence = new HashMap<>();
         private String packageVersion;  // XSLT 3.0 package version
         private String defaultMode;  // XSLT 3.0 default-mode from stylesheet element
 
@@ -505,6 +576,13 @@ public final class CompiledStylesheet {
         }
 
         /**
+         * Returns an attribute set by name, or null if not found.
+         */
+        public AttributeSet getAttributeSet(String name) {
+            return attributeSets.get(name);
+        }
+
+        /**
          * Sets the output properties for the stylesheet.
          *
          * @param props the output properties
@@ -517,6 +595,10 @@ public final class CompiledStylesheet {
 
         /**
          * Merges an output attribute value, detecting XTSE1560 conflicts.
+         *
+         * <p>A conflict occurs when two declarations at the same import precedence
+         * specify different values for the same attribute. A higher-precedence
+         * declaration silently overrides any lower-precedence value.
          */
         public void mergeOutputAttribute(String outputName, String attrName, String attrValue)
                 throws SAXException {
@@ -526,13 +608,49 @@ public final class CompiledStylesheet {
                 existing = new HashMap<>();
                 outputAttributeValues.put(key, existing);
             }
-            String prev = existing.get(attrName);
-            if (prev != null && !prev.equals(attrValue)) {
-                String desc = key.isEmpty() ? "unnamed" : "'" + key + "'";
-                throw new SAXException("XTSE1560: Conflicting values for " + attrName +
-                    " in " + desc + " output definition: '" + prev + "' vs '" + attrValue + "'");
+            
+            // Track precedence for conflict detection
+            String precKey = key + "\0" + attrName;
+            String oldValue = existing.get(attrName);
+            Integer oldPrec = outputAttributePrecedence.get(precKey);
+            if (oldValue != null && oldPrec != null) {
+                if (currentImportPrecedence == oldPrec.intValue()) {
+                    // Same precedence: conflict if values differ
+                    if (!oldValue.equals(attrValue)) {
+                        String defName = key.isEmpty() ? "unnamed" : "'" + key + "'";
+                        throw new SAXException("XTSE1560: Conflicting values for " +
+                            attrName + " in " + defName + " output definition: '" +
+                            oldValue + "' vs '" + attrValue + "'");
+                    }
+                } else if (currentImportPrecedence < oldPrec.intValue()) {
+                    // Lower precedence: ignore
+                    return;
+                }
             }
+            
             existing.put(attrName, attrValue);
+            outputAttributePrecedence.put(precKey, currentImportPrecedence);
+        }
+
+        /**
+         * Registers a named output definition, creating an empty entry if needed.
+         */
+        public void registerOutputDefinition(String name) {
+            String key = name != null ? name : "";
+            if (!outputAttributeValues.containsKey(key)) {
+                outputAttributeValues.put(key, new HashMap<String, String>());
+            }
+        }
+
+        /**
+         * Checks whether a named output definition exists.
+         *
+         * @param name the output definition name (expanded QName)
+         * @return true if the named output definition has been declared
+         */
+        public boolean hasOutputDefinition(String name) {
+            String key = name != null ? name : "";
+            return outputAttributeValues.containsKey(key);
         }
 
         /**
@@ -541,9 +659,31 @@ public final class CompiledStylesheet {
          * @param key the key definition
          * @return this builder
          */
-        public Builder addKeyDefinition(KeyDefinition key) {
-            // Use expanded name (Clark notation) for lookup
-            keyDefinitions.put(key.getExpandedName(), key);
+        public Builder addKeyDefinition(KeyDefinition key) throws SAXException {
+            String expandedName = key.getExpandedName();
+            List<KeyDefinition> defs = keyDefinitions.get(expandedName);
+            if (defs == null) {
+                defs = new ArrayList<>();
+                keyDefinitions.put(expandedName, defs);
+            } else if (!defs.isEmpty()) {
+                // XTSE1222: all xsl:key declarations with the same name must
+                // have the same effective value of the composite attribute
+                boolean existingComposite = defs.get(0).isComposite();
+                if (key.isComposite() != existingComposite) {
+                    throw new SAXException("XTSE1222: Conflicting 'composite' attribute " +
+                        "values for xsl:key '" + expandedName + "'");
+                }
+                // XTSE1220: all xsl:key declarations with the same name must
+                // have the same effective collation
+                String existingColl = defs.get(0).getCollation();
+                String newColl = key.getCollation();
+                if (existingColl == null && newColl != null
+                        || existingColl != null && !existingColl.equals(newColl)) {
+                    throw new SAXException("XTSE1220: Conflicting collation values " +
+                        "for xsl:key '" + expandedName + "'");
+                }
+            }
+            defs.add(key);
             return this;
         }
 
@@ -556,8 +696,29 @@ public final class CompiledStylesheet {
          * @return this builder
          */
         public Builder addNamespaceAlias(String stylesheetUri, String resultUri, String resultPrefix) {
-            namespaceAliases.put(stylesheetUri, new NamespaceAlias(resultUri, resultPrefix));
+            namespaceAliases.put(stylesheetUri,
+                new NamespaceAlias(resultUri, resultPrefix, currentImportPrecedence));
             return this;
+        }
+        
+        /**
+         * Adds a namespace alias mapping with explicit import precedence.
+         *
+         * @param stylesheetUri the namespace URI in the stylesheet (to be replaced)
+         * @param resultUri the namespace URI for the result (replacement)
+         * @param resultPrefix the prefix to use in the result
+         * @param precedence the import precedence level
+         * @return this builder
+         */
+        public Builder addNamespaceAlias(String stylesheetUri, String resultUri,
+                String resultPrefix, int precedence) {
+            namespaceAliases.put(stylesheetUri,
+                new NamespaceAlias(resultUri, resultPrefix, precedence));
+            return this;
+        }
+
+        public NamespaceAlias getNamespaceAlias(String stylesheetUri) {
+            return namespaceAliases.get(stylesheetUri);
         }
 
         public Builder addStripSpaceElement(String element) {
@@ -633,6 +794,20 @@ public final class CompiledStylesheet {
         }
         
         /**
+         * Checks if a user function with the given namespace URI and local
+         * name has been registered (any arity).
+         */
+        public boolean hasUserFunction(String nsUri, String localName) {
+            String prefix = nsUri + "#" + localName + "#";
+            for (String key : userFunctions.keySet()) {
+                if (key.startsWith(prefix)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /**
          * Adds an imported schema for schema-aware processing.
          *
          * @param schema the XSD schema to import
@@ -666,6 +841,16 @@ public final class CompiledStylesheet {
                 String infinity, String minusSign, String nan, String percent,
                 String perMille, String zeroDigit, String digit, String patternSeparator)
                 throws SAXException {
+            return addDecimalFormat(name, decimalSeparator, groupingSeparator,
+                infinity, minusSign, nan, percent, perMille, zeroDigit, digit,
+                patternSeparator, null);
+        }
+        
+        public Builder addDecimalFormat(String name, String decimalSeparator, String groupingSeparator,
+                String infinity, String minusSign, String nan, String percent,
+                String perMille, String zeroDigit, String digit, String patternSeparator,
+                String exponentSeparator)
+                throws SAXException {
             String key = name != null ? name : "";
             String[] existingRaw = decimalFormatRaw.get(key);
             if (existingRaw != null) {
@@ -679,27 +864,33 @@ public final class CompiledStylesheet {
                 zeroDigit = mergeRaw(zeroDigit, existingRaw[7], "zero-digit", name);
                 digit = mergeRaw(digit, existingRaw[8], "digit", name);
                 patternSeparator = mergeRaw(patternSeparator, existingRaw[9], "pattern-separator", name);
+                if (existingRaw.length > 10) {
+                    exponentSeparator = mergeRaw(exponentSeparator, existingRaw[10], "exponent-separator", name);
+                }
             } else {
+                // Existing format from imports (lower precedence): override, don't error
                 DecimalFormatInfo existingInfo = decimalFormats.get(key);
                 if (existingInfo != null) {
-                    decimalSeparator = mergeRaw(decimalSeparator, charToStr(existingInfo.decimalSeparator), "decimal-separator", name);
-                    groupingSeparator = mergeRaw(groupingSeparator, charToStr(existingInfo.groupingSeparator), "grouping-separator", name);
-                    infinity = mergeRaw(infinity, existingInfo.infinity, "infinity", name);
-                    minusSign = mergeRaw(minusSign, charToStr(existingInfo.minusSign), "minus-sign", name);
-                    nan = mergeRaw(nan, existingInfo.nan, "NaN", name);
-                    percent = mergeRaw(percent, charToStr(existingInfo.percent), "percent", name);
-                    perMille = mergeRaw(perMille, charToStr(existingInfo.perMille), "per-mille", name);
-                    zeroDigit = mergeRaw(zeroDigit, charToStr(existingInfo.zeroDigit), "zero-digit", name);
-                    digit = mergeRaw(digit, charToStr(existingInfo.digit), "digit", name);
-                    patternSeparator = mergeRaw(patternSeparator, charToStr(existingInfo.patternSeparator), "pattern-separator", name);
+                    decimalSeparator = mergeRaw(decimalSeparator, charToStr(existingInfo.decimalSeparator));
+                    groupingSeparator = mergeRaw(groupingSeparator, charToStr(existingInfo.groupingSeparator));
+                    infinity = mergeRaw(infinity, existingInfo.infinity);
+                    minusSign = mergeRaw(minusSign, charToStr(existingInfo.minusSign));
+                    nan = mergeRaw(nan, existingInfo.nan);
+                    percent = mergeRaw(percent, charToStr(existingInfo.percent));
+                    perMille = mergeRaw(perMille, charToStr(existingInfo.perMille));
+                    zeroDigit = mergeRaw(zeroDigit, charToStr(existingInfo.zeroDigit));
+                    digit = mergeRaw(digit, charToStr(existingInfo.digit));
+                    patternSeparator = mergeRaw(patternSeparator, charToStr(existingInfo.patternSeparator));
+                    exponentSeparator = mergeRaw(exponentSeparator, charToStr(existingInfo.exponentSeparator));
                 }
             }
             decimalFormatRaw.put(key, new String[]{
                 decimalSeparator, groupingSeparator, infinity, minusSign, nan,
-                percent, perMille, zeroDigit, digit, patternSeparator
+                percent, perMille, zeroDigit, digit, patternSeparator, exponentSeparator
             });
             decimalFormats.put(key, new DecimalFormatInfo(name, decimalSeparator, groupingSeparator,
-                infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator));
+                infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator,
+                exponentSeparator));
             return this;
         }
         
@@ -721,14 +912,17 @@ public final class CompiledStylesheet {
             }
         }
         
-        private static String mergeRaw(String newVal, String existingVal, String attrName,
-                String formatName) throws SAXException {
+        private String mergeRaw(String newVal, String existingVal, String attrName,
+                String formatName) {
             if (newVal != null) {
-                // XTSE1290: detect conflicting values at same import precedence
+                // Record conflict (may be resolved by higher-precedence override later)
                 if (existingVal != null && !newVal.equals(existingVal)) {
+                    String key = formatName != null ? formatName : "";
                     String desc = formatName != null ? "'" + formatName + "'" : "(default)";
-                    throw new SAXException("XTSE1290: Conflicting values for " + attrName +
-                        " in decimal-format " + desc + ": '" + existingVal + "' vs '" + newVal + "'");
+                    decimalFormatConflicts.put(key,
+                        "XTSE1290: Conflicting values for " + attrName +
+                        " in decimal-format " + desc + ": '" + existingVal +
+                        "' vs '" + newVal + "'");
                 }
                 return newVal;
             }
@@ -752,9 +946,18 @@ public final class CompiledStylesheet {
          * @param characterMap the character map
          * @return this builder
          */
-        public Builder addCharacterMap(CharacterMap characterMap) {
+        public Builder addCharacterMap(CharacterMap characterMap) throws SAXException {
             String key = characterMap.getName() != null ? characterMap.getName() : "";
+            CharacterMap existing = characterMaps.get(key);
+            if (existing != null) {
+                Integer existingPrec = characterMapPrecedence.get(key);
+                if (existingPrec != null && existingPrec.intValue() == currentImportPrecedence) {
+                    throw new SAXException("XTSE1580: Duplicate character-map name '" +
+                        characterMap.getName() + "' at the same import precedence");
+                }
+            }
             characterMaps.put(key, characterMap);
+            characterMapPrecedence.put(key, currentImportPrecedence);
             return this;
         }
 
@@ -788,13 +991,60 @@ public final class CompiledStylesheet {
 
         /**
          * Adds an accumulator definition.
+         * Handles import precedence: higher precedence wins and resolves
+         * any ambiguity from same-precedence duplicates at lower levels.
          *
          * @param accumulator the accumulator
          * @return this builder
          */
         public Builder addAccumulator(AccumulatorDefinition accumulator) {
-            accumulators.put(accumulator.getName(), accumulator);
+            String expandedName = accumulator.getExpandedName();
+            
+            // Check for existing accumulator with same expanded name
+            AccumulatorDefinition existing = findByExpandedName(expandedName);
+            if (existing != null) {
+                int existingPrec = existing.getImportPrecedence();
+                int newPrec = accumulator.getImportPrecedence();
+                if (newPrec > existingPrec) {
+                    accumulators.remove(existing.getName());
+                    accumulators.put(accumulator.getName(), accumulator);
+                    ambiguousAccumulators.remove(expandedName);
+                } else if (newPrec == existingPrec) {
+                    accumulators.put(accumulator.getName(), accumulator);
+                    ambiguousAccumulators.add(expandedName);
+                }
+            } else {
+                accumulators.put(accumulator.getName(), accumulator);
+            }
             return this;
+        }
+
+        private AccumulatorDefinition findByExpandedName(String expandedName) {
+            for (AccumulatorDefinition def : accumulators.values()) {
+                if (expandedName.equals(def.getExpandedName())) {
+                    return def;
+                }
+            }
+            return null;
+        }
+
+        /**
+         * XTSE3350: checks for unresolved duplicate accumulator names.
+         * Call after all imports/includes have been processed.
+         */
+        public void validateAccumulatorNames() throws SAXException {
+            if (!ambiguousAccumulators.isEmpty()) {
+                String first = ambiguousAccumulators.iterator().next();
+                throw new SAXException("XTSE3350: Duplicate accumulator name: " + first);
+            }
+        }
+
+        public AccumulatorDefinition getAccumulator(String name) {
+            return accumulators.get(name);
+        }
+
+        public java.util.Set<String> getAccumulatorNames() {
+            return accumulators.keySet();
         }
 
         /**
@@ -890,6 +1140,7 @@ public final class CompiledStylesheet {
                         rule.getBody(),
                         rule.getAsType()      // Preserve as attribute for type validation
                     );
+                    adjusted.setParsedAsType(rule.getParsedAsType());
                 }
                 templateRules.add(adjusted);
                 if (adjusted.getName() != null) {
@@ -1013,10 +1264,13 @@ public final class CompiledStylesheet {
                 this.outputProperties.merge(imported.getOutputProperties());
             }
             
-            // Add key definitions - first definition wins
-            for (Map.Entry<String, KeyDefinition> entry : imported.keyDefinitions.entrySet()) {
-                if (!keyDefinitions.containsKey(entry.getKey())) {
-                    keyDefinitions.put(entry.getKey(), entry.getValue());
+            // Merge key definitions - multiple defs with same name are all active
+            for (Map.Entry<String, List<KeyDefinition>> entry : imported.keyDefinitions.entrySet()) {
+                List<KeyDefinition> existing = keyDefinitions.get(entry.getKey());
+                if (existing == null) {
+                    keyDefinitions.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+                } else {
+                    existing.addAll(entry.getValue());
                 }
             }
             
@@ -1038,11 +1292,20 @@ public final class CompiledStylesheet {
                 preserveSpaceDeclarations.add(new SpaceDeclaration(decl.pattern, decl.importPrecedence - 1));
             }
             
-            // Add accumulators - first definition wins
-            for (Map.Entry<String, AccumulatorDefinition> entry : imported.accumulators.entrySet()) {
-                if (!accumulators.containsKey(entry.getKey())) {
-                    accumulators.put(entry.getKey(), entry.getValue());
+            // Merge user-defined functions - higher import precedence wins
+            for (Map.Entry<String, UserFunction> entry : imported.userFunctions.entrySet()) {
+                String key = entry.getKey();
+                UserFunction existing = userFunctions.get(key);
+                if (existing == null) {
+                    userFunctions.put(key, entry.getValue());
+                } else if (entry.getValue().getImportPrecedence() > existing.getImportPrecedence()) {
+                    userFunctions.put(key, entry.getValue());
                 }
+            }
+            
+            // Add accumulators via addAccumulator for proper precedence handling
+            for (AccumulatorDefinition acc : imported.accumulators.values()) {
+                addAccumulator(acc);
             }
             
             // Merge mode declarations - importing attributes take priority,
@@ -1064,6 +1327,8 @@ public final class CompiledStylesheet {
                 if (!decimalFormats.containsKey(key)) {
                     decimalFormats.put(key, importedInfo);
                 } else {
+                    // Current stylesheet has higher precedence: resolve any conflicts
+                    decimalFormatConflicts.remove(key);
                     // Merge: current stylesheet attributes take precedence
                     String[] raw = decimalFormatRaw.get(key);
                     if (raw != null) {
@@ -1087,6 +1352,15 @@ public final class CompiledStylesheet {
             for (Map.Entry<String, CharacterMap> entry : imported.characterMaps.entrySet()) {
                 if (!characterMaps.containsKey(entry.getKey())) {
                     characterMaps.put(entry.getKey(), entry.getValue());
+                }
+            }
+            
+            // Merge output attribute values - first definition wins
+            for (Map.Entry<String, Map<String, String>> entry
+                    : imported.outputAttributeValues.entrySet()) {
+                if (!outputAttributeValues.containsKey(entry.getKey())) {
+                    outputAttributeValues.put(entry.getKey(),
+                        new HashMap<String, String>(entry.getValue()));
                 }
             }
         }
@@ -1134,6 +1408,7 @@ public final class CompiledStylesheet {
                         rule.getBody(),
                         rule.getAsType()      // Preserve as attribute for type validation
                     );
+                    adjusted.setParsedAsType(rule.getParsedAsType());
                     templateRules.set(i, adjusted);
                     if (adjusted.getName() != null) {
                         namedTemplates.put(adjusted.getName(), adjusted);
@@ -1165,6 +1440,13 @@ public final class CompiledStylesheet {
          * @throws javax.xml.transform.TransformerConfigurationException if validation fails
          */
         public CompiledStylesheet build(boolean validateReferences) throws javax.xml.transform.TransformerConfigurationException {
+            // XTSE1290: throw for any unresolved decimal-format conflicts.
+            // Only check when validateReferences is true (top-level build).
+            // Sub-stylesheets may have conflicts resolved by a higher-precedence parent.
+            if (validateReferences && !decimalFormatConflicts.isEmpty()) {
+                String firstConflict = decimalFormatConflicts.values().iterator().next();
+                throw new javax.xml.transform.TransformerConfigurationException(firstConflict);
+            }
             // Validate decimal-format distinctness (XTSE1300)
             for (Map.Entry<String, DecimalFormatInfo> entry : decimalFormats.entrySet()) {
                 try {
@@ -1219,6 +1501,19 @@ public final class CompiledStylesheet {
                     if (hasCircularReference(charMap.getName(), visited)) {
                         throw new javax.xml.transform.TransformerConfigurationException(
                             "XTSE1600: Circular reference in character-map '" + charMap.getName() + "'");
+                    }
+                }
+            }
+            
+            // Validate strip-space/preserve-space conflicts at same precedence (XTSE0270)
+            for (SpaceDeclaration strip : stripSpaceDeclarations) {
+                for (SpaceDeclaration preserve : preserveSpaceDeclarations) {
+                    if (strip.pattern.equals(preserve.pattern) &&
+                            strip.importPrecedence == preserve.importPrecedence) {
+                        throw new javax.xml.transform.TransformerConfigurationException(
+                            "XTSE0270: The same NameTest '" + strip.pattern +
+                            "' appears in both xsl:strip-space and xsl:preserve-space " +
+                            "at the same import precedence");
                     }
                 }
             }
@@ -1284,7 +1579,11 @@ public final class CompiledStylesheet {
         this.globalVariables = Collections.unmodifiableList(new ArrayList<>(builder.globalVariables));
         this.attributeSets = Collections.unmodifiableMap(new HashMap<>(builder.attributeSets));
         this.outputProperties = builder.outputProperties;
-        this.keyDefinitions = Collections.unmodifiableMap(new HashMap<>(builder.keyDefinitions));
+        Map<String, List<KeyDefinition>> keyDefsCopy = new HashMap<>();
+        for (Map.Entry<String, List<KeyDefinition>> entry : builder.keyDefinitions.entrySet()) {
+            keyDefsCopy.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(entry.getValue())));
+        }
+        this.keyDefinitions = Collections.unmodifiableMap(keyDefsCopy);
         this.namespaceAliases = Collections.unmodifiableMap(new HashMap<>(builder.namespaceAliases));
         this.stripSpaceDeclarations = Collections.unmodifiableList(new ArrayList<>(builder.stripSpaceDeclarations));
         this.preserveSpaceDeclarations = Collections.unmodifiableList(new ArrayList<>(builder.preserveSpaceDeclarations));
@@ -1305,6 +1604,11 @@ public final class CompiledStylesheet {
         this.preserveSpaceElements = Collections.unmodifiableList(preservePatterns);
         this.decimalFormats = Collections.unmodifiableMap(new HashMap<>(builder.decimalFormats));
         this.characterMaps = Collections.unmodifiableMap(new HashMap<>(builder.characterMaps));
+        Map<String, Map<String, String>> oavCopy = new HashMap<>();
+        for (Map.Entry<String, Map<String, String>> entry : builder.outputAttributeValues.entrySet()) {
+            oavCopy.put(entry.getKey(), Collections.unmodifiableMap(new HashMap<>(entry.getValue())));
+        }
+        this.outputAttributeValues = Collections.unmodifiableMap(oavCopy);
         this.accumulators = Collections.unmodifiableMap(new HashMap<>(builder.accumulators));
         this.modeDeclarations = Collections.unmodifiableMap(new HashMap<>(builder.modeDeclarations));
         this.namespaceBindings = Collections.unmodifiableMap(new HashMap<>(builder.namespaceBindings));
@@ -1408,13 +1712,32 @@ public final class CompiledStylesheet {
     }
 
     /**
-     * Returns a key definition.
+     * Returns the first key definition for the given name, or null if not found.
      *
      * @param name the key name
-     * @return the key definition, or null if not found
+     * @return the first key definition, or null if not found
      */
     public KeyDefinition getKeyDefinition(String name) {
-        return keyDefinitions.get(name);
+        List<KeyDefinition> defs = keyDefinitions.get(name);
+        if (defs != null && !defs.isEmpty()) {
+            return defs.get(0);
+        }
+        return null;
+    }
+
+    /**
+     * Returns all key definitions for the given name.
+     * Multiple xsl:key elements with the same name are all active.
+     *
+     * @param name the key name
+     * @return the list of key definitions (empty if none found)
+     */
+    public List<KeyDefinition> getKeyDefinitions(String name) {
+        List<KeyDefinition> defs = keyDefinitions.get(name);
+        if (defs != null) {
+            return defs;
+        }
+        return Collections.emptyList();
     }
 
     /**

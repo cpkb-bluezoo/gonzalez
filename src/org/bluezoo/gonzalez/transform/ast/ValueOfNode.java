@@ -28,11 +28,13 @@ import java.util.List;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
+import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -46,13 +48,21 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;
     private final boolean disableEscaping;
-    private final String separator;  // null means use default (space for sequences in XSLT 2.0+)
+    private final AttributeValueTemplate separatorAvt;  // null means use default
     private final boolean xslt2Plus; // XSLT 2.0+ outputs all items, 1.0 only first
     
     public ValueOfNode(XPathExpression selectExpr, boolean disableEscaping, String separator, boolean xslt2Plus) {
         this.selectExpr = selectExpr;
         this.disableEscaping = disableEscaping;
-        this.separator = separator;
+        this.separatorAvt = separator != null ? AttributeValueTemplate.literal(separator) : null;
+        this.xslt2Plus = xslt2Plus;
+    }
+    
+    public ValueOfNode(XPathExpression selectExpr, boolean disableEscaping,
+            AttributeValueTemplate separatorAvt, boolean xslt2Plus) {
+        this.selectExpr = selectExpr;
+        this.disableEscaping = disableEscaping;
+        this.separatorAvt = separatorAvt;
         this.xslt2Plus = xslt2Plus;
     }
     
@@ -81,16 +91,15 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
                 return;
             }
             
+            // Evaluate separator AVT at runtime
+            String separator = separatorAvt != null ? separatorAvt.evaluate(context) : null;
+            
             // Check for atomization errors (XTTE1540 / XTTE3090)
             ErrorHandlingMode errorMode = context.getErrorHandlingMode();
             if (!errorMode.isSilent()) {
-                // Check if result is a sequence with multiple node items
-                // This can cause atomization issues
                 if (result.isSequence()) {
                     XPathSequence seq = (XPathSequence) result;
-                    // In XSLT 2.0+, sequences are allowed and space-separated
-                    // But we should still warn if it's not what was expected
-                    if (!xslt2Plus && seq.size() > 1) {
+                    if (!xslt2Plus && separator == null && seq.size() > 1) {
                         String msg = "xsl:value-of in XSLT 1.0 mode has sequence with " + 
                                     seq.size() + " items, only first will be used";
                         if (errorMode.isRecovery()) {
@@ -101,13 +110,16 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
             }
             
             String value;
+            // Explicit separator attribute overrides the first-item rule
+            // even in backwards-compatible mode
+            boolean outputAllItems = xslt2Plus || separator != null;
+            
             if (result.isNodeSet()) {
                 XPathNodeSet nodeSet = result.asNodeSet();
                 if (nodeSet.isEmpty()) {
                     return;
                 }
-                if (xslt2Plus) {
-                    // XSLT 2.0+: output all nodes with separator
+                if (outputAllItems) {
                     String sep = (separator != null) ? separator : " ";
                     StringBuilder sb = new StringBuilder();
                     boolean first = true;
@@ -120,25 +132,35 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
                     }
                     value = sb.toString();
                 } else {
-                    // XSLT 1.0: only output first node
                     value = nodeSet.iterator().next().getStringValue();
                 }
             } else if (result.isSequence()) {
-                // XPath 2.0+ sequence
                 XPathSequence seq = (XPathSequence) result;
                 if (seq.isEmpty()) {
                     return;
                 }
-                if (xslt2Plus) {
+                if (outputAllItems) {
                     String sep = (separator != null) ? separator : " ";
                     StringBuilder sb = new StringBuilder();
                     boolean first = true;
+                    boolean lastWasTextNode = false;
                     for (XPathValue item : seq.getItems()) {
-                        if (!first) {
-                            sb.append(sep);
+                        boolean isTextNode = isTextNodeItem(item);
+                        // Per XSLT spec: zero-length text nodes are removed
+                        if (isTextNode && item.asString().isEmpty()) {
+                            continue;
                         }
-                        sb.append(item.asString());
+                        if (isTextNode && lastWasTextNode) {
+                            // Adjacent text nodes are merged (no separator between them)
+                            sb.append(item.asString());
+                        } else {
+                            if (!first) {
+                                sb.append(sep);
+                            }
+                            sb.append(item.asString());
+                        }
                         first = false;
+                        lastWasTextNode = isTextNode;
                     }
                     value = sb.toString();
                 } else {
@@ -158,5 +180,24 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
         } catch (XPathException e) {
             throw new SAXException("XPath evaluation error", e);
         }
+    }
+
+    /**
+     * Tests whether an XPath value is a text node.
+     * Used for merging adjacent text nodes in sequences.
+     */
+    private boolean isTextNodeItem(XPathValue item) {
+        if (item instanceof XPathNode) {
+            XPathNode node = (XPathNode) item;
+            return node.getNodeType() == NodeType.TEXT;
+        }
+        if (item instanceof XPathNodeSet) {
+            XPathNodeSet ns = (XPathNodeSet) item;
+            if (ns.size() == 1) {
+                XPathNode node = ns.iterator().next();
+                return node.getNodeType() == NodeType.TEXT;
+            }
+        }
+        return false;
     }
 }

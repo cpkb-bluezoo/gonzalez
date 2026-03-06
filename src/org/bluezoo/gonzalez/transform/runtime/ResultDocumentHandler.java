@@ -29,6 +29,8 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.Writer;
 import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 
 /**
  * Output handler for secondary result documents.
@@ -61,7 +63,13 @@ public final class ResultDocumentHandler implements OutputHandler {
             encoding = "UTF-8";
         }
         
-        this.writer = new OutputStreamWriter(outputStream, Charset.forName(encoding));
+        Charset charset = StandardCharsets.UTF_8;
+        try {
+            charset = Charset.forName(encoding);
+        } catch (java.nio.charset.UnsupportedCharsetException e) {
+            // SESU0007: fall back to UTF-8 for unsupported encodings
+        }
+        this.writer = new OutputStreamWriter(outputStream, charset);
         this.documentStarted = false;
         this.depth = 0;
     }

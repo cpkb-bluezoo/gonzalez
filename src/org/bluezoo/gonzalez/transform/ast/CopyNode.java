@@ -104,6 +104,8 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     @Override public String getInstructionName() { return "copy"; }
+    public SequenceNode getContent() { return content; }
+    public String getUseAttributeSetsString() { return useAttrSets; }
 
     @Override
     public List<XPathExpression> getExpressions() {

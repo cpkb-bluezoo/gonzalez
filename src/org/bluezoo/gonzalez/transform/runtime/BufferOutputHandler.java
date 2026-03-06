@@ -62,8 +62,13 @@ public class BufferOutputHandler implements OutputHandler {
     // Pending attribute type annotations (stored by index)
     private List<String[]> pendingAttributeTypes = new ArrayList<>(4);
     
-    // XSLT 2.0 atomic value spacing state
+    // Element nesting depth (0 = document level)
+    private int elementDepth = 0;
+    private boolean documentStarted = false;
+    
+    // XSLT 2.0+ simple content spacing state
     private boolean atomicValuePending = false;
+    private boolean textOutputPending = false;
     private boolean inAttributeContent = false;
     
     /**
@@ -86,6 +91,8 @@ public class BufferOutputHandler implements OutputHandler {
     
     @Override
     public void startDocument() throws SAXException {
+        documentStarted = true;
+        elementDepth = 0;
         buffer.startDocument();
     }
     
@@ -106,6 +113,7 @@ public class BufferOutputHandler implements OutputHandler {
         pendingLocalName = localName;
         pendingQName = qName;
         hasPendingElement = true;
+        elementDepth++;
         pendingNamespaces.clear();
         pendingAttributes.clear();
     }
@@ -115,9 +123,7 @@ public class BufferOutputHandler implements OutputHandler {
             throws SAXException {
         flushPendingElement();
         buffer.endElement(namespaceURI, localName, qName);
-        
-        // Emit endPrefixMapping for namespaces we declared on the matching start element
-        // Note: This is simplified; proper implementation would track nesting
+        elementDepth--;
     }
     
     @Override
@@ -131,6 +137,9 @@ public class BufferOutputHandler implements OutputHandler {
                 qName, 
                 "CDATA", 
                 value);
+        } else if (elementDepth == 0) {
+            throw new SAXException("XTDE0420: An attribute node (" + localName +
+                ") cannot be created as a child of a document node");
         }
     }
     
@@ -153,9 +162,16 @@ public class BufferOutputHandler implements OutputHandler {
     public void characters(String text) throws SAXException {
         flushPendingElement();
         if (text != null && !text.isEmpty()) {
+            if (atomicValuePending && !inAttributeContent) {
+                buffer.characters(SPACE, 0, 1);
+            }
             buffer.characters(text.toCharArray(), 0, text.length());
+            atomicValuePending = false;
+            textOutputPending = true;
         }
     }
+    
+    private static final char[] SPACE = {' '};
     
     @Override
     public void charactersRaw(String text) throws SAXException {
@@ -170,7 +186,6 @@ public class BufferOutputHandler implements OutputHandler {
     public void comment(String text) throws SAXException {
         flushPendingElement();
         if (text != null) {
-            System.err.println("DEBUG runtime.BufferOutputHandler.comment: '" + text + "'");
             buffer.comment(text.toCharArray(), 0, text.length());
         }
     }
@@ -309,13 +324,19 @@ public class BufferOutputHandler implements OutputHandler {
     public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
             throws SAXException {
         if (value != null) {
-            // In element content, add space between adjacent atomic values (XSLT 2.0+)
-            // But NOT in attribute content
-            if (atomicValuePending && !inAttributeContent) {
-                characters(" ");
+            // XSLT 2.0+ simple content: space between adjacent items where
+            // at least one is atomic (not between adjacent text nodes)
+            if ((atomicValuePending || textOutputPending) && !inAttributeContent) {
+                flushPendingElement();
+                buffer.characters(SPACE, 0, 1);
             }
-            characters(value.asString());
+            String s = value.asString();
+            if (s != null && !s.isEmpty()) {
+                flushPendingElement();
+                buffer.characters(s.toCharArray(), 0, s.length());
+            }
             atomicValuePending = true;
+            textOutputPending = false;
         }
     }
 }

@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.type;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 
 /**
  * XPath number value.
@@ -29,6 +30,11 @@ import java.math.BigDecimal;
  * <p>Numbers in XPath are IEEE 754 double-precision 64-bit floating point values.
  * This includes special values NaN (not-a-number), positive infinity, and
  * negative infinity.
+ *
+ * <p>For exact precision, numbers may also carry an {@code exactValue} field
+ * of type {@link Number}: {@link Long} for exact integers within long range,
+ * {@link BigInteger} for exact integers outside long range, or
+ * {@link BigDecimal} for exact decimal values.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -50,6 +56,9 @@ public final class XPathNumber implements XPathValue {
     public static final XPathNumber NEGATIVE_INFINITY = new XPathNumber(Double.NEGATIVE_INFINITY);
 
     private final double value;
+    private final boolean isFloat;
+    private final boolean isExplicitDouble;
+    private final Number exactValue;
 
     /**
      * Creates a new XPath number value.
@@ -58,6 +67,164 @@ public final class XPathNumber implements XPathValue {
      */
     public XPathNumber(double value) {
         this.value = value;
+        this.isFloat = false;
+        this.isExplicitDouble = false;
+        this.exactValue = null;
+    }
+
+    /**
+     * Creates a new XPath number value with explicit float flag.
+     * When isFloat is true, serialization uses xs:float canonical form.
+     *
+     * @param value the numeric value
+     * @param isFloat true if this represents an xs:float value
+     */
+    public XPathNumber(double value, boolean isFloat) {
+        this.value = value;
+        this.isFloat = isFloat;
+        this.isExplicitDouble = false;
+        this.exactValue = null;
+    }
+
+    /**
+     * Creates a new XPath number with explicit type flags.
+     *
+     * @param value the numeric value
+     * @param isFloat true if xs:float
+     * @param isExplicitDouble true if explicitly constructed via xs:double()
+     */
+    public XPathNumber(double value, boolean isFloat, boolean isExplicitDouble) {
+        this.value = value;
+        this.isFloat = isFloat;
+        this.isExplicitDouble = isExplicitDouble;
+        this.exactValue = null;
+    }
+
+    /**
+     * Creates an XPath number backed by a BigDecimal for xs:decimal precision.
+     *
+     * @param decimal the decimal value
+     */
+    public XPathNumber(BigDecimal decimal) {
+        this.value = decimal.doubleValue();
+        this.isFloat = false;
+        this.isExplicitDouble = false;
+        this.exactValue = decimal;
+    }
+
+    /**
+     * Creates an XPath number backed by a BigInteger for xs:integer precision
+     * beyond the range of long.
+     *
+     * @param bigInt the big integer value
+     */
+    public XPathNumber(BigInteger bigInt) {
+        this.value = bigInt.doubleValue();
+        this.isFloat = false;
+        this.isExplicitDouble = false;
+        this.exactValue = bigInt;
+    }
+
+    /**
+     * Internal constructor with all fields.
+     */
+    private XPathNumber(double value, boolean isFloat, boolean isExplicitDouble,
+                        Number exactValue) {
+        this.value = value;
+        this.isFloat = isFloat;
+        this.isExplicitDouble = isExplicitDouble;
+        this.exactValue = exactValue;
+    }
+
+    /**
+     * Returns an exact xs:integer XPathNumber for the given long value.
+     *
+     * @param v the integer value
+     * @return an XPathNumber with exact integer representation
+     */
+    public static XPathNumber ofInteger(long v) {
+        return new XPathNumber(v, false, false, Long.valueOf(v));
+    }
+
+    /**
+     * Returns an exact xs:integer XPathNumber for the given BigInteger value.
+     * Demotes to Long if the value fits in long range.
+     *
+     * @param v the big integer value
+     * @return an XPathNumber with exact integer representation
+     */
+    public static XPathNumber ofInteger(BigInteger v) {
+        if (v.bitLength() < 64) {
+            long lv = v.longValue();
+            return new XPathNumber(lv, false, false, Long.valueOf(lv));
+        }
+        return new XPathNumber(v);
+    }
+
+    /**
+     * Returns the BigDecimal representation, or null if not a decimal type.
+     */
+    public BigDecimal getDecimalValue() {
+        if (exactValue instanceof BigDecimal) {
+            return (BigDecimal) exactValue;
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if this number has exact decimal representation.
+     */
+    public boolean isDecimal() {
+        return exactValue instanceof BigDecimal;
+    }
+
+    /**
+     * Returns true if this number is backed by an exact integer value
+     * (Long or BigInteger).
+     */
+    public boolean isExactInteger() {
+        return exactValue instanceof Long || exactValue instanceof BigInteger;
+    }
+
+    /**
+     * Returns this number's exact value as a BigInteger.
+     * Only valid when {@link #isExactInteger()} returns true.
+     *
+     * @return the exact integer value, or null if not an exact integer
+     */
+    public BigInteger toBigInteger() {
+        if (exactValue instanceof BigInteger) {
+            return (BigInteger) exactValue;
+        }
+        if (exactValue instanceof Long) {
+            return BigInteger.valueOf(((Long) exactValue).longValue());
+        }
+        return null;
+    }
+
+    /**
+     * Returns this number's exact value as a Long, or null if it is not
+     * an exact integer stored as Long.
+     */
+    public Long toLong() {
+        if (exactValue instanceof Long) {
+            return (Long) exactValue;
+        }
+        return null;
+    }
+
+    /**
+     * Returns true if this number represents an xs:float value.
+     */
+    public boolean isFloat() {
+        return isFloat;
+    }
+
+    /**
+     * Returns true if this number was explicitly constructed as xs:double.
+     */
+    public boolean isExplicitDouble() {
+        return isExplicitDouble;
     }
 
     /**
@@ -90,6 +257,27 @@ public final class XPathNumber implements XPathValue {
     }
 
     /**
+     * Returns an XPath number for the given double value, marked as explicit double.
+     * Used when the result of arithmetic on a double-typed operand should retain
+     * the double type to prevent misclassification as integer in subsequent operations.
+     *
+     * @param value the numeric value
+     * @return the XPath number value, marked as explicit double
+     */
+    public static XPathNumber ofExplicitDouble(double value) {
+        if (Double.isNaN(value)) {
+            return new XPathNumber(Double.NaN, false, true);
+        }
+        if (value == Double.POSITIVE_INFINITY) {
+            return new XPathNumber(Double.POSITIVE_INFINITY, false, true);
+        }
+        if (value == Double.NEGATIVE_INFINITY) {
+            return new XPathNumber(Double.NEGATIVE_INFINITY, false, true);
+        }
+        return new XPathNumber(value, false, true);
+    }
+
+    /**
      * Returns the XPath type of this value.
      *
      * @return {@link Type#NUMBER}
@@ -101,6 +289,15 @@ public final class XPathNumber implements XPathValue {
 
     @Override
     public String asString() {
+        if (exactValue instanceof Long) {
+            return Long.toString(((Long) exactValue).longValue());
+        }
+        if (exactValue instanceof BigInteger) {
+            return exactValue.toString();
+        }
+        if (exactValue instanceof BigDecimal) {
+            return formatDecimal((BigDecimal) exactValue);
+        }
         if (Double.isNaN(value)) {
             return "NaN";
         }
@@ -115,6 +312,21 @@ public final class XPathNumber implements XPathValue {
                 return "-0";
             }
             return "0";
+        }
+
+        // xs:float uses its own canonical lexical form (scientific notation)
+        if (isFloat) {
+            String s = Float.toString((float) value);
+            if (s.endsWith(".0")) {
+                return s.substring(0, s.length() - 2);
+            }
+            return s;
+        }
+
+        // xs:double (explicit) uses XPath 2.0 canonical form:
+        // Scientific notation when exponent >= 7 or <= -7, otherwise decimal
+        if (isExplicitDouble) {
+            return formatDoubleCanonical(value);
         }
 
         // XPath requires that if the number is an integer, no decimal point is shown
@@ -149,6 +361,132 @@ public final class XPathNumber implements XPathValue {
         }
 
         return str;
+    }
+
+    /**
+     * Formats a BigDecimal as the XPath canonical decimal representation.
+     */
+    private static String formatDecimal(BigDecimal bd) {
+        bd = bd.stripTrailingZeros();
+        if (bd.scale() <= 0) {
+            return bd.toBigInteger().toString();
+        }
+        return bd.toPlainString();
+    }
+
+    /**
+     * Formats a double value as XPath 2.0 xs:double canonical lexical representation.
+     *
+     * <p>Per the XPath 2.0 F&amp;O spec (casting xs:double to xs:string):
+     * if the normalized exponent E satisfies -6 &lt;= E &lt; 6 (i.e., |v| in [1E-6, 1E6)),
+     * use decimal notation; otherwise use scientific notation.
+     */
+    private static String formatDoubleCanonical(double v) {
+        if (v == 0.0) {
+            if (Double.doubleToRawLongBits(v) == Long.MIN_VALUE) {
+                return "-0";
+            }
+            return "0";
+        }
+
+        double absV = Math.abs(v);
+        boolean useScientific = absV >= 1E6 || absV < 1E-6;
+
+        if (!useScientific) {
+            // Decimal notation for |v| in [1E-6, 1E6)
+            if (v == Math.floor(v) && !Double.isInfinite(v)) {
+                long lv = (long) v;
+                if (lv == v) {
+                    return Long.toString(lv);
+                }
+            }
+            String s = Double.toString(v);
+            if (s.contains("E") || s.contains("e")) {
+                BigDecimal bd = new BigDecimal(s);
+                s = bd.toPlainString();
+            }
+            if (s.contains(".")) {
+                while (s.endsWith("0") && !s.endsWith(".0")) {
+                    s = s.substring(0, s.length() - 1);
+                }
+                if (s.endsWith(".0")) {
+                    s = s.substring(0, s.length() - 2);
+                }
+            }
+            return s;
+        }
+
+        // Scientific notation for |v| >= 1E6 or |v| < 1E-6
+        String s = Double.toString(v);
+        int ePos = s.indexOf('E');
+        if (ePos < 0) {
+            ePos = s.indexOf('e');
+        }
+
+        if (ePos >= 0) {
+            // Java already produced scientific notation — clean up
+            String mantissa = s.substring(0, ePos);
+            String expPart = s.substring(ePos + 1);
+            if (mantissa.contains(".")) {
+                while (mantissa.endsWith("0") && !mantissa.endsWith(".0")) {
+                    mantissa = mantissa.substring(0, mantissa.length() - 1);
+                }
+            }
+            int exp = Integer.parseInt(expPart);
+            return mantissa + "E" + exp;
+        }
+
+        // Java did not produce scientific notation (values in [1E6, 1E7) range)
+        return convertToScientific(s);
+    }
+
+    /**
+     * Converts a plain decimal string (e.g., "1234567.0") to XPath scientific notation
+     * (e.g., "1.234567E6"). Used for values Java doesn't represent in scientific form.
+     */
+    private static String convertToScientific(String s) {
+        boolean negative = s.startsWith("-");
+        String plain = negative ? s.substring(1) : s;
+
+        if (plain.endsWith(".0")) {
+            plain = plain.substring(0, plain.length() - 2);
+        } else if (plain.contains(".")) {
+            while (plain.endsWith("0")) {
+                plain = plain.substring(0, plain.length() - 1);
+            }
+            if (plain.endsWith(".")) {
+                plain = plain.substring(0, plain.length() - 1);
+            }
+        }
+
+        int dotPos = plain.indexOf('.');
+        String intPart;
+        String fracPart;
+        if (dotPos >= 0) {
+            intPart = plain.substring(0, dotPos);
+            fracPart = plain.substring(dotPos + 1);
+        } else {
+            intPart = plain;
+            fracPart = "";
+        }
+
+        int exp = intPart.length() - 1;
+        String allDigits = intPart + fracPart;
+        while (allDigits.length() > 1 && allDigits.endsWith("0")) {
+            allDigits = allDigits.substring(0, allDigits.length() - 1);
+        }
+
+        String mantissa;
+        if (allDigits.length() == 1) {
+            mantissa = allDigits + ".0";
+        } else {
+            mantissa = allDigits.substring(0, 1) + "." + allDigits.substring(1);
+        }
+
+        if (negative) {
+            return "-" + mantissa + "E" + exp;
+        }
+        return mantissa + "E" + exp;
     }
 
     /**
@@ -218,6 +556,9 @@ public final class XPathNumber implements XPathValue {
      * @return true if the value has no fractional part
      */
     public boolean isInteger() {
+        if (isExactInteger()) {
+            return true;
+        }
         return value == Math.floor(value) && !Double.isInfinite(value) && !Double.isNaN(value);
     }
 
@@ -239,14 +580,20 @@ public final class XPathNumber implements XPathValue {
             return false;
         }
         
-        // All numbers are xs:double (XPath 1.0 default)
-        // In XPath 2.0+, we allow numbers to match any numeric type via promotion
+        // XPath 2.0+ numeric type promotion rules:
+        // - integer → decimal → float → double (promotion allowed)
+        // - double → float is NOT allowed (demotion)
         switch (xsTypeName) {
             case "double":
-            case "float":
-            case "decimal":
-                // All XPathNumber values can be considered xs:double, xs:float, or xs:decimal
                 return true;
+                
+            case "float":
+                // Explicit double values cannot demote to float
+                return !isExplicitDouble;
+                
+            case "decimal":
+                // Decimal matches: all finite numeric values
+                return !Double.isInfinite(value) && !Double.isNaN(value);
                 
             case "integer":
             case "int":
@@ -261,7 +608,6 @@ public final class XPathNumber implements XPathValue {
             case "unsignedLong":
             case "unsignedShort":
             case "unsignedByte":
-                // Integer types require no fractional part
                 return isInteger();
                 
             default:

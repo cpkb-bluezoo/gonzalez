@@ -108,6 +108,8 @@ public class ElementNode extends XSLTInstruction {
     }
     
     @Override public String getInstructionName() { return "element"; }
+    public SequenceNode getContent() { return content; }
+    public String getUseAttributeSetsString() { return useAttrSets; }
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         try {
@@ -241,9 +243,11 @@ public class ElementNode extends XSLTInstruction {
                 output.setInheritNamespaces(false);
             }
             try {
-                // Execute content with on-empty/on-non-empty support (XSLT 3.0)
+                // Push variable scope so variables declared in the content
+                // don't leak to following siblings after the element closes
                 if (content != null) {
-                    content.executeWithOnEmptySupport(context, output, content.hasOnEmptyOrOnNonEmpty());
+                    TransformContext scopedContext = context.pushVariableScope();
+                    content.executeWithOnEmptySupport(scopedContext, output, content.hasOnEmptyOrOnNonEmpty());
                 }
             } finally {
                 if (!inheritNamespaces) {

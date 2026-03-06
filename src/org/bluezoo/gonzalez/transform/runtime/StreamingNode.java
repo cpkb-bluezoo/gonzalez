@@ -64,6 +64,9 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     private String cachedStringValue;
     private int namespaceNodeCount;
     
+    // Per-node base URI override (from external entity expansion)
+    private String entityBaseURI;
+    
     // For root nodes - DTD unparsed entity declarations: name → [publicId, systemId, notationName]
     private Map<String, String[]> unparsedEntities;
 
@@ -253,10 +256,12 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         this.typedValue = typedValue;
         this.documentBaseURI = documentBaseURI;
         
-        // Extract type annotation from TypedValue if available
         if (typedValue != null) {
             this.typeNamespaceURI = typedValue.getDatatypeURI();
             this.typeLocalName = typedValue.getDatatypeLocalName();
+        } else if (attributeType != null && isDtdTypedAttribute(attributeType)) {
+            this.typeNamespaceURI = "http://www.w3.org/2001/XMLSchema";
+            this.typeLocalName = attributeType;
         } else {
             this.typeNamespaceURI = null;
             this.typeLocalName = null;
@@ -311,10 +316,17 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         if (nodeType == NodeType.ROOT) {
             return documentBaseURI;
         }
-        // For other nodes, inherit from the root
-        // (In a full implementation, we'd also check for xml:base attributes)
+        // Per-node base URI from external entity expansion takes priority
+        if (entityBaseURI != null) {
+            return entityBaseURI;
+        }
+        // For other nodes, walk up checking for entity base URIs or xml:base,
+        // ultimately falling back to the document root's base URI
         StreamingNode current = parent;
         while (current != null) {
+            if (current.entityBaseURI != null) {
+                return current.entityBaseURI;
+            }
             if (current.nodeType == NodeType.ROOT) {
                 return current.documentBaseURI;
             }
@@ -336,6 +348,20 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
             return documentBaseURI;
         }
         return null;
+    }
+    
+    /**
+     * Sets the base URI for this node from an external entity source.
+     * Used when the node originates from an expanded external entity
+     * whose system ID differs from the document's.
+     */
+    public void setEntityBaseURI(String uri) {
+        this.entityBaseURI = uri;
+    }
+    
+    @Override
+    public String getEntityBaseURI() {
+        return entityBaseURI;
     }
     
     /**
@@ -461,6 +487,10 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
 
     @Override
     public Iterator<XPathNode> getNamespaces() {
+        // Only element nodes have namespace nodes
+        if (nodeType != NodeType.ELEMENT) {
+            return Collections.<XPathNode>emptyIterator();
+        }
         if (cachedNamespaceNodes != null) {
             return cachedNamespaceNodes.iterator();
         }
@@ -535,6 +565,16 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
      */
     public boolean isIdAttribute() {
         return "ID".equals(attributeType);
+    }
+
+    private static boolean isDtdTypedAttribute(String dtdType) {
+        return "ID".equals(dtdType) ||
+               "IDREF".equals(dtdType) ||
+               "IDREFS".equals(dtdType) ||
+               "NMTOKEN".equals(dtdType) ||
+               "NMTOKENS".equals(dtdType) ||
+               "ENTITY".equals(dtdType) ||
+               "ENTITIES".equals(dtdType);
     }
     
     /**
@@ -617,6 +657,18 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     }
 
     /**
+     * Returns the last child node, or null if there are no children.
+     *
+     * @return the last child node
+     */
+    public StreamingNode getLastChild() {
+        if (children.isEmpty()) {
+            return null;
+        }
+        return children.get(children.size() - 1);
+    }
+
+    /**
      * Returns the number of namespace nodes on this element.
      *
      * @return the namespace node count
@@ -652,14 +704,12 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         if (!children.isEmpty()) {
             StreamingNode lastChild = children.get(children.size() - 1);
             if (lastChild.nodeType == NodeType.TEXT) {
-                // Create a new text node with combined content
-                // (stringValue is final, so we need to create new node)
-                StreamingNode combined = createText(
-                    lastChild.stringValue + text, 
-                    this, 
-                    lastChild.documentOrder
-                );
-                children.set(children.size() - 1, combined);
+                // Remove old text node before createText adds the replacement,
+                // since the constructor auto-appends to parent.children
+                String combinedText = lastChild.stringValue + text;
+                long docOrder = lastChild.documentOrder;
+                children.remove(children.size() - 1);
+                createText(combinedText, this, docOrder);
                 return;
             }
         }

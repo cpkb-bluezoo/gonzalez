@@ -156,25 +156,35 @@ public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
             return value;
         }
         
+        // If value already matches the type, return as-is to preserve type metadata
+        if (expectedType.matches(value)) {
+            return value;
+        }
+        
         // If it's an atomic type, try string-to-atomic conversion
         if (expectedType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
             String typeLocalName = expectedType.getLocalName();
             String typeNsUri = expectedType.getNamespaceURI();
             
             if (typeNsUri != null && typeNsUri.equals(SequenceType.XS_NAMESPACE)) {
-                // Get the string value and try to convert
                 String stringValue = value.asString();
                 try {
                     switch (typeLocalName) {
                         case "double":
+                            return new XPathNumber(Double.parseDouble(stringValue), false, true);
                         case "float":
-                            return new XPathNumber(Double.parseDouble(stringValue));
+                            return new XPathNumber(Float.parseFloat(stringValue), true);
                         case "decimal":
+                            return new XPathNumber(new java.math.BigDecimal(stringValue));
                         case "integer":
                         case "int":
                         case "long":
                         case "short":
-                            return new XPathNumber(Double.parseDouble(stringValue));
+                            try {
+                                return XPathNumber.ofInteger(Long.parseLong(stringValue));
+                            } catch (NumberFormatException nfe) {
+                                return XPathNumber.ofInteger(new java.math.BigInteger(stringValue));
+                            }
                         case "boolean":
                             return XPathBoolean.of("true".equals(stringValue) || "1".equals(stringValue));
                         case "string":
@@ -189,9 +199,7 @@ public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
                         case "dayTimeDuration":
                         case "yearMonthDuration":
                             return XPathDateTime.parseDuration(stringValue);
-                        // Add more types as needed
                         default:
-                            // For unknown types, return as-is
                             return value;
                     }
                 } catch (NumberFormatException e) {

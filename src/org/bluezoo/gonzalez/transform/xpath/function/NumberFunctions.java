@@ -65,10 +65,15 @@ public final class NumberFunctions {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context)
                 throws XPathException {
+            boolean isXPath2 = context.getXsltVersion() >= 2.0;
             if (args.isEmpty()) {
                 String str = context.getContextNode().getStringValue();
                 try {
-                    return XPathNumber.of(Double.parseDouble(str.trim()));
+                    double num = Double.parseDouble(str.trim());
+                    if (isXPath2) {
+                        return XPathNumber.ofExplicitDouble(num);
+                    }
+                    return XPathNumber.of(num);
                 } catch (NumberFormatException e) {
                     return XPathNumber.NaN;
                 }
@@ -77,7 +82,11 @@ public final class NumberFunctions {
             if (StringFunctions.isFunctionItem(arg)) {
                 throw new XPathException("FOTY0013: Cannot atomize a function item");
             }
-            return XPathNumber.of(arg.asNumber());
+            double num = arg.asNumber();
+            if (isXPath2) {
+                return XPathNumber.ofExplicitDouble(num);
+            }
+            return XPathNumber.of(num);
         }
     };
 
@@ -195,8 +204,19 @@ public final class NumberFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
-            double value = args.get(0).asNumber();
-            return XPathNumber.of(Math.floor(value));
+            XPathValue arg = args.get(0);
+            double value = arg.asNumber();
+            double result = Math.floor(value);
+            if (arg instanceof XPathNumber) {
+                XPathNumber xn = (XPathNumber) arg;
+                if (xn.isFloat()) {
+                    return new XPathNumber(result, true);
+                }
+                if (xn.isExplicitDouble()) {
+                    return XPathNumber.ofExplicitDouble(result);
+                }
+            }
+            return XPathNumber.of(result);
         }
     };
 
@@ -217,8 +237,19 @@ public final class NumberFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
-            double value = args.get(0).asNumber();
-            return XPathNumber.of(Math.ceil(value));
+            XPathValue arg = args.get(0);
+            double value = arg.asNumber();
+            double result = Math.ceil(value);
+            if (arg instanceof XPathNumber) {
+                XPathNumber xn = (XPathNumber) arg;
+                if (xn.isFloat()) {
+                    return new XPathNumber(result, true);
+                }
+                if (xn.isExplicitDouble()) {
+                    return XPathNumber.ofExplicitDouble(result);
+                }
+            }
+            return XPathNumber.of(result);
         }
     };
 
@@ -240,33 +271,109 @@ public final class NumberFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
-            double value = args.get(0).asNumber();
-            
+            XPathValue arg = args.get(0);
+            double value = arg.asNumber();
+
             if (Double.isNaN(value) || Double.isInfinite(value)) {
+                if (arg instanceof XPathNumber) {
+                    XPathNumber xn = (XPathNumber) arg;
+                    if (xn.isFloat()) {
+                        return new XPathNumber(value, true);
+                    }
+                    if (xn.isExplicitDouble()) {
+                        return XPathNumber.ofExplicitDouble(value);
+                    }
+                }
                 return XPathNumber.of(value);
             }
 
             boolean negativeZero =
                 (Double.doubleToRawLongBits(value) == Long.MIN_VALUE);
             if (negativeZero) {
+                if (arg instanceof XPathNumber && ((XPathNumber) arg).isFloat()) {
+                    return new XPathNumber(-0.0, true);
+                }
                 return XPathNumber.of(-0.0);
             }
 
             // XPath 3.0: round($value, $precision) — round to N decimal places
             if (args.size() >= 2) {
                 int precision = (int) args.get(1).asNumber();
-                double factor = Math.pow(10.0, precision);
-                double scaled = value * factor;
-                double rounded = Math.floor(scaled + 0.5);
-                return XPathNumber.of(rounded / factor);
+                if (arg instanceof XPathNumber) {
+                    XPathNumber xn = (XPathNumber) arg;
+                    if (xn.isFloat()) {
+                        // Float: preserve float type, use half-toward-positive-infinity
+                        float fval = (float) value;
+                        double factor = Math.pow(10.0, precision);
+                        float rounded = (float) (Math.floor(fval * factor + 0.5) / factor);
+                        return new XPathNumber(rounded, true);
+                    }
+                    if (xn.isExplicitDouble()) {
+                        // Double: use BigDecimal for exact rounding, return as explicit double
+                        // half-toward-positive-infinity: floor(x * 10^n + 0.5) / 10^n
+                        BigDecimal bd = new BigDecimal(value);
+                        java.math.RoundingMode rm = value >= 0
+                            ? java.math.RoundingMode.HALF_UP : java.math.RoundingMode.HALF_DOWN;
+                        bd = bd.setScale(precision, rm);
+                        return XPathNumber.ofExplicitDouble(bd.doubleValue());
+                    }
+                    if (xn.isDecimal()) {
+                        // Decimal: use BigDecimal arithmetic with half-toward-positive-infinity
+                        BigDecimal bd = xn.getDecimalValue();
+                        java.math.RoundingMode rm = bd.signum() >= 0
+                            ? java.math.RoundingMode.HALF_UP : java.math.RoundingMode.HALF_DOWN;
+                        bd = bd.setScale(precision, rm);
+                        bd = bd.stripTrailingZeros();
+                        return new XPathNumber(bd);
+                    }
+                    if (xn.isExactInteger()) {
+                        java.math.BigInteger bi = xn.toBigInteger();
+                        BigDecimal bd = new BigDecimal(bi);
+                        java.math.RoundingMode rm = bi.signum() >= 0
+                            ? java.math.RoundingMode.HALF_UP : java.math.RoundingMode.HALF_DOWN;
+                        bd = bd.setScale(precision, rm);
+                        if (bd.scale() <= 0) {
+                            return XPathNumber.ofInteger(bd.toBigInteger());
+                        }
+                        return new XPathNumber(bd.stripTrailingZeros());
+                    }
+                }
+                // Default: use BigDecimal for precision-preserving rounding
+                java.math.RoundingMode rm = value >= 0
+                    ? java.math.RoundingMode.HALF_UP : java.math.RoundingMode.HALF_DOWN;
+                BigDecimal bd = BigDecimal.valueOf(value);
+                bd = bd.setScale(precision, rm);
+                bd = bd.stripTrailingZeros();
+                if (bd.scale() <= 0) {
+                    return XPathNumber.of(bd.doubleValue());
+                }
+                return new XPathNumber(bd);
+            }
+
+            // Exact integers are already rounded
+            if (arg instanceof XPathNumber && ((XPathNumber) arg).isExactInteger()) {
+                return arg;
             }
 
             // XPath 1.0: round-half-to-positive-infinity
             if (value < 0 && value > -0.5) {
+                if (arg instanceof XPathNumber && ((XPathNumber) arg).isFloat()) {
+                    return new XPathNumber(-0.0, true);
+                }
                 return XPathNumber.of(-0.0);
             }
-            
-            return XPathNumber.of(Math.floor(value + 0.5));
+
+            double result = Math.floor(value + 0.5);
+            if (arg instanceof XPathNumber) {
+                XPathNumber xn = (XPathNumber) arg;
+                if (xn.isFloat()) {
+                    return new XPathNumber(result, true);
+                }
+                if (xn.isExplicitDouble()) {
+                    return XPathNumber.ofExplicitDouble(result);
+                }
+            }
+            return XPathNumber.of(result);
         }
     };
 
@@ -634,7 +741,7 @@ public final class NumberFunctions {
                 int minWidth = format.length();
                 result = String.format("%0" + minWidth + "d", absValue);
             } else if (format.contains(",") || format.contains("#")) {
-                // Decimal format with grouping separator
+                validateDecimalPicture(format, picture);
                 result = formatDecimalWithGrouping(absValue, format);
             } else {
                 // Default: decimal
@@ -681,6 +788,26 @@ public final class NumberFunctions {
                            ones[(int)(value % 10)];
             
             return upperCase ? result : result.toLowerCase();
+        }
+        
+        /**
+         * Validates a decimal picture string per F&amp;O spec: optional-digit-signs
+         * (#) must precede all mandatory-digit-signs (0 or other Nd digits).
+         */
+        private void validateDecimalPicture(String format, String picture) throws XPathException {
+            boolean seenMandatory = false;
+            for (int i = 0; i < format.length(); i++) {
+                char c = format.charAt(i);
+                if (c == '#') {
+                    if (seenMandatory) {
+                        throw new XPathException("FODF1310: Invalid picture string '" +
+                            picture + "': optional-digit-sign '#' must precede " +
+                            "all mandatory-digit-signs");
+                    }
+                } else if (Character.getType(c) == Character.DECIMAL_DIGIT_NUMBER) {
+                    seenMandatory = true;
+                }
+            }
         }
         
         /**

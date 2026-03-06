@@ -58,6 +58,7 @@ public final class StreamingTransformHandler implements ContentHandler {
     private StreamingNode documentElement;
     private long documentOrder;
     private boolean documentStarted;
+    private boolean hasPendingText;
     private final Map<String, String> reusableNsBindings = new HashMap<String, String>();
 
     /**
@@ -124,6 +125,7 @@ public final class StreamingTransformHandler implements ContentHandler {
     @Override
     public void startElement(String uri, String localName, String qName, 
                             Attributes atts) throws SAXException {
+        firePendingTextAccumulators();
         documentOrder++;
         streamingContext.pushDepth();
         
@@ -162,6 +164,8 @@ public final class StreamingTransformHandler implements ContentHandler {
 
     @Override
     public void endElement(String uri, String localName, String qName) throws SAXException {
+        firePendingTextAccumulators();
+
         // Fire post-descent accumulator rules
         AccumulatorManager mgr = streamingContext.getAccumulatorManager();
         if (mgr != null && currentNode != null) {
@@ -190,6 +194,7 @@ public final class StreamingTransformHandler implements ContentHandler {
     public void characters(char[] ch, int start, int length) throws SAXException {
         if (currentNode != null) {
             currentNode.appendText(new String(ch, start, length));
+            hasPendingText = true;
         }
     }
 
@@ -208,6 +213,28 @@ public final class StreamingTransformHandler implements ContentHandler {
     @Override
     public void skippedEntity(String name) throws SAXException {
         // Not typically relevant in streaming
+    }
+
+    /**
+     * Fires accumulator rules on any pending text child nodes of the current element.
+     * Called before startElement and endElement to ensure text node accumulators
+     * fire at the correct point in document order.
+     */
+    private void firePendingTextAccumulators() throws SAXException {
+        if (!hasPendingText || currentNode == null) {
+            return;
+        }
+        hasPendingText = false;
+
+        AccumulatorManager mgr = streamingContext.getAccumulatorManager();
+        if (mgr == null) {
+            return;
+        }
+
+        StreamingNode lastChild = currentNode.getLastChild();
+        if (lastChild != null && lastChild.isText()) {
+            mgr.notifyTextNode(lastChild);
+        }
     }
 
     /**

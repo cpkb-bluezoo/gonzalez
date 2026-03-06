@@ -24,7 +24,9 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.Collections;
@@ -141,9 +143,10 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
     
     /**
      * Validates argument types for XPath 2.0+ strict type checking.
+     * Also coerces xs:untypedAtomic values to the expected type.
      *
      * @param function the function being invoked
-     * @param args the function arguments to validate
+     * @param args the function arguments to validate (may be modified for coercion)
      * @throws XPathException if any argument type is incompatible
      */
     private void validateArgumentTypes(Function function, List<XPathValue> args) throws XPathException {
@@ -157,6 +160,12 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
             // Use last type for variable args
             int typeIndex = Math.min(i, expectedTypes.length - 1);
             Function.ArgType expected = expectedTypes[typeIndex];
+            
+            if (arg instanceof XPathUntypedAtomic && expected == Function.ArgType.NUMERIC) {
+                double num = arg.asNumber();
+                args.set(i, XPathNumber.of(num));
+                continue;
+            }
             
             if (!isTypeCompatible(arg, expected)) {
                 String argType = (arg != null) ? arg.getType().name().toLowerCase() : "null";

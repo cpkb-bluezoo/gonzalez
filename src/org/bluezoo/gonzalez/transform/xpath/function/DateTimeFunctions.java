@@ -865,7 +865,8 @@ public final class DateTimeFunctions {
                                          boolean hasDate, boolean hasTime, Locale locale,
                                          String calendar, String requestedLanguage) throws XPathException {
         DateTimeLocale dtLocale = DateTimeLocale.forLocale(locale);
-        boolean useIsoCalendar = "ISO".equalsIgnoreCase(calendar);
+        boolean useIsoCalendar = calendar == null || calendar.isEmpty()
+                || "ISO".equalsIgnoreCase(calendar);
         
         // Language/calendar fallback annotations per spec section 9.8.4.7
         StringBuilder prefix = new StringBuilder();

@@ -117,6 +117,7 @@ public final class StreamNode implements XSLTNode {
                     && !context.getStylesheet().getAccumulators().isEmpty()) {
                 AccumulatorManager mgr = new AccumulatorManager(
                     context.getStylesheet(), context);
+                mgr.setStreamingMode(true);
                 streamCtx.setAccumulatorManager(mgr);
             }
 

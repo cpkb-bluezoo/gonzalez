@@ -258,26 +258,59 @@ public final class UserFunction {
      */
     public static final class FunctionParameter {
         private final String name;
+        private final String namespaceURI;
+        private final String localName;
         private final String asType;
 
         /**
          * Creates a function parameter.
          *
-         * @param name the parameter name
+         * @param name the parameter name (local name for display)
          * @param asType the optional type declaration (as attribute)
          */
         public FunctionParameter(String name, String asType) {
-            this.name = name;
+            this(null, name, asType);
+        }
+
+        /**
+         * Creates a function parameter with namespace.
+         *
+         * @param namespaceURI the namespace URI, or null
+         * @param localName the local name
+         * @param asType the optional type declaration (as attribute)
+         */
+        public FunctionParameter(String namespaceURI, String localName, String asType) {
+            this.namespaceURI = namespaceURI;
+            this.localName = localName;
+            this.name = localName;
             this.asType = asType;
         }
 
         /**
-         * Returns the parameter name.
+         * Returns the parameter local name.
          *
          * @return the name
          */
         public String getName() {
             return name;
+        }
+
+        /**
+         * Returns the namespace URI for this parameter.
+         *
+         * @return the namespace URI, or null
+         */
+        public String getNamespaceURI() {
+            return namespaceURI;
+        }
+
+        /**
+         * Returns the local name.
+         *
+         * @return the local name
+         */
+        public String getLocalName() {
+            return localName;
         }
 
         /**

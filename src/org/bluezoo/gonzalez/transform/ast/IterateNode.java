@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.VariableScope;
@@ -29,11 +30,15 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.SAXException;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -81,6 +86,7 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
     public static final class IterateParam {
         private final String name;
         private final XPathExpression defaultValue;
+        private final String asType;
 
         /**
          * Creates a new iteration parameter.
@@ -89,26 +95,32 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
          * @param defaultValue the default value expression (may be null)
          */
         public IterateParam(String name, XPathExpression defaultValue) {
-            this.name = name;
-            this.defaultValue = defaultValue;
+            this(name, defaultValue, null);
         }
 
         /**
-         * Returns the parameter name.
+         * Creates a new iteration parameter with type annotation.
          *
-         * @return the parameter name
+         * @param name the parameter name
+         * @param defaultValue the default value expression (may be null)
+         * @param asType the declared type (may be null)
          */
+        public IterateParam(String name, XPathExpression defaultValue, String asType) {
+            this.name = name;
+            this.defaultValue = defaultValue;
+            this.asType = asType;
+        }
+
         public String getName() {
             return name;
         }
 
-        /**
-         * Returns the default value expression.
-         *
-         * @return the default value expression, or null if not specified
-         */
         public XPathExpression getDefaultValue() {
             return defaultValue;
+        }
+
+        public String getAsType() {
+            return asType;
         }
     }
 
@@ -192,6 +204,9 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
         this.onCompletion = onCompletion;
     }
 
+    public XSLTNode getBody() { return body; }
+    public XSLTNode getOnCompletion() { return onCompletion; }
+
     @Override
     public List<XPathExpression> getExpressions() {
         List<XPathExpression> exprs = new ArrayList<XPathExpression>();
@@ -228,32 +243,19 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
                                    XPathValue selectResult, Map<String, XPathValue> currentParams)
             throws SAXException {
 
-        // Convert result to iterable sequence
-        List<XPathValue> items = new ArrayList<>();
-        if (selectResult.isNodeSet()) {
-            XPathNodeSet ns = selectResult.asNodeSet();
-            for (XPathNode node : ns) {
-                items.add(XPathNodeSet.of(node));
-            }
-        } else {
-            // Treat as single-item sequence
-            items.add(selectResult);
-        }
+        List<XPathValue> items = flattenToItems(selectResult);
 
         int position = 0;
         int size = items.size();
         boolean broken = false;
 
-        // Iterate through items
         for (XPathValue item : items) {
             position++;
             
-            // Create iteration context with current parameters
             TransformContext iterContext = createIterationContext(
                 context, item, position, size, currentParams
             );
             
-            // Execute body and get next parameters
             IterationResult result = executeBody(iterContext, output);
             
             if (result.isBreak()) {
@@ -261,23 +263,94 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
                 break;
             }
             
-            // Update parameters for next iteration
-            currentParams = result.getNextParams();
-            if (currentParams.isEmpty()) {
-                // No next-iteration, use current values
-                currentParams = new HashMap<>();
-                for (IterateParam param : params) {
-                    currentParams.put(param.getName(), 
-                        iterContext.getVariableScope().lookup(param.getName()));
-                }
+            Map<String, XPathValue> nextParams = result.getNextParams();
+            if (nextParams.isEmpty()) {
+                currentParams = lookupCurrentParams(iterContext);
+            } else {
+                currentParams = mergeParams(nextParams, iterContext);
             }
         }
 
-        // Execute on-completion with final parameter values
-        if (onCompletion != null) {
+        if (onCompletion != null && !broken) {
             TransformContext completionCtx = createCompletionContext(context, currentParams);
             onCompletion.execute(completionCtx, output);
         }
+    }
+
+    /**
+     * Flattens the select result into a list of individual items for iteration.
+     */
+    private List<XPathValue> flattenToItems(XPathValue selectResult) {
+        List<XPathValue> items = new ArrayList<>();
+        if (selectResult instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) selectResult;
+            for (XPathValue item : seq) {
+                items.add(item);
+            }
+        } else if (selectResult.isNodeSet()) {
+            XPathNodeSet ns = selectResult.asNodeSet();
+            for (XPathNode node : ns) {
+                items.add(XPathNodeSet.of(node));
+            }
+        } else {
+            items.add(selectResult);
+        }
+        return items;
+    }
+
+    /**
+     * Looks up all current parameter values from the iteration context scope.
+     * Used when no xsl:next-iteration was encountered.
+     */
+    private Map<String, XPathValue> lookupCurrentParams(TransformContext iterContext) {
+        Map<String, XPathValue> result = new HashMap<>();
+        for (IterateParam param : params) {
+            result.put(param.getName(),
+                iterContext.getVariableScope().lookup(param.getName()));
+        }
+        return result;
+    }
+
+    /**
+     * Merges next-iteration params with current values for any params not
+     * mentioned in xsl:next-iteration (they retain their previous value).
+     * Applies type coercion based on the declared parameter type.
+     */
+    private Map<String, XPathValue> mergeParams(Map<String, XPathValue> nextParams,
+                                                 TransformContext iterContext) {
+        Map<String, XPathValue> merged = new HashMap<>();
+        for (IterateParam param : params) {
+            String name = param.getName();
+            XPathValue val;
+            if (nextParams.containsKey(name)) {
+                val = coerceParamValue(nextParams.get(name), param.getAsType());
+            } else {
+                val = iterContext.getVariableScope().lookup(name);
+            }
+            merged.put(name, val);
+        }
+        return merged;
+    }
+
+    /**
+     * Coerces a value to match the declared parameter type.
+     * For example, coerces an RTF to its string value for as="xs:string".
+     */
+    private XPathValue coerceParamValue(XPathValue value, String asType) {
+        if (asType == null || value == null) {
+            return value;
+        }
+        String type = asType.trim();
+        if (type.startsWith("xs:")) {
+            type = type.substring(3);
+        }
+        if ("string".equals(type)) {
+            if (value instanceof XPathString) {
+                return value;
+            }
+            return new XPathString(value.asString());
+        }
+        return value;
     }
 
     /**
@@ -285,22 +358,37 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
      */
     private TransformContext createIterationContext(TransformContext parent, XPathValue item,
                                                      int position, int size,
-                                                     Map<String, XPathValue> params) {
-        // Get context node from item
-        XPathNode contextNode;
-        if (item.isNodeSet()) {
+                                                     Map<String, XPathValue> iterParams) {
+        TransformContext ctx;
+        if (item instanceof XPathNode) {
+            XPathNode node = (XPathNode) item;
+            ctx = parent.withContextNode(node)
+                        .withPositionAndSize(position, size)
+                        .pushVariableScope();
+        } else if (item.isNodeSet()) {
             XPathNodeSet ns = item.asNodeSet();
-            contextNode = ns.isEmpty() ? parent.getContextNode() : ns.first();
+            Iterator<XPathNode> iter = ns.iterator();
+            if (iter.hasNext()) {
+                XPathNode node = iter.next();
+                ctx = parent.withContextNode(node)
+                            .withPositionAndSize(position, size)
+                            .pushVariableScope();
+            } else {
+                ctx = parent.withPositionAndSize(position, size)
+                            .pushVariableScope();
+            }
         } else {
-            contextNode = parent.getContextNode();
+            if (parent instanceof BasicTransformContext) {
+                ctx = ((BasicTransformContext) parent).withContextItem(item)
+                            .withPositionAndSize(position, size)
+                            .pushVariableScope();
+            } else {
+                ctx = parent.withPositionAndSize(position, size)
+                            .pushVariableScope();
+            }
         }
         
-        TransformContext ctx = parent.withContextNode(contextNode)
-                                     .withPositionAndSize(position, size)
-                                     .pushVariableScope();
-        
-        // Bind iteration parameters
-        for (Map.Entry<String, XPathValue> entry : params.entrySet()) {
+        for (Map.Entry<String, XPathValue> entry : iterParams.entrySet()) {
             ctx.getVariableScope().bind(entry.getKey(), entry.getValue());
         }
         
@@ -309,13 +397,18 @@ public final class IterateNode implements XSLTNode, ExpressionHolder {
 
     /**
      * Creates the context for on-completion execution.
+     * Per the XSLT 3.0 spec, the context item, position, and size are
+     * all undefined within xsl:on-completion.
      */
     private TransformContext createCompletionContext(TransformContext parent,
-                                                      Map<String, XPathValue> params) {
-        TransformContext ctx = parent.pushVariableScope();
+                                                      Map<String, XPathValue> completionParams) {
+        TransformContext ctx = parent.withContextNode(null)
+                                     .pushVariableScope();
+        if (ctx instanceof BasicTransformContext) {
+            ((BasicTransformContext) ctx).setContextItemUndefined(true);
+        }
         
-        // Bind final parameter values
-        for (Map.Entry<String, XPathValue> entry : params.entrySet()) {
+        for (Map.Entry<String, XPathValue> entry : completionParams.entrySet()) {
             ctx.getVariableScope().bind(entry.getKey(), entry.getValue());
         }
         

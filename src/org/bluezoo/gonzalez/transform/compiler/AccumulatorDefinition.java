@@ -149,10 +149,12 @@ public final class AccumulatorDefinition {
     }
 
     private final String name;
+    private final String expandedName;
     private final XPathExpression initialValue;
     private final List<AccumulatorRule> rules;
     private final boolean streamable;
-    private final String asType;  // Type declaration (informational without schema)
+    private final String asType;
+    private final int importPrecedence;
 
     /**
      * Creates a new accumulator definition.
@@ -166,10 +168,25 @@ public final class AccumulatorDefinition {
     public AccumulatorDefinition(String name, XPathExpression initialValue,
                                   List<AccumulatorRule> rules, boolean streamable,
                                   String asType) {
+        this(name, null, initialValue, rules, streamable, asType, -1);
+    }
+
+    public AccumulatorDefinition(String name, XPathExpression initialValue,
+                                  List<AccumulatorRule> rules, boolean streamable,
+                                  String asType, int importPrecedence) {
+        this(name, null, initialValue, rules, streamable, asType, importPrecedence);
+    }
+
+    public AccumulatorDefinition(String name, String expandedName,
+                                  XPathExpression initialValue,
+                                  List<AccumulatorRule> rules, boolean streamable,
+                                  String asType, int importPrecedence) {
         this.name = name;
+        this.expandedName = (expandedName != null) ? expandedName : name;
         this.initialValue = initialValue;
         this.rules = Collections.unmodifiableList(new ArrayList<>(rules));
         this.streamable = streamable;
+        this.importPrecedence = importPrecedence;
         this.asType = asType;
     }
 
@@ -180,6 +197,17 @@ public final class AccumulatorDefinition {
      */
     public String getName() {
         return name;
+    }
+
+    /**
+     * Returns the namespace-expanded name for duplicate detection.
+     */
+    public String getExpandedName() {
+        return expandedName;
+    }
+
+    public int getImportPrecedence() {
+        return importPrecedence;
     }
 
     /**
@@ -264,10 +292,12 @@ public final class AccumulatorDefinition {
      */
     public static class Builder {
         private String name;
+        private String expandedName;
         private XPathExpression initialValue;
         private final List<AccumulatorRule> rules = new ArrayList<>();
-        private boolean streamable = true;  // Default is streamable
+        private boolean streamable = true;
         private String asType;
+        private int importPrecedence = -1;
 
         /**
          * Sets the accumulator name.
@@ -277,6 +307,17 @@ public final class AccumulatorDefinition {
          */
         public Builder name(String name) {
             this.name = name;
+            return this;
+        }
+
+        /**
+         * Sets the namespace-expanded name for duplicate detection.
+         *
+         * @param expandedName the expanded name in Clark notation
+         * @return this builder
+         */
+        public Builder expandedName(String expandedName) {
+            this.expandedName = expandedName;
             return this;
         }
 
@@ -337,6 +378,11 @@ public final class AccumulatorDefinition {
             return this;
         }
 
+        public Builder importPrecedence(int importPrecedence) {
+            this.importPrecedence = importPrecedence;
+            return this;
+        }
+
         /**
          * Builds the AccumulatorDefinition.
          *
@@ -350,7 +396,8 @@ public final class AccumulatorDefinition {
             if (initialValue == null) {
                 throw new IllegalStateException("Initial value is required");
             }
-            return new AccumulatorDefinition(name, initialValue, rules, streamable, asType);
+            return new AccumulatorDefinition(name, expandedName, initialValue, rules,
+                streamable, asType, importPrecedence);
         }
     }
 

@@ -222,10 +222,16 @@ public class XSLTSchemaValidator {
             return;
         }
         
+        // Trim whitespace from QName values (XML allows whitespace around attribute values)
+        value = value.trim();
+        if (value.isEmpty()) {
+            return;
+        }
+        
         // For mode attribute, allow special values like #all, #default, #current, #unnamed
         // These can also be in a space-separated list
         if ("mode".equals(attributeName)) {
-            for (String part : value.trim().split("\\s+")) {
+            for (String part : value.split("\\s+")) {
                 if (part.startsWith("#")) {
                     // Special mode values
                     if ("#all".equals(part) || "#default".equals(part) || 

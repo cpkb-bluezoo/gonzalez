@@ -21,10 +21,14 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.SAXException;
 
@@ -99,8 +103,12 @@ public final class NextIterationNode implements XSLTNode {
                 if (select != null) {
                     return select.evaluate(context);
                 }
-                // TODO: Evaluate content as RTF
-                return null;
+                if (content != null) {
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    content.execute(context, new BufferOutputHandler(buffer));
+                    return new XPathResultTreeFragment(buffer);
+                }
+                return XPathString.of("");
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating xsl:with-param: " + e.getMessage(), e);
             }

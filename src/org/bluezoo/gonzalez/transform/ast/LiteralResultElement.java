@@ -452,8 +452,10 @@ public final class LiteralResultElement implements XSLTNode {
             output.setInheritNamespaces(false);
         }
         try {
-            // Execute content with on-empty/on-non-empty support (XSLT 3.0)
-            content.executeWithOnEmptySupport(context, output, content.hasOnEmptyOrOnNonEmpty());
+            // Push variable scope so variables declared in the content
+            // don't leak to following siblings after the element closes
+            TransformContext scopedContext = context.pushVariableScope();
+            content.executeWithOnEmptySupport(scopedContext, output, content.hasOnEmptyOrOnNonEmpty());
         } finally {
             if (!inheritNamespaces) {
                 output.setInheritNamespaces(true);
@@ -524,6 +526,10 @@ public final class LiteralResultElement implements XSLTNode {
      */
     public SequenceNode getContent() {
         return content;
+    }
+
+    public List<String> getUseAttributeSets() {
+        return useAttributeSets;
     }
 
     /**

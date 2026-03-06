@@ -21,6 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
+
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
@@ -72,13 +75,35 @@ public final class Literal implements Expr {
 
     /**
      * Creates a number literal from a string representation.
+     * Integer literals are stored with exact precision (Long or BigInteger).
+     * Decimal literals are stored as BigDecimal. Literals with exponents
+     * are stored as explicit doubles.
      *
      * @param value the number as a string
      * @return the literal expression
      */
     public static Literal number(String value) {
         try {
-            return new Literal(XPathNumber.of(Double.parseDouble(value)));
+            boolean hasExponent = value.indexOf('e') >= 0 || value.indexOf('E') >= 0;
+            boolean hasDot = value.indexOf('.') >= 0;
+
+            if (hasExponent) {
+                double d = Double.parseDouble(value);
+                return new Literal(new XPathNumber(d, false, true));
+            }
+
+            if (!hasDot) {
+                try {
+                    long lv = Long.parseLong(value);
+                    return new Literal(XPathNumber.ofInteger(lv));
+                } catch (NumberFormatException e) {
+                    BigInteger bi = new BigInteger(value);
+                    return new Literal(XPathNumber.ofInteger(bi));
+                }
+            }
+
+            BigDecimal bd = new BigDecimal(value);
+            return new Literal(new XPathNumber(bd));
         } catch (NumberFormatException e) {
             return new Literal(XPathNumber.NaN);
         }

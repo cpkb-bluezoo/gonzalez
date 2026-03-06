@@ -94,7 +94,15 @@ public final class TextOutputHandler implements OutputHandler, ContentHandler {
      */
     public TextOutputHandler(WritableByteChannel channel, String encoding) {
         this.channel = channel;
-        this.charset = encoding != null ? Charset.forName(encoding) : StandardCharsets.UTF_8;
+        Charset resolvedCharset = StandardCharsets.UTF_8;
+        if (encoding != null) {
+            try {
+                resolvedCharset = Charset.forName(encoding);
+            } catch (java.nio.charset.UnsupportedCharsetException e) {
+                // SESU0007: fall back to UTF-8 for unsupported encodings
+            }
+        }
+        this.charset = resolvedCharset;
         this.encoder = charset.newEncoder();
         this.buffer = ByteBuffer.allocate(BUFFER_SIZE);
     }

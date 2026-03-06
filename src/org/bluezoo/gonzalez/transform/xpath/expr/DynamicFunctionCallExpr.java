@@ -84,6 +84,14 @@ public final class DynamicFunctionCallExpr implements Expr {
         }
 
         XPathValue baseValue = base.evaluate(context);
+        
+        // Unwrap singleton sequences to find the actual function item
+        if (baseValue instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) baseValue;
+            if (seq.size() == 1) {
+                baseValue = seq.iterator().next();
+            }
+        }
 
         if (hasPlaceholder) {
             return createDynamicPartialApplication(baseValue, context);

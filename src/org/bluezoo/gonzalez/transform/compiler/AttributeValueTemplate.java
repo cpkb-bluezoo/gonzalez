@@ -54,7 +54,7 @@ public final class AttributeValueTemplate {
      * A part of an AVT - either literal text or an XPath expression.
      */
     private static abstract class Part {
-        abstract String evaluate(TransformContext context) throws XPathException;
+        abstract String evaluate(TransformContext context, boolean backwardsCompatible) throws XPathException;
         abstract StreamingCapability getStreamingCapability();
     }
 
@@ -66,7 +66,7 @@ public final class AttributeValueTemplate {
         }
 
         @Override
-        String evaluate(TransformContext context) {
+        String evaluate(TransformContext context, boolean backwardsCompatible) {
             return text;
         }
 
@@ -84,10 +84,51 @@ public final class AttributeValueTemplate {
         }
 
         @Override
-        String evaluate(TransformContext context) throws XPathException {
+        String evaluate(TransformContext context, boolean backwardsCompatible) throws XPathException {
             XPathValue result = expression.evaluate(context);
             if (result == null) {
                 return "";
+            }
+            if (result.isNodeSet()) {
+                org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet ns = result.asNodeSet();
+                if (ns.isEmpty()) {
+                    return "";
+                }
+                // XSLT 1.0 backward compat: only use first node's string value
+                if (backwardsCompatible || ns.size() == 1) {
+                    return ns.iterator().next().getStringValue();
+                }
+                StringBuilder sb = new StringBuilder();
+                boolean first = true;
+                for (org.bluezoo.gonzalez.transform.xpath.type.XPathNode node : ns) {
+                    if (!first) {
+                        sb.append(' ');
+                    }
+                    sb.append(node.getStringValue());
+                    first = false;
+                }
+                return sb.toString();
+            }
+            if (result instanceof org.bluezoo.gonzalez.transform.xpath.type.XPathSequence) {
+                org.bluezoo.gonzalez.transform.xpath.type.XPathSequence seq =
+                    (org.bluezoo.gonzalez.transform.xpath.type.XPathSequence) result;
+                if (seq.isEmpty()) {
+                    return "";
+                }
+                // XSLT 1.0 backward compat: only use first item
+                if (backwardsCompatible || seq.size() == 1) {
+                    return seq.get(0).asString();
+                }
+                StringBuilder sb = new StringBuilder();
+                boolean first = true;
+                for (XPathValue item : seq) {
+                    if (!first) {
+                        sb.append(' ');
+                    }
+                    sb.append(item.asString());
+                    first = false;
+                }
+                return sb.toString();
             }
             return result.asString();
         }
@@ -103,6 +144,7 @@ public final class AttributeValueTemplate {
     private final List<Part> parts;
     private final boolean isStatic;
     private final StreamingCapability streamingCapability;
+    private boolean backwardsCompatible;
 
     /**
      * Private constructor - use parse().
@@ -287,6 +329,16 @@ public final class AttributeValueTemplate {
     }
 
     /**
+     * Sets backwards-compatible mode for this AVT.
+     * When true, expressions that return multiple nodes/items will only use the first.
+     *
+     * @param backwardsCompatible true for XSLT 1.0 behavior
+     */
+    public void setBackwardsCompatible(boolean backwardsCompatible) {
+        this.backwardsCompatible = backwardsCompatible;
+    }
+
+    /**
      * Evaluates this AVT in the given context.
      *
      * @param context the transformation context
@@ -300,7 +352,7 @@ public final class AttributeValueTemplate {
 
         StringBuilder result = new StringBuilder();
         for (Part part : parts) {
-            result.append(part.evaluate(context));
+            result.append(part.evaluate(context, backwardsCompatible));
         }
         return result.toString();
     }
@@ -341,6 +393,21 @@ public final class AttributeValueTemplate {
      */
     public String getOriginalValue() {
         return originalValue;
+    }
+
+    /**
+     * Collects all XPath expressions contained in this AVT into the
+     * provided list.
+     *
+     * @param exprs list to collect into
+     */
+    public void collectExpressions(java.util.List<XPathExpression> exprs) {
+        for (int i = 0; i < parts.size(); i++) {
+            Part part = parts.get(i);
+            if (part instanceof ExpressionPart) {
+                exprs.add(((ExpressionPart) part).expression);
+            }
+        }
     }
 
     @Override

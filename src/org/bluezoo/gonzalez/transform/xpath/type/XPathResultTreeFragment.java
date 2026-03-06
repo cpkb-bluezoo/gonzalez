@@ -31,10 +31,12 @@ import org.xml.sax.helpers.DefaultHandler;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * An XPath value representing a Result Tree Fragment (RTF).
@@ -509,6 +511,7 @@ public final class XPathResultTreeFragment implements XPathValue {
             // Add namespace nodes from pending prefix mappings
             for (String[] ns : pendingNamespaces) {
                 RTFNode nsNode = new RTFNode(NodeType.NAMESPACE, null, ns[0], null);
+                nsNode.docOrder = docOrderCounter++;
                 nsNode.value = ns[1];
                 nsNode.parent = element;
                 element.addNamespace(nsNode);
@@ -531,6 +534,7 @@ public final class XPathResultTreeFragment implements XPathValue {
                         attrPrefix = generateUniquePrefix(attrPrefix, prefixToUri);
                         // Add namespace declaration for the new prefix
                         RTFNode nsNode = new RTFNode(NodeType.NAMESPACE, null, attrPrefix, null);
+                        nsNode.docOrder = docOrderCounter++;
                         nsNode.value = attrUri;
                         nsNode.parent = element;
                         element.addNamespace(nsNode);
@@ -540,6 +544,7 @@ public final class XPathResultTreeFragment implements XPathValue {
                 
                 RTFNode attr = new RTFNode(NodeType.ATTRIBUTE, 
                     attrUri, attrs.getLocalName(i), attrPrefix);
+                attr.docOrder = docOrderCounter++;
                 attr.value = attrs.getValue(i);
                 attr.parent = element;
                 element.addAttribute(attr);
@@ -775,6 +780,7 @@ public final class XPathResultTreeFragment implements XPathValue {
             // Return namespace nodes declared on this element and inherited from ancestors
             // Build a map to handle redeclarations (closer declarations override)
             Map<String, RTFNode> nsMap = new LinkedHashMap<>();
+            Set<String> seenPrefixes = new HashSet<>();
             
             // Start from this element and go up, but don't override closer declarations
             RTFNode current = this;
@@ -782,10 +788,8 @@ public final class XPathResultTreeFragment implements XPathValue {
                 if (current.type == NodeType.ELEMENT) {
                     for (RTFNode ns : current.namespaces) {
                         String prefix = ns.localName != null ? ns.localName : "";
-                        // Only add if not already declared by a closer element
-                        if (!nsMap.containsKey(prefix)) {
-                            // Skip empty URIs - they represent undeclarations, not actual bindings
-                            // (except for the xml namespace which is always present)
+                        if (!seenPrefixes.contains(prefix)) {
+                            seenPrefixes.add(prefix);
                             String uri = ns.value;
                             if (uri != null && !uri.isEmpty()) {
                                 nsMap.put(prefix, ns);
@@ -802,7 +806,6 @@ public final class XPathResultTreeFragment implements XPathValue {
                 xmlNs.value = "http://www.w3.org/XML/1998/namespace";
                 nsMap.put("xml", xmlNs);
             }
-            
             return new ArrayList<XPathNode>(nsMap.values()).iterator();
         }
         

@@ -68,11 +68,21 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     private final String mode;
     private final List<SortSpec> sorts;
     private final List<WithParamNode> params;
+    private final boolean backwardsCompatible;
     public ApplyTemplatesNode(XPathExpression selectExpr, String mode, List<SortSpec> sorts, List<WithParamNode> params) {
+        this(selectExpr, mode, sorts, params, false);
+    }
+    public ApplyTemplatesNode(XPathExpression selectExpr, String mode,
+                              List<SortSpec> sorts, List<WithParamNode> params,
+                              boolean backwardsCompatible) {
         this.selectExpr = selectExpr;
         this.mode = mode;
         this.sorts = sorts;
         this.params = params;
+        this.backwardsCompatible = backwardsCompatible;
+    }
+    public boolean isBackwardsCompatible() {
+        return backwardsCompatible;
     }
     @Override public String getInstructionName() { return "apply-templates"; }
 
@@ -192,15 +202,60 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                     }
                     return;
                 } else {
-                    // XTTE0520: select must evaluate to node()*
+                    // Single atomic value - find a matching template
+                    if (context.getStylesheet().getVersion() >= 3.0
+                            && context instanceof BasicTransformContext) {
+                        BasicTransformContext btc = (BasicTransformContext) context;
+                        TemplateMatcher matcher = context.getTemplateMatcher();
+                        String effectiveMode = mode;
+                        if ("#current".equals(mode)) {
+                            effectiveMode = context.getCurrentMode();
+                        }
+                        TemplateRule rule = matcher.findMatchForAtomicValue(
+                            result, effectiveMode, context);
+                        if (rule != null) {
+                            TransformContext itemContext = btc
+                                .withContextItem(result)
+                                .withPositionAndSize(1, 1)
+                                .pushVariableScope()
+                                .withCurrentTemplateRule(rule);
+                            for (WithParamNode param : params) {
+                                if (!param.isTunnel()) {
+                                    try {
+                                        itemContext = (TransformContext) itemContext.withVariable(
+                                            null, param.getName(), param.evaluate(context));
+                                    } catch (XPathException e) {
+                                        throw new SAXException(
+                                            "Error evaluating param: " + e.getMessage(), e);
+                                    }
+                                }
+                            }
+                            rule.getBody().execute(itemContext, output);
+                        }
+                        return;
+                    }
+                    // XSLT 2.0: select must evaluate to node()*
                     throw new SAXException("XTTE0520: The select expression of xsl:apply-templates" +
                         " must return nodes, but got an atomic value: " + result);
                 }
             } else {
                 // Default: select="child::node()"
+                // XTTE0510: context item must be a node when select is absent
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode == null) {
+                    throw new SAXException("XTTE0510: An xsl:apply-templates instruction " +
+                        "with no select attribute requires the context item to be a node");
+                }
+                if (context instanceof BasicTransformContext) {
+                    XPathValue ci = ((BasicTransformContext) context).getContextItem();
+                    if (ci != null && !(ci instanceof XPathNode) && !ci.isNodeSet()) {
+                        throw new SAXException("XTTE0510: An xsl:apply-templates instruction " +
+                            "with no select attribute requires the context item to be a node");
+                    }
+                }
                 nodes = new ArrayList<>();
                 Iterator<XPathNode> children = 
-                    context.getContextNode().getChildren();
+                    contextNode.getChildren();
                 while (children.hasNext()) {
                     nodes.add(children.next());
                 }
@@ -219,7 +274,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 TransformContext nodeContext;
                 if (context instanceof BasicTransformContext) {
                     nodeContext = ((BasicTransformContext) context)
-                        .withXsltCurrentNode(node).withPositionAndSize(position, size);
+                        .withXsltCurrentNodeAndContextItem(node).withPositionAndSize(position, size);
                 } else {
                     nodeContext = context.withContextNode(node).withPositionAndSize(position, size);
                 }
@@ -317,6 +372,12 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                         }
                         
                         if (found && value != null) {
+                            // XTTE0590: validate supplied value against declared type
+                            try {
+                                value = templateParam.validateValue(value, "XTTE0590");
+                            } catch (XPathException e) {
+                                throw new SAXException(e.getMessage(), e);
+                            }
                             execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
                             passedParams.add(templateParam.getName());
                         } else {
@@ -340,6 +401,17 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                                 defaultValue = new XPathResultTreeFragment(buffer);
                             } else {
                                 defaultValue = new XPathString(""); // Empty default
+                            }
+                            try {
+                                defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                            } catch (XPathException e) {
+                                throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
+                            }
+                            // XTTE0600: validate default value against declared type
+                            try {
+                                defaultValue = templateParam.validateValue(defaultValue, "XTTE0600");
+                            } catch (XPathException e) {
+                                throw new SAXException(e.getMessage(), e);
                             }
                             execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
                         }
@@ -388,8 +460,11 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     private void validateTemplateReturnType(XPathValue result, String asType, 
             TemplateRule rule) throws SAXException {
         try {
-            // Parse the type
-            SequenceType expectedType = SequenceType.parse(asType, null);
+            // Use pre-parsed type with namespace resolution, fall back to runtime parse
+            SequenceType expectedType = rule.getParsedAsType();
+            if (expectedType == null) {
+                expectedType = SequenceType.parse(asType, null);
+            }
             if (expectedType == null) {
                 return; // Unknown type - skip validation
             }
@@ -399,10 +474,8 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 (result instanceof XPathSequence && ((XPathSequence) result).isEmpty()) ||
                 (result.asString().isEmpty() && !(result instanceof XPathBoolean));
             
-            // Empty sequence only allowed for optional types (?, *)
-            SequenceType.Occurrence occ = expectedType.getOccurrence();
-            if (isEmpty && occ != SequenceType.Occurrence.ZERO_OR_ONE && 
-                occ != SequenceType.Occurrence.ZERO_OR_MORE) {
+            // Empty sequence only allowed for optional types (?, *) or empty-sequence()
+            if (isEmpty && !expectedType.allowsEmpty()) {
                 String templateDesc = rule.getName() != null ? 
                     "named template '" + rule.getName() + "'" :
                     "template matching '" + rule.getMatchPattern() + "'";
@@ -412,20 +485,38 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
             }
             
             // For non-empty results, validate the type matches.
-            // If type is atomic and result is a text node/nodeset, atomize first.
+            // Per XSLT spec, function conversion rules apply:
+            //   1. Atomize nodes to xs:untypedAtomic
+            //   2. Cast xs:untypedAtomic to the target type if needed
             if (!isEmpty) {
                 XPathValue checkVal = result;
                 if (expectedType.getItemKind() == SequenceType.ItemKind.ATOMIC && 
                     (result instanceof XPathNode || result instanceof XPathNodeSet)) {
-                    checkVal = new org.bluezoo.gonzalez.transform.xpath.type.XPathString(result.asString());
+                    // Text nodes atomize to xs:untypedAtomic per XDM
+                    checkVal = new org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic(result.asString());
                 }
                 if (!expectedType.matches(checkVal, org.bluezoo.gonzalez.transform.xpath.type.SchemaContext.NONE)) {
-                    String templateDesc = rule.getName() != null ? 
-                        "named template '" + rule.getName() + "'" :
-                        "template matching '" + rule.getMatchPattern() + "'";
-                    throw new SAXException("XTTE0505: Required item type of " + 
-                        templateDesc + " is " + asType + 
-                        "; supplied value is " + result.getClass().getSimpleName());
+                    // Function conversion: try casting xs:untypedAtomic to target type
+                    if (checkVal instanceof org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic) {
+                        XPathValue converted = coerceAtomicForAs(checkVal.asString(), expectedType);
+                        if (converted != null && expectedType.matches(converted, org.bluezoo.gonzalez.transform.xpath.type.SchemaContext.NONE)) {
+                            checkVal = converted;
+                        } else {
+                            String templateDesc = rule.getName() != null ? 
+                                "named template '" + rule.getName() + "'" :
+                                "template matching '" + rule.getMatchPattern() + "'";
+                            throw new SAXException("XTTE0505: Required item type of " + 
+                                templateDesc + " is " + asType + 
+                                "; supplied value is " + result.getClass().getSimpleName());
+                        }
+                    } else {
+                        String templateDesc = rule.getName() != null ? 
+                            "named template '" + rule.getName() + "'" :
+                            "template matching '" + rule.getMatchPattern() + "'";
+                        throw new SAXException("XTTE0505: Required item type of " + 
+                            templateDesc + " is " + asType + 
+                            "; supplied value is " + result.getClass().getSimpleName());
+                    }
                 }
             }
         } catch (Exception e) {
@@ -433,6 +524,61 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 throw (SAXException) e;
             }
             throw new SAXException(e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * Applies function conversion rules: casts a string value to the target
+     * atomic type specified by the SequenceType.  Returns null if the cast
+     * is not possible (e.g. "hello" to xs:double).
+     */
+    private XPathValue coerceAtomicForAs(String text, SequenceType expectedType) {
+        String targetLocal = expectedType.getLocalName();
+        if (targetLocal == null) {
+            return null;
+        }
+        switch (targetLocal) {
+            case "string":
+            case "normalizedString":
+            case "token":
+            case "language":
+            case "NMTOKEN":
+            case "Name":
+            case "NCName":
+            case "ID":
+            case "IDREF":
+            case "ENTITY":
+                return new org.bluezoo.gonzalez.transform.xpath.type.XPathString(text);
+            case "double":
+            case "float":
+            case "decimal":
+                try {
+                    return new org.bluezoo.gonzalez.transform.xpath.type.XPathNumber(Double.parseDouble(text));
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            case "integer":
+            case "int":
+            case "long":
+            case "short":
+            case "nonNegativeInteger":
+            case "positiveInteger":
+                try {
+                    return org.bluezoo.gonzalez.transform.xpath.type.XPathNumber.ofInteger(Long.parseLong(text));
+                } catch (NumberFormatException e) {
+                    return null;
+                }
+            case "boolean":
+                if ("true".equals(text) || "1".equals(text)) {
+                    return org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean.TRUE;
+                } else if ("false".equals(text) || "0".equals(text)) {
+                    return org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean.FALSE;
+                }
+                return null;
+            case "anyAtomicType":
+                return new org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic(text);
+            default:
+                return null;
         }
     }
     
@@ -458,10 +604,17 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
         if (item instanceof XPathResultTreeFragment) {
             ((XPathResultTreeFragment) item).replayToOutput(output);
         } else if (item instanceof XPathNode) {
-            // Output node content
-            output.characters(item.asString());
+            XPathNode node = (XPathNode) item;
+            if (node.getNodeType() == org.bluezoo.gonzalez.transform.xpath.type.NodeType.ATTRIBUTE) {
+                String nsUri = node.getNamespaceURI();
+                String localName = node.getLocalName();
+                String prefix = node.getPrefix();
+                String qName = (prefix != null && !prefix.isEmpty()) ? prefix + ":" + localName : localName;
+                output.attribute(nsUri != null ? nsUri : "", localName, qName, node.getStringValue());
+            } else {
+                output.characters(node.getStringValue());
+            }
         } else {
-            // Atomic value
             output.atomicValue(item);
         }
     }
@@ -471,8 +624,12 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
             OutputHandler output) throws SAXException {
         switch (type) {
             case "element-or-root":
+                applyToChildren(node, context, output);
+                break;
             case "shallow-skip":
-                // Apply templates to children
+                if (node.isElement()) {
+                    applyToAttributes(node, context, output);
+                }
                 applyToChildren(node, context, output);
                 break;
             case "text-or-attribute":
@@ -493,6 +650,40 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
         }
     }
     
+    private void applyToAttributes(XPathNode node, TransformContext context,
+            OutputHandler output) throws SAXException {
+        Iterator<XPathNode> attrs = node.getAttributes();
+        List<XPathNode> attrList = new ArrayList<>();
+        while (attrs.hasNext()) {
+            attrList.add(attrs.next());
+        }
+        
+        int size = attrList.size();
+        int pos = 1;
+        for (XPathNode attr : attrList) {
+            TransformContext attrCtx;
+            if (context instanceof BasicTransformContext) {
+                attrCtx = ((BasicTransformContext) context)
+                    .withXsltCurrentNode(attr).withPositionAndSize(pos++, size);
+            } else {
+                attrCtx = context.withContextNode(attr).withPositionAndSize(pos++, size);
+            }
+            
+            TemplateMatcher m = context.getTemplateMatcher();
+            TemplateRule r = m.findMatch(attr, context.getCurrentMode(), attrCtx);
+            if (r != null) {
+                if (TemplateMatcher.isBuiltIn(r)) {
+                    executeBuiltIn(TemplateMatcher.getBuiltInType(r), attr, attrCtx, output);
+                } else {
+                    TransformContext execCtx = attrCtx.pushVariableScope()
+                        .withCurrentTemplateRule(r);
+                    bindTemplateParams(r, execCtx, context, output);
+                    r.getBody().execute(execCtx, output);
+                }
+            }
+        }
+    }
+
     private void applyToChildren(XPathNode node, TransformContext context,
             OutputHandler output) throws SAXException {
         Iterator<XPathNode> children = node.getChildren();
@@ -582,6 +773,11 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
             }
             
             if (found && value != null) {
+                try {
+                    value = templateParam.validateValue(value, "XTTE0590");
+                } catch (XPathException e) {
+                    throw new SAXException(e.getMessage(), e);
+                }
                 execCtx.getVariableScope().bind(
                     templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
             } else if (templateParam.isRequired()) {
@@ -602,6 +798,11 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 } else {
                     defaultValue = new XPathString("");
                 }
+                try {
+                    defaultValue = templateParam.validateValue(defaultValue, "XTTE0600");
+                } catch (XPathException e) {
+                    throw new SAXException(e.getMessage(), e);
+                }
                 execCtx.getVariableScope().bind(
                     templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
             }
@@ -619,18 +820,16 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
                 
                 output.startElement(uri != null ? uri : "", localName, qName);
-                
-                // Copy attributes
-                Iterator<XPathNode> attrIter = node.getAttributes();
-                while (attrIter.hasNext()) {
-                    XPathNode attr = attrIter.next();
-                    String aUri = attr.getNamespaceURI();
-                    String aLocal = attr.getLocalName();
-                    String aPrefix = attr.getPrefix();
-                    String aQName = aPrefix != null && !aPrefix.isEmpty() ? aPrefix + ":" + aLocal : aLocal;
-                    output.attribute(aUri != null ? aUri : "", aLocal, aQName, attr.getStringValue());
+                Iterator<XPathNode> namespaces = node.getNamespaces();
+                while (namespaces.hasNext()) {
+                    XPathNode ns = namespaces.next();
+                    String nsPrefix = ns.getLocalName();
+                    String nsUri = ns.getStringValue();
+                    if (!"xml".equals(nsPrefix) && nsUri != null && !nsUri.isEmpty()) {
+                        output.namespace(nsPrefix, nsUri);
+                    }
                 }
-                
+                applyToAttributes(node, context, output);
                 applyToChildren(node, context, output);
                 output.endElement(uri != null ? uri : "", localName, qName);
                 break;

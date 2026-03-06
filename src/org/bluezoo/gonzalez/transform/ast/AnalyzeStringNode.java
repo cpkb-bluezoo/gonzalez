@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.ast;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.PatternSyntaxException;
 
 import org.xml.sax.SAXException;
 
@@ -34,9 +35,11 @@ import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
-import java.util.regex.PatternSyntaxException;
 
 /**
  * AnalyzeStringNode XSLT instruction.
@@ -77,50 +80,67 @@ public class AnalyzeStringNode extends XSLTInstruction implements ExpressionHold
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         try {
-            // Get the input string
+            double xsltVersion = context.getXsltVersion();
+            
+            // Evaluate and validate the select expression
             XPathValue selectResult = selectExpr.evaluate(context);
-            String input = selectResult.asString();
+            String input = validateAndGetInput(selectResult, xsltVersion);
             
             // Get the regex pattern
             String regex = regexAvt.evaluate(context);
             
-            // Get flags (optional)
-            int patternFlags = 0;
+            // Get and validate flags
+            boolean literalFlag = false;
+            String flags = "";
             if (flagsAvt != null) {
-                String flags = flagsAvt.evaluate(context);
-                for (int i = 0; i < flags.length(); i++) {
-                    char c = flags.charAt(i);
-                    if (c != 'i' && c != 'm' && c != 's' && c != 'x') {
-                        throw new SAXException("XTDE1145: Invalid flag character '" + c + "' in xsl:analyze-string flags. Valid flags are: s, m, i, x");
-                    }
-                }
-                if (flags.contains("i")) patternFlags |= java.util.regex.Pattern.CASE_INSENSITIVE;
-                if (flags.contains("m")) patternFlags |= java.util.regex.Pattern.MULTILINE;
-                if (flags.contains("s")) patternFlags |= java.util.regex.Pattern.DOTALL;
-                if (flags.contains("x")) patternFlags |= java.util.regex.Pattern.COMMENTS;
+                flags = flagsAvt.evaluate(context);
             }
+            int patternFlags = parseFlags(flags, xsltVersion);
+            literalFlag = flags.contains("q");
+            
+            // XSLT 2.0: validate regex restrictions
+            if (xsltVersion < 3.0) {
+                validateRegexXslt20(regex);
+            }
+            
+            // In literal mode (q flag), escape the regex
+            String effectiveRegex = literalFlag ? java.util.regex.Pattern.quote(regex) : regex;
             
             // Compile the regex (cached for repeated calls)
             java.util.regex.Pattern pattern;
-            if (regex.equals(lastRegex) && patternFlags == lastFlags) {
+            if (effectiveRegex.equals(lastRegex) && patternFlags == lastFlags) {
                 pattern = lastPattern;
             } else {
-                pattern = java.util.regex.Pattern.compile(regex, patternFlags);
-                lastRegex = regex;
+                pattern = java.util.regex.Pattern.compile(effectiveRegex, patternFlags);
+                lastRegex = effectiveRegex;
                 lastFlags = patternFlags;
                 lastPattern = pattern;
             }
             java.util.regex.Matcher matcher = pattern.matcher(input);
             
+            // XSLT 2.0: check for zero-length matches
+            if (xsltVersion < 3.0 && matcher.find()) {
+                if (matcher.start() == matcher.end()) {
+                    throw new SAXException("XTDE1150: The regex in " +
+                        "xsl:analyze-string matches a zero-length string");
+                }
+                matcher.reset();
+            }
+            
             int lastEnd = 0;
             while (matcher.find()) {
+                // Handle zero-length matches in XSLT 3.0
+                if (matcher.start() == matcher.end()) {
+                    continue;
+                }
+                
                 // Non-matching part before this match
                 if (lastEnd < matcher.start() && nonMatchingContent != null) {
                     String nonMatch = input.substring(lastEnd, matcher.start());
                     executeWithStringContext(nonMatchingContent, nonMatch, null, context, output);
                 }
                 
-                // Matching part - pass the matcher for regex-group() access
+                // Matching part
                 if (matchingContent != null) {
                     String match = matcher.group();
                     executeWithStringContext(matchingContent, match, matcher, context, output);
@@ -137,7 +157,98 @@ public class AnalyzeStringNode extends XSLTInstruction implements ExpressionHold
         } catch (XPathException e) {
             throw new SAXException("Error in xsl:analyze-string select: " + e.getMessage(), e);
         } catch (PatternSyntaxException e) {
-            throw new SAXException("Invalid regex in xsl:analyze-string: " + e.getMessage(), e);
+            throw new SAXException("FORX0002: Invalid regular expression: " + e.getMessage(), e);
+        }
+    }
+    
+    private String validateAndGetInput(XPathValue selectResult, double xsltVersion) 
+            throws SAXException {
+        if (selectResult == null) {
+            if (xsltVersion < 3.0) {
+                throw new SAXException("XPTY0004: The select expression of " +
+                    "xsl:analyze-string must return a string value, got empty sequence");
+            }
+            return "";
+        }
+        
+        // Check for sequences
+        if (selectResult instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) selectResult;
+            int size = seq.size();
+            if (size == 0) {
+                if (xsltVersion < 3.0) {
+                    throw new SAXException("XPTY0004: The select expression of " +
+                        "xsl:analyze-string must return a string value, got empty sequence");
+                }
+                return "";
+            }
+            if (size > 1) {
+                throw new SAXException("XPTY0004: The select expression of " +
+                    "xsl:analyze-string must return a single string, got sequence of " +
+                    size + " items");
+            }
+            selectResult = seq.iterator().next();
+        }
+        
+        // Check type: must be a string or node (which can be atomized to string)
+        if (selectResult instanceof XPathNumber) {
+            throw new SAXException("XPTY0004: The select expression of " +
+                "xsl:analyze-string requires xs:string, got numeric value");
+        }
+        
+        return selectResult.asString();
+    }
+    
+    private int parseFlags(String flags, double xsltVersion) throws SAXException {
+        int patternFlags = 0;
+        for (int i = 0; i < flags.length(); i++) {
+            char c = flags.charAt(i);
+            switch (c) {
+                case 'i':
+                    patternFlags |= java.util.regex.Pattern.CASE_INSENSITIVE;
+                    break;
+                case 'm':
+                    patternFlags |= java.util.regex.Pattern.MULTILINE;
+                    break;
+                case 's':
+                    patternFlags |= java.util.regex.Pattern.DOTALL;
+                    break;
+                case 'x':
+                    patternFlags |= java.util.regex.Pattern.COMMENTS;
+                    break;
+                case 'q':
+                    if (xsltVersion < 3.0) {
+                        throw new SAXException("XTDE1145: Flag 'q' (literal) " +
+                            "is not allowed in XSLT " + xsltVersion);
+                    }
+                    break;
+                default:
+                    throw new SAXException("XTDE1145: Invalid flag character '" + 
+                        c + "' in xsl:analyze-string flags");
+            }
+        }
+        return patternFlags;
+    }
+    
+    private void validateRegexXslt20(String regex) throws SAXException {
+        if (regex.isEmpty()) {
+            throw new SAXException("XTDE1150: The regex in " +
+                "xsl:analyze-string must not be empty (matches zero-length string)");
+        }
+        // Check for non-capturing groups (?:...) - not allowed in XSLT 2.0
+        int idx = 0;
+        while (idx < regex.length()) {
+            char c = regex.charAt(idx);
+            if (c == '\\') {
+                idx += 2;
+                continue;
+            }
+            if (c == '(' && idx + 2 < regex.length() 
+                    && regex.charAt(idx + 1) == '?' && regex.charAt(idx + 2) == ':') {
+                throw new SAXException("XTDE1140: Non-capturing groups (?:...) " +
+                    "are not allowed in XSLT 2.0 regular expressions");
+            }
+            idx++;
         }
     }
     
@@ -150,6 +261,10 @@ public class AnalyzeStringNode extends XSLTInstruction implements ExpressionHold
         // We create a text node wrapper for this
         XPathNode textNode = new StringContextNode(contextString);
         TransformContext strContext = context.withContextNode(textNode);
+        // Update the XSLT current node so current() returns the matched string
+        if (strContext instanceof BasicTransformContext) {
+            strContext = ((BasicTransformContext) strContext).withXsltCurrentNode(textNode);
+        }
         // Set the regex matcher for regex-group() function access
         if (matcher != null) {
             strContext = strContext.withRegexMatcher(matcher);

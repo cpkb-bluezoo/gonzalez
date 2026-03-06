@@ -33,8 +33,12 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
+import org.bluezoo.json.JSONWriter;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
@@ -397,7 +401,7 @@ public final class StringFunctions {
             } else {
                 str = args.get(0).asString();
             }
-            return XPathNumber.of(str.length());
+            return XPathNumber.of(str.codePointCount(0, str.length()));
         }
     };
 
@@ -536,12 +540,12 @@ public final class StringFunctions {
         
         private XPathValue atomize(XPathValue value) {
             if (value == null) {
-                return XPathString.of("");
+                return XPathSequence.EMPTY;
             }
             if (value.isNodeSet()) {
                 XPathNodeSet nodeSet = value.asNodeSet();
                 if (nodeSet.isEmpty()) {
-                    return XPathString.of("");
+                    return XPathSequence.EMPTY;
                 }
                 // Return first node's typed value for single node
                 if (nodeSet.size() == 1) {
@@ -576,7 +580,14 @@ public final class StringFunctions {
                 return XPathTypedAtomic.fromNode(stringValue, typeNs, typeLocal);
             }
             
-            // Per XPath 2.0+, atomization of untyped nodes yields xs:untypedAtomic
+            // Per XPath 2.0 data model: comment, PI, and namespace nodes
+            // have typed value xs:string; all other untyped nodes yield xs:untypedAtomic
+            NodeType nodeType = node.getNodeType();
+            if (nodeType == NodeType.COMMENT || 
+                nodeType == NodeType.PROCESSING_INSTRUCTION ||
+                nodeType == NodeType.NAMESPACE) {
+                return XPathString.of(stringValue);
+            }
             return XPathUntypedAtomic.ofUntyped(stringValue);
         }
     };
@@ -1106,19 +1117,101 @@ public final class StringFunctions {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue arg = args.get(0);
-            // Second argument (serialization params) is optional and not fully implemented
             
             if (arg == null) {
                 return XPathString.of("");
             }
+
+            String method = extractSerializationMethod(args);
             
+            if ("json".equals(method) || "adaptive".equals(method)) {
+                return serializeJson(arg);
+            }
+            
+            return serializeXml(arg);
+        }
+
+        private String extractSerializationMethod(List<XPathValue> args) {
+            if (args.size() < 2) {
+                return null;
+            }
+            XPathValue params = args.get(1);
+            if (params instanceof XPathMap) {
+                XPathMap paramsMap = (XPathMap) params;
+                XPathValue methodVal = paramsMap.get("method");
+                if (methodVal != null) {
+                    return methodVal.asString();
+                }
+            }
+            return null;
+        }
+
+        private XPathValue serializeJson(XPathValue arg) throws XPathException {
+            try {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                JSONWriter writer = new JSONWriter(baos);
+                serializeJsonValue(arg, writer);
+                writer.close();
+                return XPathString.of(baos.toString("UTF-8"));
+            } catch (Exception e) {
+                throw new XPathException("Error serializing value as JSON: " + e.getMessage());
+            }
+        }
+
+        private void serializeJsonValue(XPathValue value, JSONWriter writer)
+                throws IOException, XPathException {
+            if (value instanceof XPathMap) {
+                XPathMap map = (XPathMap) value;
+                writer.writeStartObject();
+                for (Map.Entry<String, XPathValue> entry : map.entries()) {
+                    writer.writeKey(entry.getKey());
+                    serializeJsonValue(entry.getValue(), writer);
+                }
+                writer.writeEndObject();
+            } else if (value instanceof XPathArray) {
+                XPathArray array = (XPathArray) value;
+                writer.writeStartArray();
+                for (XPathValue member : array.members()) {
+                    serializeJsonValue(member, writer);
+                }
+                writer.writeEndArray();
+            } else if (value instanceof XPathBoolean) {
+                writer.writeBoolean(value.asBoolean());
+            } else if (value instanceof XPathNumber) {
+                double d = value.asNumber();
+                long longVal = (long) d;
+                if (d == longVal && !Double.isInfinite(d)) {
+                    writer.writeNumber(longVal);
+                } else {
+                    writer.writeNumber(d);
+                }
+            } else if (value instanceof XPathNodeSet) {
+                XPathNodeSet ns = (XPathNodeSet) value;
+                if (ns.isEmpty()) {
+                    writer.writeNull();
+                } else {
+                    writer.writeString(value.asString());
+                }
+            } else if (value instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) value;
+                writer.writeStartArray();
+                for (XPathValue item : seq) {
+                    serializeJsonValue(item, writer);
+                }
+                writer.writeEndArray();
+            } else {
+                writer.writeString(value.asString());
+            }
+        }
+
+        private XPathValue serializeXml(XPathValue arg) throws XPathException {
             try {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 OutputProperties props = new OutputProperties();
                 props.setOmitXmlDeclaration(true);
                 OutputHandler output = new XMLWriterOutputHandler(baos, props);
                 
-                serializeValue(arg, output);
+                serializeXmlValue(arg, output);
                 
                 output.endDocument();
                 return XPathString.of(baos.toString("UTF-8"));
@@ -1127,7 +1220,7 @@ public final class StringFunctions {
             }
         }
         
-        private void serializeValue(XPathValue value, OutputHandler output) throws Exception {
+        private void serializeXmlValue(XPathValue value, OutputHandler output) throws Exception {
             if (value instanceof XPathNodeSet) {
                 XPathNodeSet nodeSet = (XPathNodeSet) value;
                 for (XPathNode node : nodeSet) {
@@ -1143,7 +1236,7 @@ public final class StringFunctions {
                         output.characters(" ");
                     }
                     first = false;
-                    serializeValue(item, output);
+                    serializeXmlValue(item, output);
                 }
             } else {
                 // Atomic value - output as text

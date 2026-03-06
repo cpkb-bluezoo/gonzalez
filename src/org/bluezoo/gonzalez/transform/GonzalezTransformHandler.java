@@ -24,10 +24,12 @@ package org.bluezoo.gonzalez.transform;
 import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.ComponentVisibility;
 import org.bluezoo.gonzalez.transform.compiler.GlobalVariable;
 import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 import org.bluezoo.gonzalez.transform.compiler.TemplateParameter;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
+import org.bluezoo.gonzalez.transform.compiler.UserFunction;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
@@ -40,6 +42,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.*;
 import org.xml.sax.ext.LexicalHandler;
@@ -90,6 +93,11 @@ public class GonzalezTransformHandler extends DefaultHandler
     
     /** The initial mode for apply-templates. */
     private String initialMode;
+
+    /** Initial function for XSLT 3.0 initial-function support. */
+    private String initialFunctionNsUri;
+    private String initialFunctionLocalName;
+    private java.util.List<String> initialFunctionParams;
 
     /** XPath expression to select the initial context node from the source tree. */
     private String initialContextSelect;
@@ -149,6 +157,20 @@ public class GonzalezTransformHandler extends DefaultHandler
         this.initialTemplate = name;
     }
     
+    /**
+     * Sets the initial function for XSLT 3.0 support.
+     *
+     * @param nsUri the function namespace URI
+     * @param localName the function local name
+     * @param paramSelects XPath expressions for each parameter
+     */
+    public void setInitialFunction(String nsUri, String localName,
+                                   java.util.List<String> paramSelects) {
+        this.initialFunctionNsUri = nsUri;
+        this.initialFunctionLocalName = localName;
+        this.initialFunctionParams = paramSelects;
+    }
+
     /**
      * Sets the initial mode for the transformation.
      *
@@ -251,6 +273,9 @@ public class GonzalezTransformHandler extends DefaultHandler
         int nsCount = element.getNamespaceNodeCount();
         documentOrderCounter += nsCount + atts.getLength() + 1;
         
+        // Track base URI from external entity expansion
+        setEntityBaseURIIfNeeded(element);
+        
         currentNode = element;
     }
 
@@ -276,7 +301,8 @@ public class GonzalezTransformHandler extends DefaultHandler
     @Override
     public void processingInstruction(String target, String data) throws SAXException {
         flushTextBuffer();
-        StreamingNode.createPI(target, data, currentNode, documentOrderCounter++);
+        StreamingNode pi = StreamingNode.createPI(target, data, currentNode, documentOrderCounter++);
+        setEntityBaseURIIfNeeded(pi);
     }
 
     // LexicalHandler methods
@@ -329,6 +355,25 @@ public class GonzalezTransformHandler extends DefaultHandler
         // CDATA sections are treated as text
     }
 
+    /**
+     * Sets the entity base URI on a node if the current locator's system ID
+     * differs from the document root's base URI. This happens when the node
+     * originates from an expanded external entity.
+     */
+    private void setEntityBaseURIIfNeeded(StreamingNode node) {
+        if (documentLocator == null || root == null) {
+            return;
+        }
+        String currentSystemId = documentLocator.getSystemId();
+        if (currentSystemId == null) {
+            return;
+        }
+        String docBaseURI = root.getBaseURI();
+        if (!currentSystemId.equals(docBaseURI)) {
+            node.setEntityBaseURI(currentSystemId);
+        }
+    }
+    
     private void flushTextBuffer() {
         if (textBuffer.length() > 0) {
             String text = textBuffer.toString();
@@ -483,6 +528,12 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Start output document
         output.startDocument();
         
+        // XTDE0047: specifying both initial mode and initial template is an error
+        if (initialMode != null && initialTemplate != null) {
+            throw new SAXException("XTDE0047: Both initial-mode and " +
+                "initial-template were specified; only one is allowed");
+        }
+
         // XSLT 3.0: if no initial mode specified, use the stylesheet's default-mode
         if (initialMode == null) {
             String stylesheetDefaultMode = stylesheet.getDefaultMode();
@@ -515,8 +566,50 @@ public class GonzalezTransformHandler extends DefaultHandler
             }
         }
 
-        // Check for initial template (XSLT 2.0+ feature)
-        if (initialTemplate != null) {
+        // Check for initial function (XSLT 3.0 feature)
+        if (initialFunctionLocalName != null) {
+            String nsUri = initialFunctionNsUri != null ? initialFunctionNsUri : "";
+            int arity = initialFunctionParams != null ? initialFunctionParams.size() : 0;
+            UserFunction func = stylesheet.getUserFunction(nsUri, initialFunctionLocalName, arity);
+            if (func == null) {
+                throw new SAXException("XTDE0041: Initial function {" + nsUri + "}" +
+                    initialFunctionLocalName + "#" + arity + " not found");
+            }
+            // Check visibility - private functions cannot be called as initial function
+            if (func.getVisibility() == ComponentVisibility.PRIVATE) {
+                throw new SAXException("XTDE0041: Initial function {" + nsUri + "}" +
+                    initialFunctionLocalName + " has private visibility");
+            }
+            // Evaluate parameter expressions
+            java.util.List<XPathValue> argValues = new java.util.ArrayList<>();
+            if (initialFunctionParams != null) {
+                for (String paramExpr : initialFunctionParams) {
+                    try {
+                        XPathExpression expr = XPathExpression.compile(paramExpr, null);
+                        XPathValue val = expr.evaluate(context);
+                        argValues.add(val);
+                    } catch (Exception e) {
+                        throw new SAXException("Error evaluating initial-function parameter: " +
+                            paramExpr + " - " + e.getMessage(), e);
+                    }
+                }
+            }
+            // Create function execution context and bind parameters
+            TransformContext funcContext = context.pushVariableScope()
+                .withContextNode(null).withNoTunnelParameters();
+            if (funcContext instanceof BasicTransformContext) {
+                ((BasicTransformContext) funcContext).setContextItemUndefined(true);
+            }
+            List<UserFunction.FunctionParameter> params = func.getParameters();
+            for (int i = 0; i < params.size() && i < argValues.size(); i++) {
+                funcContext.getVariableScope().bind(params.get(i).getNamespaceURI(), params.get(i).getLocalName(), argValues.get(i));
+            }
+            // Execute the function body directly to the output
+            XSLTNode body = func.getBody();
+            if (body != null) {
+                body.execute(funcContext, output);
+            }
+        } else if (initialTemplate != null) {
                 // Call the named template directly
                 TemplateRule template = stylesheet.getNamedTemplate(initialTemplate);
                 if (template == null) {
@@ -529,10 +622,13 @@ public class GonzalezTransformHandler extends DefaultHandler
                             templateParam.getLocalName() + " is required but no value was supplied");
                     }
                 }
-                // Execute the named template with document root as context node
-                // Set current template rule so xsl:next-match works if template has match pattern
-                TransformContext templateContext = context.pushVariableScope()
-                    .withCurrentTemplateRule(template);
+                // Execute the named initial template
+                TransformContext templateContext = context.pushVariableScope();
+                // If the template also has a match pattern, invoke as if matched
+                // (XSLT 3.0 §2.4: current template rule is set)
+                if (template.getMatchPattern() != null) {
+                    templateContext = templateContext.withCurrentTemplateRule(template);
+                }
                 bindInitialTemplateParams(template, templateContext);
                 XSLTNode body = template.getBody();
                 if (body != null) {
@@ -549,9 +645,11 @@ public class GonzalezTransformHandler extends DefaultHandler
                 
                 if (xslInitialTemplate != null) {
                     // xsl:initial-template exists - invoke it with document root as context
-                    // Set current template rule so xsl:next-match works if template has match pattern
-                    TransformContext templateContext = context.pushVariableScope()
-                        .withCurrentTemplateRule(xslInitialTemplate);
+                    TransformContext templateContext = context.pushVariableScope();
+                    // If the template also has a match pattern, invoke as if matched
+                    if (xslInitialTemplate.getMatchPattern() != null) {
+                        templateContext = templateContext.withCurrentTemplateRule(xslInitialTemplate);
+                    }
                     bindInitialTemplateParams(xslInitialTemplate, templateContext);
                     XSLTNode body = xslInitialTemplate.getBody();
                     if (body != null) {
@@ -594,6 +692,11 @@ public class GonzalezTransformHandler extends DefaultHandler
                 defaultValue = new XPathString("");
             }
             if (defaultValue != null) {
+                try {
+                    defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                } catch (XPathException e) {
+                    throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
+                }
                 templateContext.getVariableScope().bind(
                     templateParam.getNamespaceURI(),
                     templateParam.getLocalName(),
@@ -614,9 +717,25 @@ public class GonzalezTransformHandler extends DefaultHandler
             context.setVariable(entry.getKey(), value);
         }
         
-        // Note: XTDE0050 (required parameter validation) is not implemented because
-        // the test framework doesn't support passing external stylesheet parameters.
-        // The getRequiredParameters() method exists for future use.
+        // XTDE0050: required parameters must have a value supplied externally
+        List<GlobalVariable> allGlobals = stylesheet.getGlobalVariables();
+        for (GlobalVariable var : allGlobals) {
+            if (var.isRequired()) {
+                String paramName = var.getLocalName();
+                boolean supplied = false;
+                for (String key : parameters.keySet()) {
+                    int braceClose = key.indexOf('}');
+                    String localPart = braceClose >= 0 ? key.substring(braceClose + 1) : key;
+                    if (localPart.equals(paramName)) {
+                        supplied = true;
+                        break;
+                    }
+                }
+                if (!supplied) {
+                    throw new SAXException("XTDE0050: No value supplied for required parameter: $" + paramName);
+                }
+            }
+        }
         
         // Evaluate global variables with forward reference support
         // Use multi-pass: keep evaluating until all done or no progress (circular reference)
@@ -676,19 +795,7 @@ public class GonzalezTransformHandler extends DefaultHandler
                     beingEvaluated.remove(key);
                 } catch (Exception e) {
                     // Check if the root cause is a circular reference or undefined variable
-                    Throwable cause = e;
-                    boolean isUndefinedVar = false;
-                    while (cause != null) {
-                        if (cause instanceof XPathVariableException) {
-                            String msg = cause.getMessage();
-                            if (msg != null && msg.contains("XTDE0640")) {
-                                throw new SAXException(msg);
-                            }
-                            // This is an undefined variable - might be evaluated later
-                            isUndefinedVar = true;
-                        }
-                        cause = cause.getCause();
-                    }
+                    boolean isUndefinedVar = containsUndefinedVariableException(e);
                     // If not a variable error, this is a real problem - rethrow
                     if (!isUndefinedVar) {
                         throw new SAXException("Error evaluating variable: " + var.getName(), e);
@@ -718,15 +825,43 @@ public class GonzalezTransformHandler extends DefaultHandler
         return var.getLocalName();
     }
     
+    /**
+     * Checks whether an exception (or any exception in its cause chain)
+     * indicates an undefined variable that may be resolved on a later pass.
+     * Walks both getCause() and SAXException.getException() chains.
+     */
+    private boolean containsUndefinedVariableException(Throwable t) {
+        Set<Throwable> visited = new HashSet<Throwable>();
+        while (t != null && visited.add(t)) {
+            if (t instanceof XPathVariableException) {
+                String msg = t.getMessage();
+                if (msg != null && msg.contains("XTDE0640")) {
+                    return false;
+                }
+                return true;
+            }
+            if (t.getMessage() != null && t.getMessage().contains("XPST0008")) {
+                return true;
+            }
+            Throwable next = t.getCause();
+            if (next == null && t instanceof org.xml.sax.SAXException) {
+                next = ((org.xml.sax.SAXException) t).getException();
+            }
+            t = next;
+        }
+        return false;
+    }
+    
     private XPathValue evaluateGlobalVariable(GlobalVariable var, BasicTransformContext context,
             Set<String> beingEvaluated, Set<String> evaluated) throws Exception {
         try {
+            XPathValue value;
             // Check for static variable with pre-computed value (XSLT 3.0)
             if (var.isStatic()) {
                 return var.getStaticValue();
             }
             if (var.getSelectExpr() != null) {
-                return var.getSelectExpr().evaluate(context);
+                value = var.getSelectExpr().evaluate(context);
             } else if (var.getContent() != null) {
                 // Check if this is a sequence or single node type
                 if (var.isSequenceType() || var.isSingleNodeType()) {
@@ -734,21 +869,22 @@ public class GonzalezTransformHandler extends DefaultHandler
                     SequenceBuilderOutputHandler seqBuilder = 
                         new SequenceBuilderOutputHandler();
                     var.getContent().execute(context, seqBuilder);
-                    return seqBuilder.getSequence();
+                    value = seqBuilder.getSequence();
+                } else {
+                    // Execute content and capture as result tree fragment (default)
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
+                    var.getContent().execute(context, bufferOutput);
+                    String varBaseUri = var.getBaseUri();
+                    if (varBaseUri == null) {
+                        varBaseUri = context.getStaticBaseURI();
+                    }
+                    value = new XPathResultTreeFragment(buffer, varBaseUri);
                 }
-                
-                // Execute content and capture as result tree fragment (default)
-                SAXEventBuffer buffer = new SAXEventBuffer();
-                BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
-                var.getContent().execute(context, bufferOutput);
-                String varBaseUri = var.getBaseUri();
-                if (varBaseUri == null) {
-                    varBaseUri = context.getStaticBaseURI();
-                }
-                return new XPathResultTreeFragment(buffer, varBaseUri);
             } else {
                 return XPathString.of("");
             }
+            return coerceGlobalValue(value, var.getAsType());
         } catch (XPathVariableException e) {
             // Variable not yet available - check if it's being evaluated (circular)
             String refName = e.getVariableName();
@@ -773,6 +909,75 @@ public class GonzalezTransformHandler extends DefaultHandler
         }
     }
     
+    /**
+     * Coerces a global variable value to match the declared 'as' type.
+     * Atomizes nodes and casts xs:untypedAtomic to the target atomic type
+     * per XSLT function conversion rules.
+     */
+    private XPathValue coerceGlobalValue(XPathValue value, String asType) throws Exception {
+        if (asType == null || value == null) {
+            return value;
+        }
+        SequenceType parsedType = SequenceType.parse(asType, null);
+        if (parsedType == null) {
+            return value;
+        }
+        SequenceType.ItemKind kind = parsedType.getItemKind();
+        if (kind != SequenceType.ItemKind.ATOMIC) {
+            return value;
+        }
+        String targetLocal = parsedType.getLocalName();
+        if (targetLocal == null) {
+            return value;
+        }
+        if (value instanceof XPathSequence) {
+            boolean needsCoercion = false;
+            for (XPathValue item : (XPathSequence) value) {
+                if (item instanceof XPathNode || item.isNodeSet()
+                        || item instanceof XPathResultTreeFragment
+                        || item instanceof XPathUntypedAtomic) {
+                    needsCoercion = true;
+                    break;
+                }
+            }
+            if (!needsCoercion) {
+                return value;
+            }
+            List<XPathValue> coerced = new ArrayList<XPathValue>();
+            for (XPathValue item : (XPathSequence) value) {
+                if (item instanceof XPathNode || item.isNodeSet()
+                        || item instanceof XPathResultTreeFragment
+                        || item instanceof XPathUntypedAtomic) {
+                    String text = item.asString();
+                    coerced.add(TemplateParameter.castStringToAtomicType(text, targetLocal));
+                } else {
+                    coerced.add(item);
+                }
+            }
+            if (coerced.size() == 1) {
+                return coerced.get(0);
+            }
+            return new XPathSequence(coerced);
+        }
+        if (value.isNodeSet()) {
+            XPathNodeSet ns = value.asNodeSet();
+            if (ns.isEmpty()) {
+                if (parsedType.allowsEmpty()) {
+                    return XPathSequence.EMPTY;
+                }
+                return value;
+            }
+            String text = value.asString();
+            return TemplateParameter.castStringToAtomicType(text, targetLocal);
+        }
+        if (value instanceof XPathUntypedAtomic
+                || value instanceof XPathResultTreeFragment) {
+            String text = value.asString();
+            return TemplateParameter.castStringToAtomicType(text, targetLocal);
+        }
+        return value;
+    }
+
     private static class CircularReferenceException extends Exception {
         CircularReferenceException(String varName) {
             super("Circular reference: " + varName);
@@ -848,6 +1053,11 @@ public class GonzalezTransformHandler extends DefaultHandler
             } else {
                 defaultValue = XPathString.of("");
             }
+            try {
+                defaultValue = templateParam.coerceDefaultValue(defaultValue);
+            } catch (XPathException e) {
+                throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
+            }
             templateContext.getVariableScope().bind(templateParam.getName(), defaultValue);
         }
         
@@ -868,7 +1078,10 @@ public class GonzalezTransformHandler extends DefaultHandler
                 body.execute(templateContext, seqBuilder);
                 XPathValue result = seqBuilder.getSequence();
                 
-                SequenceType expectedType = SequenceType.parse(asType, null);
+                SequenceType expectedType = rule.getParsedAsType();
+                if (expectedType == null) {
+                    expectedType = SequenceType.parse(asType, null);
+                }
                 if (expectedType != null && !expectedType.matches(result, SchemaContext.NONE)) {
                     String templateDesc = rule.getName() != null ?
                         "named template '" + rule.getName() + "'" :
@@ -939,16 +1152,28 @@ public class GonzalezTransformHandler extends DefaultHandler
                     uri = "";
                 }
                 output.startElement(uri, localName, qName);
+                // Declare the element's own namespace binding
+                if (prefix != null && !prefix.isEmpty()) {
+                    output.namespace(prefix, uri);
+                } else {
+                    output.namespace("", uri);
+                }
                 Iterator<XPathNode> attrs = node.getAttributes();
                 while (attrs.hasNext()) {
                     XPathNode attr = attrs.next();
                     String aUri = attr.getNamespaceURI();
                     String aLocal = attr.getLocalName();
                     String aPrefix = attr.getPrefix();
+                    if (aUri == null) {
+                        aUri = "";
+                    }
+                    // Declare attribute namespace if prefixed
+                    if (aPrefix != null && !aPrefix.isEmpty() && !aUri.isEmpty()) {
+                        output.namespace(aPrefix, aUri);
+                    }
                     String aQName = (aPrefix != null && !aPrefix.isEmpty())
                         ? aPrefix + ":" + aLocal : aLocal;
-                    output.attribute(aUri != null ? aUri : "", aLocal, aQName,
-                        attr.getStringValue());
+                    output.attribute(aUri, aLocal, aQName, attr.getStringValue());
                 }
                 Iterator<XPathNode> children = node.getChildren();
                 while (children.hasNext()) {
@@ -998,14 +1223,15 @@ public class GonzalezTransformHandler extends DefaultHandler
                 break;
                 
             case "shallow-skip":
-                // Process children but don't copy the node itself
-                if (node.isElement() || node.isRoot()) {
+                if (node.isElement()) {
+                    applyTemplatesToAttributes(node, context.getCurrentMode(), context, output);
+                    applyTemplatesToChildren(node, context.getCurrentMode(), context, output);
+                } else if (node.isRoot()) {
                     applyTemplatesToChildren(node, context.getCurrentMode(), context, output);
                 }
                 break;
                 
             case "shallow-copy": {
-                // Copy the node but process children via apply-templates
                 if (node.isElement()) {
                     String nsUri = node.getNamespaceURI();
                     String localName = node.getLocalName();
@@ -1013,17 +1239,7 @@ public class GonzalezTransformHandler extends DefaultHandler
                     String qName = (prefix != null && !prefix.isEmpty()) 
                         ? prefix + ":" + localName : localName;
                     output.startElement(nsUri != null ? nsUri : "", localName, qName);
-                    // Copy attributes
-                    java.util.Iterator<XPathNode> attrIter = node.getAttributes();
-                    while (attrIter.hasNext()) {
-                        XPathNode attr = attrIter.next();
-                        String aUri = attr.getNamespaceURI();
-                        String aLocal = attr.getLocalName();
-                        String aPrefix = attr.getPrefix();
-                        String aQName = (aPrefix != null && !aPrefix.isEmpty())
-                            ? aPrefix + ":" + aLocal : aLocal;
-                        output.attribute(aUri != null ? aUri : "", aLocal, aQName, attr.getStringValue());
-                    }
+                    applyTemplatesToAttributes(node, context.getCurrentMode(), context, output);
                     applyTemplatesToChildren(node, context.getCurrentMode(), context, output);
                     output.endElement(nsUri != null ? nsUri : "", localName, qName);
                 } else if (node.isText()) {
@@ -1033,6 +1249,13 @@ public class GonzalezTransformHandler extends DefaultHandler
                     }
                 } else if (node.isRoot()) {
                     applyTemplatesToChildren(node, context.getCurrentMode(), context, output);
+                } else if (node.isAttribute()) {
+                    String aUri = node.getNamespaceURI();
+                    String aLocal = node.getLocalName();
+                    String aPrefix = node.getPrefix();
+                    String aQName = (aPrefix != null && !aPrefix.isEmpty())
+                        ? aPrefix + ":" + aLocal : aLocal;
+                    output.attribute(aUri != null ? aUri : "", aLocal, aQName, node.getStringValue());
                 }
                 break;
             }
@@ -1099,6 +1322,31 @@ public class GonzalezTransformHandler extends DefaultHandler
             BasicTransformContext childContext = (BasicTransformContext) 
                 context.withContextNode(child).withPositionAndSize(position, size);
             applyTemplates(child, mode, childContext, output);
+            position++;
+        }
+    }
+
+    /**
+     * Applies templates to the attribute nodes of an element.
+     * Used by shallow-copy and shallow-skip built-in template rules
+     * per XSLT 3.0 spec section 6.7.
+     */
+    private void applyTemplatesToAttributes(XPathNode node, String mode,
+            BasicTransformContext context, OutputHandler output) throws SAXException {
+        
+        Iterator<XPathNode> attrs = node.getAttributes();
+        List<XPathNode> attrList = new ArrayList<>();
+        while (attrs.hasNext()) {
+            attrList.add(attrs.next());
+        }
+        
+        int size = attrList.size();
+        int position = 1;
+        
+        for (XPathNode attr : attrList) {
+            BasicTransformContext attrContext = (BasicTransformContext)
+                context.withContextNode(attr).withPositionAndSize(position, size);
+            applyTemplates(attr, mode, attrContext, output);
             position++;
         }
     }

@@ -27,6 +27,7 @@ import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.ResultDocumentHandler;
+import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.xml.sax.SAXException;
 
@@ -172,6 +173,14 @@ public final class ResultDocumentNode implements XSLTNode {
                         "because it has already been used");
                 }
                 context.claimResultDocumentUri("");
+                // Configure handler for json/adaptive output method
+                OutputProperties.Method effectiveMethod = props.getMethod();
+                if (effectiveMethod == OutputProperties.Method.JSON
+                        || effectiveMethod == OutputProperties.Method.ADAPTIVE) {
+                    if (target instanceof XMLWriterOutputHandler) {
+                        ((XMLWriterOutputHandler) target).setStrictXmlSerialization(false);
+                    }
+                }
                 secondaryOutput = target;
                 usingPrincipalOutput = true;
             }

@@ -32,10 +32,12 @@ import org.xml.sax.SAXException;
 import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.function.SequenceFunctions;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
@@ -122,15 +124,30 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
             }
             
             if (result instanceof XPathResultTreeFragment) {
-                // Result tree fragment - replay the buffered events
-                // For validation="strip", don't include type annotations
                 XPathResultTreeFragment rtf = (XPathResultTreeFragment) result;
-                boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
-                rtf.replayToOutput(output, includeTypes);
+                if (output instanceof SequenceBuilderOutputHandler) {
+                    // Preserve the document node identity in sequence construction
+                    ((SequenceBuilderOutputHandler) output).addItem(rtf);
+                } else {
+                    // Normal output: replay the buffered events
+                    // For validation="strip", don't include type annotations
+                    boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
+                    rtf.replayToOutput(output, includeTypes);
+                }
             } else if (result instanceof XPathNodeSet) {
                 XPathNodeSet nodeSet = (XPathNodeSet) result;
-                for (XPathNode node : nodeSet.getNodes()) {
-                    deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
+                if (copyAccumulators && output instanceof SequenceBuilderOutputHandler) {
+                    SequenceBuilderOutputHandler seqOut = (SequenceBuilderOutputHandler) output;
+                    for (XPathNode node : nodeSet.getNodes()) {
+                        XPathNode copied = SequenceFunctions.createCopiedNode(node);
+                        List<XPathNode> singleNode = new ArrayList<XPathNode>();
+                        singleNode.add(copied);
+                        seqOut.addItem(new XPathNodeSet(singleNode));
+                    }
+                } else {
+                    for (XPathNode node : nodeSet.getNodes()) {
+                        deepCopyNode(node, output, effectiveValidation, effectiveCopyNamespaces, 0);
+                    }
                 }
             } else if (result instanceof XPathArray) {
                 // XPath 3.1 array - iterate over members and copy each
@@ -168,8 +185,12 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
             boolean needSpace) throws SAXException {
         if (item instanceof XPathResultTreeFragment) {
             XPathResultTreeFragment rtf = (XPathResultTreeFragment) item;
-            boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
-            rtf.replayToOutput(output, includeTypes);
+            if (output instanceof SequenceBuilderOutputHandler) {
+                ((SequenceBuilderOutputHandler) output).addItem(rtf);
+            } else {
+                boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
+                rtf.replayToOutput(output, includeTypes);
+            }
             return false;
         } else if (item instanceof XPathArray) {
             XPathArray arr = (XPathArray) item;
@@ -253,12 +274,12 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                 }
                 // STRIP mode - don't set any type annotation
                 
-                // For unprefixed elements, emit the default namespace declaration
-                // This preserves the element's original namespace when copying into a
-                // different default namespace context
-                if (prefix == null || prefix.isEmpty()) {
-                    // Always emit the default namespace for this element
-                    // (either empty for no namespace, or the element's namespace URI)
+                // Always emit the namespace declaration for the element's own
+                // prefix, even when copy-namespaces="no". Without it the
+                // serialized output would be ill-formed.
+                if (prefix != null && !prefix.isEmpty()) {
+                    output.namespace(prefix, uri);
+                } else {
                     output.namespace("", uri);
                 }
                 
@@ -335,11 +356,23 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                 break;
                 
             case ROOT:
-                // Copy children only (depth+1 to preserve tree structure within document)
-                Iterator<XPathNode> rootChildren = 
-                    node.getChildren();
-                while (rootChildren.hasNext()) {
-                    deepCopyNode(rootChildren.next(), output, effectiveValidation, effectiveCopyNamespaces, depth + 1);
+                if (output instanceof SequenceBuilderOutputHandler) {
+                    // Buffer children into an RTF to preserve document node identity
+                    org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer docBuf =
+                        new org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer();
+                    org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler bufOut =
+                        new org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler(docBuf);
+                    Iterator<XPathNode> docChildren = node.getChildren();
+                    while (docChildren.hasNext()) {
+                        deepCopyNode(docChildren.next(), bufOut, effectiveValidation, effectiveCopyNamespaces, depth + 1);
+                    }
+                    ((SequenceBuilderOutputHandler) output).addItem(
+                        new XPathResultTreeFragment(docBuf));
+                } else {
+                    Iterator<XPathNode> rootChildren = node.getChildren();
+                    while (rootChildren.hasNext()) {
+                        deepCopyNode(rootChildren.next(), output, effectiveValidation, effectiveCopyNamespaces, depth + 1);
+                    }
                 }
                 break;
                 

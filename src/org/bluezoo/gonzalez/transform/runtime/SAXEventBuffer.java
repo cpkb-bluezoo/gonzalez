@@ -28,6 +28,8 @@ import org.xml.sax.helpers.AttributesImpl;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
+
 /**
  * Buffer for capturing and replaying SAX events.
  *
@@ -208,6 +210,38 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
         }
     }
 
+    /**
+     * Event representing a typed XPath value (e.g., a map, array, or other
+     * non-SAX-serializable item). Preserved as-is through buffering.
+     */
+    static class XPathValueEvent extends Event {
+        final XPathValue value;
+        XPathValueEvent(XPathValue value) {
+            this.value = value;
+        }
+        @Override void replay(ContentHandler h) throws SAXException {
+            if (h instanceof XPathValueHandler) {
+                ((XPathValueHandler) h).xpathValue(value);
+            }
+        }
+    }
+
+    /**
+     * Extended ContentHandler that can receive typed XPath values.
+     */
+    public interface XPathValueHandler extends ContentHandler {
+        void xpathValue(XPathValue value) throws SAXException;
+    }
+
+    /**
+     * Stores a typed XPath value event (for non-SAX-serializable items like maps).
+     */
+    public void xpathValue(XPathValue value) {
+        if (recording && value != null) {
+            events.add(new XPathValueEvent(value));
+        }
+    }
+
     private final List<Event> events = new ArrayList<>();
     private boolean recording = true;
 
@@ -224,6 +258,35 @@ public final class SAXEventBuffer implements ContentHandler, LexicalHandler {
      */
     public boolean isEmpty() {
         return events.isEmpty();
+    }
+
+    /**
+     * Returns true if this buffer contains meaningful content: elements,
+     * non-zero-length text, comments, or PIs. Zero-length text nodes
+     * and document start/end markers alone are not meaningful.
+     *
+     * @return true if there is meaningful content
+     */
+    public boolean hasNonEmptyContent() {
+        for (int i = 0; i < events.size(); i++) {
+            Event e = events.get(i);
+            if (e instanceof StartElement) {
+                return true;
+            }
+            if (e instanceof ProcessingInstruction) {
+                return true;
+            }
+            if (e instanceof Comment) {
+                return true;
+            }
+            if (e instanceof Characters) {
+                Characters c = (Characters) e;
+                if (c.length > 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**

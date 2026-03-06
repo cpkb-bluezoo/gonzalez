@@ -28,6 +28,7 @@ import java.util.List;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
@@ -59,10 +60,21 @@ public class NextMatchNode extends XSLTInstruction {
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         TemplateRule currentRule = context.getCurrentTemplateRule();
-        XPathNode currentNode = context.getXsltCurrentNode();
+        if (currentRule == null) {
+            throw new SAXException("XTDE0560: xsl:next-match cannot be used when there is no current template rule");
+        }
         
-        if (currentRule == null || currentNode == null) {
-            // XTDE0560: xsl:next-match is not allowed when the current template rule is absent
+        // XSLT 3.0: check if context item is atomic (non-node)
+        if (context instanceof BasicTransformContext) {
+            XPathValue contextItem = ((BasicTransformContext) context).getContextItem();
+            if (contextItem != null && !(contextItem instanceof XPathNode) && !contextItem.isNodeSet()) {
+                executeNextMatchForAtomic(contextItem, currentRule, context, output);
+                return;
+            }
+        }
+        
+        XPathNode currentNode = context.getXsltCurrentNode();
+        if (currentNode == null) {
             throw new SAXException("XTDE0560: xsl:next-match cannot be used when there is no current template rule");
         }
         
@@ -72,10 +84,28 @@ public class NextMatchNode extends XSLTInstruction {
             currentNode, context.getCurrentMode(), currentRule, context);
         
         if (nextRule == null || TemplateMatcher.isBuiltIn(nextRule)) {
+            java.util.Map<String, XPathValue> paramValues = evaluateParams(context);
+            
+            // Merge tunnel params from with-param nodes into context
+            TransformContext builtInContext = context;
+            java.util.Map<String, XPathValue> newTunnelParams = new java.util.HashMap<>();
+            for (WithParamNode param : params) {
+                if (param.isTunnel()) {
+                    try {
+                        newTunnelParams.put(param.getName(), param.evaluate(context));
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                    }
+                }
+            }
+            if (!newTunnelParams.isEmpty()) {
+                builtInContext = builtInContext.withTunnelParameters(newTunnelParams);
+            }
+            
             String type = nextRule != null ? TemplateMatcher.getBuiltInType(nextRule) : null;
             if (type == null) {
                 if (currentNode.isElement() || currentNode.getParent() == null) {
-                    applyTemplatesToChildren(currentNode, context, output);
+                    applyTemplatesToChildren(currentNode, builtInContext, output, paramValues);
                 } else if (currentNode.isText() || currentNode.isAttribute()) {
                     String value = currentNode.getStringValue();
                     if (value != null && !value.isEmpty()) {
@@ -83,7 +113,7 @@ public class NextMatchNode extends XSLTInstruction {
                     }
                 }
             } else {
-                executeBuiltIn(type, currentNode, context, output);
+                executeBuiltIn(type, currentNode, builtInContext, output, paramValues);
             }
             return;
         }
@@ -92,25 +122,138 @@ public class NextMatchNode extends XSLTInstruction {
         TransformContext execContext = context.pushVariableScope()
             .withCurrentTemplateRule(nextRule);
         
-        // Bind with-param values
+        // Collect and merge tunnel parameters into context
+        java.util.Map<String, XPathValue> newTunnelParams = new java.util.HashMap<>();
+        for (WithParamNode param : params) {
+            if (param.isTunnel()) {
+                try {
+                    newTunnelParams.put(param.getName(), param.evaluate(context));
+                } catch (XPathException e) {
+                    throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                }
+            }
+        }
+        if (!newTunnelParams.isEmpty()) {
+            execContext = execContext.withTunnelParameters(newTunnelParams);
+        }
+        
+        // Process each template parameter
+        for (TemplateParameter templateParam : nextRule.getParameters()) {
+            XPathValue value = null;
+            boolean found = false;
+            
+            if (templateParam.isTunnel()) {
+                // Tunnel param: check tunnel with-params, then context tunnel params
+                for (WithParamNode param : params) {
+                    if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                        try {
+                            value = param.evaluate(context);
+                            found = true;
+                        } catch (XPathException e) {
+                            throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    value = execContext.getTunnelParameters().get(templateParam.getName());
+                    found = (value != null);
+                }
+            } else {
+                // Non-tunnel param: only accept non-tunnel with-params
+                for (WithParamNode param : params) {
+                    if (!param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                        try {
+                            value = param.evaluate(context);
+                            found = true;
+                        } catch (XPathException e) {
+                            throw new SAXException("Error evaluating with-param: " + e.getMessage(), e);
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            if (!found) {
+                // Use default value
+                if (templateParam.getSelectExpr() != null) {
+                    try {
+                        value = templateParam.getSelectExpr().evaluate(execContext);
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating parameter default: " + e.getMessage(), e);
+                    }
+                } else if (templateParam.getDefaultContent() != null) {
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    BufferOutputHandler bufOutput = new BufferOutputHandler(buffer);
+                    templateParam.getDefaultContent().execute(execContext, bufOutput);
+                    value = new XPathResultTreeFragment(buffer);
+                } else {
+                    value = new XPathString("");
+                }
+                try {
+                    value = templateParam.coerceDefaultValue(value);
+                } catch (XPathException e) {
+                    throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
+                }
+            }
+            
+            execContext.getVariableScope().bind(
+                templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
+        }
+        
+        // Bind non-tunnel with-params that don't match any template parameter
+        for (WithParamNode param : params) {
+            if (!param.isTunnel()) {
+                String ns = param.getNamespaceURI();
+                String ln = param.getLocalName();
+                if (execContext.getVariableScope().lookup(ns, ln) == null) {
+                    try {
+                        XPathValue value = param.evaluate(context);
+                        execContext.getVariableScope().bind(ns, ln, value);
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating with-param: " + e.getMessage(), e);
+                    }
+                }
+            }
+        }
+        
+        // Execute the template body
+        nextRule.getBody().execute(execContext, output);
+    }
+    
+    private void executeNextMatchForAtomic(XPathValue atomicValue, TemplateRule currentRule,
+            TransformContext context, OutputHandler output) throws SAXException {
+        TemplateMatcher matcher = context.getTemplateMatcher();
+        TemplateRule nextRule = matcher.findNextMatchForAtomicValue(
+            atomicValue, context.getCurrentMode(), currentRule, context);
+        
+        if (nextRule == null) {
+            return;
+        }
+        
+        TransformContext execContext = context.pushVariableScope()
+            .withCurrentTemplateRule(nextRule);
+        
         for (WithParamNode param : params) {
             try {
                 XPathValue value = param.evaluate(context);
-                execContext.getVariableScope().bind(param.getNamespaceURI(), param.getLocalName(), value);
+                execContext.getVariableScope().bind(
+                    param.getNamespaceURI(), param.getLocalName(), value);
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating with-param: " + e.getMessage(), e);
             }
         }
         
-        // Bind template parameter defaults for any not provided
         for (TemplateParameter templateParam : nextRule.getParameters()) {
-            if (execContext.getVariableScope().lookup(templateParam.getNamespaceURI(), templateParam.getLocalName()) == null) {
+            if (execContext.getVariableScope().lookup(
+                    templateParam.getNamespaceURI(), templateParam.getLocalName()) == null) {
                 XPathValue defaultValue = null;
                 if (templateParam.getSelectExpr() != null) {
                     try {
                         defaultValue = templateParam.getSelectExpr().evaluate(execContext);
                     } catch (XPathException e) {
-                        throw new SAXException("Error evaluating parameter default: " + e.getMessage(), e);
+                        throw new SAXException(
+                            "Error evaluating parameter default: " + e.getMessage(), e);
                     }
                 } else if (templateParam.getDefaultContent() != null) {
                     SAXEventBuffer buffer = new SAXEventBuffer();
@@ -120,17 +263,131 @@ public class NextMatchNode extends XSLTInstruction {
                 } else {
                     defaultValue = new XPathString("");
                 }
-                execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
+                try {
+                    defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                } catch (XPathException e) {
+                    throw new SAXException(
+                        "Error coercing parameter default: " + e.getMessage(), e);
+                }
+                execContext.getVariableScope().bind(
+                    templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
             }
         }
         
-        // Execute the template body
         nextRule.getBody().execute(execContext, output);
     }
     
+    private java.util.Map<String, XPathValue> evaluateParams(TransformContext context)
+            throws SAXException {
+        java.util.Map<String, XPathValue> paramValues = new java.util.HashMap<>();
+        for (WithParamNode param : params) {
+            if (param.isTunnel()) {
+                continue;
+            }
+            try {
+                XPathValue value = param.evaluate(context);
+                paramValues.put(param.getLocalName(), value);
+            } catch (XPathException e) {
+                throw new SAXException("Error evaluating with-param: " + e.getMessage(), e);
+            }
+        }
+        return paramValues;
+    }
+    
+    private void bindParamsToTemplate(TemplateRule rule, TransformContext execContext,
+            java.util.Map<String, XPathValue> paramValues) throws SAXException {
+        for (TemplateParameter templateParam : rule.getParameters()) {
+            XPathValue value = null;
+            boolean found = false;
+            
+            if (templateParam.isTunnel()) {
+                // Tunnel param: check tunnel with-params, then context tunnel params
+                for (WithParamNode param : params) {
+                    if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                        try {
+                            value = param.evaluate(execContext);
+                            found = true;
+                        } catch (XPathException e) {
+                            throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    value = execContext.getTunnelParameters().get(templateParam.getName());
+                    found = (value != null);
+                }
+            } else {
+                // Non-tunnel param: check paramValues by local name
+                String paramName = templateParam.getLocalName();
+                if (paramValues.containsKey(paramName)) {
+                    value = paramValues.get(paramName);
+                    found = true;
+                }
+            }
+            
+            if (!found) {
+                if (templateParam.getSelectExpr() != null) {
+                    try {
+                        value = templateParam.getSelectExpr().evaluate(execContext);
+                    } catch (XPathException e) {
+                        throw new SAXException(
+                            "Error evaluating parameter default: " + e.getMessage(), e);
+                    }
+                } else if (templateParam.getDefaultContent() != null) {
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    BufferOutputHandler bufOutput = new BufferOutputHandler(buffer);
+                    templateParam.getDefaultContent().execute(execContext, bufOutput);
+                    value = new XPathResultTreeFragment(buffer);
+                } else {
+                    value = new XPathString("");
+                }
+                try {
+                    value = templateParam.coerceDefaultValue(value);
+                } catch (XPathException e) {
+                    throw new SAXException(
+                        "Error coercing parameter default: " + e.getMessage(), e);
+                }
+            }
+            
+            execContext.getVariableScope().bind(
+                templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
+        }
+    }
+    
+    private void applyTemplatesToAttributes(XPathNode node, TransformContext context,
+                                            OutputHandler output) throws SAXException {
+        List<XPathNode> attrs = new ArrayList<>();
+        Iterator<XPathNode> it = node.getAttributes();
+        while (it.hasNext()) {
+            attrs.add(it.next());
+        }
+        int size = attrs.size();
+        int pos = 1;
+        for (XPathNode attr : attrs) {
+            TransformContext attrContext = context.withContextNode(attr)
+                .withPositionAndSize(pos++, size);
+            TemplateMatcher matcher = context.getTemplateMatcher();
+            TemplateRule rule = matcher.findMatch(attr, context.getCurrentMode(), attrContext);
+            if (rule != null) {
+                TransformContext execContext = attrContext.withCurrentTemplateRule(rule);
+                if (TemplateMatcher.isBuiltIn(rule)) {
+                    executeBuiltIn(TemplateMatcher.getBuiltInType(rule), attr, execContext, output);
+                } else {
+                    rule.getBody().execute(execContext, output);
+                }
+            }
+        }
+    }
+
     private void applyTemplatesToChildren(XPathNode node, TransformContext context, 
                                           OutputHandler output) throws SAXException {
-        // First pass: count children
+        applyTemplatesToChildren(node, context, output, java.util.Collections.emptyMap());
+    }
+    
+    private void applyTemplatesToChildren(XPathNode node, TransformContext context, 
+            OutputHandler output, java.util.Map<String, XPathValue> paramValues)
+            throws SAXException {
         List<XPathNode> children = new ArrayList<>();
         Iterator<XPathNode> it = node.getChildren();
         while (it.hasNext()) {
@@ -144,11 +401,13 @@ public class NextMatchNode extends XSLTInstruction {
             TemplateMatcher matcher = context.getTemplateMatcher();
             TemplateRule rule = matcher.findMatch(child, context.getCurrentMode(), childContext);
             if (rule != null) {
-                TransformContext execContext = childContext.withCurrentTemplateRule(rule);
+                TransformContext execContext = childContext.pushVariableScope()
+                    .withCurrentTemplateRule(rule);
                 if (TemplateMatcher.isBuiltIn(rule)) {
-                    // Execute built-in template
-                    executeBuiltIn(TemplateMatcher.getBuiltInType(rule), child, execContext, output);
+                    executeBuiltIn(TemplateMatcher.getBuiltInType(rule), child, execContext, output,
+                        paramValues);
                 } else {
+                    bindParamsToTemplate(rule, execContext, paramValues);
                     rule.getBody().execute(execContext, output);
                 }
             }
@@ -157,10 +416,21 @@ public class NextMatchNode extends XSLTInstruction {
     
     private void executeBuiltIn(String type, XPathNode node,
             TransformContext context, OutputHandler output) throws SAXException {
+        executeBuiltIn(type, node, context, output, java.util.Collections.emptyMap());
+    }
+    
+    private void executeBuiltIn(String type, XPathNode node,
+            TransformContext context, OutputHandler output,
+            java.util.Map<String, XPathValue> paramValues) throws SAXException {
         switch (type) {
             case "element-or-root":
+                applyTemplatesToChildren(node, context, output, paramValues);
+                break;
             case "shallow-skip":
-                applyTemplatesToChildren(node, context, output);
+                if (node.isElement()) {
+                    applyTemplatesToAttributes(node, context, output);
+                }
+                applyTemplatesToChildren(node, context, output, paramValues);
                 break;
             case "text-or-attribute":
             case "text-only-copy":
@@ -193,15 +463,16 @@ public class NextMatchNode extends XSLTInstruction {
                 String prefix = node.getPrefix();
                 String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
                 output.startElement(uri != null ? uri : "", localName, qName);
-                Iterator<XPathNode> attrIter = node.getAttributes();
-                while (attrIter.hasNext()) {
-                    XPathNode attr = attrIter.next();
-                    String aUri = attr.getNamespaceURI();
-                    String aLocal = attr.getLocalName();
-                    String aPrefix = attr.getPrefix();
-                    String aQName = aPrefix != null && !aPrefix.isEmpty() ? aPrefix + ":" + aLocal : aLocal;
-                    output.attribute(aUri != null ? aUri : "", aLocal, aQName, attr.getStringValue());
+                Iterator<XPathNode> namespaces = node.getNamespaces();
+                while (namespaces.hasNext()) {
+                    XPathNode ns = namespaces.next();
+                    String nsPrefix = ns.getLocalName();
+                    String nsUri = ns.getStringValue();
+                    if (!"xml".equals(nsPrefix) && nsUri != null && !nsUri.isEmpty()) {
+                        output.namespace(nsPrefix, nsUri);
+                    }
                 }
+                applyTemplatesToAttributes(node, context, output);
                 applyTemplatesToChildren(node, context, output);
                 output.endElement(uri != null ? uri : "", localName, qName);
                 break;

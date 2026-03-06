@@ -51,6 +51,20 @@ public final class CollationScopeNode implements XSLTNode {
         this.body = body;
     }
 
+    /**
+     * Returns the wrapped body node.
+     */
+    public XSLTNode getBody() {
+        return body;
+    }
+
+    /**
+     * Returns the collation URI.
+     */
+    public String getCollationUri() {
+        return collationUri;
+    }
+
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         if (context instanceof BasicTransformContext) {

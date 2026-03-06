@@ -33,8 +33,12 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathAtomicValue;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -163,12 +167,22 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
 
-        // Handle null values - treat as empty string
-        if (leftVal == null) {
-            leftVal = XPathString.EMPTY;
+        if (leftVal instanceof XPathFunctionItem || leftVal instanceof XPathMap
+                || leftVal instanceof InlineFunctionItem) {
+            throw new XPathException("FOTY0013: Atomization is not defined for function items");
         }
-        if (rightVal == null) {
-            rightVal = XPathString.EMPTY;
+        if (rightVal instanceof XPathFunctionItem || rightVal instanceof XPathMap
+                || rightVal instanceof InlineFunctionItem) {
+            throw new XPathException("FOTY0013: Atomization is not defined for function items");
+        }
+
+        // General comparison with empty sequence always returns false
+        // (existential quantification over zero items yields false)
+        if (leftVal == null || isEmptySequence(leftVal)) {
+            return XPathBoolean.FALSE;
+        }
+        if (rightVal == null || isEmptySequence(rightVal)) {
+            return XPathBoolean.FALSE;
         }
         
         // Note: We don't do strict type checking for comparisons because XSLT 2.0
@@ -178,7 +192,7 @@ public final class BinaryExpr implements Expr {
         // XPath 2.0: General comparison uses existential semantics
         // If either operand is a sequence, iterate and check if any pair matches
         if (leftVal.isSequence() || rightVal.isSequence()) {
-            return evaluateSequenceComparison(leftVal, rightVal);
+            return evaluateSequenceComparison(leftVal, rightVal, context);
         }
 
         // For XPath 2.0+, node-sets (including typed nodes) should use sequence comparison
@@ -186,39 +200,56 @@ public final class BinaryExpr implements Expr {
         if (leftVal.isNodeSet() || rightVal.isNodeSet()) {
             // Check if either value might have a list type annotation
             if (hasListTypeAnnotation(leftVal) || hasListTypeAnnotation(rightVal)) {
-                return evaluateSequenceComparison(leftVal, rightVal);
+                return evaluateSequenceComparison(leftVal, rightVal, context);
             }
             // Standard XPath 1.0 node-set comparison for untyped nodes
-            return evaluateNodeSetComparison(leftVal, rightVal);
+            return evaluateNodeSetComparison(leftVal, rightVal, context);
         }
 
         // Both operands are non-node-sets
-        return evaluateValueComparison(leftVal, rightVal);
+        return evaluateValueComparison(leftVal, rightVal, context);
     }
 
     /**
      * Evaluates XPath 2.0 general comparison with sequence semantics.
      * Returns true if any pair of items (one from each operand) satisfies the comparison.
      * For list types (xs:NMTOKENS, xs:IDREFS), nodes are atomized to sequences.
+     *
+     * <p>In XPath 2.0+, when one operand is numeric and the other atomizes from
+     * a node (xs:untypedAtomic), the untypedAtomic is cast to xs:double.
+     * If the cast fails, FORG0001 is raised.
      */
-    private XPathValue evaluateSequenceComparison(XPathValue leftVal, XPathValue rightVal) 
+    private XPathValue evaluateSequenceComparison(XPathValue leftVal, XPathValue rightVal,
+                                                   XPathContext context)
             throws XPathException {
-        // Atomize both operands to get sequences of atomic values
+        boolean isXPath2 = context.getXsltVersion() >= 2.0;
+        boolean leftHasNumeric = containsNumericValue(leftVal);
+        boolean rightHasNumeric = containsNumericValue(rightVal);
+
         List<String> leftAtoms = atomizeToList(leftVal);
         List<String> rightAtoms = atomizeToList(rightVal);
         
-        // Compare all pairs
         for (String leftStr : leftAtoms) {
             for (String rightStr : rightAtoms) {
-                // Try numeric comparison if both are numeric
                 Double leftNum = tryParseNumber(leftStr);
                 Double rightNum = tryParseNumber(rightStr);
                 
+                if (isXPath2) {
+                    if (rightHasNumeric && leftNum == null) {
+                        throw new XPathException(
+                            "FORG0001: Cannot cast '" + leftStr + "' to xs:double");
+                    }
+                    if (leftHasNumeric && rightNum == null) {
+                        throw new XPathException(
+                            "FORG0001: Cannot cast '" + rightStr + "' to xs:double");
+                    }
+                }
+
                 boolean match;
                 if (leftNum != null && rightNum != null) {
                     match = compareNumbers(leftNum, rightNum);
                 } else {
-                    match = compareValues(leftStr, rightStr);
+                    match = compareValues(leftStr, rightStr, context);
                 }
                 
                 if (match) {
@@ -227,6 +258,25 @@ public final class BinaryExpr implements Expr {
             }
         }
         return XPathBoolean.FALSE;
+    }
+
+    /**
+     * Checks if a value is or contains a numeric (XPathNumber) value.
+     */
+    private static boolean containsNumericValue(XPathValue val) {
+        if (val instanceof XPathNumber) {
+            return true;
+        }
+        if (val instanceof XPathSequence) {
+            Iterator<XPathValue> it = val.sequenceIterator();
+            while (it.hasNext()) {
+                XPathValue item = it.next();
+                if (item instanceof XPathNumber) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -372,7 +422,8 @@ public final class BinaryExpr implements Expr {
         }
     }
 
-    private XPathValue evaluateNodeSetComparison(XPathValue leftVal, XPathValue rightVal) {
+    private XPathValue evaluateNodeSetComparison(XPathValue leftVal, XPathValue rightVal,
+                                                    XPathContext context) throws XPathException {
         // XPath 1.0 comparison rules for node-sets:
         // A = B (both node-sets): true if any node in A has same string-value as any node in B
         // A = x (one node-set): true if any node in A has string-value equal to x (converted)
@@ -384,7 +435,7 @@ public final class BinaryExpr implements Expr {
             for (XPathNode leftNode : leftSet) {
                 String leftStr = leftNode.getStringValue();
                 for (XPathNode rightNode : rightSet) {
-                    if (compareValues(leftStr, rightNode.getStringValue())) {
+                    if (compareValues(leftStr, rightNode.getStringValue(), context)) {
                         return XPathBoolean.TRUE;
                     }
                 }
@@ -413,8 +464,14 @@ public final class BinaryExpr implements Expr {
             boolean match;
 
             if (other.getType() == XPathValue.Type.NUMBER) {
-                // Compare as numbers
-                double nodeNum = XPathNumber.of(Double.parseDouble(nodeStr.trim())).asNumber();
+                // XPath 2.0+: cast failure raises FORG0001
+                // XPath 1.0: non-numeric strings become NaN
+                Double parsed = tryParseNumber(nodeStr);
+                if (parsed == null && context.getXsltVersion() >= 2.0) {
+                    throw new XPathException(
+                            "FORG0001: Cannot cast '" + nodeStr + "' to xs:double");
+                }
+                double nodeNum = parsed != null ? parsed : Double.NaN;
                 match = compareNumbers(reversed ? other.asNumber() : nodeNum,
                                        reversed ? nodeNum : other.asNumber());
             } else if (other.getType() == XPathValue.Type.BOOLEAN) {
@@ -423,7 +480,7 @@ public final class BinaryExpr implements Expr {
             } else {
                 // Compare as strings
                 match = compareValues(reversed ? other.asString() : nodeStr,
-                                      reversed ? nodeStr : other.asString());
+                                      reversed ? nodeStr : other.asString(), context);
             }
 
             if (match) {
@@ -434,12 +491,21 @@ public final class BinaryExpr implements Expr {
         return XPathBoolean.FALSE;
     }
 
-    private XPathValue evaluateValueComparison(XPathValue leftVal, XPathValue rightVal) 
+    private XPathValue evaluateValueComparison(XPathValue leftVal, XPathValue rightVal)
+            throws XPathException {
+        return evaluateValueComparison(leftVal, rightVal, null);
+    }
+
+    private XPathValue evaluateValueComparison(XPathValue leftVal, XPathValue rightVal,
+                                                XPathContext context)
             throws XPathException {
         // XPath 2.0: If both are date/time values, use value-based comparison
         if (leftVal instanceof XPathDateTime && rightVal instanceof XPathDateTime) {
             XPathDateTime leftDt = (XPathDateTime) leftVal;
             XPathDateTime rightDt = (XPathDateTime) rightVal;
+            if (isOrderingComparison()) {
+                checkOrderableDateTime(leftDt);
+            }
             try {
                 int cmp = leftDt.compareTo(rightDt);
                 return XPathBoolean.of(compareDateTimeResult(cmp));
@@ -447,6 +513,18 @@ public final class BinaryExpr implements Expr {
                 // Different date/time types - can't compare
                 return XPathBoolean.FALSE;
             }
+        }
+        
+        // QName comparison: uses namespace URI + local name equality, not string form
+        if (leftVal instanceof XPathQName && rightVal instanceof XPathQName) {
+            boolean equal = leftVal.equals(rightVal);
+            if (operator == Operator.EQUALS || operator == Operator.VALUE_EQUALS) {
+                return XPathBoolean.of(equal);
+            }
+            if (operator == Operator.NOT_EQUALS || operator == Operator.VALUE_NOT_EQUALS) {
+                return XPathBoolean.of(!equal);
+            }
+            throw new XPathException("XPTY0004: QName values do not support ordering comparisons");
         }
         
         // XPath 1.0 Section 3.4 comparison rules:
@@ -461,10 +539,47 @@ public final class BinaryExpr implements Expr {
 
         if (leftVal.getType() == XPathValue.Type.NUMBER || 
             rightVal.getType() == XPathValue.Type.NUMBER) {
+            if (leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
+                int exactCmp = compareExact((XPathNumber) leftVal, (XPathNumber) rightVal);
+                if (exactCmp != Integer.MIN_VALUE) {
+                    return XPathBoolean.of(compareIntResult(exactCmp));
+                }
+            }
             return XPathBoolean.of(compareNumbers(leftVal.asNumber(), rightVal.asNumber()));
         }
 
-        return XPathBoolean.of(compareValues(leftVal.asString(), rightVal.asString()));
+        return XPathBoolean.of(compareValues(leftVal.asString(), rightVal.asString(), context));
+    }
+    
+    private boolean isOrderingComparison() {
+        switch (operator) {
+            case LESS_THAN:
+            case LESS_THAN_OR_EQUAL:
+            case GREATER_THAN:
+            case GREATER_THAN_OR_EQUAL:
+            case VALUE_LESS_THAN:
+            case VALUE_LESS_THAN_OR_EQUAL:
+            case VALUE_GREATER_THAN:
+            case VALUE_GREATER_THAN_OR_EQUAL:
+                return true;
+            default:
+                return false;
+        }
+    }
+    
+    private void checkOrderableDateTime(XPathDateTime dt) throws XPathException {
+        XPathDateTime.DateTimeType dtType = dt.getDateTimeType();
+        switch (dtType) {
+            case G_YEAR:
+            case G_YEAR_MONTH:
+            case G_MONTH_DAY:
+            case G_DAY:
+            case G_MONTH:
+                throw new XPathException("XPTY0004: Values of type xs:" + dtType +
+                    " do not support ordering comparisons");
+            default:
+                break;
+        }
     }
     
     private boolean compareDateTimeResult(int cmp) {
@@ -503,11 +618,48 @@ public final class BinaryExpr implements Expr {
     }
 
     private boolean compareValues(String a, String b) {
+        return compareValues(a, b, (XPathContext) null);
+    }
+
+    private boolean compareValues(String a, String b, XPathContext context) {
+        if (context != null) {
+            String collUri = context.getDefaultCollation();
+            if (collUri != null) {
+                try {
+                    Collation collation = Collation.forUri(collUri);
+                    int cmp = collation.compare(a, b);
+                    switch (operator) {
+                        case EQUALS: return cmp == 0;
+                        case NOT_EQUALS: return cmp != 0;
+                        case LESS_THAN: return cmp < 0;
+                        case LESS_THAN_OR_EQUAL: return cmp <= 0;
+                        case GREATER_THAN: return cmp > 0;
+                        case GREATER_THAN_OR_EQUAL: return cmp >= 0;
+                        default: break;
+                    }
+                } catch (XPathException e) {
+                    // URI was validated at compile time; fall through to default
+                }
+            }
+            // XPath 2.0+: untypedAtomic values compared as strings for all operators
+            if (context.getXsltVersion() >= 2.0) {
+                int cmp = a.compareTo(b);
+                switch (operator) {
+                    case EQUALS: return cmp == 0;
+                    case NOT_EQUALS: return cmp != 0;
+                    case LESS_THAN: return cmp < 0;
+                    case LESS_THAN_OR_EQUAL: return cmp <= 0;
+                    case GREATER_THAN: return cmp > 0;
+                    case GREATER_THAN_OR_EQUAL: return cmp >= 0;
+                    default: break;
+                }
+            }
+        }
         switch (operator) {
             case EQUALS: return a.equals(b);
             case NOT_EQUALS: return !a.equals(b);
             default:
-                // Relational operators on strings: convert to numbers
+                // XPath 1.0: relational operators on strings convert to numbers
                 return compareNumbers(stringToNumber(a), stringToNumber(b));
         }
     }
@@ -525,6 +677,58 @@ public final class BinaryExpr implements Expr {
         }
     }
 
+    /**
+     * Compares two XPathNumber values using exact precision when both have exact
+     * values (Long, BigInteger, or BigDecimal). Returns Integer.MIN_VALUE if
+     * exact comparison is not applicable (e.g., double operands).
+     */
+    private static int compareExact(XPathNumber left, XPathNumber right) {
+        if (left.isExactInteger() && right.isExactInteger()) {
+            Long ll = left.toLong();
+            Long rl = right.toLong();
+            if (ll != null && rl != null) {
+                return Long.compare(ll.longValue(), rl.longValue());
+            }
+            return left.toBigInteger().compareTo(right.toBigInteger());
+        }
+        if ((left.isExactInteger() || left.isDecimal()) &&
+            (right.isExactInteger() || right.isDecimal())) {
+            BigDecimal leftBd = toBigDecimal(left);
+            BigDecimal rightBd = toBigDecimal(right);
+            return leftBd.compareTo(rightBd);
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    /**
+     * Applies the current comparison operator to a compareTo result.
+     * Works for both general (=, !=, <, etc.) and value (eq, ne, lt, etc.) operators.
+     */
+    private boolean compareIntResult(int cmp) {
+        switch (operator) {
+            case EQUALS:
+            case VALUE_EQUALS:
+                return cmp == 0;
+            case NOT_EQUALS:
+            case VALUE_NOT_EQUALS:
+                return cmp != 0;
+            case LESS_THAN:
+            case VALUE_LESS_THAN:
+                return cmp < 0;
+            case LESS_THAN_OR_EQUAL:
+            case VALUE_LESS_THAN_OR_EQUAL:
+                return cmp <= 0;
+            case GREATER_THAN:
+            case VALUE_GREATER_THAN:
+                return cmp > 0;
+            case GREATER_THAN_OR_EQUAL:
+            case VALUE_GREATER_THAN_OR_EQUAL:
+                return cmp >= 0;
+            default:
+                return false;
+        }
+    }
+
     private double stringToNumber(String s) {
         try {
             return Double.parseDouble(s.trim());
@@ -537,7 +741,14 @@ public final class BinaryExpr implements Expr {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
         
-        // Handle null values
+        // In XPath 2.0+, arithmetic on an empty sequence returns empty
+        if (context.getXsltVersion() >= 2.0) {
+            if (isEmptySequence(leftVal) || isEmptySequence(rightVal)) {
+                return XPathSequence.EMPTY;
+            }
+        }
+        
+        // Handle null values (XPath 1.0: empty node-set → NaN)
         if (leftVal == null) {
             leftVal = XPathNumber.of(Double.NaN);
         }
@@ -545,20 +756,53 @@ public final class BinaryExpr implements Expr {
             rightVal = XPathNumber.of(Double.NaN);
         }
         
-        // Note: XPTY0004 type checking for arithmetic is deferred because XSLT 2.0/3.0
-        // allows element-level xsl:version="1.0" for backwards compatibility, which is
-        // complex to track. The XPath 1.0 auto-coercion (string to number) is allowed.
-        // Specific error tests that require XPTY0004 detection use version="2.0" and
-        // are typically handled by expecting the error at a higher level.
-        
         // Check for date/time arithmetic
         if (leftVal instanceof XPathDateTime || rightVal instanceof XPathDateTime) {
             return evaluateDateTimeArithmetic(leftVal, rightVal);
         }
         
-        // Standard numeric arithmetic
+        // Use exact integer arithmetic when both operands are exact integers
+        if (leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
+            XPathNumber leftXn = (XPathNumber) leftVal;
+            XPathNumber rightXn = (XPathNumber) rightVal;
+            if (leftXn.isExactInteger() && rightXn.isExactInteger()) {
+                return evaluateIntegerArithmetic(leftXn, rightXn);
+            }
+            if ((leftXn.isDecimal() || rightXn.isDecimal())
+                    && !leftXn.isExplicitDouble() && !rightXn.isExplicitDouble()
+                    && !leftXn.isFloat() && !rightXn.isFloat()) {
+                BigDecimal leftDec = toBigDecimal(leftXn);
+                BigDecimal rightDec = toBigDecimal(rightXn);
+                return evaluateDecimalArithmetic(leftDec, rightDec);
+            }
+        }
+
+        // In XPath 2.0+, integer/decimal division by zero raises FOAR0001
+        // In XPath 1.0, all numbers are doubles and follow IEEE 754 (Infinity)
+        if (context.getXsltVersion() >= 2.0) {
+            if (operator == Operator.DIV || operator == Operator.IDIV ||
+                    operator == Operator.MOD) {
+                double rv = rightVal.asNumber();
+                if (rv == 0.0 && isIntegerOrDecimalOperand(leftVal, rightVal)) {
+                    throw new XPathException("FOAR0001: Division by zero");
+                }
+            }
+        }
+
+        // Standard double arithmetic
         double leftNum = leftVal.asNumber();
         double rightNum = rightVal.asNumber();
+
+        // Determine if either operand is an explicit float/double type
+        // If so, the result must also be treated as double to prevent
+        // subsequent operations from misclassifying it as integer/decimal
+        boolean eitherIsDouble = false;
+        if (leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
+            XPathNumber ln = (XPathNumber) leftVal;
+            XPathNumber rn = (XPathNumber) rightVal;
+            eitherIsDouble = ln.isExplicitDouble() || rn.isExplicitDouble()
+                || ln.isFloat() || rn.isFloat();
+        }
 
         double result;
         switch (operator) {
@@ -572,13 +816,9 @@ public final class BinaryExpr implements Expr {
                 result = leftNum * rightNum;
                 break;
             case DIV:
-                // IEEE 754: division by zero returns ±Infinity or NaN
-                // FOAR0001 only applies to xs:integer/xs:decimal operands but we
-                // cannot distinguish types at this level, so rely on idiv for that
                 result = leftNum / rightNum;
                 break;
             case IDIV:
-                // FOAR0001: integer division by zero (idiv is XPath 2.0+ only)
                 if (rightNum == 0.0) {
                     throw new XPathException("FOAR0001: Division by zero");
                 }
@@ -591,12 +831,162 @@ public final class BinaryExpr implements Expr {
                 throw new XPathException("Not an arithmetic operator: " + operator);
         }
 
+        if (eitherIsDouble) {
+            return XPathNumber.ofExplicitDouble(result);
+        }
         return XPathNumber.of(result);
     }
     
     /**
+     * Performs exact integer arithmetic for xs:integer operands.
+     * Uses Long fast-path with overflow promotion to BigInteger.
+     */
+    private XPathValue evaluateIntegerArithmetic(XPathNumber leftXn, XPathNumber rightXn)
+            throws XPathException {
+        Long leftLong = leftXn.toLong();
+        Long rightLong = rightXn.toLong();
+
+        if (leftLong != null && rightLong != null) {
+            return evaluateLongArithmetic(leftLong.longValue(), rightLong.longValue());
+        }
+
+        BigInteger leftBi = leftXn.toBigInteger();
+        BigInteger rightBi = rightXn.toBigInteger();
+        return evaluateBigIntegerArithmetic(leftBi, rightBi);
+    }
+
+    /**
+     * Performs arithmetic on two long values. Promotes to BigInteger on overflow.
+     */
+    private XPathValue evaluateLongArithmetic(long a, long b) throws XPathException {
+        try {
+            switch (operator) {
+                case PLUS:
+                    return XPathNumber.ofInteger(Math.addExact(a, b));
+                case MINUS:
+                    return XPathNumber.ofInteger(Math.subtractExact(a, b));
+                case MULTIPLY:
+                    return XPathNumber.ofInteger(Math.multiplyExact(a, b));
+                case DIV:
+                    if (b == 0) {
+                        throw new XPathException("FOAR0001: Division by zero");
+                    }
+                    BigDecimal leftDec = BigDecimal.valueOf(a);
+                    BigDecimal rightDec = BigDecimal.valueOf(b);
+                    return evaluateDecimalArithmetic(leftDec, rightDec);
+                case IDIV:
+                    if (b == 0) {
+                        throw new XPathException("FOAR0001: Division by zero");
+                    }
+                    return XPathNumber.ofInteger(a / b);
+                case MOD:
+                    if (b == 0) {
+                        throw new XPathException("FOAR0001: Division by zero");
+                    }
+                    return XPathNumber.ofInteger(a % b);
+                default:
+                    throw new XPathException("Not an arithmetic operator: " + operator);
+            }
+        } catch (ArithmeticException e) {
+            BigInteger leftBi = BigInteger.valueOf(a);
+            BigInteger rightBi = BigInteger.valueOf(b);
+            return evaluateBigIntegerArithmetic(leftBi, rightBi);
+        }
+    }
+
+    /**
+     * Performs arithmetic on two BigInteger values.
+     */
+    private XPathValue evaluateBigIntegerArithmetic(BigInteger a, BigInteger b)
+            throws XPathException {
+        switch (operator) {
+            case PLUS:
+                return XPathNumber.ofInteger(a.add(b));
+            case MINUS:
+                return XPathNumber.ofInteger(a.subtract(b));
+            case MULTIPLY:
+                return XPathNumber.ofInteger(a.multiply(b));
+            case DIV:
+                if (b.signum() == 0) {
+                    throw new XPathException("FOAR0001: Division by zero");
+                }
+                BigDecimal leftDec = new BigDecimal(a);
+                BigDecimal rightDec = new BigDecimal(b);
+                return evaluateDecimalArithmetic(leftDec, rightDec);
+            case IDIV:
+                if (b.signum() == 0) {
+                    throw new XPathException("FOAR0001: Division by zero");
+                }
+                return XPathNumber.ofInteger(a.divide(b));
+            case MOD:
+                if (b.signum() == 0) {
+                    throw new XPathException("FOAR0001: Division by zero");
+                }
+                return XPathNumber.ofInteger(a.remainder(b));
+            default:
+                throw new XPathException("Not an arithmetic operator: " + operator);
+        }
+    }
+
+    /**
+     * Converts an XPathNumber to BigDecimal, preserving exact integer or decimal
+     * values when available, falling back to double conversion.
+     */
+    private static BigDecimal toBigDecimal(XPathNumber xn) {
+        if (xn.isDecimal()) {
+            return xn.getDecimalValue();
+        }
+        if (xn.isExactInteger()) {
+            BigInteger bi = xn.toBigInteger();
+            return new BigDecimal(bi);
+        }
+        return BigDecimal.valueOf(xn.asNumber());
+    }
+
+    /**
+     * Performs arithmetic using BigDecimal for xs:decimal precision.
+     */
+    private XPathValue evaluateDecimalArithmetic(BigDecimal left, BigDecimal right)
+            throws XPathException {
+        BigDecimal result;
+        switch (operator) {
+            case PLUS:
+                result = left.add(right);
+                break;
+            case MINUS:
+                result = left.subtract(right);
+                break;
+            case MULTIPLY:
+                result = left.multiply(right);
+                break;
+            case DIV:
+                if (right.signum() == 0) {
+                    throw new XPathException("FOAR0002: Decimal division by zero");
+                }
+                result = left.divide(right, 20, java.math.RoundingMode.HALF_EVEN);
+                result = result.stripTrailingZeros();
+                break;
+            case IDIV:
+                if (right.signum() == 0) {
+                    throw new XPathException("FOAR0001: Division by zero");
+                }
+                result = left.divideToIntegralValue(right);
+                break;
+            case MOD:
+                if (right.signum() == 0) {
+                    throw new XPathException("FOAR0002: Decimal division by zero");
+                }
+                result = left.remainder(right);
+                break;
+            default:
+                throw new XPathException("Not an arithmetic operator: " + operator);
+        }
+        return new XPathNumber(result);
+    }
+
+    /**
      * Checks if both operands are integer or decimal (not float/double).
-     * Per XPath 2.0+ spec, division by zero raises FOAR0001 for integer/decimal
+     * Per XPath 2.0+ spec, division by zero raises FOAR0002 for integer/decimal
      * but returns INF/-INF/NaN for float/double (IEEE 754 semantics).
      * In XPath 1.0, all division follows IEEE 754 (no FOAR0001 error).
      */
@@ -604,9 +994,11 @@ public final class BinaryExpr implements Expr {
         if (leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
             XPathNumber leftNum = (XPathNumber) leftVal;
             XPathNumber rightNum = (XPathNumber) rightVal;
-            if (leftNum.isInteger() && rightNum.isInteger()) {
-                return true;
-            }
+            boolean leftIsIntOrDec = (leftNum.isInteger() || leftNum.isDecimal())
+                && !leftNum.isFloat() && !leftNum.isExplicitDouble();
+            boolean rightIsIntOrDec = (rightNum.isInteger() || rightNum.isDecimal())
+                && !rightNum.isFloat() && !rightNum.isExplicitDouble();
+            return leftIsIntOrDec && rightIsIntOrDec;
         }
         return false;
     }
@@ -731,14 +1123,54 @@ public final class BinaryExpr implements Expr {
     private XPathValue evaluateValueComparison(XPathContext context) throws XPathException {
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
+
+        if (leftVal instanceof XPathFunctionItem || leftVal instanceof XPathMap
+                || leftVal instanceof InlineFunctionItem) {
+            throw new XPathException("FOTY0013: Atomization is not defined for function items");
+        }
+        if (rightVal instanceof XPathFunctionItem || rightVal instanceof XPathMap
+                || rightVal instanceof InlineFunctionItem) {
+            throw new XPathException("FOTY0013: Atomization is not defined for function items");
+        }
         
-        // Handle null values
+        // XPath 2.0: value comparison with empty operand returns empty sequence
         if (leftVal == null || rightVal == null) {
-            // Null comparisons: eq returns false, ne returns true for null vs non-null
-            if (operator == Operator.VALUE_NOT_EQUALS) {
-                return XPathBoolean.of(leftVal != rightVal);
+            return XPathSequence.EMPTY;
+        }
+        if (isEmptySequenceOrNodeSet(leftVal) || isEmptySequenceOrNodeSet(rightVal)) {
+            return XPathSequence.EMPTY;
+        }
+        
+        // XPTY0004: value comparison requires single atomic values, not sequences
+        if (leftVal instanceof XPathSequence) {
+            int leftSize = ((XPathSequence) leftVal).size();
+            if (leftSize > 1) {
+                throw new XPathException("XPTY0004: Value comparison requires a single " +
+                    "atomic value, but left operand is a sequence of " + leftSize + " items");
             }
-            return XPathBoolean.FALSE;
+            leftVal = ((XPathSequence) leftVal).iterator().next();
+        }
+        if (rightVal instanceof XPathSequence) {
+            int rightSize = ((XPathSequence) rightVal).size();
+            if (rightSize > 1) {
+                throw new XPathException("XPTY0004: Value comparison requires a single " +
+                    "atomic value, but right operand is a sequence of " + rightSize + " items");
+            }
+            rightVal = ((XPathSequence) rightVal).iterator().next();
+        }
+        
+        // Atomize node-sets: a single-node node-set becomes its string value
+        if (leftVal.isNodeSet() && !(leftVal instanceof XPathNode)) {
+            XPathNodeSet ns = leftVal.asNodeSet();
+            if (ns.size() == 1) {
+                leftVal = XPathString.of(ns.iterator().next().getStringValue());
+            }
+        }
+        if (rightVal.isNodeSet() && !(rightVal instanceof XPathNode)) {
+            XPathNodeSet ns = rightVal.asNodeSet();
+            if (ns.size() == 1) {
+                rightVal = XPathString.of(ns.iterator().next().getStringValue());
+            }
         }
         
         // XPath 2.0 value comparison is type-aware
@@ -748,6 +1180,12 @@ public final class BinaryExpr implements Expr {
         
         // If both operands are numbers, use numeric comparison
         if (leftType == XPathValue.Type.NUMBER && rightType == XPathValue.Type.NUMBER) {
+            if (leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
+                int exactCmp = compareExact((XPathNumber) leftVal, (XPathNumber) rightVal);
+                if (exactCmp != Integer.MIN_VALUE) {
+                    return XPathBoolean.of(compareResult(exactCmp));
+                }
+            }
             return XPathBoolean.of(compareValuesNumeric(leftVal.asNumber(), rightVal.asNumber()));
         }
         
@@ -772,6 +1210,21 @@ public final class BinaryExpr implements Expr {
                 return XPathBoolean.of(!equal);
             }
             throw new XPathException("XPTY0004: QName values do not support ordering comparisons");
+        }
+        
+        // DateTime comparison
+        if (leftVal instanceof XPathDateTime && rightVal instanceof XPathDateTime) {
+            XPathDateTime leftDt = (XPathDateTime) leftVal;
+            XPathDateTime rightDt = (XPathDateTime) rightVal;
+            if (isOrderingComparison()) {
+                checkOrderableDateTime(leftDt);
+            }
+            try {
+                int cmp = leftDt.compareTo(rightDt);
+                return XPathBoolean.of(compareResult(cmp));
+            } catch (IllegalArgumentException e) {
+                return XPathBoolean.FALSE;
+            }
         }
         
         // Mixed types or other types: try numeric first, fall back to string
@@ -843,10 +1296,10 @@ public final class BinaryExpr implements Expr {
             return XPathSequence.EMPTY;
         }
         
-        // Return a sequence of integers
+        // Return a sequence of exact integers
         List<XPathValue> items = new ArrayList<>();
         for (int i = start; i <= end; i++) {
-            items.add(XPathNumber.of(i));
+            items.add(XPathNumber.ofInteger(i));
         }
         return XPathSequence.fromList(items);
     }
@@ -863,8 +1316,8 @@ public final class BinaryExpr implements Expr {
         XPathNode rightNode = getSingleNode(rightVal);
         
         if (leftNode == null || rightNode == null) {
-            // Empty sequence results in empty sequence (which is falsy)
-            return XPathBoolean.FALSE;
+            // XPath 2.0: node comparison with empty operand returns empty sequence
+            return XPathSequence.EMPTY;
         }
         
         switch (operator) {
@@ -885,6 +1338,32 @@ public final class BinaryExpr implements Expr {
         }
     }
     
+    /**
+     * Returns true if the value is an empty sequence or an empty node-set.
+     */
+    private static boolean isEmptySequence(XPathValue value) {
+        if (value == null) {
+            return true;
+        }
+        if (value instanceof XPathSequence) {
+            return ((XPathSequence) value).size() == 0;
+        }
+        if (value.isNodeSet()) {
+            return value.asNodeSet().isEmpty();
+        }
+        return false;
+    }
+
+    private static boolean isEmptySequenceOrNodeSet(XPathValue value) {
+        if (value instanceof XPathSequence) {
+            return ((XPathSequence) value).size() == 0;
+        }
+        if (value.isNodeSet()) {
+            return value.asNodeSet().isEmpty();
+        }
+        return false;
+    }
+
     /**
      * Extracts a single node from a value, or null if empty/multiple.
      */

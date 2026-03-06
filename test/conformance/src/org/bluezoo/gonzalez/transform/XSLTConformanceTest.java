@@ -329,9 +329,14 @@ public class XSLTConformanceTest {
         private List<String> stylesheetFiles;
         private String initialTemplate;
         private String initialMode;
+        private String initialFunctionNsUri;
+        private String initialFunctionLocalName;
+        private List<String> initialFunctionParams;
+        private boolean inInitialFunction;
         private String expectedXml;
         private String expectedError;
         private boolean expectsError;
+        private Map<String, String> namespacePrefixes = new HashMap<>();
         private boolean inNot;
         private boolean inAnyOf;
         private boolean anyOfAcceptsSuccess;
@@ -349,6 +354,28 @@ public class XSLTConformanceTest {
             this.testDir = testDir;
             this.environments = environments;
             this.tests = tests;
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String nsUri) {
+            namespacePrefixes.put(prefix, nsUri);
+        }
+
+        private String expandQNameAttribute(String value) {
+            if (value == null || value.isEmpty()) {
+                return value;
+            }
+            String trimmed = value.trim();
+            int colonPos = trimmed.indexOf(':');
+            if (colonPos > 0) {
+                String prefix = trimmed.substring(0, colonPos);
+                String local = trimmed.substring(colonPos + 1);
+                String nsUri = namespacePrefixes.get(prefix);
+                if (nsUri != null && !nsUri.isEmpty()) {
+                    return "{" + nsUri + "}" + local;
+                }
+            }
+            return trimmed;
         }
 
         @Override
@@ -409,6 +436,10 @@ public class XSLTConformanceTest {
                 stylesheetFiles = new ArrayList<>();
                 initialTemplate = null;
                 initialMode = null;
+                initialFunctionNsUri = null;
+                initialFunctionLocalName = null;
+                initialFunctionParams = null;
+                inInitialFunction = false;
                 expectedXml = null;
                 expectedError = null;
                 expectsError = false;
@@ -456,6 +487,32 @@ public class XSLTConformanceTest {
                         && "false".equals(satisfied)) {
                     requiresUnsupportedFeature = true;
                 }
+                // Gonzalez supports XPath 3.1 features (e.g. exponent-separator),
+                // so skip tests that assume XPath 3.1 is absent.
+                if ("XPath_3.1".equals(value) && "false".equals(satisfied)) {
+                    requiresUnsupportedFeature = true;
+                }
+            } else if ("maximum_number_of_decimal_digits".equals(localName) && inDependencies) {
+                // Gonzalez uses double precision (~15-17 significant digits).
+                // Skip tests requiring more than 18 decimal digits.
+                String value = attrs.getValue("value");
+                if (value != null) {
+                    try {
+                        int required = Integer.parseInt(value);
+                        if (required > 18) {
+                            requiresUnsupportedFeature = true;
+                        }
+                    } catch (NumberFormatException e) {
+                        // ignore
+                    }
+                }
+            } else if ("year_component_values".equals(localName) && inDependencies) {
+                // Gonzalez supports all year ranges (negative years and
+                // years above 9999) so skip tests that assume these are absent.
+                String satisfied = attrs.getValue("satisfied");
+                if ("false".equals(satisfied)) {
+                    requiresUnsupportedFeature = true;
+                }
             } else if ("test".equals(localName) && inTestCase) {
                 inTest = true;
             } else if ("stylesheet".equals(localName) && inTest) {
@@ -479,6 +536,11 @@ public class XSLTConformanceTest {
                     }
                     currentEnv.packages.put(pkgUri, new File(testDir, file));
                 }
+            } else if ("param".equals(localName) && inInitialFunction) {
+                String select = attrs.getValue("select");
+                if (select != null) {
+                    initialFunctionParams.add(select);
+                }
             } else if ("param".equals(localName) && inTest) {
                 String paramName = attrs.getValue("name");
                 String paramSelect = attrs.getValue("select");
@@ -498,8 +560,23 @@ public class XSLTConformanceTest {
                 }
             } else if ("initial-template".equals(localName) && inTest) {
                 initialTemplate = attrs.getValue("name");
+            } else if ("initial-function".equals(localName) && inTest) {
+                String qname = attrs.getValue("name");
+                if (qname != null) {
+                    int colonPos = qname.indexOf(':');
+                    if (colonPos > 0) {
+                        String prefix = qname.substring(0, colonPos);
+                        initialFunctionLocalName = qname.substring(colonPos + 1);
+                        initialFunctionNsUri = namespacePrefixes.get(prefix);
+                    } else {
+                        initialFunctionLocalName = qname;
+                        initialFunctionNsUri = "";
+                    }
+                }
+                initialFunctionParams = new ArrayList<>();
+                inInitialFunction = true;
             } else if ("initial-mode".equals(localName) && inTest) {
-                initialMode = attrs.getValue("name");
+                initialMode = expandQNameAttribute(attrs.getValue("name"));
             } else if ("result".equals(localName) && inTestCase) {
                 inResult = true;
             } else if ("any-of".equals(localName) && inResult) {
@@ -594,6 +671,8 @@ public class XSLTConformanceTest {
                 }
             } else if ("assert-result-document".equals(localName)) {
                 currentResultDocumentUri = null;
+            } else if ("initial-function".equals(localName)) {
+                inInitialFunction = false;
             } else if ("dependencies".equals(localName)) {
                 inDependencies = false;
             } else if ("test".equals(localName)) {
@@ -616,6 +695,9 @@ public class XSLTConformanceTest {
                         currentTest.stylesheetFile = new File(testDir, stylesheetFiles.get(0));
                     }
                     currentTest.initialTemplate = initialTemplate;
+                    currentTest.initialFunctionNsUri = initialFunctionNsUri;
+                    currentTest.initialFunctionLocalName = initialFunctionLocalName;
+                    currentTest.initialFunctionParams = initialFunctionParams;
                     currentTest.initialMode = initialMode;
                     currentTest.expectedXml = expectedXml;
                     currentTest.expectsError = expectsError;
@@ -697,6 +779,24 @@ public class XSLTConformanceTest {
         }
     }
 
+    private static double parseSpecVersionAsDouble(String spec) {
+        if (spec == null) {
+            return -1;
+        }
+        for (String part : spec.split("\\s+")) {
+            String s = part.trim();
+            if (s.startsWith("XSLT")) {
+                try {
+                    int v = Integer.parseInt(s.substring(4));
+                    return v / 10.0;
+                } catch (NumberFormatException e) {
+                    // ignore
+                }
+            }
+        }
+        return -1;
+    }
+
     @Test
     public void runTest() {
 
@@ -727,6 +827,20 @@ public class XSLTConformanceTest {
                 for (Map.Entry<String, String> entry : testCase.staticParams.entrySet()) {
                     factory.setStaticParameter(entry.getKey(), entry.getValue());
                 }
+            }
+
+            // Limit processor version when the test targets a specific XSLT
+            // version (e.g. XSLT20 without +), so that later instructions
+            // like xsl:try are treated as unknown and xsl:fallback fires.
+            if (testCase.specValue != null && !testCase.specValue.contains("+")) {
+                double specVersion = parseSpecVersionAsDouble(testCase.specValue);
+                if (specVersion > 0 && specVersion < 3.0) {
+                    factory.setMaxXsltVersion(specVersion);
+                } else {
+                    factory.setMaxXsltVersion(-1);
+                }
+            } else {
+                factory.setMaxXsltVersion(-1);
             }
 
             // Compile stylesheet - use FileChannel for NIO-native input
@@ -765,6 +879,13 @@ public class XSLTConformanceTest {
             // Set initial template if specified (XSLT 2.0+ feature)
             if (testCase.initialTemplate != null && transformer instanceof GonzalezTransformer) {
                 ((GonzalezTransformer) transformer).setInitialTemplate(testCase.initialTemplate);
+            }
+
+            // Set initial function if specified (XSLT 3.0 feature)
+            if (testCase.initialFunctionLocalName != null && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setInitialFunction(
+                    testCase.initialFunctionNsUri, testCase.initialFunctionLocalName,
+                    testCase.initialFunctionParams);
             }
 
             // Set initial mode if specified
@@ -925,17 +1046,27 @@ public class XSLTConformanceTest {
 
     /**
      * Detects the XML encoding from the XML declaration in the raw bytes.
-     * Falls back to UTF-8 if no encoding is specified.
+     * Handles UTF-16 BOM detection and falls back to UTF-8 if no encoding
+     * is specified.
      */
     private static String detectXmlEncoding(byte[] bytes) {
-        // Look for encoding="..." in the first 200 bytes (ASCII-safe for XML decl)
+        if (bytes.length >= 2) {
+            int b0 = bytes[0] & 0xFF;
+            int b1 = bytes[1] & 0xFF;
+            if ((b0 == 0xFE && b1 == 0xFF) || (b0 == 0xFF && b1 == 0xFE)) {
+                return "UTF-16";
+            }
+            if ((b0 == 0x00 && b1 == 0x3C) || (b0 == 0x3C && b1 == 0x00)) {
+                return "UTF-16";
+            }
+        }
         int limit = Math.min(bytes.length, 200);
         String header = new String(bytes, 0, limit, StandardCharsets.US_ASCII);
         int encIdx = header.indexOf("encoding=");
         if (encIdx < 0) {
             return StandardCharsets.UTF_8.name();
         }
-        encIdx += 9; // skip "encoding="
+        encIdx += 9;
         if (encIdx >= header.length()) {
             return StandardCharsets.UTF_8.name();
         }
@@ -1048,6 +1179,9 @@ public class XSLTConformanceTest {
         String sourceSelect;
         String initialTemplate;
         String initialMode;
+        String initialFunctionNsUri;
+        String initialFunctionLocalName;
+        List<String> initialFunctionParams;
         String expectedXml;
         boolean expectsError;
         boolean anyOfAcceptsSuccess;

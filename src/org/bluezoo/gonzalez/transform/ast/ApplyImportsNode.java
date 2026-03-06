@@ -78,12 +78,32 @@ public class ApplyImportsNode extends XSLTInstruction {
             currentNode, context.getCurrentMode(), currentRule, context);
         
         if (importedRule == null || TemplateMatcher.isBuiltIn(importedRule)) {
+            // Evaluate with-param values to propagate through built-in templates
+            Map<String, XPathValue> paramValues = new HashMap<>();
+            Map<String, XPathValue> tunnelParams = new HashMap<>();
+            for (WithParamNode param : params) {
+                try {
+                    if (param.isTunnel()) {
+                        tunnelParams.put(param.getName(), param.evaluate(context));
+                    } else {
+                        paramValues.put(param.getName(), param.evaluate(context));
+                    }
+                } catch (XPathException e) {
+                    throw new SAXException("Error evaluating param: " + e.getMessage(), e);
+                }
+            }
+            
+            TransformContext builtInContext = context;
+            if (!tunnelParams.isEmpty()) {
+                builtInContext = context.withTunnelParameters(tunnelParams);
+            }
+            
             String type = importedRule != null ? TemplateMatcher.getBuiltInType(importedRule) : null;
             if (type != null) {
-                executeBuiltIn(type, currentNode, context, output);
+                executeBuiltIn(type, currentNode, builtInContext, output, paramValues);
             } else {
                 if (currentNode.isElement() || currentNode.getParent() == null) {
-                    applyTemplatesToChildren(currentNode, context, output);
+                    applyTemplatesToChildren(currentNode, builtInContext, output, paramValues);
                 } else if (currentNode.isText() || currentNode.isAttribute()) {
                     String value = currentNode.getStringValue();
                     if (value != null && !value.isEmpty()) {
@@ -171,6 +191,11 @@ public class ApplyImportsNode extends XSLTInstruction {
                     defaultValue = new XPathString("");
                 }
                 if (defaultValue != null) {
+                    try {
+                        defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                    } catch (XPathException e) {
+                        throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
+                    }
                     execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
                 }
             }
@@ -179,9 +204,39 @@ public class ApplyImportsNode extends XSLTInstruction {
         importedRule.getBody().execute(execContext, output);
     }
     
+    private void applyTemplatesToAttributes(XPathNode node, TransformContext context,
+                                            OutputHandler output) throws SAXException {
+        List<XPathNode> attrs = new ArrayList<>();
+        Iterator<XPathNode> it = node.getAttributes();
+        while (it.hasNext()) {
+            attrs.add(it.next());
+        }
+        int size = attrs.size();
+        int pos = 1;
+        for (XPathNode attr : attrs) {
+            TransformContext attrContext = context.withContextNode(attr)
+                .withPositionAndSize(pos++, size);
+            TemplateMatcher matcher = context.getTemplateMatcher();
+            TemplateRule rule = matcher.findMatch(attr, context.getCurrentMode(), attrContext);
+            if (rule != null) {
+                TransformContext execContext = attrContext.pushVariableScope()
+                    .withCurrentTemplateRule(rule);
+                if (TemplateMatcher.isBuiltIn(rule)) {
+                    executeBuiltIn(TemplateMatcher.getBuiltInType(rule), attr, execContext, output);
+                } else {
+                    rule.getBody().execute(execContext, output);
+                }
+            }
+        }
+    }
+
     private void applyTemplatesToChildren(XPathNode node, TransformContext context, 
                                           OutputHandler output) throws SAXException {
-        // First pass: count children
+        applyTemplatesToChildren(node, context, output, java.util.Collections.emptyMap());
+    }
+    
+    private void applyTemplatesToChildren(XPathNode node, TransformContext context, 
+            OutputHandler output, Map<String, XPathValue> paramValues) throws SAXException {
         List<XPathNode> children = new ArrayList<>();
         Iterator<XPathNode> it = node.getChildren();
         while (it.hasNext()) {
@@ -198,20 +253,71 @@ public class ApplyImportsNode extends XSLTInstruction {
                 TransformContext execContext = childContext.pushVariableScope()
                     .withCurrentTemplateRule(rule);
                 if (TemplateMatcher.isBuiltIn(rule)) {
-                    executeBuiltIn(TemplateMatcher.getBuiltInType(rule), child, execContext, output);
+                    executeBuiltIn(TemplateMatcher.getBuiltInType(rule), child, execContext, output,
+                        paramValues);
                 } else {
+                    bindParamsToTemplate(rule, execContext, paramValues);
                     rule.getBody().execute(execContext, output);
                 }
             }
         }
     }
     
+    private void bindParamsToTemplate(TemplateRule rule, TransformContext execContext,
+            Map<String, XPathValue> paramValues) throws SAXException {
+        for (TemplateParameter templateParam : rule.getParameters()) {
+            String paramName = templateParam.getLocalName();
+            if (paramValues.containsKey(paramName)) {
+                execContext.getVariableScope().bind(
+                    templateParam.getNamespaceURI(), paramName, paramValues.get(paramName));
+                continue;
+            }
+            if (templateParam.isTunnel()) {
+                XPathValue tunnelValue = execContext.getTunnelParameters().get(paramName);
+                if (tunnelValue != null) {
+                    execContext.getVariableScope().bind(
+                        templateParam.getNamespaceURI(), paramName, tunnelValue);
+                    continue;
+                }
+            }
+            XPathValue defaultValue = null;
+            if (templateParam.getSelectExpr() != null) {
+                try {
+                    defaultValue = templateParam.getSelectExpr().evaluate(execContext);
+                } catch (XPathException e) {
+                    throw new SAXException(
+                        "Error evaluating parameter default: " + e.getMessage(), e);
+                }
+            } else if (templateParam.getDefaultContent() != null) {
+                SAXEventBuffer buffer = new SAXEventBuffer();
+                templateParam.getDefaultContent().execute(execContext,
+                    new BufferOutputHandler(buffer));
+                defaultValue = new XPathResultTreeFragment(buffer);
+            } else {
+                defaultValue = new XPathString("");
+            }
+            try {
+                defaultValue = templateParam.coerceDefaultValue(defaultValue);
+            } catch (XPathException e) {
+                throw new SAXException(
+                    "Error coercing parameter default: " + e.getMessage(), e);
+            }
+            execContext.getVariableScope().bind(
+                templateParam.getNamespaceURI(), paramName, defaultValue);
+        }
+    }
+    
     private void executeBuiltIn(String type, XPathNode node,
             TransformContext context, OutputHandler output) throws SAXException {
+        executeBuiltIn(type, node, context, output, java.util.Collections.emptyMap());
+    }
+    
+    private void executeBuiltIn(String type, XPathNode node,
+            TransformContext context, OutputHandler output,
+            Map<String, XPathValue> paramValues) throws SAXException {
         switch (type) {
             case "element-or-root":
-                // Apply templates to children
-                applyTemplatesToChildren(node, context, output);
+                applyTemplatesToChildren(node, context, output, paramValues);
                 break;
             case "text-or-attribute":
             case "text-only-copy":
@@ -221,22 +327,20 @@ public class ApplyImportsNode extends XSLTInstruction {
                 }
                 break;
             case "shallow-copy":
-                // Copy the node (without content for elements) then apply-templates to children
                 executeShallowCopy(node, context, output);
                 break;
             case "deep-copy":
-                // Copy the entire subtree
                 executeDeepCopy(node, output);
                 break;
             case "shallow-skip":
-                // Skip the node but apply-templates to children
-                applyTemplatesToChildren(node, context, output);
+                if (node.isElement()) {
+                    applyTemplatesToAttributes(node, context, output);
+                }
+                applyTemplatesToChildren(node, context, output, paramValues);
                 break;
             case "fail":
-                // Raise an error - no template matched
                 throw new SAXException("XTDE0555: No matching template found for node: " + 
                     node.getNodeType() + " (mode has on-no-match='fail')");
-            // "empty" type does nothing
         }
     }
     
@@ -251,18 +355,16 @@ public class ApplyImportsNode extends XSLTInstruction {
                 String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
                 
                 output.startElement(uri != null ? uri : "", localName, qName);
-                
-                // Copy attributes
-                Iterator<XPathNode> attrIter = node.getAttributes();
-                while (attrIter.hasNext()) {
-                    XPathNode attr = attrIter.next();
-                    String aUri = attr.getNamespaceURI();
-                    String aLocal = attr.getLocalName();
-                    String aPrefix = attr.getPrefix();
-                    String aQName = aPrefix != null && !aPrefix.isEmpty() ? aPrefix + ":" + aLocal : aLocal;
-                    output.attribute(aUri != null ? aUri : "", aLocal, aQName, attr.getStringValue());
+                Iterator<XPathNode> namespaces = node.getNamespaces();
+                while (namespaces.hasNext()) {
+                    XPathNode ns = namespaces.next();
+                    String nsPrefix = ns.getLocalName();
+                    String nsUri = ns.getStringValue();
+                    if (!"xml".equals(nsPrefix) && nsUri != null && !nsUri.isEmpty()) {
+                        output.namespace(nsPrefix, nsUri);
+                    }
                 }
-                
+                applyTemplatesToAttributes(node, context, output);
                 applyTemplatesToChildren(node, context, output);
                 output.endElement(uri != null ? uri : "", localName, qName);
                 break;

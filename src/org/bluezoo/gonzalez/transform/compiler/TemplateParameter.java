@@ -23,6 +23,17 @@ package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathAnyURI;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
  * A template parameter (xsl:param).
@@ -38,6 +49,7 @@ public final class TemplateParameter {
     private final SequenceNode defaultContent;
     private final boolean tunnel; // XSLT 2.0: whether this is a tunnel parameter
     private final boolean required; // XSLT 2.0: whether required="yes"
+    private final String asType; // XSLT 2.0+: declared type from 'as' attribute
 
     /**
      * Creates a template parameter without namespace.
@@ -47,7 +59,7 @@ public final class TemplateParameter {
      * @param defaultContent the default content (may be null)
      */
     public TemplateParameter(String localName, XPathExpression selectExpr, SequenceNode defaultContent) {
-        this(null, localName, selectExpr, defaultContent, false, false);
+        this(null, localName, selectExpr, defaultContent, false, false, null);
     }
 
     /**
@@ -59,7 +71,7 @@ public final class TemplateParameter {
      * @param defaultContent the default content (may be null)
      */
     public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, SequenceNode defaultContent) {
-        this(namespaceURI, localName, selectExpr, defaultContent, false, false);
+        this(namespaceURI, localName, selectExpr, defaultContent, false, false, null);
     }
 
     /**
@@ -73,7 +85,22 @@ public final class TemplateParameter {
      */
     public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, 
                             SequenceNode defaultContent, boolean tunnel) {
-        this(namespaceURI, localName, selectExpr, defaultContent, tunnel, false);
+        this(namespaceURI, localName, selectExpr, defaultContent, tunnel, false, null);
+    }
+
+    /**
+     * Creates a template parameter with all options except asType.
+     *
+     * @param namespaceURI the namespace URI (may be null)
+     * @param localName the parameter local name
+     * @param selectExpr the select expression (may be null)
+     * @param defaultContent the default content (may be null)
+     * @param tunnel whether this is a tunnel parameter (XSLT 2.0)
+     * @param required whether this parameter is required (XSLT 2.0)
+     */
+    public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, 
+                            SequenceNode defaultContent, boolean tunnel, boolean required) {
+        this(namespaceURI, localName, selectExpr, defaultContent, tunnel, required, null);
     }
 
     /**
@@ -85,9 +112,10 @@ public final class TemplateParameter {
      * @param defaultContent the default content (may be null)
      * @param tunnel whether this is a tunnel parameter (XSLT 2.0)
      * @param required whether this parameter is required (XSLT 2.0)
+     * @param asType the declared type from 'as' attribute (may be null)
      */
     public TemplateParameter(String namespaceURI, String localName, XPathExpression selectExpr, 
-                            SequenceNode defaultContent, boolean tunnel, boolean required) {
+                            SequenceNode defaultContent, boolean tunnel, boolean required, String asType) {
         this.namespaceURI = namespaceURI;
         this.localName = localName;
         this.expandedName = makeExpandedName(namespaceURI, localName);
@@ -95,6 +123,7 @@ public final class TemplateParameter {
         this.defaultContent = defaultContent;
         this.tunnel = tunnel;
         this.required = required;
+        this.asType = asType;
     }
 
     /**
@@ -179,7 +208,218 @@ public final class TemplateParameter {
      * @return true if this parameter is required
      */
     public boolean isRequired() {
-        return required;
+        if (required) {
+            return true;
+        }
+        // XTDE0610: if no select and no content, default is empty sequence.
+        // If empty sequence doesn't match 'as' type, param is effectively required.
+        if (asType != null && selectExpr == null && defaultContent == null) {
+            SequenceType parsedType = SequenceType.parse(asType, null);
+            if (parsedType != null) {
+                SequenceType.Occurrence occ = parsedType.getOccurrence();
+                if (occ == SequenceType.Occurrence.ONE
+                    || occ == SequenceType.Occurrence.ONE_OR_MORE) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the declared type from the 'as' attribute (XSLT 2.0+).
+     *
+     * @return the type declaration string, or null if not specified
+     */
+    public String getAsType() {
+        return asType;
+    }
+
+    /**
+     * Coerces a default value to match this parameter's declared 'as' type.
+     * If the value is an RTF and the declared type is atomic, atomizes and
+     * casts the string content to the appropriate typed value.
+     *
+     * @param value the default value to coerce
+     * @return the coerced value, or the original value if no coercion needed
+     * @throws XPathException if the cast fails
+     */
+    public XPathValue coerceDefaultValue(XPathValue value) throws XPathException {
+        if (asType == null || value == null) {
+            return value;
+        }
+        if (!(value instanceof XPathResultTreeFragment)) {
+            return value;
+        }
+        SequenceType parsedType = SequenceType.parse(asType, null);
+        if (parsedType == null) {
+            return value;
+        }
+        if (parsedType.getItemKind() != SequenceType.ItemKind.ATOMIC) {
+            return value;
+        }
+        String targetLocal = parsedType.getLocalName();
+        if (targetLocal == null) {
+            return value;
+        }
+        String textContent = value.asString();
+        return castStringToAtomicType(textContent, targetLocal);
+    }
+    
+    public static XPathValue castStringToAtomicType(String textContent, 
+                                                     String targetLocal) throws XPathException {
+        switch (targetLocal) {
+            case "untypedAtomic":
+                return new XPathUntypedAtomic(textContent);
+            case "string":
+            case "normalizedString":
+            case "token":
+            case "language":
+            case "NMTOKEN":
+            case "Name":
+            case "NCName":
+            case "ID":
+            case "IDREF":
+            case "ENTITY":
+                return new XPathString(textContent);
+            case "double":
+                return new XPathNumber(Double.parseDouble(normalizeSpecialDouble(textContent)), false, true);
+            case "float":
+                return new XPathNumber(Float.parseFloat(normalizeSpecialDouble(textContent)), true);
+            case "decimal":
+            case "integer":
+            case "int":
+            case "long":
+            case "short":
+            case "byte":
+            case "nonNegativeInteger":
+            case "nonPositiveInteger":
+            case "positiveInteger":
+            case "negativeInteger":
+            case "unsignedInt":
+            case "unsignedLong":
+            case "unsignedShort":
+            case "unsignedByte":
+                return new XPathNumber(Double.parseDouble(textContent));
+            case "boolean":
+                return XPathBoolean.of("true".equals(textContent) || "1".equals(textContent));
+            case "date":
+                return XPathDateTime.parseDate(textContent);
+            case "dateTime":
+                return XPathDateTime.parseDateTime(textContent);
+            case "time":
+                return XPathDateTime.parseTime(textContent);
+            case "duration":
+            case "dayTimeDuration":
+            case "yearMonthDuration":
+                return XPathDateTime.parseDuration(textContent);
+            case "gYear":
+                return XPathDateTime.parseGYear(textContent);
+            case "gYearMonth":
+                return XPathDateTime.parseGYearMonth(textContent);
+            case "gMonth":
+                return XPathDateTime.parseGMonth(textContent);
+            case "gMonthDay":
+                return XPathDateTime.parseGMonthDay(textContent);
+            case "gDay":
+                return XPathDateTime.parseGDay(textContent);
+            case "anyURI":
+                return new XPathAnyURI(textContent);
+            default:
+                return new XPathUntypedAtomic(textContent);
+        }
+    }
+    
+    /**
+     * Validates a supplied value against this parameter's declared type.
+     * Throws XTTE0590 if the value cannot be converted to the required type.
+     *
+     * @param value the supplied value
+     * @param errorCode error code to use (XTTE0590 for supplied, XTTE0600 for default)
+     * @return the coerced value if conversion was needed, otherwise the original
+     * @throws XPathException if the value doesn't match the declared type
+     */
+    public XPathValue validateValue(XPathValue value, String errorCode) throws XPathException {
+        if (asType == null || value == null) {
+            return value;
+        }
+        SequenceType parsedType = SequenceType.parse(asType, null);
+        if (parsedType == null) {
+            return value;
+        }
+        if (parsedType.matches(value, SchemaContext.NONE)) {
+            return value;
+        }
+        // Try coercion from untypedAtomic
+        if (value instanceof XPathUntypedAtomic) {
+            if (parsedType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
+                String targetLocal = parsedType.getLocalName();
+                if (targetLocal != null) {
+                    String textContent = value.asString();
+                    return castStringToAtomicType(textContent, targetLocal);
+                }
+            }
+        }
+        // Try coercion from RTF to atomic (atomize then cast)
+        if (value instanceof XPathResultTreeFragment) {
+            if (parsedType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
+                String targetLocal = parsedType.getLocalName();
+                if (targetLocal != null) {
+                    String textContent = value.asString();
+                    return castStringToAtomicType(textContent, targetLocal);
+                }
+            }
+            // Try extracting children for node() or element() target types
+            if (parsedType.getItemKind() == SequenceType.ItemKind.ELEMENT ||
+                parsedType.getItemKind() == SequenceType.ItemKind.NODE) {
+                org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet rtfNodes =
+                    ((XPathResultTreeFragment) value).asNodeSet();
+                if (rtfNodes != null && !rtfNodes.isEmpty()) {
+                    org.bluezoo.gonzalez.transform.xpath.type.XPathNode root = rtfNodes.iterator().next();
+                    java.util.List<org.bluezoo.gonzalez.transform.xpath.type.XPathNode> children =
+                        new java.util.ArrayList<>();
+                    java.util.Iterator<org.bluezoo.gonzalez.transform.xpath.type.XPathNode> it =
+                        root.getChildren();
+                    while (it.hasNext()) {
+                        children.add(it.next());
+                    }
+                    if (!children.isEmpty()) {
+                        org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet nodeSet =
+                            new org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet(children);
+                        if (parsedType.matches(nodeSet, SchemaContext.NONE)) {
+                            return nodeSet;
+                        }
+                    }
+                }
+            }
+        }
+        // Try coercion from NodeSet to atomic (atomize first node then cast)
+        if (value.isNodeSet()) {
+            if (parsedType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
+                String targetLocal = parsedType.getLocalName();
+                if (targetLocal != null) {
+                    String textContent = value.asString();
+                    return castStringToAtomicType(textContent, targetLocal);
+                }
+            }
+        }
+        throw new XPathException(errorCode + ": Parameter $" + localName +
+            ": required type is " + asType +
+            ", but supplied value (" + value.getClass().getSimpleName() + ") does not match");
+    }
+
+    /**
+     * Normalizes XPath special floating-point strings to Java equivalents.
+     * XPath uses "INF"/"-INF" while Java uses "Infinity"/"-Infinity".
+     */
+    private static String normalizeSpecialDouble(String text) {
+        if ("INF".equals(text)) {
+            return "Infinity";
+        }
+        if ("-INF".equals(text)) {
+            return "-Infinity";
+        }
+        return text;
     }
 
     @Override

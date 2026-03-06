@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import java.math.BigInteger;
+
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -64,14 +66,37 @@ public final class UnaryExpr implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
-        double value = operand.evaluate(context).asNumber();
+        XPathValue raw = operand.evaluate(context);
         
-        // Odd number of negations = negate, even = no-op
-        if (negationCount % 2 == 1) {
-            value = -value;
+        // Even number of negations is a no-op
+        if (negationCount % 2 == 0) {
+            return raw instanceof XPathNumber ? raw : XPathNumber.of(raw.asNumber());
         }
         
-        return XPathNumber.of(value);
+        if (raw instanceof XPathNumber) {
+            XPathNumber num = (XPathNumber) raw;
+            if (num.isExactInteger()) {
+                Long lv = num.toLong();
+                if (lv != null) {
+                    long negated = -lv.longValue();
+                    if (lv.longValue() != Long.MIN_VALUE) {
+                        return XPathNumber.ofInteger(negated);
+                    }
+                    return XPathNumber.ofInteger(BigInteger.valueOf(lv.longValue()).negate());
+                }
+                BigInteger bi = num.toBigInteger();
+                return XPathNumber.ofInteger(bi.negate());
+            }
+            if (num.isDecimal()) {
+                return new XPathNumber(num.getDecimalValue().negate());
+            }
+            double value = -num.asNumber();
+            if (num.isFloat() || num.isExplicitDouble()) {
+                return new XPathNumber(value, num.isFloat(), num.isExplicitDouble());
+            }
+            return XPathNumber.of(value);
+        }
+        return XPathNumber.of(-raw.asNumber());
     }
 
     /**

@@ -37,6 +37,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -88,6 +89,9 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
                 }
             }
             
+            // XTDE0450: function items cannot appear in a result tree
+            checkForFunctionItems(result);
+            
             if (result instanceof XPathResultTreeFragment) {
                 // Result tree fragment - replay the buffered events
                 XPathResultTreeFragment rtf = (XPathResultTreeFragment) result;
@@ -105,6 +109,10 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
                     outputSequenceItem(item, output, first);
                     first = false;
                 }
+            } else if (result instanceof XPathNode) {
+                // Single node item (e.g. SequenceTextItem from variable)
+                outputNode((XPathNode) result, output);
+                output.setAtomicValuePending(false);
             } else if (result instanceof XPathNodeSet) {
                 // For node-sets, output nodes (similar to copy-of for simplicity)
                 XPathNodeSet nodeSet = (XPathNodeSet) result;
@@ -140,6 +148,21 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
         } else {
             // Atomic value - use atomicValue() which handles spacing
             output.atomicValue(item);
+        }
+    }
+    
+    private void checkForFunctionItems(XPathValue result) throws SAXException {
+        if (result instanceof XPathFunctionItem) {
+            throw new SAXException("XTDE0450: " +
+                "A result tree cannot contain a function item");
+        }
+        if (result instanceof XPathSequence) {
+            for (XPathValue item : (XPathSequence) result) {
+                if (item instanceof XPathFunctionItem) {
+                    throw new SAXException("XTDE0450: " +
+                        "A result tree cannot contain a function item");
+                }
+            }
         }
     }
     

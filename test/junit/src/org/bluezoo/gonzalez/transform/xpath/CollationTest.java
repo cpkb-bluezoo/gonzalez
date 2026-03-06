@@ -79,14 +79,9 @@ public class CollationTest {
         assertEquals(uri, collation.getUri());
     }
 
-    @Test
-    public void testForUriUnknownFallsBackToCodepointLike() throws XPathException {
-        String unknownUri = "http://example.com/unknown-collation";
-        Collation collation = Collation.forUri(unknownUri);
-        assertNotNull(collation);
-        assertEquals(unknownUri, collation.getUri());
-        int result = collation.compare("a", "b");
-        assertTrue(result < 0);
+    @Test(expected = XPathException.class)
+    public void testForUriUnknownThrowsException() throws XPathException {
+        Collation.forUri("http://example.com/unknown-collation");
     }
 
     @Test

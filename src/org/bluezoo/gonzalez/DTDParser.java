@@ -2321,10 +2321,21 @@ class DTDParser implements TokenConsumer {
             // External parameter entity - resolve and process it
             if (entity.externalID != null) {
                 try {
+                    String sysId = entity.externalID.systemId;
+                    if (entity.declarationBaseURI != null && sysId != null
+                            && !sysId.contains(":/")) {
+                        try {
+                            java.net.URI base = new java.net.URI(entity.declarationBaseURI);
+                            java.net.URI resolved = base.resolve(sysId);
+                            sysId = resolved.toString();
+                        } catch (java.net.URISyntaxException e) {
+                            // keep original
+                        }
+                    }
                     xmlParser.processExternalEntity(
                         entityName, 
                         entity.externalID.publicId, 
-                        entity.externalID.systemId);
+                        sysId);
                 } catch (IOException e) {
                     throw fatalError(
                         "Failed to resolve external parameter entity %" + entityName + ";",

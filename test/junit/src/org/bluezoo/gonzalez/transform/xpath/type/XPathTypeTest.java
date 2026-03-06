@@ -175,11 +175,11 @@ public class XPathTypeTest {
 
         XPathNumber posInf = XPathNumber.POSITIVE_INFINITY;
         String posInfStr = posInf.asString();
-        assertEquals("Infinity", posInfStr);
+        assertEquals("INF", posInfStr);
 
         XPathNumber negInf = XPathNumber.NEGATIVE_INFINITY;
         String negInfStr = negInf.asString();
-        assertEquals("-Infinity", negInfStr);
+        assertEquals("-INF", negInfStr);
     }
 
     @Test

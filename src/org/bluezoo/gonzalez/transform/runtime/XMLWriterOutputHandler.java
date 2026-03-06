@@ -24,7 +24,16 @@ package org.bluezoo.gonzalez.transform.runtime;
 import org.bluezoo.gonzalez.IndentConfig;
 import org.bluezoo.gonzalez.XMLWriter;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
+import org.bluezoo.json.JSONWriter;
 import org.xml.sax.SAXException;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.Channels;
@@ -81,10 +90,14 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     private boolean contentReceived = false;
     private boolean claimedByResultDocument = false;
 
+    // When true, raise SENR0001 if a map is serialized (xml/html/xhtml/text methods)
+    private boolean strictXmlSerialization = true;
+
     // inherit-namespaces="no" tracking
     private boolean pendingInheritCapture = false;
     private List<String> inheritUndeclarePrefixes = null;
     private int inheritDepth = -1;
+    private int elementDepth = 0;
 
     /** Buffered attribute. */
     private static class PendingAttribute {
@@ -143,7 +156,16 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         }
         
         String encoding = outputProperties.getEncoding();
-        Charset charset = (encoding != null) ? Charset.forName(encoding) : StandardCharsets.UTF_8;
+        Charset charset = StandardCharsets.UTF_8;
+        if (encoding != null) {
+            try {
+                charset = Charset.forName(encoding);
+            } catch (java.nio.charset.UnsupportedCharsetException e) {
+                // SESU0007: fall back to UTF-8 for unsupported encodings
+                charset = StandardCharsets.UTF_8;
+                outputProperties.setEncoding("UTF-8");
+            }
+        }
         writer.setCharset(charset);
         
         boolean xml11 = "1.1".equals(outputProperties.getVersion());
@@ -178,6 +200,16 @@ public final class XMLWriterOutputHandler implements OutputHandler {
      */
     public void setCharacterMappings(Map<Integer, String> mappings) {
         this.characterMappings = mappings;
+    }
+    
+    /**
+     * Sets whether to raise SENR0001 when a map is encountered during serialization.
+     * Should be true for xml/html/xhtml/text output methods, false for adaptive/json.
+     *
+     * @param strict true to raise SENR0001 for maps
+     */
+    public void setStrictXmlSerialization(boolean strict) {
+        this.strictXmlSerialization = strict;
     }
     
     /**
@@ -232,6 +264,7 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         pendingLocalName = localName;
         pendingQName = qName;
         inPendingElement = true;
+        elementDepth++;
         pendingAttributes.clear();
         pendingNamespaces.clear();
         if (inheritUndeclarePrefixes != null) {
@@ -249,6 +282,7 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         } catch (IOException e) {
             throw new SAXException("Error writing end element", e);
         }
+        elementDepth--;
         if (inheritUndeclarePrefixes != null) {
             inheritDepth--;
         }
@@ -511,11 +545,36 @@ public final class XMLWriterOutputHandler implements OutputHandler {
                 }
             }
 
-            // Write namespace declarations
+            // Write namespace declarations (explicit first, then element prefix with fixup)
             prefixToNamespaceMap.clear();
             for (int i = 0; i < pendingNamespaces.size(); i++) {
                 PendingNamespace ns = pendingNamespaces.get(i);
+                if (ns.elementPrefix) {
+                    continue;
+                }
                 String nsPrefix = (ns.prefix != null) ? ns.prefix : "";
+                if (nsPrefix.isEmpty()) {
+                    writer.writeDefaultNamespace(ns.uri);
+                } else {
+                    writer.writeNamespace(nsPrefix, ns.uri);
+                }
+                if (!nsPrefix.isEmpty()) {
+                    prefixToNamespaceMap.put(nsPrefix, ns.uri);
+                }
+            }
+            for (int i = 0; i < pendingNamespaces.size(); i++) {
+                PendingNamespace ns = pendingNamespaces.get(i);
+                if (!ns.elementPrefix) {
+                    continue;
+                }
+                String nsPrefix = (ns.prefix != null) ? ns.prefix : "";
+                String existingUri = prefixToNamespaceMap.get(nsPrefix);
+                if (existingUri != null && existingUri.equals(ns.uri)) {
+                    continue;
+                }
+                if (existingUri != null) {
+                    nsPrefix = generateUniquePrefix(nsPrefix);
+                }
                 if (nsPrefix.isEmpty()) {
                     writer.writeDefaultNamespace(ns.uri);
                 } else {
@@ -624,14 +683,88 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     }
     
     @Override
-    public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
-            throws org.xml.sax.SAXException {
-        if (value != null) {
+    public void atomicValue(XPathValue value) throws SAXException {
+        if (value == null) {
+            return;
+        }
+        if (strictXmlSerialization && elementDepth == 0 && !inAttributeContent
+                && (value instanceof XPathMap || value instanceof XPathArray)) {
+            throw new SAXException(
+                "SENR0001: Cannot serialize a map using this output method");
+        }
+        if (!strictXmlSerialization && (value instanceof XPathMap || value instanceof XPathArray)) {
+            String json = serializeToJson(value);
             if (atomicValuePending && !inAttributeContent) {
                 characters(" ");
             }
-            characters(value.asString());
+            characters(json);
             atomicValuePending = true;
+            return;
+        }
+        if (atomicValuePending && !inAttributeContent) {
+            characters(" ");
+        }
+        characters(value.asString());
+        atomicValuePending = true;
+    }
+
+    /**
+     * Serializes an XPath value as JSON using the org.bluezoo.json framework.
+     */
+    private String serializeToJson(XPathValue value) throws SAXException {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            JSONWriter writer = new JSONWriter(baos);
+            writeJsonValue(value, writer);
+            writer.close();
+            return baos.toString("UTF-8");
+        } catch (IOException e) {
+            throw new SAXException("Error serializing JSON: " + e.getMessage(), e);
+        }
+    }
+
+    private void writeJsonValue(XPathValue value, JSONWriter writer) throws IOException {
+        if (value instanceof XPathMap) {
+            XPathMap map = (XPathMap) value;
+            writer.writeStartObject();
+            for (Map.Entry<String, XPathValue> entry : map.entries()) {
+                writer.writeKey(entry.getKey());
+                writeJsonValue(entry.getValue(), writer);
+            }
+            writer.writeEndObject();
+        } else if (value instanceof XPathArray) {
+            XPathArray array = (XPathArray) value;
+            writer.writeStartArray();
+            for (XPathValue member : array.members()) {
+                writeJsonValue(member, writer);
+            }
+            writer.writeEndArray();
+        } else if (value instanceof XPathBoolean) {
+            writer.writeBoolean(value.asBoolean());
+        } else if (value instanceof XPathNumber) {
+            double d = value.asNumber();
+            long longVal = (long) d;
+            if (d == longVal && !Double.isInfinite(d)) {
+                writer.writeNumber(longVal);
+            } else {
+                writer.writeNumber(d);
+            }
+        } else if (value instanceof XPathNodeSet) {
+            XPathNodeSet ns = (XPathNodeSet) value;
+            if (ns.isEmpty()) {
+                writer.writeNull();
+            } else {
+                writer.writeString(value.asString());
+            }
+        } else if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            writer.writeStartArray();
+            for (XPathValue item : seq) {
+                writeJsonValue(item, writer);
+            }
+            writer.writeEndArray();
+        } else {
+            writer.writeString(value.asString());
         }
     }
 

@@ -32,6 +32,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
  */
 public class SortSpec {
     private final XPathExpression selectExpr;
+    private final Object contentBody;
     private final AttributeValueTemplate dataTypeAvt;
     private final AttributeValueTemplate orderAvt;
     private final AttributeValueTemplate caseOrderAvt;
@@ -42,7 +43,15 @@ public class SortSpec {
     public SortSpec(XPathExpression selectExpr, AttributeValueTemplate dataTypeAvt, 
                    AttributeValueTemplate orderAvt, AttributeValueTemplate caseOrderAvt, 
                    AttributeValueTemplate langAvt, AttributeValueTemplate collationAvt) {
+        this(selectExpr, null, dataTypeAvt, orderAvt, caseOrderAvt, langAvt, collationAvt);
+    }
+    
+    public SortSpec(XPathExpression selectExpr, Object contentBody,
+                   AttributeValueTemplate dataTypeAvt, AttributeValueTemplate orderAvt,
+                   AttributeValueTemplate caseOrderAvt, AttributeValueTemplate langAvt,
+                   AttributeValueTemplate collationAvt) {
         this.selectExpr = selectExpr;
+        this.contentBody = contentBody;
         this.dataTypeAvt = dataTypeAvt;
         this.orderAvt = orderAvt;
         this.caseOrderAvt = caseOrderAvt;
@@ -52,17 +61,19 @@ public class SortSpec {
     
     public XPathExpression getSelectExpr() { return selectExpr; }
     
+    public Object getContentBody() { return contentBody; }
+    
     public boolean hasStable() { return hasStable; }
     
     public void setHasStable(boolean hasStable) { this.hasStable = hasStable; }
     
-    /** Evaluate data-type AVT at runtime. Returns "text" or "number". */
+    /** Evaluate data-type AVT at runtime. Returns "text", "number", or null (unspecified). */
     public String getDataType(TransformContext context) throws XPathException {
         if (dataTypeAvt == null) {
-            return "text";
+            return null;
         }
         String value = dataTypeAvt.evaluate(context);
-        return value != null && !value.isEmpty() ? value : "text";
+        return value != null && !value.isEmpty() ? value : null;
     }
     
     /** Evaluate order AVT at runtime. Returns "ascending" or "descending". */

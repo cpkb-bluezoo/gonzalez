@@ -60,6 +60,7 @@ public class MessageNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     @Override public String getInstructionName() { return "message"; }
+    public SequenceNode getContent() { return content; }
 
     @Override
     public List<XPathExpression> getExpressions() {

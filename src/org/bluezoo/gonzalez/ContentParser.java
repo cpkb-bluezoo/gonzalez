@@ -79,6 +79,16 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     private State state = State.INIT;
     private Locator locator;
     
+    /**
+     * Stack-based locator that always reflects the current parser position,
+     * including during external entity expansion. Each tokenizer (main
+     * document, external DTD subset, external entity) is pushed when
+     * entered and popped when finished.  The SAX ContentHandler receives
+     * a single reference to this object, so it always sees the correct
+     * system ID, line and column number without being re-notified.
+     */
+    private final LocatorStack locatorStack = new LocatorStack();
+    
     // Current tokenizer state (updated via tokenizerState callback)
     private TokenizerState currentTokenizerState = TokenizerState.CONTENT;
     
@@ -302,8 +312,23 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     @Override
     public void setLocator(Locator locator) {
         this.locator = locator;
+        locatorStack.push(locator);
         if (dtdParser != null) {
             dtdParser.setLocator(locator);
+        }
+    }
+
+    /**
+     * Pops the current locator from the stack, restoring the previous
+     * tokenizer as the active delegate.  Also updates the internal
+     * {@code locator} field and DTDParser to stay in sync.
+     */
+    private void popLocator() {
+        locatorStack.pop();
+        Locator restored = locatorStack.peek();
+        this.locator = restored;
+        if (dtdParser != null) {
+            dtdParser.setLocator(restored);
         }
     }
 
@@ -753,8 +778,35 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         // Resolve entity with appropriate base URI
         InputSource source = helper.resolveEntity(name, publicId, systemId, baseURI);
         if (source == null) {
-            // Resolver returned null, use default resolution (skip for now)
-            return;
+            // Resolver returned null — fall back to default resolution.
+            // Resolve the system ID against the base URI and open the stream.
+            if (systemId == null) {
+                return;
+            }
+            String resolved = systemId;
+            if (baseURI != null) {
+                try {
+                    java.net.URI base = new java.net.URI(baseURI);
+                    java.net.URI target = base.resolve(systemId);
+                    resolved = target.toString();
+                } catch (java.net.URISyntaxException e) {
+                    // keep original
+                }
+            }
+            source = new InputSource(resolved);
+            source.setSystemId(resolved);
+            source.setPublicId(publicId);
+            try {
+                java.net.URL url = new java.net.URL(resolved);
+                source.setByteStream(url.openStream());
+            } catch (java.net.MalformedURLException mue) {
+                java.io.File f = new java.io.File(resolved);
+                if (f.exists()) {
+                    source.setByteStream(new java.io.FileInputStream(f));
+                } else {
+                    return;
+                }
+            }
         }
         
         // Get resolved system ID for recursion check
@@ -826,9 +878,16 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             
             // Get input stream from source
             InputStream inputStream = source.getByteStream();
+            if (inputStream == null && resolvedSystemId != null) {
+                try {
+                    java.net.URL url = new java.net.URL(resolvedSystemId);
+                    inputStream = url.openStream();
+                } catch (java.net.MalformedURLException mue) {
+                    // try as file path
+                    inputStream = new java.io.FileInputStream(resolvedSystemId);
+                }
+            }
             if (inputStream == null) {
-                // WFC: Entity Declared (Section 4.1)
-                // "External entities must be resolvable"
                 throw fatalError("Entity InputSource must have a byte stream");
             }
             
@@ -864,7 +923,10 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             // Decrement depth
             externalEntityDepth--;
             
-            // Pop context from stack
+            // Pop entity tokenizer from locator stack, restoring parent
+            popLocator();
+            
+            // Pop context from entity stack
             if (dtdParser != null && !dtdParser.entityStack.isEmpty() && 
                 dtdParser.entityStack.peek() == entry) {
                 dtdParser.entityStack.pop();
@@ -969,7 +1031,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      */
     private void ensureDocumentStarted() throws SAXException {
         if (!documentStarted && contentHandler != null) {
-            contentHandler.setDocumentLocator(locator);
+            contentHandler.setDocumentLocator(locatorStack);
             contentHandler.startDocument();
             documentStarted = true;
         }
@@ -1508,8 +1570,11 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             // Whitespace in attribute value - append directly
             appendBufferToBuilder(currentAttributeValue, data);
         } else if (token == Token.CHARENTITYREF) {
-            // Character reference in attribute value (already expanded) - append directly
-            appendBufferToBuilder(currentAttributeValue, data);
+            // Character reference in attribute value (already expanded)
+            // Per XML spec 3.3.3, whitespace from character references must be preserved
+            // as-is (not subject to attribute value normalization). Use PUA markers
+            // that will be restored after normalization.
+            appendCharRefToBuilder(currentAttributeValue, data);
         } else if (token == Token.PREDEFENTITYREF) {
             // Predefined entity reference in attribute value (already expanded) - append directly
             appendBufferToBuilder(currentAttributeValue, data);
@@ -2032,6 +2097,43 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         builder.append(buffer);
     }
     
+    // PUA markers for whitespace characters from character references.
+    // Per XML spec 3.3.3, whitespace from character references is NOT subject
+    // to attribute value normalization (only literal whitespace is normalized).
+    private static final char PUA_NEWLINE = '\uE00A';
+    private static final char PUA_TAB = '\uE009';
+    private static final char PUA_CR = '\uE00D';
+    
+    /**
+     * Appends character reference data to an attribute value builder, protecting
+     * whitespace characters from normalization by temporarily substituting
+     * private-use area markers.
+     */
+    private void appendCharRefToBuilder(StringBuilder builder, CharBuffer buffer) {
+        if (buffer == null || builder == null) {
+            return;
+        }
+        int pos = buffer.position();
+        int lim = buffer.limit();
+        for (int i = pos; i < lim; i++) {
+            char c = buffer.charAt(i - pos);
+            switch (c) {
+                case '\n':
+                    builder.append(PUA_NEWLINE);
+                    break;
+                case '\t':
+                    builder.append(PUA_TAB);
+                    break;
+                case '\r':
+                    builder.append(PUA_CR);
+                    break;
+                default:
+                    builder.append(c);
+                    break;
+            }
+        }
+    }
+    
     /**
      * Checks if an attribute name is a namespace declaration (xmlns or xmlns:prefix).
      * This is a fast check that avoids String allocation.
@@ -2206,10 +2308,24 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     if (lexicalHandler != null) {
                         lexicalHandler.startEntity(entityName);
                     }
+                    // When the entity was declared in an external DTD, pre-resolve
+                    // its system ID against the DTD's base URI so
+                    // processExternalEntity gets an absolute URI.
+                    String sysId = entity.externalID.systemId;
+                    if (entity.declarationBaseURI != null && sysId != null
+                            && !sysId.contains(":/")) {
+                        try {
+                            java.net.URI base = new java.net.URI(entity.declarationBaseURI);
+                            java.net.URI resolved = base.resolve(sysId);
+                            sysId = resolved.toString();
+                        } catch (java.net.URISyntaxException e) {
+                            // keep original
+                        }
+                    }
                     processExternalEntity(
                         entityName,
                         entity.externalID.publicId,
-                        entity.externalID.systemId
+                        sysId
                     );
                     if (lexicalHandler != null) {
                         lexicalHandler.endEntity(entityName);
@@ -2266,46 +2382,29 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
     }
     
     /**
-     * Re-tokenizes an internal entity's expanded value.
+     * Re-tokenizes an internal entity's replacement text.
      * This is necessary to properly handle markup in entity values.
      * Uses the current tokenizer state to ensure the entity is expanded in the
      * correct context (e.g., CONTENT vs DOCTYPE_INTERNAL).
+     *
+     * <p>Predefined entity references (&amp;lt;, &amp;quot;, etc.) are kept
+     * unexpanded in the replacement text per XML 1.0 § 4.4.7, so the
+     * tokenizer resolves them in the correct context during re-parsing.
      * 
-     * Implements XML 1.0 § 4.4.7 character reference bypass: If an entity's replacement
-     * text contains character references (like &amp;lt;), the resulting characters are
-     * treated as literal data, not markup.
-     * 
-     * Enforces WFC: Parsed Entity - the entity replacement text must not cause
-     * unbalanced elements (element start/end tags must match within the entity).
+     * <p>Enforces WFC: Parsed Entity - the entity replacement text must not
+     * cause unbalanced elements (start/end tags must match within the entity).
      * 
      * @param entityName the entity name (for error reporting)
-     * @param expandedValue the fully expanded entity value
-     * @param entity the entity declaration (to check containsCharacterReferences flag)
+     * @param expandedValue the replacement text (with predefined refs unexpanded)
+     * @param entity the entity declaration
      * @throws SAXException if re-tokenization fails or entity causes unbalanced markup
      */
     private void retokenizeInternalEntity(String entityName, String expandedValue, EntityDeclaration entity) 
             throws SAXException {
-        // XML 1.0 § 4.4.7: If entity contains character references, bypass re-tokenization
-        // The characters resulting from character references (like &lt; → <) should be
-        // treated as literal data, not as markup delimiters.
-        if (entity != null && entity.containsCharacterReferences) {
-            // VC: No Character Data (Section 3.2)
-            // Entity references that expand to character data (via character references)
-            // are not allowed in element-only content
-            if (validationEnabled && dtdParser != null) {
-                validateNotElementOnlyContent("entity reference &" + entityName + ";", expandedValue);
-            }
-            
-            // Emit the expanded value as pure character data without re-tokenizing
-            if (contentHandler != null) {
-                contentHandler.characters(expandedValue.toCharArray(), 0, expandedValue.length());
-            }
-            return;
-        }
-        
-        // Entity does NOT contain character references - any markup delimiters
-        // are literal in the entity value and should be recognized as markup.
-        // Re-tokenize to ensure proper handling and validation.
+        // Re-tokenize the replacement text. Predefined entity references
+        // (e.g. &quot;) are kept unexpanded per XML 1.0 § 4.4.7, so the
+        // tokenizer handles them in the correct context (e.g. inside an
+        // attribute value where &quot; resolves to " without closing it).
         
         // Increment entity expansion depth
         // This marks any elements opened during expansion so we can verify they're closed
@@ -2376,6 +2475,8 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 }
             }
         } finally {
+            // Pop internal entity tokenizer from locator stack
+            popLocator();
             // Pop entity context to restore parent's state
             if (dtdParser != null && !dtdParser.entityStack.isEmpty() && 
                 dtdParser.entityStack.peek() == entry) {
@@ -2708,20 +2809,6 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         if ("xmlns".equals(attrName)) {
             // Default namespace declaration: xmlns="uri"
             
-            // Validate URI contains only ASCII characters (URIs, not IRIs)
-            // Per Namespaces in XML 1.0 and RFC 3986, namespace URIs must be ASCII-only
-            // Note: Namespaces in XML 1.1 allows IRIs (Unicode), so this only applies to XML 1.0
-            if (!this.xml11 && !attrValue.isEmpty() && !isAsciiOnly(attrValue)) {
-                throw fatalError(
-                    "Namespace URI must be a URI (ASCII-only), not an IRI: " + attrValue);
-            }
-            
-            // Per Namespaces in XML 1.0 (Third Edition), relative URI references are deprecated
-            if (!attrValue.isEmpty() && !isAbsoluteURI(attrValue)) {
-                reportValidationError(
-                    "Relative namespace URI is deprecated: " + attrValue);
-            }
-            
             // Check for reserved namespace URIs
             if (NamespaceScopeTracker.XML_NAMESPACE_URI.equals(attrValue)) {
                 throw fatalError(
@@ -2732,6 +2819,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     "Cannot bind default namespace to reserved xmlns namespace URI");
             }
             
+            validateNamespaceURI(attrValue);
             namespaceTracker.declarePrefix("", attrValue);
             return true;
         } else if (attrName.startsWith("xmlns:")) {
@@ -2742,20 +2830,6 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             if (prefix.isEmpty()) {
                 throw fatalError(
                     "Namespace prefix must not be empty after xmlns:");
-            }
-            
-            // Validate URI contains only ASCII characters (URIs, not IRIs)
-            // Per Namespaces in XML 1.0 and RFC 3986, namespace URIs must be ASCII-only
-            // Note: Namespaces in XML 1.1 allows IRIs (Unicode), so this only applies to XML 1.0
-            if (!this.xml11 && !attrValue.isEmpty() && !isAsciiOnly(attrValue)) {
-                throw fatalError(
-                    "Namespace URI must be a URI (ASCII-only), not an IRI: " + attrValue);
-            }
-            
-            // Per Namespaces in XML 1.0 (Third Edition), relative URI references are deprecated
-            if (!attrValue.isEmpty() && !isAbsoluteURI(attrValue)) {
-                reportValidationError(
-                    "Relative namespace URI is deprecated: " + attrValue);
             }
             
             // Check for XML 1.1-style prefix unbinding in XML 1.0 documents
@@ -2791,12 +2865,43 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                     "Cannot bind prefix '" + prefix + "' to reserved xmlns namespace URI");
             }
             
-            // Declare the prefix
+            validateNamespaceURI(attrValue);
             namespaceTracker.declarePrefix(prefix, attrValue);
             return true;
         }
         
         return false;
+    }
+    
+    /**
+     * Validates a namespace URI per Namespaces in XML.
+     *
+     * <p>Namespaces 1.0 Third Edition deprecated relative URI references
+     * as namespace names. We report non-absolute URIs as recoverable errors
+     * via {@code ErrorHandler.error()}, allowing processors that don't set
+     * an error handler (e.g. XSLT stylesheet compilation) to continue
+     * while still satisfying conformance tests that expect the error.
+     *
+     * <p>Namespaces 1.0 requires ASCII-only URIs (RFC 3986); non-ASCII
+     * characters (IRIs) are a fatal error. Namespaces 1.1 allows IRIs.
+     *
+     * @param uri the namespace URI to validate
+     * @throws SAXException if the URI violates the IRI constraint
+     */
+    private void validateNamespaceURI(String uri) throws SAXException {
+        if (uri == null || uri.isEmpty()) {
+            return;
+        }
+        if (!this.xml11 && !isAsciiOnly(uri)) {
+            throw fatalError(
+                "Namespace name '" + uri + "' is an IRI, not a URI " +
+                "(Namespaces in XML 1.0 \u00a7 2)");
+        }
+        if (!isAbsoluteURI(uri)) {
+            reportValidationError(
+                "Namespace name '" + uri + "' is not an absolute URI " +
+                "(Namespaces in XML 1.0 \u00a7 2, deprecated)");
+        }
     }
     
     /**
@@ -2944,10 +3049,42 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
                 }
             }
             
-            return result;
+            return restoreCharRefWhitespace(result);
         }
         
-        return normalized.toString();
+        return restoreCharRefWhitespace(normalized.toString());
+    }
+    
+    /**
+     * Restores whitespace characters that were protected from attribute value
+     * normalization via PUA markers back to their original characters.
+     */
+    private String restoreCharRefWhitespace(String value) {
+        boolean hasPua = false;
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == PUA_NEWLINE || c == PUA_TAB || c == PUA_CR) {
+                hasPua = true;
+                break;
+            }
+        }
+        if (!hasPua) {
+            return value;
+        }
+        StringBuilder sb = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == PUA_NEWLINE) {
+                sb.append('\n');
+            } else if (c == PUA_TAB) {
+                sb.append('\t');
+            } else if (c == PUA_CR) {
+                sb.append('\r');
+            } else {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
     
     /**

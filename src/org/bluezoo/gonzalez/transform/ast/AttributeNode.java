@@ -54,7 +54,7 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
     private final AttributeValueTemplate nameAvt;
     private final AttributeValueTemplate nsAvt;
     private final XPathExpression selectExpr;
-    private final String separator;
+    private final AttributeValueTemplate separatorAvt;
     private final SequenceNode content;
     private final Map<String, String> namespaceBindings;
     private final String typeNamespaceURI;
@@ -64,23 +64,25 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
     public AttributeNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt, 
                  SequenceNode content, Map<String, String> namespaceBindings,
                  String typeNamespaceURI, String typeLocalName) {
-        this(nameAvt, nsAvt, null, null, content, namespaceBindings, typeNamespaceURI, typeLocalName, null);
+        this(nameAvt, nsAvt, null, (AttributeValueTemplate) null, content, namespaceBindings,
+            typeNamespaceURI, typeLocalName, null);
     }
     
     public AttributeNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt, 
                  SequenceNode content, Map<String, String> namespaceBindings,
                  String typeNamespaceURI, String typeLocalName, ValidationMode validation) {
-        this(nameAvt, nsAvt, null, null, content, namespaceBindings, typeNamespaceURI, typeLocalName, validation);
+        this(nameAvt, nsAvt, null, (AttributeValueTemplate) null, content, namespaceBindings,
+            typeNamespaceURI, typeLocalName, validation);
     }
     
     public AttributeNode(AttributeValueTemplate nameAvt, AttributeValueTemplate nsAvt,
-                 XPathExpression selectExpr, String separator,
+                 XPathExpression selectExpr, AttributeValueTemplate separatorAvt,
                  SequenceNode content, Map<String, String> namespaceBindings,
                  String typeNamespaceURI, String typeLocalName, ValidationMode validation) {
         this.nameAvt = nameAvt;
         this.nsAvt = nsAvt;
         this.selectExpr = selectExpr;
-        this.separator = separator;
+        this.separatorAvt = separatorAvt;
         this.content = content;
         this.namespaceBindings = namespaceBindings;
         this.typeNamespaceURI = typeNamespaceURI;
@@ -89,6 +91,7 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     @Override public String getInstructionName() { return "attribute"; }
+    public SequenceNode getContent() { return content; }
 
     @Override
     public List<XPathExpression> getExpressions() {
@@ -131,8 +134,16 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
             if (selectExpr != null) {
                 // XSLT 2.0+: select attribute takes precedence over content
                 XPathValue result = selectExpr.evaluate(evalContext);
-                // Convert sequence to string with separator (default is single space)
-                String sep = separator != null ? separator : " ";
+                String sep;
+                if (separatorAvt != null) {
+                    try {
+                        sep = separatorAvt.evaluate(evalContext);
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating separator: " + e.getMessage(), e);
+                    }
+                } else {
+                    sep = " ";
+                }
                 StringBuilder sb = new StringBuilder();
                 Iterator<XPathValue> iter = result.sequenceIterator();
                 boolean first = true;
@@ -216,8 +227,7 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
                     prefix = StylesheetCompiler.findOrGeneratePrefix(namespace, namespaceBindings);
                     qName = prefix + ":" + localName;
                 }
-                // Declare the namespace binding
-                output.namespace(prefix, namespace);
+                output.elementPrefixNamespace(prefix, namespace);
             }
             
             // Convert value to canonical form if type annotation is specified

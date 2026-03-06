@@ -63,7 +63,11 @@ public final class NodeSetFunctions {
         @Override public int getMaxArgs() { return 0; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            if (context.isContextItemUndefined()) {
+                throw new XPathException("XPDY0002: Context item is undefined");
+            }
             return XPathNumber.of(context.getContextSize());
         }
     };
@@ -83,7 +87,11 @@ public final class NodeSetFunctions {
         @Override public int getMaxArgs() { return 0; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            if (context.isContextItemUndefined()) {
+                throw new XPathException("XPDY0002: Context item is undefined");
+            }
             return XPathNumber.of(context.getContextPosition());
         }
     };
@@ -495,60 +503,70 @@ public final class NodeSetFunctions {
                 docNode = context.getContextNode().getRoot();
             }
             
-            // Search for elements with IDREF/IDREFS attributes matching the IDs
             List<XPathNode> result = new ArrayList<>();
-            findIdrefElements(docNode, idValues, result);
+            findIdrefNodes(docNode, idValues, result);
             
             return new XPathNodeSet(result);
         }
         
         private void addIdValues(java.util.Set<String> idValues, String value) {
-            if (value != null) {
-                // Split on whitespace for IDREFS
-                for (String id : value.trim().split("\\s+")) {
-                    if (!id.isEmpty()) {
-                        idValues.add(id);
-                    }
-                }
+            if (value != null && !value.isEmpty()) {
+                idValues.add(value);
             }
         }
         
-        private void findIdrefElements(XPathNode node, java.util.Set<String> idValues, List<XPathNode> result) {
+        private void findIdrefNodes(XPathNode node, java.util.Set<String> idValues, List<XPathNode> result) {
             if (node == null) {
                 return;
             }
             
             NodeType type = node.getNodeType();
             if (type == NodeType.ELEMENT || type == NodeType.ROOT) {
-                // Check attributes for IDREF values
                 if (type == NodeType.ELEMENT) {
                     Iterator<XPathNode> attrs = node.getAttributes();
                     if (attrs != null) {
                         while (attrs.hasNext()) {
                             XPathNode attr = attrs.next();
+                            String typeName = attr.getTypeLocalName();
+                            boolean isIdref = "IDREF".equals(typeName) || "IDREFS".equals(typeName);
+                            if (!isIdref) {
+                                continue;
+                            }
                             String attrValue = attr.getStringValue();
-                            // Check if this attribute value contains any of our ID values
-                            // (for IDREFS, split on whitespace)
-                            if (attrValue != null) {
-                                for (String part : attrValue.trim().split("\\s+")) {
-                                    if (idValues.contains(part)) {
-                                        // Found a match - add this element (not the attribute)
-                                        if (!result.contains(node)) {
-                                            result.add(node);
-                                        }
+                            if (attrValue == null) {
+                                continue;
+                            }
+                            boolean matched = false;
+                            int len = attrValue.length();
+                            int start = 0;
+                            while (start < len) {
+                                while (start < len && Character.isWhitespace(attrValue.charAt(start))) {
+                                    start++;
+                                }
+                                int end = start;
+                                while (end < len && !Character.isWhitespace(attrValue.charAt(end))) {
+                                    end++;
+                                }
+                                if (end > start) {
+                                    String token = attrValue.substring(start, end);
+                                    if (idValues.contains(token)) {
+                                        matched = true;
                                         break;
                                     }
                                 }
+                                start = end;
+                            }
+                            if (matched && !result.contains(attr)) {
+                                result.add(attr);
                             }
                         }
                     }
                 }
                 
-                // Recurse into children
                 Iterator<XPathNode> children = node.getChildren();
                 if (children != null) {
                     while (children.hasNext()) {
-                        findIdrefElements(children.next(), idValues, result);
+                        findIdrefNodes(children.next(), idValues, result);
                     }
                 }
             }

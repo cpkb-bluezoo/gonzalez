@@ -49,8 +49,16 @@ final class ValueOutputHelper {
             ((XPathResultTreeFragment) value).replayToOutput(output);
         } else if (value instanceof XPathSequence) {
             XPathSequence seq = (XPathSequence) value;
+            boolean prevWasAtomic = false;
             for (XPathValue item : seq) {
+                boolean isAtomic = !(item instanceof XPathNode)
+                    && !(item instanceof XPathNodeSet)
+                    && !(item instanceof XPathResultTreeFragment);
+                if (isAtomic && prevWasAtomic) {
+                    output.characters(" ");
+                }
                 outputValue(item, output);
+                prevWasAtomic = isAtomic;
             }
         } else if (value instanceof XPathNodeSet) {
             XPathNodeSet nodeSet = (XPathNodeSet) value;

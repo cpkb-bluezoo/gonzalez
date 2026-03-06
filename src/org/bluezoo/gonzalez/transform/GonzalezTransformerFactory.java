@@ -110,6 +110,9 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     /** Static parameters to override at compile time (XSLT 3.0). */
     private final Map<String, String> staticParameters = new HashMap<>();
 
+    /** Maximum XSLT version the processor should advertise (-1 = no limit). */
+    private double maxXsltVersion = -1;
+
     /**
      * Creates a new transformer factory.
      */
@@ -179,6 +182,10 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         
         // Create compiler with resolver and base URI
         StylesheetCompiler compiler = new StylesheetCompiler(resolver, baseUri);
+
+        if (maxXsltVersion > 0) {
+            compiler.setMaxProcessorVersion(maxXsltVersion);
+        }
 
         // Pass static parameter overrides to the compiler
         for (Map.Entry<String, String> entry : staticParameters.entrySet()) {
@@ -371,6 +378,15 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     public void clearStaticParameters() {
         staticParameters.clear();
+    }
+
+    /**
+     * Limits the maximum XSLT version the processor will advertise.
+     * Instructions introduced after this version are treated as unknown.
+     * Pass -1 to remove the limit (default).
+     */
+    public void setMaxXsltVersion(double version) {
+        this.maxXsltVersion = version;
     }
 
     /**

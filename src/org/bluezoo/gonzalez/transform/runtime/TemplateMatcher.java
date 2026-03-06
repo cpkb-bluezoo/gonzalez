@@ -71,17 +71,20 @@ public final class TemplateMatcher {
         // First pass: collect all named mode keys and #all rules
         Set<String> allModeKeys = new HashSet<>();
         allModeKeys.add("");
+        
+        // Include declared modes so #all templates are added to them
+        for (String declaredMode : stylesheet.getModeDeclarations().keySet()) {
+            String key = normalizeModeKey(declaredMode);
+            allModeKeys.add(key);
+        }
+        
         for (TemplateRule rule : stylesheet.getTemplateRules()) {
             if (rule.getMatchPattern() != null) {
                 String mode = rule.getMode();
                 if ("#all".equals(mode)) {
                     allModeRules.add(rule);
                 } else {
-                    String key = mode != null ? mode : "";
-                    // #default and #unnamed are aliases for the unnamed mode
-                    if ("#default".equals(key) || "#unnamed".equals(key)) {
-                        key = "";
-                    }
+                    String key = normalizeModeKey(mode);
                     allModeKeys.add(key);
                     List<TemplateRule> modeRules = map.get(key);
                     if (modeRules == null) {
@@ -147,7 +150,7 @@ public final class TemplateMatcher {
      * @throws RuntimeException if on-multiple-match="fail" and multiple templates match
      */
     public TemplateRule findMatch(XPathNode node, String mode, TransformContext context) {
-        String modeKey = mode != null ? mode : "";
+        String modeKey = normalizeModeKey(mode);
         List<TemplateRule> candidates = rulesByMode.get(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
@@ -171,14 +174,16 @@ public final class TemplateMatcher {
                     firstMatch = rule;
                     matchCount = 1;
                     if (!failOnMultiple) {
-                        // Standard behavior - return first match
                         return firstMatch;
                     }
                 } else if (failOnMultiple) {
-                    // Check if this match has the same precedence and priority
                     if (rule.getImportPrecedence() == firstMatch.getImportPrecedence() &&
                         rule.getPriority() == firstMatch.getPriority()) {
-                        matchCount++;
+                        // Two branches of the same union pattern share
+                        // the same body; don't count them as separate matches
+                        if (rule.getBody() != firstMatch.getBody()) {
+                            matchCount++;
+                        }
                     } else {
                         break;
                     }
@@ -188,7 +193,6 @@ public final class TemplateMatcher {
         
         if (firstMatch != null) {
             if (failOnMultiple && matchCount > 1) {
-                // XTDE0540: Multiple templates match with same priority
                 throw new RuntimeException("XTDE0540: Multiple templates match node " + 
                     describeNode(node) + " with the same import precedence and priority");
             }
@@ -207,26 +211,86 @@ public final class TemplateMatcher {
      * @param mode the current mode (null for default)
      * @param context the transformation context
      * @return the matching rule, or null if no match
+     * @throws RuntimeException if on-multiple-match="fail" and ambiguous
      */
     public TemplateRule findMatchForAtomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value, 
                                                  String mode, TransformContext context) {
-        String modeKey = mode != null ? mode : "";
+        String modeKey = normalizeModeKey(mode);
         List<TemplateRule> candidates = rulesByMode.get(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
-            // No atomic value built-in rules
             return null;
         }
         
-        // Rules are already sorted by precedence/priority
+        ModeDeclaration modeDecl = stylesheet.getModeDeclaration(mode);
+        boolean failOnMultiple = modeDecl != null &&
+            modeDecl.getOnMultipleMatch() == ModeDeclaration.OnMultipleMatch.FAIL;
+        
+        TemplateRule firstMatch = null;
+        int matchCount = 0;
+        
         for (TemplateRule rule : candidates) {
             if (rule.getMatchPattern().canMatchAtomicValues() &&
                 rule.getMatchPattern().matchesAtomicValue(value, context)) {
-                return rule;
+                if (firstMatch == null) {
+                    firstMatch = rule;
+                    matchCount = 1;
+                    if (!failOnMultiple) {
+                        return firstMatch;
+                    }
+                } else if (failOnMultiple) {
+                    if (rule.getImportPrecedence() == firstMatch.getImportPrecedence() &&
+                        rule.getPriority() == firstMatch.getPriority()) {
+                        if (rule.getBody() != firstMatch.getBody()) {
+                            matchCount++;
+                        }
+                    } else {
+                        break;
+                    }
+                }
             }
         }
         
-        // No match
+        if (firstMatch != null && failOnMultiple && matchCount > 1) {
+            throw new RuntimeException(
+                "XTDE0540: Ambiguous rule match for atomic value " +
+                "with the same import precedence and priority");
+        }
+        
+        return firstMatch;
+    }
+    
+    /**
+     * Finds the next matching template for an atomic value after the current rule (XSLT 3.0).
+     *
+     * @param value the atomic value to match
+     * @param mode the current mode (null for default)
+     * @param currentRule the currently executing template rule
+     * @param context the transformation context
+     * @return the next matching rule, or null if no more matches
+     */
+    public TemplateRule findNextMatchForAtomicValue(
+            org.bluezoo.gonzalez.transform.xpath.type.XPathValue value,
+            String mode, TemplateRule currentRule, TransformContext context) {
+        String modeKey = normalizeModeKey(mode);
+        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        
+        boolean foundCurrent = false;
+        for (TemplateRule rule : candidates) {
+            if (foundCurrent) {
+                if (rule.getMatchPattern().canMatchAtomicValues()
+                        && rule.getMatchPattern().matchesAtomicValue(value, context)) {
+                    return rule;
+                }
+            } else if (rule == currentRule || isSameRule(rule, currentRule)) {
+                foundCurrent = true;
+            }
+        }
+        
         return null;
     }
     
@@ -288,18 +352,21 @@ public final class TemplateMatcher {
     private TemplateRule getBuiltInRuleForMode(XPathNode node, ModeDeclaration modeDecl) {
         ModeDeclaration.OnNoMatch onNoMatch = modeDecl.getOnNoMatch();
         
+        // XSLT 3.0 spec 6.7: document node always processes its children
+        // regardless of on-no-match setting
+        if (node.getNodeType() == NodeType.ROOT) {
+            return BUILTIN_SHALLOW_SKIP_RULE;
+        }
+        
         switch (onNoMatch) {
             case SHALLOW_COPY:
-                // Copy the node (without content) and apply-templates to children
                 return BUILTIN_SHALLOW_COPY_RULE;
                 
             case DEEP_COPY:
-                // Copy the entire subtree
                 return BUILTIN_DEEP_COPY_RULE;
                 
             case TEXT_ONLY_COPY:
-                // Default XSLT 1.0/2.0 behavior
-                if (node.isElement() || node.getNodeType() == NodeType.ROOT) {
+                if (node.isElement()) {
                     return BUILTIN_ELEMENT_RULE;
                 }
                 if (node.isText() || node.isAttribute()) {
@@ -308,20 +375,16 @@ public final class TemplateMatcher {
                 return BUILTIN_EMPTY_RULE;
                 
             case SHALLOW_SKIP:
-                // Skip the node but apply-templates to children
                 return BUILTIN_SHALLOW_SKIP_RULE;
                 
             case DEEP_SKIP:
-                // Skip the entire subtree (do nothing)
                 return BUILTIN_EMPTY_RULE;
                 
             case FAIL:
-                // Raise an error
                 return BUILTIN_FAIL_RULE;
                 
             default:
-                // Fall back to default behavior
-                if (node.isElement() || node.getNodeType() == NodeType.ROOT) {
+                if (node.isElement()) {
                     return BUILTIN_ELEMENT_RULE;
                 }
                 if (node.isText() || node.isAttribute()) {
@@ -339,6 +402,17 @@ public final class TemplateMatcher {
     private static final TemplateRule BUILTIN_DEEP_COPY_RULE = createBuiltInRule("deep-copy");
     private static final TemplateRule BUILTIN_SHALLOW_SKIP_RULE = createBuiltInRule("shallow-skip");
     private static final TemplateRule BUILTIN_FAIL_RULE = createBuiltInRule("fail");
+
+    /**
+     * Normalizes a mode name to the key used in the rulesByMode map.
+     * #unnamed and #default are aliases for the unnamed mode (empty string).
+     */
+    private static String normalizeModeKey(String mode) {
+        if (mode == null || "#default".equals(mode) || "#unnamed".equals(mode)) {
+            return "";
+        }
+        return mode;
+    }
 
     private static TemplateRule createBuiltInRule(String type) {
         // Built-in rules are created with placeholder bodies
@@ -386,7 +460,7 @@ public final class TemplateMatcher {
      */
     public TemplateRule findNextMatch(XPathNode node, String mode, 
                                        TemplateRule currentRule, TransformContext context) {
-        String modeKey = mode != null ? mode : "";
+        String modeKey = normalizeModeKey(mode);
         List<TemplateRule> candidates = rulesByMode.get(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
@@ -454,11 +528,10 @@ public final class TemplateMatcher {
             return null;
         }
         
-        String modeKey = mode != null ? mode : "";
+        String modeKey = normalizeModeKey(mode);
         List<TemplateRule> candidates = rulesByMode.get(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
-            // No templates in this mode - fall back to built-in
             return getBuiltInRule(node, mode);
         }
         

@@ -25,11 +25,15 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
+import org.bluezoo.gonzalez.transform.ast.SequenceNode;
+import org.bluezoo.gonzalez.transform.ast.XSLTNode;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -59,32 +63,40 @@ final class KeyPattern extends AbstractPattern {
     @Override
     boolean matchesBase(XPathNode node, TransformContext context,
                         XPathNode targetNode) {
-        String keyValue;
+        List<String> keyValues = new ArrayList<>();
         if (isVariable) {
             try {
                 XPathValue varValue =
                     context.getVariable(null, keyValueExpr);
-                keyValue = varValue.asString();
+                if (varValue instanceof XPathSequence) {
+                    XPathSequence seq = (XPathSequence) varValue;
+                    for (XPathValue item : seq) {
+                        keyValues.add(item.asString());
+                    }
+                } else {
+                    keyValues.add(varValue.asString());
+                }
             } catch (Exception e) {
                 return false;
             }
         } else {
-            keyValue = keyValueExpr;
+            keyValues.add(keyValueExpr);
         }
 
         CompiledStylesheet stylesheet = context.getStylesheet();
-        KeyDefinition keyDef = stylesheet.getKeyDefinition(keyName);
-        if (keyDef == null) {
+        List<KeyDefinition> keyDefs = stylesheet.getKeyDefinitions(keyName);
+        if (keyDefs.isEmpty()) {
             return false;
         }
 
-        Pattern matchPattern = keyDef.getMatchPattern();
-        XPathExpression useExpr = keyDef.getUseExpr();
-
         XPathNode root = node.getRoot();
         List<XPathNode> keyNodes = new ArrayList<>();
-        collectKeyNodes(root, matchPattern, useExpr, keyValue, keyNodes,
-                        context);
+        for (int d = 0; d < keyDefs.size(); d++) {
+            for (int v = 0; v < keyValues.size(); v++) {
+                collectKeyNodes(root, keyDefs.get(d), keyValues.get(v),
+                    keyNodes, context);
+            }
+        }
 
         if (trailingAxis == null) {
             for (int i = 0; i < keyNodes.size(); i++) {
@@ -129,15 +141,29 @@ final class KeyPattern extends AbstractPattern {
         return false;
     }
 
-    private void collectKeyNodes(XPathNode current, Pattern matchPattern,
-                                 XPathExpression useExpr, String searchValue,
-                                 List<XPathNode> result,
+    private void collectKeyNodes(XPathNode current, KeyDefinition keyDef,
+                                 String searchValue, List<XPathNode> result,
                                  TransformContext context) {
         try {
+            Pattern matchPattern = keyDef.getMatchPattern();
             if (matchPattern.matches(current, context)) {
-                XPathContext nodeContext =
-                    context.withContextNode(current);
-                XPathValue useValue = useExpr.evaluate(nodeContext);
+                XPathValue useValue;
+                XPathExpression useExpr = keyDef.getUseExpr();
+                if (useExpr != null) {
+                    XPathContext nodeContext = context.withContextNode(current);
+                    useValue = useExpr.evaluate(nodeContext);
+                } else {
+                    SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
+                    SequenceNode content = keyDef.getContent();
+                    BasicTransformContext btx = (BasicTransformContext) context;
+                    TransformContext nodeContext = btx.withXsltCurrentNode(current);
+                    List<XSLTNode> contentChildren = content.getChildren();
+                    for (int i = 0; i < contentChildren.size(); i++) {
+                        contentChildren.get(i).execute(nodeContext, seqBuilder);
+                        seqBuilder.markItemBoundary();
+                    }
+                    useValue = seqBuilder.getSequence();
+                }
                 String nodeKeyValue = useValue.asString();
                 if (searchValue.equals(nodeKeyValue)) {
                     result.add(current);
@@ -149,8 +175,7 @@ final class KeyPattern extends AbstractPattern {
 
         Iterator<XPathNode> children = current.getChildren();
         while (children.hasNext()) {
-            collectKeyNodes(children.next(), matchPattern, useExpr,
-                            searchValue, result, context);
+            collectKeyNodes(children.next(), keyDef, searchValue, result, context);
         }
     }
 

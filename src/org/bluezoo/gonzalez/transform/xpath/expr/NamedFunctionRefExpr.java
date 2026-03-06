@@ -23,8 +23,14 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.UserFunction;
+import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+
+import java.util.List;
 
 /**
  * XPath 3.0 named function reference: {@code name#arity}.
@@ -95,12 +101,13 @@ public final class NamedFunctionRefExpr implements Expr {
         
         // Check built-in functions first (use fullName for unprefixed)
         if (library.hasFunction(effectiveURI, localName)) {
-            // Built-in functions with no explicit prefix are in the fn: namespace
             String itemURI = effectiveURI;
             if (itemURI == null || itemURI.isEmpty()) {
                 itemURI = FN_NAMESPACE;
             }
-            return new XPathFunctionItem(fullName, itemURI, arity, library);
+            XPathFunctionItem funcItem = new XPathFunctionItem(fullName, itemURI, arity, library);
+            setUserFunctionSignature(funcItem, itemURI, context);
+            return funcItem;
         }
         if (library.hasFunction(null, fullName)) {
             return new XPathFunctionItem(fullName, FN_NAMESPACE, arity, library);
@@ -109,10 +116,56 @@ public final class NamedFunctionRefExpr implements Expr {
         // For namespaced functions, the function library may resolve user-defined
         // functions at invoke time — return a function item that will do that
         if (effectiveURI != null && !effectiveURI.isEmpty()) {
-            return new XPathFunctionItem(fullName, effectiveURI, arity, library);
+            XPathFunctionItem funcItem = new XPathFunctionItem(fullName, effectiveURI, arity, library);
+            setUserFunctionSignature(funcItem, effectiveURI, context);
+            return funcItem;
         }
         
         throw new XPathException("XPST0017: Unknown function: " + fullName + "#" + arity);
+    }
+
+    /**
+     * Looks up the UserFunction signature and sets parameter/return types on the function item.
+     */
+    private void setUserFunctionSignature(XPathFunctionItem funcItem,
+                                          String nsURI, XPathContext context) {
+        if (!(context instanceof TransformContext)) {
+            return;
+        }
+        TransformContext tc = (TransformContext) context;
+        CompiledStylesheet stylesheet = tc.getStylesheet();
+        if (stylesheet == null) {
+            return;
+        }
+        UserFunction uf = stylesheet.getUserFunction(nsURI, localName, arity);
+        if (uf == null) {
+            return;
+        }
+        List params = uf.getParameters();
+        SequenceType[] paramTypes = new SequenceType[params.size()];
+        for (int i = 0; i < params.size(); i++) {
+            UserFunction.FunctionParameter fp = (UserFunction.FunctionParameter) params.get(i);
+            String asType = fp.getAsType();
+            if (asType != null && !asType.isEmpty()) {
+                SequenceType pt = SequenceType.parse(asType, null);
+                if (pt != null) {
+                    paramTypes[i] = pt;
+                } else {
+                    paramTypes[i] = SequenceType.ITEM_STAR;
+                }
+            } else {
+                paramTypes[i] = SequenceType.ITEM_STAR;
+            }
+        }
+        SequenceType returnType = SequenceType.ITEM_STAR;
+        String asType = uf.getAsType();
+        if (asType != null && !asType.isEmpty()) {
+            SequenceType rt = SequenceType.parse(asType, null);
+            if (rt != null) {
+                returnType = rt;
+            }
+        }
+        funcItem.setSignature(paramTypes, returnType);
     }
 
     @Override

@@ -28,15 +28,15 @@ import java.util.List;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
-import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
-import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -73,75 +73,104 @@ public class PerformSortNode extends XSLTInstruction implements ExpressionHolder
                                   OutputHandler output) throws SAXException {
         try {
             // Get the sequence to sort
-            List<XPathNode> nodes = new ArrayList<>();
+            List<XPathValue> items = new ArrayList<>();
             
             if (selectExpr != null) {
-                // Sort the selected sequence
                 XPathValue result = selectExpr.evaluate(context);
                 if (result != null) {
-                    collectNodes(result, nodes);
+                    collectItems(result, items);
                 }
             } else if (content != null) {
-                // Content generates the sequence - evaluate and collect nodes
-                SAXEventBuffer buffer = new SAXEventBuffer();
-                BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
-                content.execute(context, bufferOutput);
-                
-                // Convert buffer to RTF and collect its children
-                XPathResultTreeFragment rtf = new XPathResultTreeFragment(buffer);
-                collectNodes(rtf, nodes);
+                SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
+                content.execute(context, seqBuilder);
+                XPathValue seqResult = seqBuilder.getSequence();
+                if (seqResult != null) {
+                    collectItems(seqResult, items);
+                }
             }
             
-            if (nodes.isEmpty()) {
+            if (items.isEmpty()) {
                 return;
             }
             
-            // Apply sorting
-            ForEachNode.sortNodesStatic(nodes, sorts, context);
-            
-            // Output the sorted sequence
-            boolean first = true;
-            for (XPathNode node : nodes) {
-                if (!first) {
-                    output.itemBoundary();
+            // Check if all items are nodes (wrapped in XPathNodeSet)
+            boolean allNodes = true;
+            for (XPathValue item : items) {
+                if (!(item instanceof XPathNodeSet)) {
+                    allNodes = false;
+                    break;
                 }
-                first = false;
-                deepCopyNode(node, output);
+            }
+            
+            if (allNodes) {
+                List<XPathNode> nodes = new ArrayList<>();
+                for (XPathValue item : items) {
+                    for (XPathNode node : ((XPathNodeSet) item).getNodes()) {
+                        nodes.add(node);
+                    }
+                }
+                ForEachNode.sortNodesStatic(nodes, sorts, context);
+                
+                for (XPathNode node : nodes) {
+                    deepCopyNode(node, output);
+                }
+            } else {
+                // Sequence contains atomic values — use sequence sort
+                ForEachNode.sortSequence(items, sorts, context);
+                
+                for (XPathValue item : items) {
+                    if (item instanceof XPathNodeSet) {
+                        XPathNodeSet ns = (XPathNodeSet) item;
+                        XPathNode node = ns.first();
+                        if (node != null) {
+                            deepCopyNode(node, output);
+                        }
+                    } else {
+                        output.atomicValue(item);
+                    }
+                }
             }
         } catch (XPathException e) {
             throw new SAXException("Error in xsl:perform-sort", e);
         }
     }
     
-    private void collectNodes(XPathValue result, List<XPathNode> nodes) {
+    private XPathValue wrapNode(XPathNode node) {
+        List<XPathNode> list = new ArrayList<>();
+        list.add(node);
+        return new XPathNodeSet(list);
+    }
+
+    private void collectItems(XPathValue result, List<XPathValue> items) {
         if (result instanceof XPathNodeSet) {
             for (XPathNode node : ((XPathNodeSet) result).getNodes()) {
-                nodes.add(node);
+                items.add(wrapNode(node));
             }
         } else if (result instanceof XPathSequence) {
             for (XPathValue item : ((XPathSequence) result).getItems()) {
-                collectNodes(item, nodes);
+                collectItems(item, items);
             }
-        } else if (result instanceof XPathNode) {
-            nodes.add((XPathNode) result);
         } else if (result instanceof XPathResultTreeFragment) {
             XPathResultTreeFragment rtf = (XPathResultTreeFragment) result;
             if (rtf.isNodeSet()) {
                 XPathNodeSet ns = rtf.asNodeSet();
                 for (XPathNode node : ns.getNodes()) {
-                    // RTF root contains the sortable items as children
                     if (node.getNodeType() == NodeType.ROOT) {
                         Iterator<XPathNode> children = node.getChildren();
                         while (children.hasNext()) {
-                            nodes.add(children.next());
+                            items.add(wrapNode(children.next()));
                         }
                     } else {
-                        nodes.add(node);
+                        items.add(wrapNode(node));
                     }
                 }
             }
+        } else if (result instanceof XPathNode) {
+            items.add(wrapNode((XPathNode) result));
+        } else {
+            // Atomic values (strings, numbers, etc.)
+            items.add(result);
         }
-        // Atomic values are skipped
     }
     
     /**
@@ -196,6 +225,16 @@ public class PerformSortNode extends XSLTInstruction implements ExpressionHolder
             output.comment(node.getStringValue());
         } else if (nodeType == NodeType.PROCESSING_INSTRUCTION) {
             output.processingInstruction(node.getLocalName(), node.getStringValue());
+        } else if (nodeType == NodeType.ATTRIBUTE) {
+            String attrUri = node.getNamespaceURI();
+            String attrLocal = node.getLocalName();
+            String attrPrefix = node.getPrefix();
+            String attrQName = attrPrefix != null && !attrPrefix.isEmpty()
+                ? attrPrefix + ":" + attrLocal : attrLocal;
+            output.attribute(attrUri != null ? attrUri : "", attrLocal, attrQName,
+                             node.getStringValue());
+        } else if (nodeType == NodeType.NAMESPACE) {
+            output.atomicValue(new XPathString(node.getStringValue()));
         } else if (nodeType == NodeType.ROOT) {
             // Copy children of document node
             Iterator<XPathNode> docChildren = node.getChildren();
@@ -203,6 +242,5 @@ public class PerformSortNode extends XSLTInstruction implements ExpressionHolder
                 deepCopyNode(docChildren.next(), output);
             }
         }
-        // Ignore other node types (ATTRIBUTE, NAMESPACE)
     }
 }

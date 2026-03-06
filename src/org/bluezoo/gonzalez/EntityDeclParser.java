@@ -272,11 +272,13 @@ class EntityDeclParser {
                         }
                         break;
                     case PREDEFENTITYREF:
-                        // Predefined entity reference (already expanded) - e.g., &lt; -> '<'
-                        // Per XML 1.0 § 4.4.8, markup delimiters from predefined entity
-                        // references are bypassed (not recognized as markup)
-                        currentEntity.containsCharacterReferences = true;
-                        entityValueTextBuilder.append(data.toString());
+                        // Per XML 1.0 § 4.4.7, general entity references (including
+                        // predefined entities) in entity values are bypassed and left
+                        // as-is. Keep as &name; so the reference is properly handled
+                        // during retokenization in the correct context (e.g. inside
+                        // an attribute value where &quot; must not close the value).
+                        entityValueTextBuilder.append(
+                            predefinedCharToEntityRef(data.toString()));
                         break;
                     case GENERALENTITYREF:
                         // General entity reference - flush text and add reference
@@ -833,6 +835,29 @@ class EntityDeclParser {
         return state == State.IN_ENTITY_VALUE;
     }
     
+    /**
+     * Converts an expanded predefined entity character back to its entity
+     * reference form for bypass in entity values (XML 1.0 § 4.4.7).
+     */
+    private static String predefinedCharToEntityRef(String ch) {
+        if ("<".equals(ch)) {
+            return "&lt;";
+        }
+        if (">".equals(ch)) {
+            return "&gt;";
+        }
+        if ("&".equals(ch)) {
+            return "&amp;";
+        }
+        if ("\"".equals(ch)) {
+            return "&quot;";
+        }
+        if ("'".equals(ch)) {
+            return "&apos;";
+        }
+        return ch;
+    }
+
     /**
      * Reports a fatal error through the error handler and returns the exception.
      * 

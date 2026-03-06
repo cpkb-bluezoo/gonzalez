@@ -216,7 +216,7 @@ public final class StreamingClassifier {
 
     private static ExpressionStreamability classifyLocationPath(
             LocationPath path) {
-        ExpressionStreamability result = ExpressionStreamability.CONSUMING;
+        ExpressionStreamability result = ExpressionStreamability.MOTIONLESS;
         List<Step> steps = path.getSteps();
 
         for (int i = 0; i < steps.size(); i++) {
@@ -228,7 +228,6 @@ public final class StreamingClassifier {
             }
         }
 
-        // Absolute path from root is at least CONSUMING
         return result;
     }
 
@@ -236,12 +235,18 @@ public final class StreamingClassifier {
         Step.Axis axis = step.getAxis();
         ExpressionStreamability axisClass = classifyAxis(axis);
 
-        // Also classify predicates within the step
+        // XSLT 3.0 streaming: a predicate containing last() on a
+        // forward-axis step requires the total count of items, which
+        // means the entire input must be buffered (FREE_RANGING).
+        boolean forwardAxis = isForwardAxis(axis);
         List<Expr> predicates = step.getPredicates();
         if (predicates != null) {
             for (int i = 0; i < predicates.size(); i++) {
-                ExpressionStreamability predClass =
-                    classify(predicates.get(i));
+                Expr pred = predicates.get(i);
+                ExpressionStreamability predClass = classify(pred);
+                if (forwardAxis && containsLast(pred)) {
+                    return ExpressionStreamability.FREE_RANGING;
+                }
                 axisClass = combine(axisClass, predClass);
             }
         }
@@ -255,15 +260,84 @@ public final class StreamingClassifier {
         return axisClass;
     }
 
-    private static ExpressionStreamability classifyAxis(Step.Axis axis) {
+    private static boolean isForwardAxis(Step.Axis axis) {
         switch (axis) {
             case CHILD:
             case DESCENDANT:
             case DESCENDANT_OR_SELF:
             case FOLLOWING_SIBLING:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Checks whether an expression tree contains a call to last().
+     * Used to detect predicates that require the total item count.
+     */
+    private static boolean containsLast(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String name = fc.getLocalName();
+            String ns = fc.getResolvedNamespaceURI();
+            boolean core = (ns == null || ns.isEmpty() ||
+                "http://www.w3.org/2005/xpath-functions".equals(ns));
+            if (core && "last".equals(name)) {
+                return true;
+            }
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (containsLast(args.get(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return containsLast(be.getLeft()) ||
+                   containsLast(be.getRight());
+        }
+        if (expr instanceof UnaryExpr) {
+            return containsLast(((UnaryExpr) expr).getOperand());
+        }
+        if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            if (containsLast(fe.getPrimary())) {
+                return true;
+            }
+            List<Expr> preds = fe.getPredicates();
+            for (int i = 0; i < preds.size(); i++) {
+                if (containsLast(preds.get(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof IfExpr) {
+            IfExpr ie = (IfExpr) expr;
+            return containsLast(ie.getCondition()) ||
+                   containsLast(ie.getThenExpr()) ||
+                   containsLast(ie.getElseExpr());
+        }
+        return false;
+    }
+
+    private static ExpressionStreamability classifyAxis(Step.Axis axis) {
+        switch (axis) {
+            case SELF:
             case ATTRIBUTE:
             case NAMESPACE:
-            case SELF:
+                return ExpressionStreamability.MOTIONLESS;
+
+            case CHILD:
+            case DESCENDANT:
+            case DESCENDANT_OR_SELF:
+            case FOLLOWING_SIBLING:
                 return ExpressionStreamability.CONSUMING;
 
             case PARENT:
@@ -313,12 +387,26 @@ public final class StreamingClassifier {
             "http://www.w3.org/2005/xpath-functions".equals(nsUri));
 
         if (isCoreFunction) {
-            if ("key".equals(name) || "document".equals(name) ||
-                "doc".equals(name) || "collection".equals(name) ||
+            if ("key".equals(name) ||
                 "id".equals(name) || "idref".equals(name) ||
-                "element-with-id".equals(name) ||
-                "unparsed-text".equals(name)) {
+                "element-with-id".equals(name)) {
                 return ExpressionStreamability.FREE_RANGING;
+            }
+
+            // doc(), document(), collection(), unparsed-text() access
+            // external resources. When arguments are motionless (e.g.
+            // literal URI), the call is motionless since it does not
+            // depend on the streaming context.
+            if ("doc".equals(name) || "document".equals(name) ||
+                "collection".equals(name) ||
+                "unparsed-text".equals(name)) {
+                ExpressionStreamability argClass =
+                    ExpressionStreamability.MOTIONLESS;
+                List<Expr> args = fc.getArguments();
+                for (int i = 0; i < args.size(); i++) {
+                    argClass = combine(argClass, classify(args.get(i)));
+                }
+                return argClass;
             }
 
             // last() requires grounding (sibling count)
@@ -326,9 +414,15 @@ public final class StreamingClassifier {
                 return ExpressionStreamability.GROUNDED;
             }
 
-            // position() is consuming
+            // position() is motionless (returns focus position, no node navigation)
             if ("position".equals(name)) {
-                return ExpressionStreamability.CONSUMING;
+                return ExpressionStreamability.MOTIONLESS;
+            }
+
+            // last() requires knowing context size (all siblings must be
+            // read), making it at least grounded.
+            if ("last".equals(name)) {
+                return ExpressionStreamability.GROUNDED;
             }
 
             // root() is grounded (needs access to root)
@@ -349,9 +443,6 @@ public final class StreamingClassifier {
         for (int i = 0; i < args.size(); i++) {
             result = combine(result, classify(args.get(i)));
         }
-
-        // A function call with only motionless args remains motionless
-        // (e.g., concat('a', 'b'), string-length($var))
         return result;
     }
 
@@ -477,6 +568,216 @@ public final class StreamingClassifier {
     private static ExpressionStreamability combine(
             ExpressionStreamability a, ExpressionStreamability b) {
         return a.ordinal() > b.ordinal() ? a : b;
+    }
+
+    // ---- Expression inspection utilities ----
+
+    /**
+     * Counts how many times a named function is called within an expression
+     * tree. Walks the entire AST recursively.
+     *
+     * @param expr the expression to inspect (may be null)
+     * @param functionName the local name of the function to count
+     * @return the number of calls found
+     */
+    public static int countFunctionCalls(Expr expr, String functionName) {
+        if (expr == null) {
+            return 0;
+        }
+        int count = 0;
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            if (functionName.equals(fc.getLocalName())) {
+                count++;
+            }
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                count += countFunctionCalls(args.get(i), functionName);
+            }
+            return count;
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            count += countFunctionCalls(be.getLeft(), functionName);
+            count += countFunctionCalls(be.getRight(), functionName);
+            return count;
+        }
+        if (expr instanceof UnaryExpr) {
+            return countFunctionCalls(((UnaryExpr) expr).getOperand(),
+                                     functionName);
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            count += countFunctionCalls(pe.getFilter(), functionName);
+            count += countFunctionCalls(pe.getPath(), functionName);
+            return count;
+        }
+        if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            count += countFunctionCalls(fe.getPrimary(), functionName);
+            List<Expr> predicates = fe.getPredicates();
+            for (int i = 0; i < predicates.size(); i++) {
+                count += countFunctionCalls(predicates.get(i), functionName);
+            }
+            return count;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step step = steps.get(i);
+                List<Expr> predicates = step.getPredicates();
+                if (predicates != null) {
+                    for (int j = 0; j < predicates.size(); j++) {
+                        count += countFunctionCalls(predicates.get(j),
+                                                    functionName);
+                    }
+                }
+            }
+            return count;
+        }
+        if (expr instanceof SequenceExpr) {
+            List<Expr> items = ((SequenceExpr) expr).getItems();
+            for (int i = 0; i < items.size(); i++) {
+                count += countFunctionCalls(items.get(i), functionName);
+            }
+            return count;
+        }
+        if (expr instanceof IfExpr) {
+            IfExpr ie = (IfExpr) expr;
+            count += countFunctionCalls(ie.getCondition(), functionName);
+            count += countFunctionCalls(ie.getThenExpr(), functionName);
+            count += countFunctionCalls(ie.getElseExpr(), functionName);
+            return count;
+        }
+        if (expr instanceof ForExpr) {
+            ForExpr fe = (ForExpr) expr;
+            List<ForExpr.Binding> bindings = fe.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                count += countFunctionCalls(bindings.get(i).getSequence(),
+                                            functionName);
+            }
+            count += countFunctionCalls(fe.getReturnExpr(), functionName);
+            return count;
+        }
+        if (expr instanceof LetExpr) {
+            LetExpr le = (LetExpr) expr;
+            List<LetExpr.Binding> bindings = le.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                count += countFunctionCalls(bindings.get(i).getValue(),
+                                            functionName);
+            }
+            count += countFunctionCalls(le.getReturnExpr(), functionName);
+            return count;
+        }
+        return count;
+    }
+
+    /**
+     * Counts function calls in a compiled XPath expression.
+     *
+     * @param xpathExpr the compiled expression (may be null)
+     * @param functionName the local name of the function to count
+     * @return the number of calls found
+     */
+    public static int countFunctionCalls(XPathExpression xpathExpr,
+                                         String functionName) {
+        if (xpathExpr == null) {
+            return 0;
+        }
+        return countFunctionCalls(xpathExpr.getCompiledExpr(), functionName);
+    }
+
+    /**
+     * Checks whether a compiled XPath expression uses a descendant or
+     * descendant-or-self axis, indicating a crawling posture.
+     *
+     * @param xpathExpr the compiled expression (may be null)
+     * @return true if the expression contains a descendant axis
+     */
+    public static boolean containsDescendantAxis(XPathExpression xpathExpr) {
+        if (xpathExpr == null) {
+            return false;
+        }
+        return containsDescendantAxis(xpathExpr.getCompiledExpr());
+    }
+
+    /**
+     * Checks whether an expression uses a descendant or descendant-or-self
+     * axis anywhere in its tree.
+     */
+    static boolean containsDescendantAxis(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step.Axis axis = steps.get(i).getAxis();
+                if (axis == Step.Axis.DESCENDANT
+                        || axis == Step.Axis.DESCENDANT_OR_SELF) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            return containsDescendantAxis(pe.getFilter())
+                || containsDescendantAxis(pe.getPath());
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return containsDescendantAxis(be.getLeft())
+                || containsDescendantAxis(be.getRight());
+        }
+        if (expr instanceof FilterExpr) {
+            return containsDescendantAxis(((FilterExpr) expr).getPrimary());
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (containsDescendantAxis(args.get(i))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Counts how many consuming sub-expressions exist at the top level of
+     * a binary expression. Used to detect multiple consuming operands
+     * (e.g. {@code TITLE||PRICE}).
+     *
+     * @param xpathExpr the compiled expression (may be null)
+     * @return the number of consuming operands
+     */
+    public static int countConsumingOperands(XPathExpression xpathExpr) {
+        if (xpathExpr == null) {
+            return 0;
+        }
+        return countConsumingOperands(xpathExpr.getCompiledExpr());
+    }
+
+    static int countConsumingOperands(Expr expr) {
+        if (expr == null) {
+            return 0;
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return countConsumingOperands(be.getLeft())
+                 + countConsumingOperands(be.getRight());
+        }
+        ExpressionStreamability es = classify(expr);
+        if (es == ExpressionStreamability.CONSUMING
+                || es == ExpressionStreamability.GROUNDED
+                || es == ExpressionStreamability.FREE_RANGING) {
+            return 1;
+        }
+        return 0;
     }
 
 }

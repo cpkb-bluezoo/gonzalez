@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.ItemCollectorOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -36,7 +37,7 @@ import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 public class ValueOfContentNode extends XSLTInstruction {
     private final XSLTNode content;
     private final boolean disableEscaping;
-    private final String separator;  // null means use default (empty string for content)
+    private final String separator;  // null means use default (space)
     
     public ValueOfContentNode(XSLTNode content, boolean disableEscaping, String separator) {
         this.content = content;
@@ -49,20 +50,22 @@ public class ValueOfContentNode extends XSLTInstruction {
     @Override
     public void execute(TransformContext context, 
                        OutputHandler output) throws SAXException {
-        // Execute content into a buffer to capture its string output
-        SAXEventBuffer eventBuffer = new SAXEventBuffer();
-        BufferOutputHandler buffer = new BufferOutputHandler(eventBuffer);
-        content.execute(context, buffer);
-        
-        String value = eventBuffer.getTextContent();
-        
-        // Only output non-empty values to preserve empty element serialization
-        if (value != null && !value.isEmpty()) {
-            if (disableEscaping) {
-                output.charactersRaw(value);
-            } else {
-                output.characters(value);
-            }
+        // Use ItemCollectorOutputHandler to gather items with item-boundary awareness.
+        // This correctly handles:
+        //   - Separator between distinct items
+        //   - Adjacent text nodes merged (no separator between them)
+        //   - Zero-length text nodes removed
+        ItemCollectorOutputHandler collector = new ItemCollectorOutputHandler();
+        content.execute(context, collector);
+
+        // Default separator for xsl:value-of content form is empty string in XSLT 2.0+
+        String sep = (separator != null) ? separator : "";
+        String value = collector.getContentAsString(sep);
+
+        if (disableEscaping) {
+            output.charactersRaw(value);
+        } else {
+            output.characters(value);
         }
     }
 }

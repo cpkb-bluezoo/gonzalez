@@ -105,6 +105,9 @@ public final class SourceDocumentNode implements XSLTNode {
      * @param useAccumulators which accumulators to apply
      * @param body the body to execute
      */
+    public boolean isStreamable() { return streamable; }
+    public XSLTNode getContent() { return body; }
+
     public SourceDocumentNode(AttributeValueTemplate hrefAvt, boolean streamable,
                               String validation, String useAccumulators, XSLTNode body) {
         this.hrefAvt = hrefAvt;
@@ -160,6 +163,7 @@ public final class SourceDocumentNode implements XSLTNode {
                     && !context.getStylesheet().getAccumulators().isEmpty()) {
                 AccumulatorManager mgr = new AccumulatorManager(
                     context.getStylesheet(), context);
+                mgr.setStreamingMode(true);
                 streamCtx.setAccumulatorManager(mgr);
             }
 

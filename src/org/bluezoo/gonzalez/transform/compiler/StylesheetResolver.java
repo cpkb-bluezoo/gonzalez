@@ -30,7 +30,10 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import javax.xml.transform.Source;
 import javax.xml.transform.TransformerException;
@@ -75,6 +78,13 @@ public class StylesheetResolver {
     // Allowed protocols for external DTD access (empty = none, "all" = unrestricted)
     private String accessExternalDTD = "";
 
+    // Shared static variables for include processing (XSLT 3.0).
+    // When non-null, child compilers share this map with the parent so
+    // static variables defined before an xsl:include are visible inside
+    // the included module, and variables declared in the included module
+    // become visible in the parent after the include.
+    private Map<String, XPathValue> sharedStaticVariables;
+
     /**
      * Creates a new stylesheet resolver with no custom URI resolver.
      */
@@ -99,13 +109,15 @@ public class StylesheetResolver {
      */
     private StylesheetResolver(URIResolver uriResolver, Set<String> loadedStylesheets, 
                                int[] precedenceCounter, int[] templateCounter,
-                               String allowedProtocols, String accessExternalDTD) {
+                               String allowedProtocols, String accessExternalDTD,
+                               Map<String, XPathValue> sharedStaticVariables) {
         this.uriResolver = uriResolver;
         this.loadedStylesheets = loadedStylesheets;
         this.precedenceCounter = precedenceCounter;
         this.templateCounter = templateCounter;
         this.allowedProtocols = allowedProtocols;
         this.accessExternalDTD = accessExternalDTD;
+        this.sharedStaticVariables = sharedStaticVariables;
     }
 
     /**
@@ -128,6 +140,17 @@ public class StylesheetResolver {
     }
 
     /**
+     * Sets shared static variables for include processing (XSLT 3.0).
+     * The included module's compiler will share this map with the parent,
+     * so static variables flow bidirectionally across xsl:include boundaries.
+     *
+     * @param vars the parent's static variable map to share
+     */
+    void setSharedStaticVariables(Map<String, XPathValue> vars) {
+        this.sharedStaticVariables = vars;
+    }
+
+    /**
      * Creates a child resolver that shares the loaded stylesheet tracking,
      * precedence counter, and template counter. Used when compiling imported/included stylesheets.
      *
@@ -135,7 +158,8 @@ public class StylesheetResolver {
      */
     StylesheetResolver createChild() {
         return new StylesheetResolver(uriResolver, loadedStylesheets, 
-            precedenceCounter, templateCounter, allowedProtocols, accessExternalDTD);
+            precedenceCounter, templateCounter, allowedProtocols, accessExternalDTD,
+            sharedStaticVariables);
     }
     
     /**
@@ -240,6 +264,11 @@ public class StylesheetResolver {
             // Create compiler for the external stylesheet
             StylesheetResolver childResolver = createChild();
             StylesheetCompiler compiler = new StylesheetCompiler(childResolver, resolvedUri, importPrecedence);
+            
+            // For includes (not imports), share static variables with child compiler
+            if (!isImport && sharedStaticVariables != null) {
+                compiler.setSharedStaticVariables(sharedStaticVariables);
+            }
             
             // Parse the stylesheet
             XMLReader reader = createXMLReader();

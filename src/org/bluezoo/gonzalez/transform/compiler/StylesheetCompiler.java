@@ -133,6 +133,16 @@ import org.bluezoo.gonzalez.transform.xpath.XPathParser;
 import org.bluezoo.gonzalez.transform.xpath.function.XSLTFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathSyntaxException;
+import org.bluezoo.gonzalez.transform.xpath.expr.BinaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.ContextItemExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
+import org.bluezoo.gonzalez.transform.xpath.expr.FilterExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.FunctionCall;
+import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
+import org.bluezoo.gonzalez.transform.xpath.expr.PathExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+import org.bluezoo.gonzalez.transform.xpath.expr.TypeExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.ForExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -201,9 +211,19 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     // Key: "modeName|attrName", Value: explicit attribute value
     private final Map<String, String> modeAttributeValues = new HashMap<>();
     
+    // Tracks whether the current template being compiled has a match/name pattern
+    // Used by xsl:context-item to detect invalid use="absent" in match-only templates
+    private boolean currentTemplateHasMatch = false;
+    private boolean currentTemplateHasName = false;
+    
     // Forward-compatible processing mode
     private double stylesheetVersion = 1.0;
     private boolean forwardCompatible = false;
+    
+    // Maximum XSLT version the processor should advertise.
+    // When set below 3.0, XSLT 3.0 instructions like xsl:try are
+    // treated as unknown, enabling xsl:fallback processing.
+    private double maxProcessorVersion = 3.0;
     
     // Default validation mode (XSLT 2.0+)
     private ValidationMode defaultValidation = ValidationMode.STRIP;
@@ -235,11 +255,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private int inlineSchemaDepth = 0;
     private String importSchemaNamespace = null;  // namespace attribute from xsl:import-schema
     
-    // Static variables (XSLT 3.0): evaluated at compile time, available in use-when
-    private final Map<String, XPathValue> staticVariables = new HashMap<>();
+    // Static variables (XSLT 3.0): evaluated at compile time, available in use-when.
+    // For included modules, this map may be shared with the parent compiler.
+    private Map<String, XPathValue> staticVariables = new HashMap<>();
 
     // External static parameter overrides (set before compilation)
     private final Map<String, String> staticParameterOverrides = new HashMap<>();
+    
+    // Track static declarations for XTSE3450 conflict detection across import precedences.
+    // Key: variable/param local name; Value: Object[]{Boolean isParam, String select, Integer prec}
+    private final Map<String, Object[]> staticDeclarationInfo = new HashMap<>();
     
     // Simplified stylesheet: root element is a literal result element with xsl:version attribute
     // Per XSLT 1.0 Section 2.3: equivalent to xsl:stylesheet containing template match="/"
@@ -251,6 +276,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     String packageName = null;  // Package-private for access in compilePackage
     String packageVersion = null;  // Package-private for access in compilePackage
     final List<CompiledPackage.PackageDependency> packageDependencies = new ArrayList<>();  // Package-private
+    private boolean declaredModesEnabled = false;
+    private final Set<String> usedModeNames = new HashSet<>();
 
     /**
      * Allowed attributes for XSLT elements (XTSE0090 validation).
@@ -316,6 +343,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String defaultCollation = null;  // XSLT 2.0+ default-collation for comparisons
         String defaultMode = null;  // XSLT 3.0 default-mode (null = inherit from parent)
         final Set<String> childElementNames = new HashSet<>();  // Local names of XSLT child elements
+        final List<String> childElementNameList = new ArrayList<>();  // Ordered child element names
         
         ElementContext(String namespaceURI, String localName, String originalPrefix) {
             this.namespaceURI = namespaceURI;
@@ -440,6 +468,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         ensurePrecedenceAssigned();
         // Fix up any templates that were compiled before precedence was assigned
         builder.finalizePrecedence(importPrecedence);
+        // XTSE3350: check for unresolved duplicate accumulator names
+        // Only validate at the principal stylesheet level, not in imported modules
+        if (isPrincipalStylesheet) {
+            try {
+                builder.validateAccumulatorNames();
+            } catch (SAXException e) {
+                throw new TransformerConfigurationException(e.getMessage(), e);
+            }
+        }
         CompiledStylesheet stylesheet = builder.build(validateReferences);
         
         // Run streamability analysis and store results
@@ -449,7 +486,14 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
         // XTSE3430: Validate that templates in streamable modes are streamable
         try {
-            validateStreamableModes(stylesheet, analysis);
+            validateStreamableModes(stylesheet, analysis, analyzer);
+        } catch (SAXException e) {
+            throw new TransformerConfigurationException(e.getMessage(), e);
+        }
+        
+        // XTSE3085: Validate declared-modes (xsl:package with declared-modes="yes")
+        try {
+            validateDeclaredModes(stylesheet);
         } catch (SAXException e) {
             throw new TransformerConfigurationException(e.getMessage(), e);
         }
@@ -458,12 +502,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     /**
+     * XTSE3085: Validates that all used modes are explicitly declared when declared-modes is enabled.
+     */
+    private void validateDeclaredModes(CompiledStylesheet stylesheet) throws SAXException {
+        if (!declaredModesEnabled) {
+            return;
+        }
+        Map<String, ModeDeclaration> declaredModes = stylesheet.getModeDeclarations();
+        for (String usedMode : usedModeNames) {
+            if (!declaredModes.containsKey(usedMode)) {
+                String displayName = "#default".equals(usedMode) ? "the unnamed mode" : "mode '" + usedMode + "'";
+                throw new SAXException("XTSE3085: " + displayName
+                    + " is used but not declared (declared-modes is enabled)");
+            }
+        }
+    }
+
+    /**
      * XTSE3430: Validates that all templates in streamable modes are streamable.
-     * A template in a streamable mode must not use constructs that require
-     * full document buffering (FREE_RANGING).
+     * Checks for FREE_RANGING expressions, crawling (descendant axis) patterns,
+     * xsl:number, non-motionless match patterns, and backwards-compatible instructions.
      */
     private void validateStreamableModes(CompiledStylesheet stylesheet,
-                                          StreamabilityAnalyzer.StylesheetStreamability analysis)
+                                          StreamabilityAnalyzer.StylesheetStreamability analysis,
+                                          StreamabilityAnalyzer analyzer)
             throws SAXException {
         Map<String, ModeDeclaration> modes = stylesheet.getModeDeclarations();
         Map<TemplateRule, StreamabilityAnalyzer.TemplateStreamability> templateAnalysis =
@@ -496,37 +558,1546 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
                 StreamabilityAnalyzer.TemplateStreamability ts = entry.getValue();
                 if (ts.requiresDocumentBuffering()) {
-                    StringBuilder sb = new StringBuilder();
-                    sb.append("XTSE3430: Template");
-                    String matchStr = template.getMatchPattern() != null
-                        ? template.getMatchPattern().toString() : null;
-                    if (matchStr != null) {
-                        sb.append(" matching '");
-                        sb.append(matchStr);
-                        sb.append("'");
+                    throwStreamabilityError(template, modeName,
+                        ts.getBufferingReasons());
+                }
+
+                XSLTNode body = template.getBody();
+
+                // XTSE3430: Template in streamable mode must not use
+                // current-group() (si-fork-116) — it is not available
+                // outside xsl:for-each-group scope in streaming.
+                if (body != null) {
+                    int cgCalls = countCurrentGroupCalls(body, 0);
+                    if (cgCalls > 0) {
+                        throw new SAXException("XTSE3430: Template in " +
+                            "streamable mode uses current-group() which " +
+                            "is not available in this context");
                     }
-                    String tName = template.getName();
-                    if (tName != null) {
-                        sb.append(" named '");
-                        sb.append(tName);
-                        sb.append("'");
+                }
+
+                // XTSE3430: Fork-specific streaming constraint validation
+                if (body != null) {
+                    validateForkStreamability(body, 0);
+                }
+
+                // XTSE3430: Crawling instructions — apply-templates or
+                // for-each with descendant-axis select expressions that
+                // are not wrapped in outermost()/innermost() create
+                // non-streamable crawling patterns (XSLT 3.0 section 19)
+                if (body != null) {
+                    if (containsCrawlingInstruction(body, 0)) {
+                        throw new SAXException(
+                            "XTSE3430: Template in streamable mode " +
+                            "uses a crawling instruction (descendant " +
+                            "axis in apply-templates or for-each)");
                     }
-                    sb.append(" in streamable mode");
-                    if (modeName != null && !"#default".equals(modeName)) {
-                        sb.append(" '");
-                        sb.append(modeName);
-                        sb.append("'");
+                }
+
+                // XTSE3430: xsl:number requires sibling counting
+                if (body != null) {
+                    if (containsNumberInstruction(body, 0)) {
+                        throw new SAXException(
+                            "XTSE3430: xsl:number in streamable mode " +
+                            "is not streamable (requires sibling access)");
                     }
-                    sb.append(" is not streamable");
-                    List<String> reasons = ts.getBufferingReasons();
-                    if (!reasons.isEmpty()) {
-                        sb.append(": ");
-                        sb.append(reasons.get(0));
+                }
+
+                // XTSE3430: Match patterns in streamable modes must be
+                // motionless — predicates that depend on position, last(),
+                // or string value are not motionless
+                Pattern matchPat = template.getMatchPattern();
+                if (matchPat != null) {
+                    if (hasNonMotionlessPredicate(matchPat)) {
+                        throw new SAXException(
+                            "XTSE3430: Match pattern '" + matchPat +
+                            "' in streamable mode is not motionless");
                     }
-                    throw new SAXException(sb.toString());
+                }
+
+                // XTSE3430: Instructions in backwards-compatible mode
+                // (version="1.0") are roaming and free-ranging (section 3.9.1)
+                if (body != null) {
+                    if (containsBackwardsCompatInstruction(body, 0)) {
+                        throw new SAXException(
+                            "XTSE3430: Template in streamable mode " +
+                            "contains an instruction in backwards-" +
+                            "compatible mode (version=\"1.0\"), which " +
+                            "is roaming and free-ranging");
+                    }
                 }
             }
         }
+    }
+
+    /**
+     * Throws a formatted XTSE3430 error for a non-streamable template.
+     */
+    private static void throwStreamabilityError(TemplateRule template,
+                                                 String modeName,
+                                                 List<String> reasons)
+            throws SAXException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("XTSE3430: Template");
+        String matchStr = template.getMatchPattern() != null
+            ? template.getMatchPattern().toString() : null;
+        if (matchStr != null) {
+            sb.append(" matching '");
+            sb.append(matchStr);
+            sb.append("'");
+        }
+        String tName = template.getName();
+        if (tName != null) {
+            sb.append(" named '");
+            sb.append(tName);
+            sb.append("'");
+        }
+        sb.append(" in streamable mode");
+        if (modeName != null && !"#default".equals(modeName)) {
+            sb.append(" '");
+            sb.append(modeName);
+            sb.append("'");
+        }
+        sb.append(" is not streamable");
+        if (!reasons.isEmpty()) {
+            sb.append(": ");
+            sb.append(reasons.get(0));
+        }
+        throw new SAXException(sb.toString());
+    }
+
+    /**
+     * Checks whether an XSLT node tree contains an xsl:number instruction.
+     */
+    private static boolean containsNumberInstruction(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof NumberNode) {
+            return true;
+        }
+        if (node instanceof SequenceNode) {
+            SequenceNode seq = (SequenceNode) node;
+            List<XSLTNode> children = seq.getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (containsNumberInstruction(children.get(i), depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+            if (containsNumberInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+            XSLTNode body =
+                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+            if (containsNumberInstruction(body, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+            if (containsNumberInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
+            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
+                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
+            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+                XSLTNode wContent = when.getContent();
+                if (containsNumberInstruction(wContent, depth + 1)) {
+                    return true;
+                }
+            }
+            XSLTNode ow = choose.getOtherwise();
+            if (containsNumberInstruction(ow, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+            if (containsNumberInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether a match pattern has a predicate that is not motionless.
+     * Patterns with positional, last(), or string-value-dependent predicates
+     * are not motionless and thus not valid in streamable modes.
+     * Type checks and ancestor attribute access are considered motionless.
+     */
+    private static boolean hasNonMotionlessPredicate(Pattern pat) {
+        if (pat == null) {
+            return false;
+        }
+        if (pat instanceof PredicatedPattern) {
+            return true;
+        }
+        if (pat instanceof UnionPattern) {
+            UnionPattern up = (UnionPattern) pat;
+            Pattern[] alts = up.getAlternatives();
+            for (int i = 0; i < alts.length; i++) {
+                if (hasNonMotionlessPredicate(alts[i])) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (pat instanceof IntersectPattern) {
+            IntersectPattern ip = (IntersectPattern) pat;
+            return hasNonMotionlessPredicate(ip.getLeft())
+                || hasNonMotionlessPredicate(ip.getRight());
+        }
+        if (pat instanceof ExceptPattern) {
+            ExceptPattern ep = (ExceptPattern) pat;
+            return hasNonMotionlessPredicate(ep.getLeft())
+                || hasNonMotionlessPredicate(ep.getRight());
+        }
+
+        if (pat instanceof AtomicPattern) {
+            AtomicPattern ap = (AtomicPattern) pat;
+            List<String> preds = ap.getPredicates();
+            if (preds != null) {
+                for (int i = 0; i < preds.size(); i++) {
+                    String p = preds.get(i);
+                    boolean nm = isNonMotionlessPredicateStr(p);
+                    if (nm) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        if (pat instanceof AbstractPattern) {
+            AbstractPattern ap = (AbstractPattern) pat;
+            String predStr = ap.getPredicateStr();
+            if (predStr != null && isNonMotionlessPredicateStr(predStr)) {
+                return true;
+            }
+        }
+
+        if (pat instanceof PathPattern) {
+            PatternStep[] steps = ((PathPattern) pat).getSteps();
+            if (steps != null) {
+                for (int i = 0; i < steps.length; i++) {
+                    String stepPred = steps[i].predicateStr;
+                    if (stepPred != null
+                            && isNonMotionlessPredicateStr(stepPred)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether a predicate string represents a non-motionless
+     * predicate for streaming pattern matching.
+     */
+    private static boolean isNonMotionlessPredicateStr(String predStr) {
+        if (predStr == null) {
+            return false;
+        }
+        String trimmed = predStr.trim();
+        if (trimmed.isEmpty()) {
+            return false;
+        }
+
+        // Numeric literal → positional predicate → non-motionless
+        try {
+            Double.parseDouble(trimmed);
+            return true;
+        } catch (NumberFormatException e) {
+            // continue
+        }
+
+        try {
+            XPathExpression predExpr = XPathExpression.compile(trimmed);
+            Expr compiled = predExpr.getCompiledExpr();
+
+            // Type checks (instance of, treat as) are motionless
+            if (compiled instanceof TypeExpr) {
+                return false;
+            }
+
+            // In a match pattern context, functions that access the
+            // string value of the context item (self::node()) require
+            // consuming the node content → non-motionless
+            if (accessesStringValueOfSelf(compiled)) {
+                return true;
+            }
+
+            StreamabilityAnalyzer.ExpressionStreamability es =
+                StreamingClassifier.classify(predExpr);
+
+            if (es == StreamabilityAnalyzer.ExpressionStreamability.MOTIONLESS) {
+                return false;
+            }
+
+            // GROUNDED from ancestor/parent attribute access is motionless
+            // in streaming (ancestor stack is maintained)
+            if (es == StreamabilityAnalyzer.ExpressionStreamability.GROUNDED) {
+                if (isAncestorAttributeOnly(compiled)) {
+                    return false;
+                }
+            }
+
+            return true;
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /**
+     * Checks whether a compiled expression accesses the string value
+     * of the context item (self::node() / "."). In a streaming match
+     * pattern predicate, this is non-motionless because atomizing the
+     * matched node requires consuming its descendant text content.
+     */
+    private static boolean accessesStringValueOfSelf(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String name = fc.getLocalName();
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                Expr arg = args.get(i);
+                if (isSelfReference(arg) && atomizesArgument(name)) {
+                    return true;
+                }
+                if (accessesStringValueOfSelf(arg)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            if (isSelfReference(be.getLeft()) ||
+                isSelfReference(be.getRight())) {
+                return true;
+            }
+            return accessesStringValueOfSelf(be.getLeft()) ||
+                   accessesStringValueOfSelf(be.getRight());
+        }
+        if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            return accessesStringValueOfSelf(fe.getPrimary());
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            return accessesStringValueOfSelf(pe.getFilter()) ||
+                   accessesStringValueOfSelf(pe.getPath());
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if the expression is a reference to the context item
+     * ({@code .} or {@code self::node()}).
+     */
+    private static boolean isSelfReference(Expr expr) {
+        if (expr instanceof ContextItemExpr) {
+            return true;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            if (steps.size() == 1) {
+                Step step = steps.get(0);
+                if (step.getAxis() == Step.Axis.SELF) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if the named function atomizes (accesses string/numeric
+     * value of) its arguments. Functions that only inspect node identity
+     * or structural properties return false.
+     */
+    private static boolean atomizesArgument(String functionName) {
+        if ("name".equals(functionName) ||
+            "local-name".equals(functionName) ||
+            "namespace-uri".equals(functionName) ||
+            "node-name".equals(functionName) ||
+            "nilled".equals(functionName) ||
+            "count".equals(functionName) ||
+            "empty".equals(functionName) ||
+            "exists".equals(functionName) ||
+            "boolean".equals(functionName) ||
+            "not".equals(functionName) ||
+            "generate-id".equals(functionName) ||
+            "has-children".equals(functionName) ||
+            "deep-equal".equals(functionName)) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Checks whether a GROUNDED expression only accesses ancestor attributes,
+     * which are available in a streaming context (maintained on a stack).
+     * Returns true only if the expression actually uses a parent/ancestor
+     * axis to reach attributes, and has no other source of grounded-ness
+     * (like last(), root(), etc.).
+     */
+    private static boolean isAncestorAttributeOnly(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        return hasAncestorAxisStep(expr)
+            && allPathsUseAncestorAttributeOnly(expr);
+    }
+
+    private static boolean hasAncestorAxisStep(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            java.util.List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step.Axis axis = steps.get(i).getAxis();
+                if (axis == Step.Axis.PARENT || axis == Step.Axis.ANCESTOR
+                        || axis == Step.Axis.ANCESTOR_OR_SELF) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            return hasAncestorAxisStep(pe.getFilter())
+                || hasAncestorAxisStep(pe.getPath());
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return hasAncestorAxisStep(be.getLeft())
+                || hasAncestorAxisStep(be.getRight());
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            java.util.List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (hasAncestorAxisStep(args.get(i))) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            return hasAncestorAxisStep(fe.getPrimary());
+        }
+        return false;
+    }
+
+    private static boolean allPathsUseAncestorAttributeOnly(Expr expr) {
+        if (expr == null) {
+            return true;
+        }
+        if (expr instanceof org.bluezoo.gonzalez.transform.xpath.expr.Literal) {
+            return true;
+        }
+        if (expr instanceof org.bluezoo.gonzalez.transform.xpath.expr.VariableReference) {
+            return true;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            java.util.List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step.Axis axis = steps.get(i).getAxis();
+                if (axis == Step.Axis.PARENT || axis == Step.Axis.ANCESTOR
+                        || axis == Step.Axis.ANCESTOR_OR_SELF
+                        || axis == Step.Axis.ATTRIBUTE
+                        || axis == Step.Axis.SELF
+                        || axis == Step.Axis.NAMESPACE) {
+                    continue;
+                }
+                return false;
+            }
+            return true;
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            return allPathsUseAncestorAttributeOnly(pe.getFilter())
+                && allPathsUseAncestorAttributeOnly(pe.getPath());
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return allPathsUseAncestorAttributeOnly(be.getLeft())
+                && allPathsUseAncestorAttributeOnly(be.getRight());
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            java.util.List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (!allPathsUseAncestorAttributeOnly(args.get(i))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            if (!allPathsUseAncestorAttributeOnly(fe.getPrimary())) {
+                return false;
+            }
+            java.util.List<Expr> preds = fe.getPredicates();
+            for (int i = 0; i < preds.size(); i++) {
+                if (!allPathsUseAncestorAttributeOnly(preds.get(i))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return true;
+    }
+
+    /**
+     * Checks whether an XSLT node tree contains a crawling instruction:
+     * apply-templates or for-each with a descendant-axis select expression
+     * not wrapped in outermost()/innermost(). Also detects FLWOR
+     * expressions with descendant-axis bindings.
+     */
+    private static boolean containsCrawlingInstruction(XSLTNode node,
+                                                        int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof ApplyTemplatesNode) {
+            ApplyTemplatesNode at = (ApplyTemplatesNode) node;
+            java.util.List<XPathExpression> exprs = at.getExpressions();
+            if (exprs != null && !exprs.isEmpty()) {
+                XPathExpression selectExpr = exprs.get(0);
+                if (isDirectCrawlingSelect(selectExpr)) {
+                    return true;
+                }
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+            org.bluezoo.gonzalez.transform.ast.ForEachNode fe =
+                (org.bluezoo.gonzalez.transform.ast.ForEachNode) node;
+            java.util.List<XPathExpression> exprs = fe.getExpressions();
+            if (exprs != null && !exprs.isEmpty()) {
+                XPathExpression selectExpr = exprs.get(0);
+                if (isDirectCrawlingSelect(selectExpr)) {
+                    XSLTNode body = fe.getBody();
+                    if (bodyHasConsumingExpression(body)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Check ExpressionHolder for FLWOR with descendant axis in bindings
+        if (node instanceof ExpressionHolder) {
+            java.util.List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    XPathExpression xpe = exprs.get(i);
+                    if (xpe != null && containsCrawlingFlwor(
+                            xpe.getCompiledExpr())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // Recurse into children
+        if (node instanceof SequenceNode) {
+            java.util.List<XSLTNode> children =
+                ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (containsCrawlingInstruction(children.get(i),
+                                                    depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+            if (containsCrawlingInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+            if (containsCrawlingInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
+            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
+                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
+            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+                if (containsCrawlingInstruction(when.getContent(), depth + 1)) {
+                    return true;
+                }
+            }
+            if (containsCrawlingInstruction(choose.getOtherwise(), depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+            if (containsCrawlingInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.VariableNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.VariableNode) node).getContent();
+            if (containsCrawlingInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof LiteralResultElement) {
+            XSLTNode content =
+                ((LiteralResultElement) node).getContent();
+            if (containsCrawlingInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+            XSLTNode body =
+                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+            if (containsCrawlingInstruction(body, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.AttributeNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.AttributeNode) node).getContent();
+            if (containsCrawlingInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether a select expression directly uses descendant axis,
+     * not wrapped inside outermost()/innermost() or aggregate functions.
+     */
+    private static boolean isDirectCrawlingSelect(XPathExpression xpathExpr) {
+        if (xpathExpr == null) {
+            return false;
+        }
+        return isDirectCrawling(xpathExpr.getCompiledExpr());
+    }
+
+    private static boolean isDirectCrawling(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            java.util.List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step.Axis axis = steps.get(i).getAxis();
+                if (axis == Step.Axis.DESCENDANT
+                        || axis == Step.Axis.DESCENDANT_OR_SELF) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            return isDirectCrawling(pe.getFilter())
+                || isDirectCrawling(pe.getPath());
+        }
+        if (expr instanceof FilterExpr) {
+            return isDirectCrawling(((FilterExpr) expr).getPrimary());
+        }
+        if (expr instanceof ContextItemExpr) {
+            return false;
+        }
+        // Do NOT recurse into FunctionCall arguments —
+        // outermost(.//x), count(.//x), etc. are safe
+        return false;
+    }
+
+    /**
+     * Checks whether a for-each body has consuming expressions
+     * (child axis navigation), which combined with a crawling select
+     * creates a non-streamable pattern.
+     */
+    private static boolean bodyHasConsumingExpression(XSLTNode body) {
+        return bodyHasConsumingExpr(body, 0);
+    }
+
+    private static boolean bodyHasConsumingExpr(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof ExpressionHolder) {
+            java.util.List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    XPathExpression xpe = exprs.get(i);
+                    if (xpe != null) {
+                        StreamabilityAnalyzer.ExpressionStreamability es =
+                            StreamingClassifier.classify(xpe);
+                        if (es.ordinal() >
+                                StreamabilityAnalyzer.ExpressionStreamability.MOTIONLESS.ordinal()) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        if (node instanceof SequenceNode) {
+            java.util.List<XSLTNode> children =
+                ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (bodyHasConsumingExpr(children.get(i), depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof LiteralResultElement) {
+            XSLTNode content = ((LiteralResultElement) node).getContent();
+            if (bodyHasConsumingExpr(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+            if (bodyHasConsumingExpr(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+            if (bodyHasConsumingExpr(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+            if (bodyHasConsumingExpr(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
+            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
+                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
+            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+                if (bodyHasConsumingExpr(when.getContent(), depth + 1)) {
+                    return true;
+                }
+            }
+            if (bodyHasConsumingExpr(choose.getOtherwise(), depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.AttributeNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.AttributeNode) node).getContent();
+            if (bodyHasConsumingExpr(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+            XSLTNode body =
+                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+            if (bodyHasConsumingExpr(body, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether an XPath expression tree contains a FLWOR for-expression
+     * with descendant axis in its binding. Such expressions create crawling
+     * patterns: for $x in .//y return $x/z
+     */
+    private static boolean containsCrawlingFlwor(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof ForExpr) {
+            ForExpr fe = (ForExpr) expr;
+            java.util.List<ForExpr.Binding> bindings = fe.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                Expr seq = bindings.get(i).getSequence();
+                if (StreamingClassifier.containsDescendantAxis(seq)) {
+                    return true;
+                }
+            }
+        }
+        // Recurse into sub-expressions
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return containsCrawlingFlwor(be.getLeft())
+                || containsCrawlingFlwor(be.getRight());
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            java.util.List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (containsCrawlingFlwor(args.get(i))) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            if (containsCrawlingFlwor(fe.getPrimary())) {
+                return true;
+            }
+            java.util.List<Expr> preds = fe.getPredicates();
+            for (int i = 0; i < preds.size(); i++) {
+                if (containsCrawlingFlwor(preds.get(i))) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            return containsCrawlingFlwor(pe.getFilter())
+                || containsCrawlingFlwor(pe.getPath());
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether an XSLT node tree contains any instruction compiled
+     * in backwards-compatible mode (version="1.0"). Per XSLT 3.0 section
+     * 3.9.1, such instructions are roaming and free-ranging.
+     */
+    private static boolean containsBackwardsCompatInstruction(XSLTNode node,
+                                                               int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof ApplyTemplatesNode) {
+            if (((ApplyTemplatesNode) node).isBackwardsCompatible()) {
+                return true;
+            }
+        }
+        if (node instanceof SequenceNode) {
+            SequenceNode seq = (SequenceNode) node;
+            List<XSLTNode> children = seq.getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (containsBackwardsCompatInstruction(children.get(i),
+                                                           depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+            if (containsBackwardsCompatInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+            XSLTNode body =
+                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+            if (containsBackwardsCompatInstruction(body, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+            if (containsBackwardsCompatInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
+            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
+                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
+            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+                XSLTNode wContent = when.getContent();
+                if (containsBackwardsCompatInstruction(wContent, depth + 1)) {
+                    return true;
+                }
+            }
+            XSLTNode ow = choose.getOtherwise();
+            if (containsBackwardsCompatInstruction(ow, depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+            XSLTNode content =
+                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+            if (containsBackwardsCompatInstruction(content, depth + 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * XTSE3430: Validates xsl:fork streamability constraints within a
+     * streaming context body. Walks the AST looking for ForkNode instances
+     * and checks each branch for streaming violations.
+     *
+     * @param node the AST node to validate
+     * @param depth recursion depth guard
+     * @throws SAXException if a streamability violation is found
+     */
+    private void validateForkStreamability(XSLTNode node, int depth)
+            throws SAXException {
+        if (node == null || depth > 50) {
+            return;
+        }
+
+        if (node instanceof ForkNode) {
+            ForkNode fork = (ForkNode) node;
+            validateForkBranches(fork);
+        }
+
+        // Recurse into child nodes
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    validateForkStreamability(children.get(i), depth + 1);
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            validateForkStreamability(((ForEachNode) node).getBody(),
+                                     depth + 1);
+        }
+        if (node instanceof IfNode) {
+            validateForkStreamability(((IfNode) node).getContent(),
+                                     depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                validateForkStreamability(when, depth + 1);
+            }
+            validateForkStreamability(choose.getOtherwise(), depth + 1);
+        }
+        if (node instanceof WhenNode) {
+            validateForkStreamability(((WhenNode) node).getContent(),
+                                     depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            validateForkStreamability(((VariableNode) node).getContent(),
+                                     depth + 1);
+        }
+        if (node instanceof CopyNode) {
+            validateForkStreamability(((CopyNode) node).getContent(),
+                                     depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            validateForkStreamability(
+                ((LiteralResultElement) node).getContent(), depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            validateForkStreamability(((ElementNode) node).getContent(),
+                                     depth + 1);
+        }
+        if (node instanceof TryNode) {
+            TryNode tryNode = (TryNode) node;
+            validateForkStreamability(tryNode.getTryContent(), depth + 1);
+            for (CatchNode catchNode : tryNode.getCatchBlocks()) {
+                validateForkStreamability(catchNode, depth + 1);
+            }
+        }
+        if (node instanceof CatchNode) {
+            validateForkStreamability(((CatchNode) node).getContent(),
+                                     depth + 1);
+        }
+    }
+
+    /**
+     * Validates the branches of a ForkNode for streaming compliance.
+     * Checks for:
+     * <ul>
+     *   <li>Fork prongs returning streamed nodes (si-fork-901)</li>
+     *   <li>Fork prongs with multiple consuming operands (si-fork-902)</li>
+     *   <li>For-each-group in fork with streaming violations</li>
+     * </ul>
+     */
+    private void validateForkBranches(ForkNode fork) throws SAXException {
+        List<ForkNode.ForkBranch> branches = fork.getBranches();
+
+        // Count branches that output streamed nodes directly.
+        // Multiple consuming branches are fine (that's the purpose of fork),
+        // but multiple branches that RETURN raw streamed nodes are not.
+        int streamedNodeBranches = 0;
+        for (int i = 0; i < branches.size(); i++) {
+            ForkNode.ForkBranch branch = branches.get(i);
+            XSLTNode content = branch.getContent();
+            if (content == null) {
+                continue;
+            }
+
+            if (branchReturnsStreamedNodes(content)) {
+                streamedNodeBranches++;
+            }
+
+            // Check for multiple consuming operands in a single
+            // expression (si-fork-902)
+            validateBranchOperands(content);
+
+            // Check for ForEachGroupNode within fork branches
+            validateForkForEachGroup(content, 0);
+        }
+
+        if (streamedNodeBranches > 1) {
+            throw new SAXException("XTSE3430: xsl:fork is not streamable:" +
+                " multiple prongs return streamed nodes");
+        }
+    }
+
+    /**
+     * Returns true if a fork branch outputs streamed nodes directly.
+     * This happens when a SequenceOutputNode has a select expression
+     * that evaluates to nodes (LocationPath/PathExpr) and is consuming.
+     * Expressions wrapped in grounding functions (string(), number(),
+     * sum(), etc.) return atomic values and are fine.
+     */
+    private boolean branchReturnsStreamedNodes(XSLTNode node) {
+        if (node instanceof SequenceOutputNode) {
+            return isStreamedNodeReturning((SequenceOutputNode) node);
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if a SequenceOutputNode returns consuming streamed
+     * nodes. The expression returns nodes (not grounded values) when its
+     * top-level is a LocationPath, PathExpr, or ContextItemExpr.
+     */
+    private boolean isStreamedNodeReturning(SequenceOutputNode son) {
+        List<XPathExpression> exprs = son.getExpressions();
+        for (int i = 0; i < exprs.size(); i++) {
+            XPathExpression xpe = exprs.get(i);
+            Expr compiled = xpe.getCompiledExpr();
+            if (compiled instanceof LocationPath
+                    || compiled instanceof PathExpr
+                    || compiled instanceof ContextItemExpr) {
+                StreamabilityAnalyzer.ExpressionStreamability es =
+                    StreamingClassifier.classify(xpe);
+                if (es == StreamabilityAnalyzer.ExpressionStreamability
+                        .CONSUMING
+                        || es == StreamabilityAnalyzer.ExpressionStreamability
+                        .GROUNDED) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks for multiple consuming operands within a single expression
+     * in a fork branch (si-fork-902: {@code TITLE||PRICE}).
+     */
+    private void validateBranchOperands(XSLTNode node) throws SAXException {
+        List<XSLTNode> toCheck = new ArrayList<XSLTNode>();
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                toCheck.addAll(children);
+            }
+        } else {
+            toCheck.add(node);
+        }
+
+        for (int i = 0; i < toCheck.size(); i++) {
+            XSLTNode child = toCheck.get(i);
+            if (child instanceof SequenceOutputNode) {
+                List<XPathExpression> exprs =
+                    ((ExpressionHolder) child).getExpressions();
+                for (int j = 0; j < exprs.size(); j++) {
+                    int ops = StreamingClassifier.countConsumingOperands(
+                        exprs.get(j));
+                    if (ops > 1) {
+                        throw new SAXException("XTSE3430: xsl:fork " +
+                            "prong is not streamable: expression has " +
+                            "multiple consuming operands");
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Validates xsl:for-each-group within a fork branch for streaming
+     * constraints (si-fork-951 through si-fork-957).
+     */
+    private void validateForkForEachGroup(XSLTNode node, int depth)
+            throws SAXException {
+        if (node == null || depth > 50) {
+            return;
+        }
+
+        if (node instanceof ForEachGroupNode) {
+            ForEachGroupNode feg = (ForEachGroupNode) node;
+
+            // (si-fork-955, 956, 957): Crawling population (descendant axis)
+            // This also catches non-motionless group-by when the population
+            // is crawling, since descendant-axis select implies the group-by
+            // operates on streamed nodes.
+            XPathExpression selectExpr = feg.getSelect();
+            if (StreamingClassifier.containsDescendantAxis(selectExpr)) {
+                throw new SAXException("XTSE3430: xsl:for-each-group in " +
+                    "xsl:fork is not streamable: population uses " +
+                    "descendant axis (crawling)");
+            }
+
+            // (si-fork-953): Sorted groups
+            List<SortSpec> sorts = feg.getSorts();
+            if (sorts != null && !sorts.isEmpty()) {
+                throw new SAXException("XTSE3430: xsl:for-each-group in " +
+                    "xsl:fork is not streamable: sorted groups require " +
+                    "buffering");
+            }
+
+            // Check the body for current-group() usage violations
+            validateForkGroupBody(feg.getBody(), 0);
+        }
+
+        // Recurse into child nodes to find nested ForEachGroupNode
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    validateForkForEachGroup(children.get(i), depth + 1);
+                }
+            }
+        }
+    }
+
+    /**
+     * Validates the body of a for-each-group within a fork for
+     * current-group() usage violations.
+     *
+     * <p>In a streaming fork, current-group() may only be consumed once.
+     * Multiple uses, mixing with context-item consumption, or use in
+     * higher-order operands all violate streamability.
+     */
+    private void validateForkGroupBody(XSLTNode node, int depth)
+            throws SAXException {
+        if (node == null || depth > 50) {
+            return;
+        }
+
+        int totalCurrentGroupCalls =
+            countCurrentGroupCalls(node, 0);
+
+        // (si-fork-951, 952, 954): Multiple current-group() usage
+        if (totalCurrentGroupCalls > 1) {
+            throw new SAXException("XTSE3430: xsl:for-each-group in " +
+                "xsl:fork is not streamable: current-group() is used " +
+                "more than once");
+        }
+
+        // (si-fork-954): current-group() mixed with context-item
+        // down-selection. If there is one current-group() call AND a
+        // consuming expression that does not involve current-group(),
+        // both compete for the streamed input.
+        if (totalCurrentGroupCalls >= 1) {
+            boolean hasOtherConsuming =
+                hasNonGroupConsuming(node, 0);
+            if (hasOtherConsuming) {
+                throw new SAXException("XTSE3430: xsl:for-each-group " +
+                    "in xsl:fork is not streamable: current-group() " +
+                    "mixed with context item down-selection");
+            }
+        }
+
+        // (si-fork-952): current-group() with multiple consuming
+        // down-selections, e.g. current-group()/(AUTHOR||TITLE)
+        if (hasMultipleConsumingFromGroup(node, 0)) {
+            throw new SAXException("XTSE3430: xsl:for-each-group in " +
+                "xsl:fork is not streamable: multiple down-selections " +
+                "from current-group()");
+        }
+
+        // (si-fork-956): current-group() in higher-order operand
+        // (predicate or nested for-each body)
+        if (hasCurrentGroupInHigherOrder(node, 0)) {
+            throw new SAXException("XTSE3430: xsl:for-each-group in " +
+                "xsl:fork is not streamable: current-group() used in " +
+                "higher-order operand");
+        }
+    }
+
+    /**
+     * Counts the total number of current-group() calls in all expressions
+     * within a node tree.
+     */
+    private int countCurrentGroupCalls(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return 0;
+        }
+        int count = 0;
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    count += StreamingClassifier.countFunctionCalls(
+                        exprs.get(i), "current-group");
+                }
+            }
+        }
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    count += countCurrentGroupCalls(children.get(i),
+                                                    depth + 1);
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            count += countCurrentGroupCalls(((ForEachNode) node).getBody(),
+                                            depth + 1);
+        }
+        if (node instanceof IfNode) {
+            count += countCurrentGroupCalls(((IfNode) node).getContent(),
+                                            depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            LiteralResultElement lre = (LiteralResultElement) node;
+            // Count current-group() in AVT attribute values
+            Map<String, AttributeValueTemplate> attrs = lre.getAttributes();
+            if (attrs != null) {
+                List<XPathExpression> avtExprs =
+                    new ArrayList<XPathExpression>();
+                for (AttributeValueTemplate avt : attrs.values()) {
+                    avt.collectExpressions(avtExprs);
+                }
+                for (int i = 0; i < avtExprs.size(); i++) {
+                    count += StreamingClassifier.countFunctionCalls(
+                        avtExprs.get(i), "current-group");
+                }
+            }
+            count += countCurrentGroupCalls(lre.getContent(), depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            count += countCurrentGroupCalls(
+                ((ElementNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            count += countCurrentGroupCalls(
+                ((VariableNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof TryNode) {
+            TryNode tryNode = (TryNode) node;
+            count += countCurrentGroupCalls(tryNode.getTryContent(),
+                                            depth + 1);
+            for (CatchNode catchNode : tryNode.getCatchBlocks()) {
+                count += countCurrentGroupCalls(catchNode, depth + 1);
+            }
+        }
+        if (node instanceof CatchNode) {
+            count += countCurrentGroupCalls(
+                ((CatchNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                count += countCurrentGroupCalls(when, depth + 1);
+            }
+            count += countCurrentGroupCalls(choose.getOtherwise(),
+                                            depth + 1);
+        }
+        if (node instanceof WhenNode) {
+            count += countCurrentGroupCalls(
+                ((WhenNode) node).getContent(), depth + 1);
+        }
+        return count;
+    }
+
+    /**
+     * Checks whether the node tree contains consuming expressions that
+     * navigate axis steps (LocationPath/PathExpr) independently of
+     * current-group(). Only actual axis navigation expressions compete
+     * for streamed input; functions like current-grouping-key() are
+     * consuming but do not navigate children.
+     */
+    private boolean hasNonGroupConsuming(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    if (isAxisConsumingWithoutGroup(exprs.get(i))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (hasNonGroupConsuming(children.get(i), depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof LiteralResultElement) {
+            LiteralResultElement lre = (LiteralResultElement) node;
+            Map<String, AttributeValueTemplate> attrs = lre.getAttributes();
+            if (attrs != null) {
+                List<XPathExpression> avtExprs =
+                    new ArrayList<XPathExpression>();
+                for (AttributeValueTemplate avt : attrs.values()) {
+                    avt.collectExpressions(avtExprs);
+                }
+                for (int i = 0; i < avtExprs.size(); i++) {
+                    if (isAxisConsumingWithoutGroup(avtExprs.get(i))) {
+                        return true;
+                    }
+                }
+            }
+            return hasNonGroupConsuming(lre.getContent(), depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            return hasNonGroupConsuming(
+                ((ElementNode) node).getContent(), depth + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if the expression navigates child/descendant axes
+     * (consuming) without going through current-group(). Functions like
+     * current-grouping-key() are excluded because they don't navigate.
+     */
+    private boolean isAxisConsumingWithoutGroup(XPathExpression expr) {
+        int cgCalls = StreamingClassifier.countFunctionCalls(
+            expr, "current-group");
+        if (cgCalls > 0) {
+            return false;
+        }
+        Expr compiled = expr.getCompiledExpr();
+        if (compiled instanceof LocationPath
+                || compiled instanceof PathExpr
+                || compiled instanceof ContextItemExpr) {
+            StreamabilityAnalyzer.ExpressionStreamability es =
+                StreamingClassifier.classify(expr);
+            return es == StreamabilityAnalyzer.ExpressionStreamability
+                    .CONSUMING;
+        }
+        return false;
+    }
+
+    /**
+     * Detects expressions like {@code current-group()/(AUTHOR||TITLE)}
+     * where the path from current-group() has multiple consuming
+     * down-selections. This requires reading group items multiple times.
+     */
+    private boolean hasMultipleConsumingFromGroup(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    if (hasMultiConsumingGroupPath(
+                            exprs.get(i).getCompiledExpr())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (hasMultipleConsumingFromGroup(children.get(i),
+                                                      depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof LiteralResultElement) {
+            return hasMultipleConsumingFromGroup(
+                ((LiteralResultElement) node).getContent(), depth + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Checks if an expression is a path from current-group() that has
+     * multiple consuming operands in its relative path (e.g.,
+     * {@code current-group()/(A||B)}).
+     */
+    private boolean hasMultiConsumingGroupPath(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            int cgCalls = StreamingClassifier.countFunctionCalls(
+                pe.getFilter(), "current-group");
+            if (cgCalls > 0) {
+                LocationPath path = pe.getPath();
+                if (path != null) {
+                    // Check step expressions for multi-consuming patterns
+                    // e.g. current-group()/(AUTHOR||TITLE) where the step
+                    // is an EXPR step containing a BinaryExpr
+                    List<Step> steps = path.getSteps();
+                    for (int i = 0; i < steps.size(); i++) {
+                        Step step = steps.get(i);
+                        Expr stepExpr = step.getStepExpr();
+                        if (stepExpr != null) {
+                            int ops = StreamingClassifier
+                                .countConsumingOperands(stepExpr);
+                            if (ops > 1) {
+                                return true;
+                            }
+                        }
+                    }
+                    // Also check the path itself
+                    int ops = StreamingClassifier.countConsumingOperands(
+                        path);
+                    if (ops > 1) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return hasMultiConsumingGroupPath(be.getLeft())
+                || hasMultiConsumingGroupPath(be.getRight());
+        }
+        return false;
+    }
+
+    /**
+     * Detects current-group() used in a higher-order context, such as a
+     * predicate on current-group() or inside a nested xsl:for-each body.
+     * This pattern requires repeated access to group items and is not
+     * streamable.
+     */
+    private boolean hasCurrentGroupInHigherOrder(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+
+        // current-group() inside a nested xsl:for-each body
+        if (node instanceof ForEachNode) {
+            int cgInBody = countCurrentGroupCalls(
+                ((ForEachNode) node).getBody(), 0);
+            if (cgInBody > 0) {
+                return true;
+            }
+        }
+
+        // current-group() with a predicate: current-group()[$p]
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    if (hasCurrentGroupWithPredicate(
+                            exprs.get(i).getCompiledExpr())) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (hasCurrentGroupInHigherOrder(children.get(i),
+                                                     depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof LiteralResultElement) {
+            return hasCurrentGroupInHigherOrder(
+                ((LiteralResultElement) node).getContent(), depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            return hasCurrentGroupInHigherOrder(
+                ((VariableNode) node).getContent(), depth + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether an expression tree contains current-group() used
+     * with a predicate, e.g. {@code current-group()[$p]}.
+     */
+    private boolean hasCurrentGroupWithPredicate(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            Expr primary = fe.getPrimary();
+            if (primary instanceof FunctionCall) {
+                FunctionCall fc = (FunctionCall) primary;
+                if ("current-group".equals(fc.getLocalName())) {
+                    List<Expr> predicates = fe.getPredicates();
+                    if (predicates != null && !predicates.isEmpty()) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            return hasCurrentGroupWithPredicate(pe.getFilter())
+                || hasCurrentGroupWithPredicate(pe.getPath());
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return hasCurrentGroupWithPredicate(be.getLeft())
+                || hasCurrentGroupWithPredicate(be.getRight());
+        }
+        return false;
     }
 
     /**
@@ -663,6 +2234,27 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     /**
+     * Sets the maximum XSLT version this processor should advertise.
+     * Instructions introduced after this version (e.g. xsl:try at 3.0) are
+     * treated as unknown, so xsl:fallback children execute instead.
+     */
+    public void setMaxProcessorVersion(double version) {
+        this.maxProcessorVersion = version;
+    }
+
+    /**
+     * Replaces this compiler's static variable map with a shared map from the
+     * parent compiler. Used for xsl:include so that static variables defined
+     * before the include are visible in the included module, and variables
+     * defined in the included module are visible after the include point.
+     *
+     * @param sharedMap the parent compiler's static variable map
+     */
+    void setSharedStaticVariables(Map<String, XPathValue> sharedMap) {
+        this.staticVariables = sharedMap;
+    }
+
+    /**
      * Sets the document locator for error reporting.
      *
      * @param locator the SAX locator
@@ -761,6 +2353,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Note: Don't add to elementStack.peek() here!
         // Namespace bindings are captured in startElement() at the time each element starts.
         // Adding here would incorrectly modify parent element's bindings when child declares xmlns.
+        
+        // Also record in the builder so runtime functions (e.g. format-number 3rd arg)
+        // can resolve prefixes declared on any element, not just the stylesheet root.
+        if (builder != null && prefix != null && !prefix.isEmpty() && uri != null) {
+            builder.addNamespaceBinding(prefix, uri);
+        }
     }
 
     /**
@@ -860,11 +2458,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Handle inline schema parsing inside xsl:import-schema
         if (inImportSchema) {
             if (XSD_NAMESPACE.equals(uri) && "schema".equals(localName)) {
-                // Start of inline xs:schema - create parser and forward event
-                inlineSchemaParser = new XSDSchemaParser();
-                inlineSchemaDepth = 1;
-                inlineSchemaParser.startElement(uri, localName, qName, atts);
-                elementStack.push(new ElementContext(uri, localName, originalPrefix));
+                // XTSE1650: non-schema-aware processor must reject xsl:import-schema
+                // with inline schema (we only support external schema-location references)
+                throw new SAXException("XTSE1650: xsl:import-schema with inline schema " +
+                    "is not supported by this non-schema-aware XSLT processor");
+            } else if (inlineSchemaParser != null && inlineSchemaDepth > 0) {
+                // XTSE1650: should not reach here (inline schema already rejected above)
+                // but handle gracefully
                 return;
             } else if (inlineSchemaParser != null && inlineSchemaDepth > 0) {
                 // Inside inline schema - forward event to parser
@@ -927,6 +2527,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // This allows stylesheets to use any prefix for the XSLT namespace
                 // (e.g., t:xpath-default-namespace becomes xsl:xpath-default-namespace)
                 if (XSLT_NS.equals(attrURI) && attrLocal != null && !attrLocal.isEmpty()) {
+                    // XTSE0090: On an XSLT element, standard attributes must appear
+                    // without a namespace. Having them in the XSLT namespace is an error.
+                    if (XSLT_NS.equals(uri) && STANDARD_ATTRIBUTES.contains(attrLocal)) {
+                        throw new SAXException("XTSE0090: Standard attribute '" + attrLocal +
+                            "' must not be namespace-qualified on XSLT element xsl:" + localName);
+                    }
                     ctx.attributes.put("xsl:" + attrLocal, attrValue);
                 } else {
                     ctx.attributes.put(attrQName, attrValue);
@@ -1116,13 +2722,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             if (versionAttr != null) {
                 try {
+                    if (!isValidXsDecimal(versionAttr.trim())) {
+                        throw new SAXException("XTSE0110: The version attribute " +
+                            "must be a valid xs:decimal: '" + versionAttr + "'");
+                    }
                     stylesheetVersion = Double.parseDouble(versionAttr);
-                    // Forward-compatible mode: enabled when version > max supported (3.0)
-                    // Per XSLT spec, processor must run in forward-compatible mode when
-                    // version is higher than what it implements
                     forwardCompatible = stylesheetVersion > 3.0;
                 } catch (NumberFormatException e) {
-                    // Ignore invalid version, use default
+                    throw new SAXException("XTSE0110: The version attribute " +
+                        "must be a valid xs:decimal: '" + versionAttr + "'");
                 }
             }
             
@@ -1177,6 +2785,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     if ("#default".equals(prefix)) {
                         String defaultNs = namespaces.get("");
                         if (defaultNs != null && !defaultNs.isEmpty()) {
+                            checkNotReservedExtensionNamespace(defaultNs);
                             extensionNamespaceURIs.add(defaultNs);
                         }
                     } else {
@@ -1185,6 +2794,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                             throw new SAXException("XTSE1430: No namespace binding " +
                                 "in scope for prefix '" + prefix + "' in extension-element-prefixes");
                         }
+                        checkNotReservedExtensionNamespace(nsUri);
                         extensionNamespaceURIs.add(nsUri);
                     }
                 }
@@ -1208,7 +2818,6 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     isSimplifiedStylesheet = true;
                     try {
                         stylesheetVersion = Double.parseDouble(xslVersion);
-                        // Forward-compatible mode: enabled when version > max supported (3.0)
                         forwardCompatible = stylesheetVersion > 3.0;
                     } catch (NumberFormatException e) {
                         // Use default version
@@ -1243,6 +2852,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     for (Map.Entry<String, String> ns : namespaces.entrySet()) {
                         builder.addNamespaceBinding(ns.getKey(), ns.getValue());
                     }
+                } else {
+                    throw new SAXException("XTSE0150: The document is not a " +
+                        "stylesheet (the root element <" + localName +
+                        "> is not xsl:stylesheet, xsl:transform, or a " +
+                        "literal result element with an xsl:version attribute)");
                 }
             }
             
@@ -1284,6 +2898,28 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (excludePrefixes != null && !excludePrefixes.isEmpty()) {
                 processExcludeResultPrefixes(excludePrefixes, namespaces, ctx);
             }
+        }
+        
+        // Track child element names in parent for sibling order validation.
+        // This is done at startElement time so all sibling names are visible
+        // when any sibling's endElement (and compile) fires.
+        if (!elementStack.isEmpty()) {
+            ElementContext parentCtx = elementStack.peek();
+            if (XSLT_NS.equals(uri)) {
+                parentCtx.childElementNames.add(ctx.localName);
+                parentCtx.childElementNameList.add(ctx.localName);
+            } else {
+                parentCtx.childElementNameList.add("#LRE");
+            }
+        }
+        
+        // Set currentTemplateHasMatch/Name early so xsl:context-item children
+        // can check them during their compilation (before template endElement)
+        if (isXsltElement && "template".equals(localName)) {
+            String matchAttr = atts.getValue("match");
+            String nameAttr = atts.getValue("name");
+            currentTemplateHasMatch = (matchAttr != null);
+            currentTemplateHasName = (nameAttr != null);
         }
         
         elementStack.push(ctx);
@@ -1347,6 +2983,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // This restores the scope to what it was before entering this element
         excludedNamespaceURIs.removeAll(ctx.excludedByThisElement);
         
+        validateBreakNextIterationPosition(ctx);
+        
         XSLTNode node = compileElement(ctx);
         
         if (elementStack.isEmpty()) {
@@ -1359,11 +2997,39 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         } else {
             // Add to parent's children
             if (node != null) {
-                elementStack.peek().children.add(node);
+                ElementContext parentCtx = elementStack.peek();
+                // XTSE0010: xsl:on-empty must be the last instruction
+                validateOnEmptyOrdering(parentCtx, node);
+                parentCtx.children.add(node);
             }
-            // Track child XSLT element names for parent validation
-            if (XSLT_NS.equals(ctx.namespaceURI)) {
-                elementStack.peek().childElementNames.add(ctx.localName);
+            // Note: child element name tracking is done in startElement()
+        }
+    }
+
+    /**
+     * XTSE0010: Validates that nothing follows xsl:on-empty in a sequence
+     * constructor. Also validates that xsl:on-empty comes after
+     * xsl:on-non-empty if both are present.
+     */
+    private void validateOnEmptyOrdering(ElementContext parentCtx,
+                                          XSLTNode newNode) throws SAXException {
+        boolean parentHasOnEmpty = false;
+        for (int i = 0; i < parentCtx.children.size(); i++) {
+            if (parentCtx.children.get(i) instanceof OnEmptyNode) {
+                parentHasOnEmpty = true;
+                break;
+            }
+        }
+        if (parentHasOnEmpty) {
+            if (!(newNode instanceof OnEmptyNode)) {
+                throw new SAXException("XTSE0010: xsl:on-empty must be the "
+                    + "last instruction in a sequence constructor");
+            }
+        }
+        if (newNode instanceof OnNonEmptyNode) {
+            if (parentHasOnEmpty) {
+                throw new SAXException("XTSE0010: xsl:on-non-empty must come "
+                    + "before xsl:on-empty in a sequence constructor");
             }
         }
     }
@@ -1418,6 +3084,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             
             // Check if we should preserve whitespace
             if (!isWhitespace(text) || shouldPreserveWhitespace()) {
+                // XTSE0010: text after xsl:on-empty
+                for (int i = 0; i < ctx.children.size(); i++) {
+                    if (ctx.children.get(i) instanceof OnEmptyNode) {
+                        throw new SAXException("XTSE0010: xsl:on-empty must be the "
+                            + "last instruction in a sequence constructor");
+                    }
+                }
                 // Parse Text Value Templates if expand-text is enabled
                 // XSLT 3.0: TVTs apply to all text in sequence constructors
                 if (ctx.expandText) {
@@ -1504,7 +3177,6 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             case "key":
             case "decimal-format":
             case "namespace-alias":
-            case "sort":
             case "import-schema":
             case "expose":
             case "accept":
@@ -1600,7 +3272,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private XSLTNode compileElementInternal(ElementContext ctx) throws SAXException {
         XSLTNode result;
         if (XSLT_NS.equals(ctx.namespaceURI)) {
-            result = compileXSLTElement(ctx);
+            result = compileXSLTElementWithFCRecovery(ctx);
         } else {
             // Per XSLT 1.0 Section 2.2: Top-level elements in non-XSLT namespaces
             // are "user data elements" and are ignored (not compiled).
@@ -1628,9 +3300,17 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 if (!fallbacks.isEmpty()) {
                     result = new SequenceNode(fallbacks);
                 } else {
-                    // No fallback: XTDE1450 is a dynamic error raised at runtime
-                    // when the extension element is actually instantiated
-                    result = null;
+                    final String extElementName = ctx.localName;
+                    final String extNsUri = ctx.namespaceURI;
+                    result = new XSLTNode() {
+                        @Override
+                        public void execute(TransformContext context,
+                                OutputHandler output) throws SAXException {
+                            throw new SAXException("XTDE1450: No xsl:fallback was found " +
+                                "for the extension instruction {" + extNsUri + "}" +
+                                extElementName);
+                        }
+                    };
                 }
             } else {
                 result = compileLiteralResultElement(ctx);
@@ -1691,7 +3371,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // Check if prefix is bound to XSLT namespace
                 String attrNs = ctx.namespaceBindings.get(prefix);
                 if (XSLT_NS.equals(attrNs)) {
-                    // XTSE0090: XSLT namespace-qualified attributes are not allowed on XSLT elements
+                    if (isElementForwardCompatible(ctx)) {
+                        continue;
+                    }
                     throw new SAXException("XTSE0090: Attribute '" + attrName + 
                         "' in the XSLT namespace is not allowed on xsl:" + ctx.localName);
                 }
@@ -1703,7 +3385,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // XTSE0090: Check if attribute is in allowed set or standard attributes
             // In forward-compatible mode, unknown attributes are silently ignored
             if (!allowed.contains(localAttrName) && !STANDARD_ATTRIBUTES.contains(localAttrName)) {
-                if (forwardCompatible || getEffectiveVersion() > 3.0) {
+                if (isElementForwardCompatible(ctx)) {
                     continue;
                 }
                 throw new SAXException("XTSE0090: Unknown attribute '" + attrName + 
@@ -1733,11 +3415,77 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     /**
+     * Compiles an XSLT element with forward-compatible error recovery.
+     * Per XSLT 3.0 section 3.8, when the effective version of an element
+     * is greater than the processor supports, static errors are suppressed
+     * and fallback behavior is used.
+     */
+    private XSLTNode compileXSLTElementWithFCRecovery(ElementContext ctx) throws SAXException {
+        boolean elementFC = isElementForwardCompatible(ctx);
+        if (!elementFC) {
+            return compileXSLTElement(ctx);
+        }
+        try {
+            return compileXSLTElement(ctx);
+        } catch (Exception e) {
+            // In forward-compatible mode, recover from static errors
+            List<XSLTNode> fallbacks = new ArrayList<>();
+            for (XSLTNode child : ctx.children) {
+                if (child instanceof FallbackNode) {
+                    fallbacks.add(child);
+                }
+            }
+            if (!fallbacks.isEmpty()) {
+                return new SequenceNode(fallbacks);
+            }
+            // At top level or with no fallback: silently ignore
+            return null;
+        }
+    }
+
+    /**
+     * Checks if an element is in forward-compatible mode, considering
+     * the global stylesheet version, per-element version attributes,
+     * and inherited version from parent elements on the stack.
+     */
+    private boolean isElementForwardCompatible(ElementContext ctx) {
+        if (forwardCompatible) {
+            return true;
+        }
+        if (ctx.effectiveVersion > 3.0) {
+            return true;
+        }
+        // Check inherited version from ancestors still on the element stack
+        // (the current element has been popped, but its parent may still be there)
+        if (getEffectiveVersion() > 3.0) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
      * Compiles an XSLT instruction element.
      */
     private XSLTNode compileXSLTElement(ElementContext ctx) throws SAXException {
         // XTSE0090: Validate attributes are allowed on this element
         validateAllowedAttributes(ctx);
+        
+        // Per XSLT spec, xsl:fallback is silently ignored inside instructions that
+        // accept a sequence constructor as content. For instructions with restricted
+        // content models (apply-imports, apply-templates, call-template, choose, etc.),
+        // xsl:fallback is NOT permitted and should trigger XTSE0010 from validation.
+        // Extract fallback for the default case (unknown elements in FC mode need fallback).
+        List<XSLTNode> fallbackNodes = new ArrayList<>();
+        if (!hasRestrictedContentModel(ctx.localName)) {
+            java.util.Iterator<XSLTNode> fbIter = ctx.children.iterator();
+            while (fbIter.hasNext()) {
+                XSLTNode child = fbIter.next();
+                if (child instanceof FallbackNode) {
+                    fallbackNodes.add(child);
+                    fbIter.remove();
+                }
+            }
+        }
         
         switch (ctx.localName) {
             case "stylesheet":
@@ -1926,14 +3674,17 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 
             case "next-iteration":
                 validateNotTopLevel(ctx.localName);
+                validateLexicallyInIterate("xsl:next-iteration");
                 return compileNextIteration(ctx);
                 
             case "break":
                 validateNotTopLevel(ctx.localName);
+                validateLexicallyInIterate("xsl:break");
                 return compileBreak(ctx);
                 
             case "on-completion":
                 validateNotTopLevel(ctx.localName);
+                validateDirectChildOfIterate("xsl:on-completion");
                 String onCompSelect = ctx.attributes.get("select");
                 if (onCompSelect != null && !ctx.children.isEmpty()) {
                     throw new SAXException("XTSE3125: xsl:on-completion must not have " +
@@ -1992,21 +3743,34 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // These are handled as children of analyze-string
                 return new SequenceNode(ctx.children);
                 
-            case "try":
+            case "try": {
+                double effectiveVersion = Math.min(stylesheetVersion, maxProcessorVersion);
+                if (effectiveVersion < 3.0) {
+                    return compileUnknownXSLTInstruction(ctx, fallbackNodes);
+                }
                 validateNotTopLevel(ctx.localName);
                 return compileTry(ctx);
-                
-            case "catch":
+            }
+            case "catch": {
+                double effectiveVersion = Math.min(stylesheetVersion, maxProcessorVersion);
+                if (effectiveVersion < 3.0) {
+                    return compileUnknownXSLTInstruction(ctx, fallbackNodes);
+                }
+            }
                 validateNotTopLevel(ctx.localName);
                 String catchSelect = ctx.attributes.get("select");
-                if (catchSelect != null && !ctx.children.isEmpty()
-                        && hasNonWhitespaceContent(ctx.children)) {
-                    throw new SAXException("XTSE3150: xsl:catch with select attribute " +
-                        "must have empty content");
+                XPathExpression catchSelectExpr = null;
+                if (catchSelect != null && !catchSelect.isEmpty()) {
+                    if (!ctx.children.isEmpty()
+                            && hasNonWhitespaceContent(ctx.children)) {
+                        throw new SAXException("XTSE3150: xsl:catch with select attribute " +
+                            "must have empty content");
+                    }
+                    catchSelectExpr = compileExpression(catchSelect);
                 }
                 String catchErrors = ctx.attributes.get("errors");
                 XSLTNode catchContent = ctx.children.isEmpty() ? null : new SequenceNode(ctx.children);
-                return new CatchNode(catchContent, catchErrors);
+                return new CatchNode(catchContent, catchErrors, catchSelectExpr);
                 
             case "assert":
                 validateNotTopLevel(ctx.localName);
@@ -2120,26 +3884,34 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return null;
                 
             default:
-                // In forward-compatible mode, unknown elements use xsl:fallback or are ignored
-                // Per XSLT spec, FC mode applies when the effective version > max supported (3.0),
-                // either from the stylesheet root or a per-element version attribute
-                if (forwardCompatible || getEffectiveVersion() > 3.0) {
-                    // Collect ALL xsl:fallback children (XSLT spec says all are executed)
-                    List<XSLTNode> fallbacks = new ArrayList<>();
-                    for (XSLTNode child : ctx.children) {
-                        if (child instanceof FallbackNode) {
-                            fallbacks.add(child);
-                        }
-                    }
-                    if (!fallbacks.isEmpty()) {
-                        return new SequenceNode(fallbacks);
-                    }
-                    // No fallback - return empty sequence
-                    return new SequenceNode(new ArrayList<>());
-                }
-                // XTSE0010: Unknown XSLT element
-                throw new SAXException("XTSE0010: Unknown XSLT element: xsl:" + ctx.localName);
+                return compileUnknownXSLTInstruction(ctx, fallbackNodes);
         }
+    }
+    
+    /**
+     * Handles an unknown XSLT instruction element.
+     * In forward-compatible mode, uses xsl:fallback if present, otherwise
+     * defers the error to runtime. Without FC mode, raises XTSE0010.
+     */
+    private XSLTNode compileUnknownXSLTInstruction(ElementContext ctx, 
+            List<XSLTNode> fallbackNodes) throws SAXException {
+        boolean effectiveFC = forwardCompatible || isElementForwardCompatible(ctx)
+            || (maxProcessorVersion > 0 && stylesheetVersion > maxProcessorVersion);
+        if (effectiveFC) {
+            if (!fallbackNodes.isEmpty()) {
+                return new SequenceNode(fallbackNodes);
+            }
+            final String unknownName = ctx.localName;
+            return new XSLTNode() {
+                @Override
+                public void execute(TransformContext context,
+                        OutputHandler output) throws SAXException {
+                    throw new SAXException("XTDE1450: Unknown XSLT instruction " +
+                        "xsl:" + unknownName + " (no xsl:fallback)");
+                }
+            };
+        }
+        throw new SAXException("XTSE0010: Unknown XSLT element: xsl:" + ctx.localName);
     }
     
     /**
@@ -2157,21 +3929,28 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String zeroDigit = ctx.attributes.get("zero-digit");
         String digit = ctx.attributes.get("digit");
         String patternSeparator = ctx.attributes.get("pattern-separator");
+        String exponentSeparator = ctx.attributes.get("exponent-separator");
         
         // XTSE0020: name attribute cannot be an AVT
         validateNotAVT("xsl:decimal-format", "name", name);
         
-        // XTSE0080: Check for reserved namespace in decimal-format name
+        // Resolve QName prefix to expanded name
         if (name != null && name.contains(":")) {
             int colonIdx = name.indexOf(':');
             String prefix = name.substring(0, colonIdx);
+            String localName = name.substring(colonIdx + 1);
             String nsUri = ctx.namespaceBindings.get(prefix);
             if (nsUri == null) {
                 nsUri = lookupNamespaceUri(prefix);
             }
+            // XTSE0080: Check for reserved namespace
             if (nsUri != null && isReservedNamespace(nsUri)) {
                 throw new SAXException("XTSE0080: Reserved namespace '" + nsUri + 
                     "' cannot be used in the decimal-format name '" + name + "'");
+            }
+            // Store using expanded QName for namespace-aware lookup
+            if (nsUri != null) {
+                name = "{" + nsUri + "}" + localName;
             }
         }
         
@@ -2195,7 +3974,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         builder.addDecimalFormat(name, decimalSeparator, groupingSeparator,
-            infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator);
+            infinity, minusSign, nan, percent, perMille, zeroDigit, digit, patternSeparator,
+            exponentSeparator);
     }
     
     private void validateDistinctChars(String formatName, String... chars) throws SAXException {
@@ -2245,9 +4025,36 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
     }
-    
+
+    /**
+     * Checks that a namespace URI is not a reserved namespace for extension-element-prefixes.
+     * Per XSLT spec XTSE0085: reserved namespaces cannot be used as extension namespace URIs.
+     */
+    private void checkNotReservedExtensionNamespace(String nsUri) throws SAXException {
+        if (XSLT_NS.equals(nsUri)) {
+            throw new SAXException("XTSE0085: The XSLT namespace cannot be used " +
+                "as an extension namespace URI");
+        }
+        if (XSD_NAMESPACE.equals(nsUri)) {
+            throw new SAXException("XTSE0085: The XML Schema namespace cannot be used " +
+                "as an extension namespace URI");
+        }
+        if ("http://www.w3.org/XML/1998/namespace".equals(nsUri)) {
+            throw new SAXException("XTSE0085: The XML namespace cannot be used " +
+                "as an extension namespace URI");
+        }
+    }
+
     private void validateNotAVT(String elementName, String attrName, String value) throws SAXException {
-        if (value != null && value.contains("{") && value.contains("}")) {
+        if (value == null) {
+            return;
+        }
+        String trimmed = value.trim();
+        // Q{uri}local EQName syntax uses braces but is not an AVT
+        if (trimmed.startsWith("Q{") || trimmed.contains(" Q{")) {
+            return;
+        }
+        if (trimmed.contains("{") && trimmed.contains("}")) {
             throw new SAXException("XTSE0020: The " + attrName + " attribute on " + elementName + 
                                   " is not an attribute value template");
         }
@@ -2280,6 +4087,126 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
     }
     
+    /**
+     * Checks whether a global variable's select expression references the
+     * variable being defined. A global variable is not in scope within its
+     * own declaration (XPST0008).
+     */
+    private void checkSelfReference(XPathExpression selectExpr, String varLocalName) throws SAXException {
+        String exprStr = selectExpr.getExpressionString();
+        if (exprStr == null) {
+            return;
+        }
+        String varRef = "$" + varLocalName;
+        int idx = exprStr.indexOf(varRef);
+        while (idx >= 0) {
+            int afterIdx = idx + varRef.length();
+            if (afterIdx >= exprStr.length()) {
+                throw new SAXException("XPST0008: Variable $" + varLocalName +
+                    " is not in scope within its own declaration");
+            }
+            char afterChar = exprStr.charAt(afterIdx);
+            if (!Character.isLetterOrDigit(afterChar) && afterChar != '_' && afterChar != '-'
+                    && afterChar != '.') {
+                throw new SAXException("XPST0008: Variable $" + varLocalName +
+                    " is not in scope within its own declaration");
+            }
+            idx = exprStr.indexOf(varRef, afterIdx);
+        }
+    }
+
+    /**
+     * Validates that a function type in an 'as' attribute has a return type
+     * when parameter types are specified. Per the XPath grammar, TypedFunctionTest
+     * requires "function(ParamTypes) as ReturnType".
+     */
+    private void validateFunctionTypeAs(String asType) throws SAXException {
+        if (asType == null) {
+            return;
+        }
+        String trimmed = asType.trim();
+        if (!trimmed.startsWith("function(")) {
+            return;
+        }
+        int openParen = trimmed.indexOf('(');
+        int depth = 0;
+        int closeParen = -1;
+        for (int i = openParen; i < trimmed.length(); i++) {
+            char c = trimmed.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    closeParen = i;
+                    break;
+                }
+            }
+        }
+        if (closeParen < 0) {
+            return;
+        }
+        String inner = trimmed.substring(openParen + 1, closeParen).trim();
+        if (inner.equals("*") || inner.isEmpty()) {
+            return;
+        }
+        String afterParen = trimmed.substring(closeParen + 1).trim();
+        if (!afterParen.startsWith("as ") && !afterParen.startsWith("as\t")) {
+            throw new SAXException("XPST0003: Function type with parameter types " +
+                "requires a return type: " + asType);
+        }
+    }
+
+    /**
+     * Validates a boolean attribute on xsl:output (no AVTs on xsl:output).
+     * XSLT 2.0: accepts "yes" or "no" only.
+     * XSLT 3.0: accepts "yes", "no", "true", "false", "1", "0" (case-sensitive).
+     */
+    private void validateOutputBoolean(ElementContext ctx, String attrName) throws SAXException {
+        String value = ctx.attributes.get(attrName);
+        if (value == null || value.isEmpty()) {
+            return;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        if ("yes".equals(trimmed) || "no".equals(trimmed)) {
+            return;
+        }
+        if (stylesheetVersion >= 3.0) {
+            if ("true".equals(trimmed) || "false".equals(trimmed) ||
+                    "1".equals(trimmed) || "0".equals(trimmed)) {
+                return;
+            }
+        }
+        throw new SAXException("XTSE0020: Invalid value for " + attrName +
+            " attribute on xsl:output: got '" + value + "'");
+    }
+
+    /**
+     * Checks if a character is a valid XML PubidChar per the XML specification.
+     * PubidChar ::= #x20 | #xD | #xA | [a-zA-Z0-9] | [-'()+,./:=?;!*#@$_%]
+     */
+    private boolean isPubidChar(char c) {
+        if (c == 0x20 || c == 0x0D || c == 0x0A) {
+            return true;
+        }
+        if (c >= 'a' && c <= 'z') {
+            return true;
+        }
+        if (c >= 'A' && c <= 'Z') {
+            return true;
+        }
+        if (c >= '0' && c <= '9') {
+            return true;
+        }
+        return c == '-' || c == '\'' || c == '(' || c == ')' || c == '+' ||
+               c == ',' || c == '.' || c == '/' || c == ':' || c == '=' ||
+               c == '?' || c == ';' || c == '!' || c == '*' || c == '#' ||
+               c == '@' || c == '$' || c == '_' || c == '%';
+    }
+
     /**
      * Validates a boolean attribute on xsl:result-document, skipping AVTs.
      */
@@ -2486,40 +4413,42 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * </pre>
      */
     private void processCharacterMap(ElementContext ctx) throws SAXException {
-        String name = ctx.attributes.get("name");
-        if (name == null || name.isEmpty()) {
+        String rawName = ctx.attributes.get("name");
+        if (rawName == null || rawName.isEmpty()) {
             throw new SAXException("XTSE0010: xsl:character-map requires name attribute");
         }
         
         // XTSE0080: Check for reserved namespace in character-map name
-        if (name.contains(":")) {
-            int colonIdx = name.indexOf(':');
-            String prefix = name.substring(0, colonIdx);
+        if (rawName.contains(":")) {
+            int colonIdx = rawName.indexOf(':');
+            String prefix = rawName.substring(0, colonIdx);
             String nsUri = ctx.namespaceBindings.get(prefix);
             if (nsUri == null) {
                 nsUri = lookupNamespaceUri(prefix);
             }
             if (nsUri != null && isReservedNamespace(nsUri)) {
                 throw new SAXException("XTSE0080: Reserved namespace '" + nsUri + 
-                    "' cannot be used in the character-map name '" + name + "'");
+                    "' cannot be used in the character-map name '" + rawName + "'");
             }
         }
         
-        // XTSE1580: Check for duplicate character map name
-        if (builder.hasCharacterMap(name)) {
-            throw new SAXException("XTSE1580: Duplicate character-map name: " + name);
-        }
+        String name = expandQName(rawName.trim());
+        
+        // XTSE1580 only applies at the same import precedence.
+        // Allow redefinition: last definition wins within same stylesheet module,
+        // and mergeNonTemplates handles "first wins" for imports.
         
         String useCharacterMaps = ctx.attributes.get("use-character-maps");
         
         CompiledStylesheet.CharacterMap charMap = new CompiledStylesheet.CharacterMap(name);
         
-        // Process use-character-maps references
+        // Process use-character-maps references (expand QNames)
         if (useCharacterMaps != null && !useCharacterMaps.isEmpty()) {
             String[] refs = useCharacterMaps.split("\\s+");
             for (String ref : refs) {
                 if (!ref.isEmpty()) {
-                    charMap.addUseCharacterMap(ref);
+                    String expandedRef = expandQName(ref.trim());
+                    charMap.addUseCharacterMap(expandedRef);
                 }
             }
         }
@@ -2584,6 +4513,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (name == null || name.isEmpty()) {
             throw new SAXException("xsl:accumulator requires name attribute");
         }
+        ensurePrecedenceAssigned();
+        
         
         String initialValueStr = resolveStaticShadowAttribute(ctx, "initial-value");
         if (initialValueStr == null) {
@@ -2598,11 +4529,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         boolean streamable = !"no".equals(streamableAttr);  // Default is yes
         
+        String expandedName = expandQName(name.trim());
+        
         AccumulatorDefinition.Builder accBuilder = new AccumulatorDefinition.Builder()
             .name(name)
+            .expandedName(expandedName)
             .initialValue(initialValue)
             .streamable(streamable)
-            .asType(asType);
+            .asType(asType)
+            .importPrecedence(importPrecedence);
         
         // Process accumulator-rule children
         int ruleCount = 0;
@@ -2630,7 +4565,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         validateEmptyElement(ctx, "xsl:mode");
         
         String name = ctx.attributes.get("name");
-        String streamableAttr = ctx.attributes.get("streamable");
+        String streamableAttr = resolveStaticShadowAttribute(ctx, "streamable");
         String onNoMatchAttr = ctx.attributes.get("on-no-match");
         String onMultipleMatchAttr = ctx.attributes.get("on-multiple-match");
         String visibilityAttr = ctx.attributes.get("visibility");
@@ -2645,16 +4580,32 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         validateYesOrNo("xsl:mode", "warning-on-no-match", warningOnNoMatch);
         validateYesOrNo("xsl:mode", "warning-on-multiple-match", warningOnMultipleMatch);
         
+        // XTSE0020: unnamed mode cannot be public or final
+        if (name == null && visibilityAttr != null) {
+            String vis = visibilityAttr.trim();
+            if ("public".equals(vis) || "final".equals(vis)) {
+                throw new SAXException("XTSE0020: The unnamed mode cannot have visibility='" +
+                    vis + "'");
+            }
+        }
+        
         // XTSE0545: detect conflicting mode declarations at same import precedence
         String modeKey = name != null ? name : "#default";
         checkModeConflict(modeKey, "on-no-match", onNoMatchAttr);
         checkModeConflict(modeKey, "on-multiple-match", onMultipleMatchAttr);
         checkModeConflict(modeKey, "visibility", visibilityAttr);
         checkModeConflict(modeKey, "streamable", streamableAttr);
+        if (useAccumulators != null) {
+            checkModeConflict(modeKey, "use-accumulators",
+                expandAccumulatorNames(useAccumulators));
+        }
         
+        boolean isStreamable = "yes".equals(streamableAttr)
+            || "true".equals(streamableAttr)
+            || "1".equals(streamableAttr);
         ModeDeclaration.Builder modeBuilder = new ModeDeclaration.Builder()
             .name(name)
-            .streamable("yes".equals(streamableAttr))
+            .streamable(isStreamable)
             .onNoMatch(onNoMatchAttr)
             .onMultipleMatch(onMultipleMatchAttr)
             .visibility(visibilityAttr)
@@ -2670,6 +4621,26 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * Two declarations for the same mode must not set the same attribute
      * to different values at the same import precedence.
      */
+    private String expandAccumulatorNames(String names) throws SAXException {
+        String trimmed = names.trim();
+        if ("#all".equals(trimmed)) {
+            return trimmed;
+        }
+        String[] tokens = trimmed.split("\\s+");
+        java.util.TreeSet<String> expanded = new java.util.TreeSet<>();
+        for (String token : tokens) {
+            expanded.add(expandQName(token));
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String name : expanded) {
+            if (sb.length() > 0) {
+                sb.append(' ');
+            }
+            sb.append(name);
+        }
+        return sb.toString();
+    }
+
     private void checkModeConflict(String modeKey, String attrName,
                                     String attrValue) throws SAXException {
         if (attrValue == null) {
@@ -2716,6 +4687,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String localName = funcName.getLocalName();
         
         String asType = ctx.attributes.get("as"); // Optional return type
+        String visibilityAttr = resolveStaticShadowAttribute(ctx, "visibility");
         String cacheAttr = ctx.attributes.get("cache");
         String overrideExtAttr = ctx.attributes.get("override-extension-function");
         String overrideAttr = ctx.attributes.get("override");
@@ -2747,6 +4719,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         boolean cached = "yes".equals(cacheAttr) || "true".equals(cacheAttr);
+        ComponentVisibility funcVisibility = ComponentVisibility.PRIVATE;
+        if (visibilityAttr != null && !visibilityAttr.isEmpty()) {
+            try {
+                funcVisibility = ComponentVisibility.valueOf(visibilityAttr.trim().toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new SAXException("XTSE0020: Invalid visibility value for xsl:function: " +
+                    visibilityAttr);
+            }
+        }
         
         // Extract parameters from children
         List<UserFunction.FunctionParameter> params = new ArrayList<>();
@@ -2765,7 +4746,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         "have a default value (select attribute or content): " + pn.getName());
                 }
                 String paramAs = pn.getAs(); // Type annotation if any
-                params.add(new UserFunction.FunctionParameter(pn.getName(), paramAs));
+                params.add(new UserFunction.FunctionParameter(pn.getNamespaceURI(), pn.getLocalName(), paramAs));
+            } else if (child instanceof ContextItemDeclaration) {
+                throw new SAXException("XTSE0010: xsl:context-item is not allowed " +
+                    "in xsl:function");
             } else {
                 bodyNodes.add(child);
             }
@@ -2774,7 +4758,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         SequenceNode body = new SequenceNode(bodyNodes);
         
         UserFunction function = new UserFunction(
-            namespaceURI, localName, params, body, asType, importPrecedence, cached);
+            namespaceURI, localName, params, body, asType, importPrecedence, cached, funcVisibility);
         try {
             builder.addUserFunction(function);
         } catch (javax.xml.transform.TransformerConfigurationException e) {
@@ -2891,18 +4875,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        // Extract xsl:type for type annotation (XSLT 2.0)
-        // XTSE1660: Non-schema-aware processor must reject xsl:type except for xs:untyped
-        // xs:untyped is the default type for elements without schema validation, so it's a no-op
+        // XTSE1660: Non-schema-aware processor must reject any xsl:type attribute
         String typeValue = ctx.attributes.get("xsl:type");
         if (typeValue != null && !typeValue.isEmpty()) {
-            String normalizedType = typeValue.trim();
-            // Allow xs:untyped (element default) - strip any namespace prefix
-            if (normalizedType.endsWith(":untyped") || "untyped".equals(normalizedType)) {
-                // This is valid - elements without validation have type xs:untyped by default
-            } else {
-                throw new SAXException("XTSE1660: xsl:type='" + typeValue + "' requires a schema-aware processor");
-            }
+            throw new SAXException("XTSE1660: xsl:type='" + typeValue +
+                "' requires a schema-aware processor");
         }
         
         // XTSE1660: Non-schema-aware processor must reject certain xsl:validation values
@@ -2912,6 +4889,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         // Compile attributes as AVTs
+        // Check if we're in backward-compat mode (version 1.0)
+        double lreEffectiveVer = ctx.effectiveVersion > 0 ? ctx.effectiveVersion : getEffectiveVersion();
+        boolean lreBackwardsCompat = lreEffectiveVer < 2.0;
         Map<String, AttributeValueTemplate> avts = new LinkedHashMap<>();
         for (Map.Entry<String, String> attr : ctx.attributes.entrySet()) {
             String name = attr.getKey();
@@ -2921,6 +4901,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (name.startsWith("xsl:")) {
                 String xslAttr = name.substring(4);
                 if (!isKnownLREAttribute(xslAttr)) {
+                    if (isElementForwardCompatible(ctx)) {
+                        continue;
+                    }
                     throw new SAXException("XTSE0805: Unknown XSLT attribute '" + name +
                         "' on literal result element");
                 }
@@ -2928,7 +4911,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             
             try {
-                avts.put(name, AttributeValueTemplate.parse(value, this));
+                AttributeValueTemplate avt = AttributeValueTemplate.parse(value, this);
+                if (lreBackwardsCompat) {
+                    avt.setBackwardsCompatible(true);
+                }
+                avts.put(name, avt);
             } catch (XPathSyntaxException e) {
                 throw new SAXException("Invalid AVT in attribute " + name + ": " + e.getMessage(), e);
             }
@@ -3026,8 +5013,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XTSE0110: Invalid version attribute value: " + versionAttr);
         }
         
-        // xsl:package requires XSLT 3.0: if the declared version is < 3.0, the
-        // stylesheet is declaring itself as pre-3.0, where xsl:package does not exist
+        // xsl:package is an XSLT 3.0 element. If the declared version is < 3.0,
+        // reject it since pre-3.0 processors don't recognize xsl:package.
         if ("package".equals(ctx.localName) && stylesheetVersion < 3.0) {
             throw new SAXException("XTSE0010: xsl:package is only allowed in XSLT 3.0 or later (version="
                 + versionAttr + ")");
@@ -3075,10 +5062,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             
             // declared-modes attribute (XSLT 3.0)
-            // "yes" (default) means modes are declared by their first use or explicit xsl:mode
-            // "no" means all modes must be declared with xsl:mode
+            // When "yes" (default for xsl:package), all modes must be explicitly declared
+            // with xsl:mode. Using an undeclared mode is XTSE3085.
             String declaredModesAttr = ctx.attributes.get("declared-modes");
-            // For now, we allow undeclared modes (default behavior)
+            if (declaredModesAttr != null) {
+                String trimmed = declaredModesAttr.trim();
+                declaredModesEnabled = "yes".equals(trimmed) || "1".equals(trimmed)
+                    || "true".equals(trimmed);
+            } else {
+                declaredModesEnabled = true;
+            }
             
             // input-type-annotations attribute (for typed documents)
             String inputTypeAnnotations = ctx.attributes.get("input-type-annotations");
@@ -3234,6 +5227,96 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     /**
+     * Validates that the given instruction is the last XSLT element child
+     * in its parent's sequence constructor.
+     */
+    /**
+     * Validates that xsl:break and xsl:next-iteration are the last instruction
+     * in their parent's sequence constructor (XTSE3120).
+     * Called after all children of an element have been compiled,
+     * so the complete children list is available.
+     */
+    private void validateBreakNextIterationPosition(ElementContext ctx)
+            throws SAXException {
+        List<XSLTNode> children = ctx.children;
+        if (children.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < children.size(); i++) {
+            XSLTNode child = children.get(i);
+            boolean isBreak = (child instanceof BreakNode);
+            boolean isNextIteration = (child instanceof NextIterationNode);
+            if (!isBreak && !isNextIteration) {
+                continue;
+            }
+            for (int j = i + 1; j < children.size(); j++) {
+                XSLTNode next = children.get(j);
+                if (next instanceof LiteralText) {
+                    continue;
+                }
+                if (next instanceof FallbackNode) {
+                    continue;
+                }
+                if (next instanceof CatchNode) {
+                    continue;
+                }
+                if (next instanceof OnCompletionNode) {
+                    continue;
+                }
+                String instruction = isBreak ?
+                    "xsl:break" : "xsl:next-iteration";
+                throw new SAXException("XTSE3120: " + instruction +
+                    " must be the last instruction in its " +
+                    "sequence constructor");
+            }
+        }
+    }
+
+    /**
+     * Validates that the current element is a direct child of xsl:iterate.
+     */
+    private void validateDirectChildOfIterate(String instruction) throws SAXException {
+        if (!elementStack.isEmpty()) {
+            ElementContext parent = elementStack.peek();
+            if (XSLT_NS.equals(parent.namespaceURI) && "iterate".equals(parent.localName)) {
+                return;
+            }
+        }
+        throw new SAXException("XTSE0010: " + instruction +
+            " must be a direct child of xsl:iterate");
+    }
+
+    /**
+     * Validates that the current element is lexically inside an xsl:iterate,
+     * with only permitted intermediate elements (conditionals, etc.) in between.
+     * Elements like xsl:for-each, xsl:for-each-group, literal result elements,
+     * xsl:template, and xsl:function break the lexical scope.
+     */
+    private void validateLexicallyInIterate(String instruction) throws SAXException {
+        for (ElementContext ancestor : elementStack) {
+            if (XSLT_NS.equals(ancestor.namespaceURI)) {
+                String name = ancestor.localName;
+                if ("iterate".equals(name)) {
+                    return;
+                }
+                if ("if".equals(name) || "choose".equals(name)
+                    || "when".equals(name) || "otherwise".equals(name)
+                    || "try".equals(name) || "catch".equals(name)
+                    || "where-populated".equals(name)) {
+                    continue;
+                }
+                throw new SAXException("XTSE3120: " + instruction +
+                    " is not allowed here; it must be lexically within xsl:iterate");
+            } else {
+                throw new SAXException("XTSE3120: " + instruction +
+                    " is not allowed inside a literal result element within xsl:iterate");
+            }
+        }
+        throw new SAXException("XTSE3120: " + instruction +
+            " is not allowed outside xsl:iterate");
+    }
+
+    /**
      * Validates that an element has no content (text or child elements).
      * XTSE0260: Elements required to be empty cannot have content.
      * Note: Even whitespace text nodes preserved with xml:space="preserve" are an error.
@@ -3278,7 +5361,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // XTSE0260: xsl:import must be empty
         validateEmptyElement(ctx, "xsl:import");
         
-        String href = ctx.attributes.get("href");
+        String href = resolveStaticShadowAttribute(ctx, "href");
         if (href == null || href.isEmpty()) {
             throw new SAXException("XTSE0010: xsl:import requires href attribute");
         }
@@ -3294,9 +5377,27 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // - This ensures: D < B < E < C < A for the tree A→[B→D, C→E]
             // The imported stylesheet will assign its own precedence from the global counter
             // Pass -1 to indicate the imported stylesheet should assign its own precedence
-            CompiledStylesheet imported = resolver.resolve(href, baseUri, true, -1);
+            CompiledStylesheet imported = resolver.resolve(href, getEffectiveBaseUri(), true, -1);
             if (imported != null) {
                 builder.merge(imported, true);
+                // Propagate static variables from imported module into parent scope
+                for (GlobalVariable gv : imported.getGlobalVariables()) {
+                    if (gv.isStatic()) {
+                        String ln = gv.getLocalName();
+                        if (!staticVariables.containsKey(ln)) {
+                            staticVariables.put(ln, gv.getStaticValue());
+                        }
+                        // Register for XTSE3450 conflict detection (only if not already
+                        // registered at a higher precedence from the importing stylesheet)
+                        if (!staticDeclarationInfo.containsKey(ln)) {
+                            String selStr = gv.getStaticValue() != null
+                                ? gv.getStaticValue().asString() : null;
+                            staticDeclarationInfo.put(ln, new Object[]{
+                                Boolean.valueOf(gv.isParam()), selStr,
+                                Integer.valueOf(gv.getImportPrecedence())});
+                        }
+                    }
+                }
             }
         } catch (IOException e) {
             throw new SAXException("Failed to import stylesheet: " + href, e);
@@ -3322,7 +5423,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // element, no more imports are allowed
         importsAllowed = false;
         
-        String href = ctx.attributes.get("href");
+        String href = resolveStaticShadowAttribute(ctx, "href");
         if (href == null || href.isEmpty()) {
             throw new SAXException("XTSE0010: xsl:include requires href attribute");
         }
@@ -3332,10 +5433,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         try {
+            // Share static variables with included module (XSLT 3.0 §3.8)
+            resolver.setSharedStaticVariables(staticVariables);
+            
             // For includes: compile the included stylesheet (which may have imports
             // that need lower precedence). The included stylesheet uses -1 to assign
             // its own precedence after its imports.
-            CompiledStylesheet included = resolver.resolve(href, baseUri, false, -1);
+            CompiledStylesheet included = resolver.resolve(href, getEffectiveBaseUri(), false, -1);
             
             // Don't assign our precedence here - wait until getCompiledStylesheet()
             // to ensure our precedence is higher than ALL imports (including those
@@ -3843,28 +5947,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         importsAllowed = false;
         ensurePrecedenceAssigned();
         
-        // Reset inline schema tracking (was set in startElement)
         inImportSchema = false;
         
         String namespace = ctx.attributes.get("namespace");
         String schemaLocation = ctx.attributes.get("schema-location");
         
-        // If an inline schema was already parsed (in endElement), we're done
-        // The inline schema handling in endElement already added the schema to builder
         if (schemaLocation == null || schemaLocation.isEmpty()) {
-            // No schema-location - inline schema (if present) was already processed
             importSchemaNamespace = null;
             return;
         }
         
         try {
-            // Resolve the schema location relative to the stylesheet base URI
             String resolvedLocation = resolveUri(schemaLocation);
-            
-            // Parse the schema
             XSDSchema schema = XSDSchemaParser.parse(resolvedLocation);
             
-            // Verify namespace matches if specified
             if (namespace != null && !namespace.isEmpty()) {
                 String schemaTargetNs = schema.getTargetNamespace();
                 if (schemaTargetNs != null && !namespace.equals(schemaTargetNs)) {
@@ -3873,16 +5969,32 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
             }
             
-            // Add the schema to the compiled stylesheet
             builder.addImportedSchema(schema);
             
         } catch (IOException e) {
-            throw new SAXException("Failed to import schema: " + schemaLocation, e);
+            // Schema not found - silently continue (best effort for Basic processor)
         } catch (Exception e) {
-            throw new SAXException("Error parsing schema: " + schemaLocation + " - " + e.getMessage(), e);
+            // Schema parse error - silently continue
         } finally {
             importSchemaNamespace = null;
         }
+    }
+
+    /**
+     * Returns the effective base URI for resolving relative references.
+     * During external entity expansion the SAX locator reports the
+     * entity's system ID, which may differ from the stylesheet's own
+     * base URI.  If the locator provides a system ID we use it;
+     * otherwise we fall back to the static {@code baseUri}.
+     */
+    private String getEffectiveBaseUri() {
+        if (locator != null) {
+            String sysId = locator.getSystemId();
+            if (sysId != null) {
+                return sysId;
+            }
+        }
+        return baseUri;
     }
 
     /**
@@ -3909,6 +6021,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String mode = ctx.attributes.get("mode");
         String priorityStr = ctx.attributes.get("priority");
         String asType = ctx.attributes.get("as");  // XSLT 2.0+ return type
+        
+        // Pre-parse the 'as' type with namespace resolution while bindings are available
+        SequenceType parsedAsType = null;
+        if (asType != null && !asType.trim().isEmpty()) {
+            final Map<String, String> nsBindings = ctx.namespaceBindings;
+            parsedAsType = SequenceType.parse(asType.trim(), new java.util.function.Function<String, String>() {
+                @Override
+                public String apply(String prefix) {
+                    return nsBindings.get(prefix);
+                }
+            });
+        }
+        
+        // Track whether this template has a match pattern (for xsl:context-item validation)
+        boolean savedHasMatch = currentTemplateHasMatch;
+        currentTemplateHasMatch = (match != null);
         
         // XSLT 3.0: visibility attribute for package components
         String visibilityAttr = resolveStaticShadowAttribute(ctx, "visibility");
@@ -3990,10 +6118,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 String token = trimmedMode.substring(start, end);
                 String expandedToken = expandModeQName(token, true);
                 expandedModes.add(expandedToken);
+                if (!"#all".equals(token)) {
+                    usedModeNames.add(expandedToken != null ? expandedToken : "#default");
+                }
                 start = end;
             }
         } else {
             expandedModes.add(null);
+            if (match != null) {
+                usedModeNames.add("#default");
+            }
         }
         
         // Expand template name to Clark notation for proper namespace comparison
@@ -4022,6 +6156,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         List<TemplateParameter> params = new ArrayList<>();
         List<XSLTNode> bodyNodes = new ArrayList<>();
         boolean foundNonParam = false;
+        boolean foundContextItem = false;
         Set<String> seenParamNames = new HashSet<>();
         
         for (XSLTNode child : ctx.children) {
@@ -4038,7 +6173,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 if (!seenParamNames.add(paramKey)) {
                     throw new SAXException("XTSE0580: Duplicate parameter name '" + pn.getName() + "' in xsl:template");
                 }
-                params.add(new TemplateParameter(pn.getNamespaceURI(), pn.getLocalName(), pn.getSelectExpr(), pn.getContent(), pn.isTunnel(), pn.isRequired()));
+                params.add(new TemplateParameter(pn.getNamespaceURI(), pn.getLocalName(), pn.getSelectExpr(), pn.getContent(), pn.isTunnel(), pn.isRequired(), pn.getAs()));
             } else if (child instanceof WithParamNode) {
                 // XTSE0010: xsl:with-param not allowed directly in template
                 throw new SAXException("XTSE0010: xsl:with-param is not allowed directly in xsl:template");
@@ -4046,7 +6181,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 // XTSE0010: xsl:sort not allowed directly in template
                 throw new SAXException("XTSE0010: xsl:sort is not allowed directly in xsl:template");
             } else if (child instanceof ContextItemDeclaration) {
-                // XSLT 3.0: xsl:context-item is allowed in the preamble (before/with params)
+                // XTSE0010: xsl:context-item must be before params and body content
+                if (foundNonParam || !params.isEmpty()) {
+                    throw new SAXException("XTSE0010: xsl:context-item must appear before " +
+                        "xsl:param and any other content in xsl:template");
+                }
+                if (foundContextItem) {
+                    throw new SAXException("XTSE0010: Duplicate xsl:context-item in xsl:template");
+                }
+                foundContextItem = true;
                 bodyNodes.add(child);
             } else {
                 // Only non-whitespace content counts as "found non-param" for ordering check
@@ -4086,6 +6229,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                         expandedMode, rulePriority, importPrecedence,
                         nextTemplateIndex(), params, body, asType,
                         visibility);
+                    rule.setParsedAsType(parsedAsType);
                     builder.addTemplateRule(rule);
                 }
             }
@@ -4094,9 +6238,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 TemplateRule rule = new TemplateRule(pattern, expandedName,
                     expandedMode, priority, importPrecedence,
                     nextTemplateIndex(), params, body, asType, visibility);
+                rule.setParsedAsType(parsedAsType);
                 builder.addTemplateRule(rule);
             }
         }
+        currentTemplateHasMatch = savedHasMatch;
     }
 
     /**
@@ -4115,38 +6261,64 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             return mode;
         }
         
+        String trimmed = mode.trim();
+        
         // Handle special mode values
-        if ("#default".equals(mode) || "#all".equals(mode) || 
-            "#current".equals(mode) || "#unnamed".equals(mode)) {
-            return mode;
+        if ("#default".equals(trimmed) || "#all".equals(trimmed) || 
+            "#current".equals(trimmed) || "#unnamed".equals(trimmed)) {
+            return trimmed;
         }
         
-        int colonPos = mode.indexOf(':');
+        // Handle EQName syntax: Q{uri}localname (XSLT 3.0)
+        if (trimmed.startsWith("Q{")) {
+            int closeBrace = trimmed.indexOf('}');
+            if (closeBrace >= 2) {
+                String uri = trimmed.substring(2, closeBrace);
+                String localPart = trimmed.substring(closeBrace + 1);
+                if (checkReserved && isReservedNamespace(uri)) {
+                    throw new SAXException("XTSE0080: Reserved namespace '" + uri + 
+                        "' cannot be used in the mode '" + mode + "'");
+                }
+                if (uri.isEmpty()) {
+                    return localPart;
+                }
+                return "{" + uri + "}" + localPart;
+            }
+        }
+        
+        int colonPos = trimmed.indexOf(':');
         if (colonPos > 0) {
-            // Prefixed mode name - expand to Clark notation
-            String prefix = mode.substring(0, colonPos);
-            String localName = mode.substring(colonPos + 1);
+            String prefix = trimmed.substring(0, colonPos);
+            String localName = trimmed.substring(colonPos + 1);
             String uri = resolve(prefix);
             if (uri != null && !uri.isEmpty()) {
-                // XTSE0080: Check for reserved namespaces in mode names
                 if (checkReserved && isReservedNamespace(uri)) {
                     throw new SAXException("XTSE0080: Reserved namespace '" + uri + 
                         "' cannot be used in the mode '" + mode + "'");
                 }
                 return "{" + uri + "}" + localName;
             }
-            // XTSE0280: Prefix not declared
             throw new SAXException("XTSE0280: Namespace prefix '" + prefix + "' is not declared");
         }
         
-        // Unprefixed mode - return as-is (no namespace)
-        return mode;
+        return trimmed;
     }
 
     /**
      * Expands a QName to Clark notation {uri}localname for proper comparison.
      * Names like woo:a and hoo:a should be equal if both prefixes map to the same URI.
      */
+    /**
+     * Returns true if the given expression streamability is fully streamable
+     * (MOTIONLESS or CONSUMING). GROUNDED and FREE_RANGING expressions are
+     * not allowed in streamable contexts per XSLT 3.0 section 19.
+     */
+    private static boolean isFullyStreamable(
+            StreamabilityAnalyzer.ExpressionStreamability streamability) {
+        return streamability == StreamabilityAnalyzer.ExpressionStreamability.MOTIONLESS
+            || streamability == StreamabilityAnalyzer.ExpressionStreamability.CONSUMING;
+    }
+
     /**
      * Checks if an XPath expression string contains a descendant or
      * descendant-or-self axis (indicating a crawling/non-motionless expression).
@@ -4189,6 +6361,45 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         return false;
+    }
+
+    /**
+     * Returns a copy of children with xsl:fallback elements removed.
+     * Per XSLT spec, xsl:fallback is only activated for unknown instructions.
+     */
+    private List<XSLTNode> filterFallback(List<XSLTNode> children) {
+        List<XSLTNode> result = new ArrayList<>(children.size());
+        for (XSLTNode child : children) {
+            if (!(child instanceof FallbackNode)) {
+                result.add(child);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Returns true if the named XSLT instruction has a restricted content model
+     * where xsl:fallback is NOT permitted. These instructions only allow specific
+     * child elements (not arbitrary sequence constructors).
+     */
+    private static boolean hasRestrictedContentModel(String localName) {
+        switch (localName) {
+            case "apply-imports":
+            case "apply-templates":
+            case "call-template":
+            case "choose":
+            case "stylesheet":
+            case "transform":
+            case "package":
+            case "number":
+            case "sort":
+            case "merge":
+            case "merge-source":
+            case "accumulator":
+                return true;
+            default:
+                return false;
+        }
     }
 
     /**
@@ -4405,17 +6616,73 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        String name = ctx.attributes.get("name");
+        String rawName = ctx.attributes.get("name");
+        String name = null;
+        if (rawName != null && !rawName.isEmpty()) {
+            name = expandQName(rawName.trim());
+        }
+        
+        // XTSE0020: validate boolean attributes (must be yes/no/true/false/1/0)
+        validateOutputBoolean(ctx, "byte-order-mark");
+        validateOutputBoolean(ctx, "escape-uri-attributes");
+        validateOutputBoolean(ctx, "include-content-type");
+        validateOutputBoolean(ctx, "indent");
+        validateOutputBoolean(ctx, "omit-xml-declaration");
+        validateOutputBoolean(ctx, "undeclare-prefixes");
+        
+        // standalone accepts "yes"/"no"/"omit" (and "true"/"false"/"1"/"0" in 3.0)
+        String standalone = ctx.attributes.get("standalone");
+        if (standalone != null && !standalone.isEmpty()) {
+            String trimmed = standalone.trim();
+            if (!trimmed.isEmpty() && !"yes".equals(trimmed) && !"no".equals(trimmed) && !"omit".equals(trimmed)) {
+                if (stylesheetVersion < 3.0 || (!"true".equals(trimmed) && !"false".equals(trimmed) &&
+                        !"1".equals(trimmed) && !"0".equals(trimmed))) {
+                    throw new SAXException("XTSE0020: Invalid value for standalone attribute on xsl:output: got '" +
+                        standalone + "'");
+                }
+            }
+        }
+        
+        // XTSE0020: html-version must be a valid number
+        String htmlVersion = ctx.attributes.get("html-version");
+        if (htmlVersion != null && !htmlVersion.isEmpty()) {
+            String hv = htmlVersion.trim();
+            if (!hv.isEmpty()) {
+                try {
+                    Double.parseDouble(hv);
+                } catch (NumberFormatException e) {
+                    throw new SAXException("XTSE0020: Invalid value for html-version on xsl:output: '" +
+                        htmlVersion + "' is not a valid number");
+                }
+            }
+        }
+        
+        // SEPM0016: doctype-public must contain only valid PubidChars
+        String doctypePublic = ctx.attributes.get("doctype-public");
+        if (doctypePublic != null && !doctypePublic.isEmpty()) {
+            for (int i = 0; i < doctypePublic.length(); i++) {
+                char c = doctypePublic.charAt(i);
+                if (!isPubidChar(c)) {
+                    throw new SAXException("SEPM0016: Invalid character in doctype-public: '" +
+                        doctypePublic + "' (character '" + c + "' at position " + i + ")");
+                }
+            }
+        }
         
         // XTSE1560: merge output attributes, detecting conflicts
         String[] attrNames = {"method", "version", "encoding", "indent",
             "omit-xml-declaration", "standalone", "doctype-public", "doctype-system",
-            "media-type", "byte-order-mark", "normalization-form"};
+            "media-type", "byte-order-mark", "normalization-form",
+            "parameter-document", "html-version"};
         for (String attrName : attrNames) {
             String val = ctx.attributes.get(attrName);
             if (val != null) {
                 builder.mergeOutputAttribute(name, attrName, val);
             }
+        }
+        // Ensure named output definitions are registered even with no standard attrs
+        if (name != null && !name.isEmpty()) {
+            builder.registerOutputDefinition(name);
         }
         
         // Build the actual output properties from merged attributes
@@ -4444,7 +6711,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             String[] mapNames = useCharacterMaps.split("\\s+");
             for (String mapName : mapNames) {
                 if (!mapName.isEmpty()) {
-                    props.addUseCharacterMap(mapName);
+                    String expandedMap = expandQName(mapName.trim());
+                    props.addUseCharacterMap(expandedMap);
                 }
             }
         }
@@ -4494,9 +6762,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         QName keyName = parseQName(name, ctx.namespaceBindings, true);
         
         Pattern pattern = compilePattern(match);
-        XPathExpression useExpr = compileExpression(use);
+        XPathExpression useExpr = null;
+        SequenceNode content = null;
+        if (use != null) {
+            useExpr = compileExpression(use);
+        } else {
+            content = new SequenceNode(ctx.children);
+        }
         
-        builder.addKeyDefinition(new KeyDefinition(keyName, pattern, useExpr));
+        String compositeStr = ctx.attributes.get("composite");
+        validateYesOrNo("xsl:key", "composite", compositeStr);
+        boolean composite = "yes".equals(compositeStr) || "1".equals(compositeStr)
+                || "true".equals(compositeStr);
+        
+        // Resolve effective collation: explicit attribute, then default-collation in scope
+        String keyCollation = null;
+        if (collation != null && !collation.isEmpty()) {
+            keyCollation = collation;
+        } else if (ctx.defaultCollation != null) {
+            keyCollation = ctx.defaultCollation;
+        } else if (builder.getDefaultCollation() != null) {
+            keyCollation = builder.getDefaultCollation();
+        }
+        builder.addKeyDefinition(new KeyDefinition(keyName, pattern, useExpr, content,
+                composite, keyCollation));
     }
     
     /**
@@ -4612,7 +6901,34 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         SequenceNode attrs = new SequenceNode(attrNodes);
-        builder.addAttributeSet(new AttributeSet(expandedName, useSets, attrs));
+        String streamableTrimmed = streamableAttr != null ? streamableAttr.trim() : null;
+        boolean isStreamable = "yes".equals(streamableTrimmed) ||
+            "true".equals(streamableTrimmed) || "1".equals(streamableTrimmed);
+
+        // XTSE3430: If declared streamable, body must be motionless
+        // (attribute sets have no streaming context to consume from)
+        if (isStreamable) {
+            StreamabilityAnalyzer attrAnalyzer = new StreamabilityAnalyzer();
+            List<String> reasons = new ArrayList<String>();
+            StreamabilityAnalyzer.ExpressionStreamability bodyClass =
+                attrAnalyzer.analyzeNode(attrs, reasons);
+            if (bodyClass != StreamabilityAnalyzer.ExpressionStreamability
+                    .MOTIONLESS) {
+                StringBuilder sb = new StringBuilder();
+                sb.append("XTSE3430: Attribute set '");
+                sb.append(name);
+                sb.append("' is declared streamable but its body is not");
+                if (!reasons.isEmpty()) {
+                    sb.append(": ");
+                    sb.append(reasons.get(0));
+                }
+                throw new SAXException(sb.toString());
+            }
+        }
+
+        builder.addAttributeSet(new AttributeSet(expandedName, useSets,
+                                                  attrs, ComponentVisibility.PUBLIC,
+                                                  isStreamable));
     }
     
     /**
@@ -4840,7 +7156,21 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 "map to the same namespace URI (" + stylesheetUri + ")");
         }
         
-        builder.addNamespaceAlias(stylesheetUri, resultUri, resultPrefix);
+        // XTSE0810: conflict detection - only raise for same import precedence
+        ensurePrecedenceAssigned();
+        CompiledStylesheet.NamespaceAlias existing = builder.getNamespaceAlias(stylesheetUri);
+        if (existing != null && !existing.resultUri.equals(resultUri)) {
+            if (existing.importPrecedence == importPrecedence) {
+                throw new SAXException("XTSE0810: Conflicting namespace-alias " +
+                    "declarations for namespace '" + stylesheetUri +
+                    "': result URIs '" + existing.resultUri + "' and '" + resultUri + "'");
+            }
+            if (existing.importPrecedence < importPrecedence) {
+                builder.addNamespaceAlias(stylesheetUri, resultUri, resultPrefix, importPrecedence);
+            }
+        } else {
+            builder.addNamespaceAlias(stylesheetUri, resultUri, resultPrefix, importPrecedence);
+        }
     }
     
     /**
@@ -4880,9 +7210,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XTSE0010: xsl:variable requires name attribute");
         }
         
-        String select = ctx.attributes.get("select");
+        String select = resolveStaticShadowAttribute(ctx, "select");
         String staticAttr = ctx.attributes.get("static");
         String asType = ctx.attributes.get("as"); // XSLT 2.0 type annotation
+        String visibilityAttr = ctx.attributes.get("visibility");
         validateYesOrNo("xsl:variable", "static", staticAttr);
         
         // Parse QName with resolved namespace
@@ -4891,6 +7222,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         // Check for static variable (XSLT 3.0)
         boolean isStatic = isStaticValue(staticAttr);
+        
+        // XTSE0020: static="yes" combined with visibility is not allowed
+        if (isStatic && visibilityAttr != null) {
+            throw new SAXException("XTSE0020: static='yes' must not be combined " +
+                "with visibility attribute on xsl:variable");
+        }
         
         if (isStatic && isTopLevel) {
             // XTSE0620: static variable must not have both select and content
@@ -4901,6 +7238,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // Static variable: evaluate at compile time and store for use-when
             // Use the element's base URI for static-base-uri()
             XPathValue staticValue = evaluateStaticExpression(select, varName.getLocalName(), ctx.baseURI);
+            // XTSE3450: check for conflicting static declarations across import precedences
+            checkStaticDeclarationConflict(varName.getLocalName(), false, 
+                staticValue != null ? staticValue.asString() : null, importPrecedence);
             staticVariables.put(varName.getLocalName(), staticValue);
             // Add as global variable with pre-computed static value
             try {
@@ -4910,6 +7250,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             return null;
         }
+        
+        validateFunctionTypeAs(asType);
         
         XPathExpression selectExpr = select != null ? compileExpression(select) : null;
         SequenceNode content = ctx.children.isEmpty() ? null : new SequenceNode(ctx.children);
@@ -4921,6 +7263,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         if (isTopLevel) {
+            if (selectExpr != null) {
+                checkSelfReference(selectExpr, varName.getLocalName());
+            }
             try {
                 builder.addGlobalVariable(new GlobalVariable(varName, false, selectExpr, content, 
                     importPrecedence, asType, ComponentVisibility.PUBLIC, false, ctx.baseURI));
@@ -4986,12 +7331,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        // Function params are always required; required='no' is not allowed
-        if (requiredAttr != null && !required) {
+        // XTSE0090: required attribute on function params not allowed in XSLT 2.0
+        if (requiredAttr != null && stylesheetVersion < 3.0) {
             ElementContext parent = elementStack.isEmpty() ? null : elementStack.peek();
             if (parent != null && XSLT_NS.equals(parent.namespaceURI)
                     && "function".equals(parent.localName)) {
-                throw new SAXException("XTSE0020: XTSE0090: required='no' " +
+                throw new SAXException("XTSE0090: required attribute is not allowed " +
+                    "on xsl:param inside xsl:function in XSLT " + stylesheetVersion);
+            }
+        }
+        
+        // Function params are always required; required='no' is not allowed (XSLT 3.0)
+        if (requiredAttr != null && !required && stylesheetVersion >= 3.0) {
+            ElementContext parent = elementStack.isEmpty() ? null : elementStack.peek();
+            if (parent != null && XSLT_NS.equals(parent.namespaceURI)
+                    && "function".equals(parent.localName)) {
+                throw new SAXException("XTSE0020: required='no' " +
                     "is not allowed on xsl:param inside xsl:function");
             }
         }
@@ -5010,6 +7365,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XTSE0010: A static parameter must not have content (use select attribute): " + name);
         }
         
+        // XTSE0020: static="yes" is only allowed on global params
+        if (isStaticCheck && !isTopLevel) {
+            throw new SAXException("XTSE0020: static='yes' is not allowed on " +
+                "a non-global parameter: " + name);
+        }
+        
         // Parse QName with resolved namespace
         // XTSE0080: Check for reserved namespace
         QName paramName = parseQName(name, ctx.namespaceBindings, true);
@@ -5025,8 +7386,26 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 overrideSelect = staticParameterOverrides.get(name);
             }
             String effectiveSelect = overrideSelect != null ? overrideSelect : select;
+            // XTDE0050: required static param must have a value
+            if (required && effectiveSelect == null) {
+                throw new SAXException("XTDE0050: Required static parameter $" +
+                    paramName.getLocalName() + " has no value");
+            }
+            // XTDE0700: mandatory type with no value (empty sequence doesn't match)
+            if (effectiveSelect == null && asType != null) {
+                String trimmedType = asType.trim();
+                boolean optional = trimmedType.endsWith("?") || trimmedType.endsWith("*");
+                if (!optional) {
+                    throw new SAXException("XTDE0700: Static parameter $" +
+                        paramName.getLocalName() + " has type " + asType +
+                        " but no value was supplied");
+                }
+            }
             XPathValue staticValue = evaluateStaticExpression(effectiveSelect,
                     paramName.getLocalName(), ctx.baseURI);
+            // XTSE3450: check for conflicting static declarations across import precedences
+            checkStaticDeclarationConflict(paramName.getLocalName(), true,
+                staticValue != null ? staticValue.asString() : null, importPrecedence);
             staticVariables.put(paramName.getLocalName(), staticValue);
             // Add as global variable with pre-computed static value
             try {
@@ -5036,6 +7415,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             return null;
         }
+        
+        validateFunctionTypeAs(asType);
         
         XPathExpression selectExpr = select != null ? compileExpression(select) : null;
         SequenceNode content = ctx.children.isEmpty() ? null : new SequenceNode(ctx.children);
@@ -5135,6 +7516,44 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     /**
+     * Checks for XTSE3450: conflicting static variable/parameter declarations
+     * across import precedences.
+     *
+     * <p>When a higher-precedence declaration arrives for a name already registered
+     * at lower precedence, the declarations must be consistent (same kind and value).
+     * When a lower-precedence declaration arrives after a higher-precedence one,
+     * it is silently ignored.
+     */
+    private void checkStaticDeclarationConflict(String localName, boolean isParam,
+            String valueStr, int prec) throws SAXException {
+        Object[] existing = staticDeclarationInfo.get(localName);
+        if (existing == null) {
+            staticDeclarationInfo.put(localName, new Object[]{
+                Boolean.valueOf(isParam), valueStr, Integer.valueOf(prec)});
+            return;
+        }
+        boolean existIsParam = ((Boolean) existing[0]).booleanValue();
+        String existValue = (String) existing[1];
+        int existPrec = ((Integer) existing[2]).intValue();
+        if (prec < existPrec) {
+            return;
+        }
+        boolean kindMatch = (isParam == existIsParam);
+        boolean valueMatch = (valueStr == null && existValue == null)
+            || (valueStr != null && valueStr.equals(existValue));
+        if (!kindMatch || !valueMatch) {
+            String newKind = isParam ? "parameter" : "variable";
+            String existKind = existIsParam ? "parameter" : "variable";
+            throw new SAXException("XTSE3450: Conflicting static declarations for $" +
+                localName + ": " + existKind + " (import precedence " + existPrec +
+                ") vs " + newKind + " (import precedence " + prec + ")");
+        }
+        // Consistent: update tracking to new (higher or equal) precedence declaration
+        staticDeclarationInfo.put(localName, new Object[]{
+            Boolean.valueOf(isParam), valueStr, Integer.valueOf(prec)});
+    }
+
+    /**
      * Validates a package-version string against the XSLT 3.0 grammar:
      * PackageVersion ::= NumericVersion NamePart?
      * NumericVersion ::= DecimalDigits ('.' DecimalDigits)*
@@ -5225,6 +7644,36 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
     
     /**
+     * Validates that a string is a valid xs:decimal (digits with optional
+     * decimal point, optional leading sign, no exponent notation).
+     */
+    private static boolean isValidXsDecimal(String s) {
+        if (s == null || s.isEmpty()) {
+            return false;
+        }
+        int start = 0;
+        if (s.charAt(0) == '+' || s.charAt(0) == '-') {
+            start = 1;
+        }
+        if (start >= s.length()) {
+            return false;
+        }
+        boolean hasDigit = false;
+        boolean hasDot = false;
+        for (int i = start; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= '0' && c <= '9') {
+                hasDigit = true;
+            } else if (c == '.' && !hasDot) {
+                hasDot = true;
+            } else {
+                return false;
+            }
+        }
+        return hasDigit;
+    }
+
+    /**
      * Returns the effective XSLT version at the current point in the stylesheet.
      * This considers xsl:version attributes on literal result element ancestors
      * which establish backwards compatibility mode (XSLT 1.0 behavior).
@@ -5259,18 +7708,28 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String doeAttr = ctx.attributes.get("disable-output-escaping");
         validateYesOrNo("xsl:value-of", "disable-output-escaping", doeAttr);
         boolean disableEscaping = "yes".equals(doeAttr);
-        // XSLT 2.0+ separator attribute (default is single space for sequences)
-        String separator = ctx.attributes.get("separator");
+        // XSLT 2.0+ separator attribute (AVT, default is single space for sequences)
+        String separatorStr = ctx.attributes.get("separator");
+        AttributeValueTemplate separatorAvt = null;
+        if (separatorStr != null) {
+            try {
+                separatorAvt = AttributeValueTemplate.parse(separatorStr, this);
+            } catch (XPathSyntaxException e) {
+                throw new SAXException("Invalid AVT in separator: " + e.getMessage(), e);
+            }
+        }
         // In XSLT 2.0+, value-of outputs all items; in 1.0, only the first
-        // Use getEffectiveVersion() to respect xsl:version on ancestor LREs
-        boolean xslt2Plus = getEffectiveVersion() >= 2.0;
+        // Check element's own version first (it has been popped from the stack),
+        // then fall back to inherited version from ancestors
+        double effectiveVer = ctx.effectiveVersion > 0 ? ctx.effectiveVersion : getEffectiveVersion();
+        boolean xslt2Plus = effectiveVer >= 2.0;
         
         // XSLT 3.0: shadow attribute _select takes precedence
         if (ctx.hasShadowAttribute("select")) {
             String shadowSelect = ctx.shadowAttributes.get("select");
             AttributeValueTemplate selectAvt = parseAvt(shadowSelect);
             return new org.bluezoo.gonzalez.transform.ast.DynamicValueOfNode(
-                selectAvt, disableEscaping, separator);
+                selectAvt, disableEscaping, separatorStr);
         }
         
         if (select != null) {
@@ -5278,30 +7737,34 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 throw new SAXException("XTSE0870: xsl:value-of must not have both " +
                     "a select attribute and content");
             }
-            return new ValueOfNode(compileExpression(select), disableEscaping, separator, xslt2Plus);
+            return new ValueOfNode(compileExpression(select), disableEscaping,
+                separatorAvt, xslt2Plus);
         }
         
         // XSLT 2.0+ allows content (sequence constructor) instead of select attribute
-        // The output is the string-join of all items with the separator (default space)
+        // Filter out xsl:fallback children — they are only activated for unknown instructions
         if (xslt2Plus && !ctx.children.isEmpty()) {
-            XSLTNode content = ctx.children.size() == 1 ? ctx.children.get(0) 
-                : new SequenceNode(new ArrayList<>(ctx.children));
-            return new ValueOfContentNode(content, disableEscaping, separator);
+            List<XSLTNode> contentNodes = filterFallback(ctx.children);
+            if (!contentNodes.isEmpty()) {
+                XSLTNode content = contentNodes.size() == 1 ? contentNodes.get(0) 
+                    : new SequenceNode(contentNodes);
+                return new ValueOfContentNode(content, disableEscaping, separatorStr);
+            }
         }
         
         // Also allow in forward-compatible mode
         if (forwardCompatible && !ctx.children.isEmpty()) {
-            XSLTNode content = ctx.children.size() == 1 ? ctx.children.get(0) 
-                : new SequenceNode(new ArrayList<>(ctx.children));
-            return new ValueOfContentNode(content, disableEscaping, separator);
+            List<XSLTNode> contentNodes = filterFallback(ctx.children);
+            if (!contentNodes.isEmpty()) {
+                XSLTNode content = contentNodes.size() == 1 ? contentNodes.get(0) 
+                    : new SequenceNode(contentNodes);
+                return new ValueOfContentNode(content, disableEscaping, separatorStr);
+            }
         }
 
         // XSLT 3.0: empty xsl:value-of with no select and no content produces empty string
-        if (getEffectiveVersion() >= 3.0) {
-            return new ValueOfNode(compileExpression("''"), disableEscaping, separator, true);
-        }
-        
-        throw new SAXException("xsl:value-of requires select attribute");
+        return new ValueOfNode(compileExpression("''"), disableEscaping,
+            separatorAvt, true);
     }
 
     private XSLTNode compileText(ElementContext ctx) throws SAXException {
@@ -5310,21 +7773,37 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         boolean disableEscaping = "yes".equals(doeTextAttr);
 
         // XSLT 3.0: when expand-text is active, xsl:text content may contain
-        // TVT nodes (ValueOfNode, SequenceNode) alongside LiteralText
+        // TVT nodes (ValueOfNode) alongside LiteralText.
+        // Any other instruction type inside xsl:text is a static error (XTSE0010).
         boolean hasTVT = false;
         for (XSLTNode child : ctx.children) {
-            if (!(child instanceof LiteralText)) {
-                hasTVT = true;
-                break;
+            if (child instanceof LiteralText) {
+                continue;
             }
+            if (child instanceof ValueOfNode) {
+                hasTVT = true;
+                continue;
+            }
+            // SequenceNode wrapping TVT parts (literal + expression + literal)
+            if (child instanceof SequenceNode) {
+                hasTVT = true;
+                continue;
+            }
+            // Any other instruction type inside xsl:text is not allowed
+            throw new SAXException("XTSE0010: The content of xsl:text must be text only; " +
+                "XSLT instructions are not allowed inside xsl:text");
         }
 
         if (hasTVT) {
-            // Return the TVT-expanded content as a sequence
+            // xsl:text with TVT content always produces a text node, even if empty.
+            // Wrap in ValueOfContentNode to ensure characters() is called.
+            XSLTNode contentNode;
             if (ctx.children.size() == 1) {
-                return ctx.children.get(0);
+                contentNode = ctx.children.get(0);
+            } else {
+                contentNode = new SequenceNode(new ArrayList<>(ctx.children));
             }
-            return new SequenceNode(new ArrayList<>(ctx.children));
+            return new ValueOfContentNode(contentNode, disableEscaping, null);
         }
 
         StringBuilder text = new StringBuilder();
@@ -5364,6 +7843,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // type and validation are mutually exclusive (XTSE1505)
         if (typeValue != null && validationValue != null) {
             throw new SAXException("xsl:element cannot have both type and validation attributes");
+        }
+        
+        // XTSE1660: type attribute requires a schema-aware processor
+        if (typeValue != null && !typeValue.isEmpty()) {
+            throw new SAXException("XTSE1660: xsl:element/@type requires a schema-aware processor");
         }
         
         AttributeValueTemplate nameAvt = parseAvt(name);
@@ -5420,9 +7904,20 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     private XSLTNode compileAttribute(ElementContext ctx) throws SAXException {
         String name = ctx.attributes.get("name");
+        if (name == null || name.isEmpty()) {
+            throw new SAXException("XTSE0010: Required attribute 'name' is missing on xsl:attribute");
+        }
         String namespace = ctx.attributes.get("namespace");
         String select = ctx.attributes.get("select");
-        String separator = ctx.attributes.get("separator");
+        String separatorRaw = ctx.attributes.get("separator");
+        AttributeValueTemplate separatorAttrAvt = null;
+        if (separatorRaw != null) {
+            try {
+                separatorAttrAvt = AttributeValueTemplate.parse(separatorRaw, this);
+            } catch (XPathSyntaxException e) {
+                throw new SAXException("Invalid AVT in separator: " + e.getMessage(), e);
+            }
+        }
         String typeValue = ctx.attributes.get("type");
         String validationValue = ctx.attributes.get("validation");
         
@@ -5464,7 +7959,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         SequenceNode content = ctx.children.isEmpty() ? null : new SequenceNode(ctx.children);
         
-        return new AttributeNode(nameAvt, nsAvt, selectExpr, separator, content, nsBindings,
+        return new AttributeNode(nameAvt, nsAvt, selectExpr, separatorAttrAvt, content, nsBindings,
                                  typeNamespaceURI, typeLocalName, validation);
     }
 
@@ -5488,7 +7983,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("XTSE0940: xsl:comment must not have both " +
                 "a select attribute and content");
         }
-        return new CommentNode(new SequenceNode(ctx.children));
+        XPathExpression selectExpr = select != null ? compileExpression(select) : null;
+        SequenceNode content = ctx.children.isEmpty() ? null : new SequenceNode(ctx.children);
+        return new CommentNode(selectExpr, content);
     }
 
     private XSLTNode compilePI(ElementContext ctx) throws SAXException {
@@ -5507,7 +8004,29 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private XSLTNode compileCopy(ElementContext ctx) throws SAXException {
+        // XTTE0945: xsl:copy without select requires a context item.
+        // Inside xsl:function there is no context item, so this is a static error
+        // unless a context-setting instruction (for-each, for-each-group, iterate)
+        // appears between the copy and the function.
         String selectValue = ctx.attributes.get("select");
+        if (selectValue == null) {
+            for (ElementContext ancestor : elementStack) {
+                String ancestorLocal = ancestor.localName;
+                if (!XSLT_NS.equals(ancestor.namespaceURI)) {
+                    continue;
+                }
+                if ("for-each".equals(ancestorLocal) ||
+                        "for-each-group".equals(ancestorLocal) ||
+                        "iterate".equals(ancestorLocal)) {
+                    break;
+                }
+                if ("function".equals(ancestorLocal)) {
+                    throw new SAXException("XTTE0945: xsl:copy with no select attribute " +
+                        "is not allowed inside xsl:function (no context item)");
+                }
+            }
+        }
+        
         String useAttrSetsRaw = ctx.attributes.get("use-attribute-sets");
         String typeValue = ctx.attributes.get("type");
         String validationValue = ctx.attributes.get("validation");
@@ -5684,11 +8203,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
             return new SequenceOutputNode(compileExpression(select));
         } else {
-            // XSLT 2.0: xsl:sequence requires a select attribute
-            if (stylesheetVersion < 3.0) {
-                throw new SAXException("XTSE0010: xsl:sequence requires a select " +
-                    "attribute in XSLT " + stylesheetVersion);
-            }
+            // xsl:sequence without select: content is a sequence constructor (XSLT 3.0)
+            // A 3.0 processor allows this even for version="2.0" stylesheets
             return new SequenceNode(new ArrayList<>(ctx.children));
         }
     }
@@ -5718,6 +8234,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         // Expand mode QName to Clark notation for proper namespace comparison
         String expandedMode = expandModeQName(mode);
+        
+        // Track mode usage for declared-modes validation (skip #current since it's runtime)
+        if (mode != null && !"#current".equals(mode)) {
+            usedModeNames.add(expandedMode != null ? expandedMode : "#default");
+        } else if (mode == null) {
+            usedModeNames.add("#default");
+        }
         
         XPathExpression selectExpr = select != null ? compileExpression(select) : null;
         
@@ -5751,7 +8274,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         validateSortStable(sorts);
-        return new ApplyTemplatesNode(selectExpr, expandedMode, sorts, params);
+        boolean backCompat = ctx.effectiveVersion > 0
+            && ctx.effectiveVersion < 2.0;
+        return new ApplyTemplatesNode(selectExpr, expandedMode, sorts, params,
+                                      backCompat);
     }
 
     private XSLTNode compileCallTemplate(ElementContext ctx) throws SAXException {
@@ -5999,6 +8525,99 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      *   <li>use-accumulators - Which accumulators to apply</li>
      * </ul>
      */
+
+    /**
+     * Recursively collects all attribute set names referenced via
+     * use-attribute-sets in the given node tree.
+     */
+    private static void collectAttributeSetReferences(
+            XSLTNode node, List<String> refs, int depth) {
+        if (node == null || depth > 50) {
+            return;
+        }
+
+        if (node instanceof CopyNode) {
+            String uas = ((CopyNode) node).getUseAttributeSetsString();
+            if (uas != null && !uas.isEmpty()) {
+                java.util.StringTokenizer st =
+                    new java.util.StringTokenizer(uas);
+                while (st.hasMoreTokens()) {
+                    refs.add(st.nextToken());
+                }
+            }
+            collectAttributeSetReferences(
+                ((CopyNode) node).getContent(), refs, depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            String uas = ((ElementNode) node).getUseAttributeSetsString();
+            if (uas != null && !uas.isEmpty()) {
+                java.util.StringTokenizer st =
+                    new java.util.StringTokenizer(uas);
+                while (st.hasMoreTokens()) {
+                    refs.add(st.nextToken());
+                }
+            }
+            collectAttributeSetReferences(
+                ((ElementNode) node).getContent(), refs, depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            List<String> uas =
+                ((LiteralResultElement) node).getUseAttributeSets();
+            if (uas != null) {
+                refs.addAll(uas);
+            }
+            collectAttributeSetReferences(
+                ((LiteralResultElement) node).getContent(), refs,
+                depth + 1);
+        }
+        if (node instanceof org.bluezoo.gonzalez.transform.ast.SequenceNode) {
+            org.bluezoo.gonzalez.transform.ast.SequenceNode seq =
+                (org.bluezoo.gonzalez.transform.ast.SequenceNode) node;
+            List<XSLTNode> children = seq.getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    collectAttributeSetReferences(
+                        children.get(i), refs, depth + 1);
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            collectAttributeSetReferences(
+                ((ForEachNode) node).getBody(), refs, depth + 1);
+        }
+        if (node instanceof ForEachGroupNode) {
+            collectAttributeSetReferences(
+                ((ForEachGroupNode) node).getBody(), refs, depth + 1);
+        }
+        if (node instanceof IfNode) {
+            collectAttributeSetReferences(
+                ((IfNode) node).getContent(), refs, depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                collectAttributeSetReferences(when, refs, depth + 1);
+            }
+            collectAttributeSetReferences(
+                choose.getOtherwise(), refs, depth + 1);
+        }
+        if (node instanceof WhenNode) {
+            collectAttributeSetReferences(
+                ((WhenNode) node).getContent(), refs, depth + 1);
+        }
+        if (node instanceof ForkNode) {
+            ForkNode fork = (ForkNode) node;
+            List<ForkNode.ForkBranch> branches = fork.getBranches();
+            for (int i = 0; i < branches.size(); i++) {
+                ForkNode.ForkBranch branch = branches.get(i);
+                if (branch.getContent() != null) {
+                    collectAttributeSetReferences(
+                        branch.getContent(), refs, depth + 1);
+                }
+            }
+        }
+    }
+
     private XSLTNode compileSourceDocument(ElementContext ctx) throws SAXException {
         String hrefStr = ctx.attributes.get("href");
         if (hrefStr == null || hrefStr.isEmpty()) {
@@ -6055,6 +8674,44 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             body = new SequenceNode(bodyNodes);
         }
         
+        // XTSE3430: Validate streamable body
+        if (streamable && body != null) {
+            StreamabilityAnalyzer bodyAnalyzer = new StreamabilityAnalyzer();
+            List<String> reasons = new ArrayList<String>();
+            StreamabilityAnalyzer.ExpressionStreamability bodyStreamability =
+                bodyAnalyzer.analyzeNode(body, reasons);
+            boolean freeRanging = (bodyStreamability ==
+                StreamabilityAnalyzer.ExpressionStreamability.FREE_RANGING);
+            if (freeRanging) {
+                StringBuilder sb = new StringBuilder();
+                sb.append("XTSE3430: Body of xsl:source-document");
+                sb.append(" with streamable='yes' is not streamable");
+                if (!reasons.isEmpty()) {
+                    sb.append(": ");
+                    sb.append(reasons.get(0));
+                }
+                throw new SAXException(sb.toString());
+            }
+
+            // XTSE3430: Validate that use-attribute-sets in the streaming
+            // body only reference streamable attribute sets.
+            List<String> attrSetRefs = new ArrayList<String>();
+            collectAttributeSetReferences(body, attrSetRefs, 0);
+            for (int i = 0; i < attrSetRefs.size(); i++) {
+                String refName = attrSetRefs.get(i);
+                AttributeSet attrSet = builder.getAttributeSet(refName);
+                if (attrSet != null && !attrSet.isStreamable()) {
+                    throw new SAXException(
+                        "XTSE3430: Attribute set '" + refName +
+                        "' used in xsl:source-document streamable='yes'" +
+                        " body is not declared streamable");
+                }
+            }
+
+            // XTSE3430: Validate fork-specific streaming constraints
+            validateForkStreamability(body, 0);
+        }
+
         return new SourceDocumentNode(hrefAvt, streamable, validation, useAccumulators, body);
     }
 
@@ -6355,8 +9012,25 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * <p>This is primarily used for streamability analysis and type checking.
      */
     private XSLTNode compileContextItem(ElementContext ctx) throws SAXException {
+        // XTSE0010: xsl:context-item must be a direct child of xsl:template
+        ElementContext parent = elementStack.peek();
+        if (parent == null || !"template".equals(parent.localName) ||
+                !XSLT_NS.equals(parent.namespaceURI)) {
+            throw new SAXException("XTSE0010: xsl:context-item is only allowed as a " +
+                "direct child of xsl:template");
+        }
+        
+        // XTSE0090: select attribute is not allowed on xsl:context-item
+        String selectAttr = ctx.attributes.get("select");
+        if (selectAttr != null) {
+            throw new SAXException("XTSE0090: xsl:context-item does not allow a 'select' attribute");
+        }
+        
         String asType = ctx.attributes.get("as");
         String use = ctx.attributes.get("use");
+        if (use != null) {
+            use = use.trim();
+        }
         
         // Validate 'use' attribute
         if (use != null && !use.isEmpty()) {
@@ -6365,9 +9039,59 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        // Return a holder that doesn't execute anything at runtime
-        // The information could be used for type checking if needed
-        return new ContextItemDeclaration(asType, use);
+        // XTSE3088: use="absent" and as are mutually exclusive
+        if ("absent".equals(use) && asType != null && !asType.trim().isEmpty()) {
+            throw new SAXException("XTSE3088: xsl:context-item cannot specify both use=\"absent\" and an 'as' type");
+        }
+        
+        // XTSE0020: use="absent" requires a name attribute; if template only
+        // has match (no name), use="absent" is not permitted
+        if ("absent".equals(use) && currentTemplateHasMatch && !currentTemplateHasName) {
+            throw new SAXException("XTSE0020: use=\"absent\" is not allowed in a "
+                + "template rule that has a match attribute but no name attribute");
+        }
+        
+        // Validate the 'as' type by parsing it via SequenceType
+        SequenceType parsedType = null;
+        if (asType != null && !asType.trim().isEmpty()) {
+            final Map<String, String> nsBindings = ctx.namespaceBindings;
+            parsedType = SequenceType.parse(asType.trim(), new java.util.function.Function<String, String>() {
+                @Override
+                public String apply(String prefix) {
+                    return nsBindings.get(prefix);
+                }
+            });
+            
+            if (parsedType != null) {
+                // XTSE0020: Occurrence indicator not allowed in xsl:context-item/@as
+                // The context item is always a single item, not a sequence
+                if (parsedType.getOccurrence() != SequenceType.Occurrence.ONE) {
+                    throw new SAXException("XTSE0020: Occurrence indicator not allowed in xsl:context-item/@as: " + asType);
+                }
+                
+                // XTSE0020/XPST0051: Unknown or user-defined atomic type
+                // For atomic types with a non-xs namespace, this requires schema-awareness
+                if (parsedType.getItemKind() == SequenceType.ItemKind.ATOMIC) {
+                    String ns = parsedType.getNamespaceURI();
+                    if (ns != null && !SequenceType.XS_NAMESPACE.equals(ns)) {
+                        throw new SAXException("XTSE0020: Unknown atomic type '" + asType.trim()
+                            + "' in xsl:context-item/@as (XPST0051: schema type not imported)");
+                    }
+                }
+                
+                // XTSE0020/XPST0008: Unknown type used in element/attribute type test
+                // typeName holds the content type for element(*, type) patterns
+                if (parsedType.getTypeName() != null) {
+                    String ns = parsedType.getTypeName().getURI();
+                    if (ns != null && !SequenceType.XS_NAMESPACE.equals(ns)) {
+                        throw new SAXException("XTSE0020: Unknown schema type '" + asType.trim()
+                            + "' in xsl:context-item/@as (XPST0008: schema type not available)");
+                    }
+                }
+            }
+        }
+        
+        return new ContextItemDeclaration(asType, use, parsedType);
     }
 
     /**
@@ -6382,6 +9106,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private void processGlobalContextItem(ElementContext ctx) throws SAXException {
         String asType = ctx.attributes.get("as");
         String use = ctx.attributes.get("use");
+        if (use != null) {
+            use = use.trim();
+        }
         
         // Validate 'use' attribute
         if (use != null && !use.isEmpty()) {
@@ -6397,19 +9124,62 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
     /**
      * Declaration node for xsl:context-item - used within templates.
+     * Performs runtime validation of context item type and presence.
      */
     private static class ContextItemDeclaration implements XSLTNode {
         final String asType;
         final String use;
+        final SequenceType parsedType;
         
-        ContextItemDeclaration(String asType, String use) {
+        ContextItemDeclaration(String asType, String use, SequenceType parsedType) {
             this.asType = asType;
             this.use = use;
+            this.parsedType = parsedType;
         }
         
         @Override
-        public void execute(TransformContext ctx, OutputHandler out) {
-            // No runtime execution - this is a declaration
+        public void execute(TransformContext ctx, OutputHandler out) throws org.xml.sax.SAXException {
+            // Determine the current context item
+            XPathNode contextNode = ctx.getContextNode();
+            XPathValue contextItem = ctx.getContextItem();
+            
+            // XTTE3090: use="required" but no context item supplied.
+            // The context item is considered absent when both contextItem and contextNode are null.
+            boolean hasContextItem = (contextNode != null || contextItem != null);
+            if ("required".equals(use) && !hasContextItem) {
+                throw new org.xml.sax.SAXException("XTTE3090: Context item is required but none was supplied");
+            }
+            
+            // use="absent": mark the context item as undefined for this template
+            // Any access to '.' inside the template body will raise XPDY0002
+            if ("absent".equals(use)) {
+                if (ctx instanceof BasicTransformContext) {
+                    ((BasicTransformContext) ctx).setContextItemUndefined(true);
+                }
+                return;
+            }
+            
+            // XTTE0590: Type check context item against declared type.
+            if (parsedType != null) {
+                XPathValue itemToCheck = contextItem;
+                // When contextItem is null but contextNode exists, the context
+                // was inherited (e.g. from call-template). Wrap the node for
+                // type checking only when the declared type expects a node type.
+                if (itemToCheck == null && contextNode != null
+                        && !"optional".equals(use)) {
+                    // contextItem is null but contextNode exists: the context
+                    // was inherited (e.g. from call-template). Wrap the node
+                    // for type checking. Skip for use="optional" since the
+                    // inherited node is not an explicit context item.
+                    java.util.List<XPathNode> nodes = new java.util.ArrayList<XPathNode>();
+                    nodes.add(contextNode);
+                    itemToCheck = new org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet(nodes);
+                }
+                if (itemToCheck != null && !parsedType.matches(itemToCheck)) {
+                    throw new org.xml.sax.SAXException(
+                        "XTTE0590: Context item does not match declared type '" + asType + "'");
+                }
+            }
         }
         
         @Override
@@ -6429,17 +9199,37 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         XPathExpression select = compileExpression(selectStr);
         
-        // Extract params, on-completion, and body
         List<IterateNode.IterateParam> params = new ArrayList<>();
+        Set<String> paramNames = new HashSet<>();
         XSLTNode onCompletion = null;
         List<XSLTNode> bodyNodes = new ArrayList<>();
+        boolean seenBody = false;
+        
+        for (int i = 0; i < ctx.childElementNameList.size(); i++) {
+            String childName = ctx.childElementNameList.get(i);
+            if ("on-completion".equals(childName) && seenBody) {
+                throw new SAXException("XTSE0010: xsl:on-completion must appear " +
+                    "before the body of xsl:iterate");
+            }
+            if (!"param".equals(childName) && !"on-completion".equals(childName)
+                    && !"fallback".equals(childName)) {
+                seenBody = true;
+            }
+        }
         
         for (XSLTNode child : ctx.children) {
             if (child instanceof ParamNode) {
                 ParamNode pn = (ParamNode) child;
-                params.add(new IterateNode.IterateParam(pn.getName(), pn.getSelectExpr()));
+                String pname = pn.getName();
+                if (!paramNames.add(pname)) {
+                    throw new SAXException("XTSE0580: Duplicate parameter name '" +
+                        pname + "' in xsl:iterate");
+                }
+                params.add(new IterateNode.IterateParam(pname, pn.getSelectExpr(), pn.getAs()));
             } else if (child instanceof OnCompletionNode) {
                 onCompletion = child;
+            } else if (child instanceof FallbackNode) {
+                // xsl:fallback is permitted but ignored for supported instructions
             } else {
                 bodyNodes.add(child);
             }
@@ -6456,14 +9246,51 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      */
     private XSLTNode compileNextIteration(ElementContext ctx) throws SAXException {
         List<NextIterationNode.ParamValue> params = new ArrayList<>();
+        Set<String> withParamNames = new HashSet<>();
         for (XSLTNode child : ctx.children) {
             if (child instanceof WithParamNode) {
                 WithParamNode wp = (WithParamNode) child;
+                String wpName = wp.getName();
+                if (!withParamNames.add(wpName)) {
+                    throw new SAXException("XTSE0670: Duplicate xsl:with-param name '" +
+                        wpName + "' in xsl:next-iteration");
+                }
                 params.add(new NextIterationNode.ParamValue(
-                    wp.getName(), wp.getSelectExpr(), wp.getContent()));
+                    wpName, wp.getSelectExpr(), wp.getContent()));
             }
         }
+        
+        // XTSE3130: validate param names are declared in the enclosing xsl:iterate
+        Set<String> iterateParamNames = findEnclosingIterateParamNames();
+        if (iterateParamNames != null) {
+            for (String wpName : withParamNames) {
+                if (!iterateParamNames.contains(wpName)) {
+                    throw new SAXException("XTSE3130: Parameter '" + wpName +
+                        "' in xsl:next-iteration is not declared in the enclosing xsl:iterate");
+                }
+            }
+        }
+        
         return new NextIterationNode(params);
+    }
+
+    /**
+     * Finds the parameter names declared in the enclosing xsl:iterate.
+     */
+    private Set<String> findEnclosingIterateParamNames() {
+        for (ElementContext ancestor : elementStack) {
+            if (XSLT_NS.equals(ancestor.namespaceURI)
+                    && "iterate".equals(ancestor.localName)) {
+                Set<String> names = new HashSet<>();
+                for (XSLTNode child : ancestor.children) {
+                    if (child instanceof ParamNode) {
+                        names.add(((ParamNode) child).getName());
+                    }
+                }
+                return names;
+            }
+        }
+        return null;
     }
 
     /**
@@ -6672,9 +9499,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        // If no select, the content must be present
+        // If no select and no content, the result is an empty sequence
         if (selectExpr == null && content == null) {
-            throw new SAXException("XTSE0010: xsl:perform-sort requires either select attribute or content");
+            selectExpr = compileExpression("()");
         }
         
         return new PerformSortNode(selectExpr, sorts, content);
@@ -6694,13 +9521,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String contextItemStr = ctx.attributes.get("context-item");
         String baseUriStr = ctx.attributes.get("base-uri");
         String namespaceContextStr = ctx.attributes.get("namespace-context");
+        String withParamsStr = ctx.attributes.get("with-params");
         String asType = ctx.attributes.get("as");
         
         XPathExpression xpathExpr = compileExpression(xpathStr);
         XPathExpression contextItemExpr = contextItemStr != null ? compileExpression(contextItemStr) : null;
-        XPathExpression baseUriExpr = baseUriStr != null ? compileExpression(baseUriStr) : null;
+        // base-uri is an AVT per XSLT 3.0 spec, not an XPath expression
+        AttributeValueTemplate baseUriAvt = baseUriStr != null ? parseAvt(baseUriStr) : null;
         XPathExpression namespaceContextExpr = namespaceContextStr != null ? 
             compileExpression(namespaceContextStr) : null;
+        XPathExpression withParamsExpr = withParamsStr != null ? compileExpression(withParamsStr) : null;
         
         // Process xsl:with-param children
         List<EvaluateNode.WithParamNode> params = new ArrayList<>();
@@ -6713,8 +9543,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        return new EvaluateNode(xpathExpr, contextItemExpr, baseUriExpr, 
-            namespaceContextExpr, asType, params);
+        return new EvaluateNode(xpathExpr, contextItemExpr, baseUriAvt, 
+            namespaceContextExpr, withParamsExpr, asType, params);
     }
 
     /**
@@ -6740,6 +9570,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         for (XSLTNode child : ctx.children) {
             if (child instanceof CatchNode) {
                 catchBlocks.add((CatchNode) child);
+            } else if (child instanceof FallbackNode) {
+                // xsl:fallback inside a supported instruction is skipped
             } else {
                 tryContent.add(child);
             }
@@ -6864,8 +9696,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (selectStr == null || selectStr.isEmpty()) {
             throw new SAXException("xsl:analyze-string requires select attribute");
         }
-        if (regexStr == null || regexStr.isEmpty()) {
+        if (regexStr == null) {
             throw new SAXException("xsl:analyze-string requires regex attribute");
+        }
+        // Empty regex is an error in XSLT 2.0 (XTDE1150) but allowed in 3.0
+        if (regexStr.isEmpty() && stylesheetVersion < 3.0) {
+            throw new SAXException("XTDE1150: The regex attribute of xsl:analyze-string must not " +
+                "be a zero-length string");
         }
         
         // XTSE1130: must have at least one of matching-substring or non-matching-substring
@@ -6876,46 +9713,63 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 "xsl:matching-substring or xsl:non-matching-substring");
         }
         
+        // XTSE0010: validate child order
+        // matching-substring must precede non-matching-substring, fallback must be last
+        validateAnalyzeStringChildOrder(ctx);
+        
         XPathExpression select = compileExpression(selectStr);
         AttributeValueTemplate regexAvt = parseAvt(regexStr);
         AttributeValueTemplate flagsAvt = flagsStr != null ? parseAvt(flagsStr) : null;
         
-        // Find matching-substring and non-matching-substring children
+        // Map children to their element names using the ordered list
         XSLTNode matchingContent = null;
         XSLTNode nonMatchingContent = null;
         
-        for (XSLTNode child : ctx.children) {
-            // We stored matching/non-matching as SequenceNode with special markers
-            // Need to identify them by their element context
-            // For now, we'll look for children named appropriately
-        }
-        
-        // Find the child elements by iterating through ctx.children
-        // Since we compiled them as SequenceNodes, we need another approach
-        // Let me use a different approach - store the children with tags
-        
-        ElementContext matchingCtx = null;
-        ElementContext nonMatchingCtx = null;
-        
-        // Re-examine the children - look through raw children list
-        for (XSLTNode child : ctx.children) {
-            if (child instanceof SequenceNode) {
-                // Check if this was a matching or non-matching substring
-                // We need to track this differently
+        int childIdx = 0;
+        for (int i = 0; i < ctx.childElementNameList.size(); i++) {
+            String childName = ctx.childElementNameList.get(i);
+            if ("matching-substring".equals(childName)) {
+                if (childIdx < ctx.children.size()) {
+                    matchingContent = ctx.children.get(childIdx);
+                }
+                childIdx++;
+            } else if ("non-matching-substring".equals(childName)) {
+                if (childIdx < ctx.children.size()) {
+                    nonMatchingContent = ctx.children.get(childIdx);
+                }
+                childIdx++;
+            } else if ("fallback".equals(childName)) {
+                childIdx++;
             }
-        }
-        
-        // For simplicity, assume first child is matching, second is non-matching
-        // (This is a common pattern in XSLT 2.0 stylesheets)
-        if (ctx.children.size() >= 1) {
-            matchingContent = ctx.children.get(0);
-        }
-        if (ctx.children.size() >= 2) {
-            nonMatchingContent = ctx.children.get(1);
         }
         
         return new AnalyzeStringNode(select, regexAvt, flagsAvt, 
             matchingContent, nonMatchingContent);
+    }
+    
+    private void validateAnalyzeStringChildOrder(ElementContext ctx) throws SAXException {
+        boolean seenNonMatching = false;
+        boolean seenFallback = false;
+        for (String childName : ctx.childElementNameList) {
+            if ("matching-substring".equals(childName)) {
+                if (seenNonMatching) {
+                    throw new SAXException("XTSE0010: xsl:matching-substring must precede " +
+                        "xsl:non-matching-substring in xsl:analyze-string");
+                }
+                if (seenFallback) {
+                    throw new SAXException("XTSE0010: xsl:matching-substring must precede " +
+                        "xsl:fallback in xsl:analyze-string");
+                }
+            } else if ("non-matching-substring".equals(childName)) {
+                seenNonMatching = true;
+                if (seenFallback) {
+                    throw new SAXException("XTSE0010: xsl:non-matching-substring must precede " +
+                        "xsl:fallback in xsl:analyze-string");
+                }
+            } else if ("fallback".equals(childName)) {
+                seenFallback = true;
+            }
+        }
     }
 
     /**
@@ -6929,6 +9783,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         String format = ctx.attributes.get("format");
+        // XTSE1460: if format is a static QName (no curly brackets), validate it now
+        if (format != null && !format.isEmpty()) {
+            boolean isAvt = format.contains("{") && format.contains("}");
+            if (!isAvt) {
+                String expandedFormat = expandQName(format.trim());
+                if (!builder.hasOutputDefinition(expandedFormat)) {
+                    throw new SAXException("XTSE1460: The format attribute of " +
+                        "xsl:result-document references an unknown output definition '" +
+                        format + "'");
+                }
+            }
+        }
         String method = ctx.attributes.get("method");
         String encoding = ctx.attributes.get("encoding");
         String indent = ctx.attributes.get("indent");
@@ -7022,27 +9888,38 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         boolean sawOtherwise = false;
         
         for (XSLTNode child : ctx.children) {
-            if (child instanceof WhenNode) {
-                // XTSE0010: xsl:when must come before xsl:otherwise
+            // Unwrap CollationScopeNode to access the inner WhenNode/OtherwiseNode
+            XSLTNode unwrapped = child;
+            if (child instanceof CollationScopeNode) {
+                unwrapped = ((CollationScopeNode) child).getBody();
+            }
+            if (unwrapped instanceof WhenNode) {
                 if (sawOtherwise) {
                     throw new SAXException("XTSE0010: xsl:when must come before xsl:otherwise in xsl:choose");
                 }
-                whens.add((WhenNode) child);
-            } else if (child instanceof OtherwiseNode) {
-                // XTSE0010: only one xsl:otherwise allowed
+                // Preserve collation scope: move it inside the WhenNode body
+                if (child instanceof CollationScopeNode) {
+                    WhenNode when = (WhenNode) unwrapped;
+                    CollationScopeNode cs = (CollationScopeNode) child;
+                    List<XSLTNode> wrappedChildren = new ArrayList<>();
+                    wrappedChildren.add(new CollationScopeNode(
+                        cs.getCollationUri(), when.getContent()));
+                    whens.add(new WhenNode(when.getTestExpr(), new SequenceNode(wrappedChildren)));
+                } else {
+                    whens.add((WhenNode) unwrapped);
+                }
+            } else if (unwrapped instanceof OtherwiseNode) {
                 if (sawOtherwise) {
                     throw new SAXException("XTSE0010: xsl:choose must have at most one xsl:otherwise");
                 }
                 sawOtherwise = true;
-                otherwise = ((OtherwiseNode) child).getContent();
+                otherwise = ((OtherwiseNode) unwrapped).getContent();
             } else if (child instanceof LiteralText) {
-                // XTSE0010: no text content allowed in xsl:choose (except whitespace)
                 String text = ((LiteralText) child).getText();
                 if (text != null && !text.trim().isEmpty()) {
                     throw new SAXException("XTSE0010: Text content is not allowed in xsl:choose");
                 }
             } else {
-                // XTSE0010: only xsl:when and xsl:otherwise are allowed in xsl:choose
                 throw new SAXException("XTSE0010: Only xsl:when and xsl:otherwise are allowed in xsl:choose");
             }
         }
@@ -7100,8 +9977,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 "a select attribute and content");
         }
         XPathExpression selectExpr;
+        XSLTNode sortBody = null;
         if (selectAttr != null && !selectAttr.isEmpty()) {
             selectExpr = compileExpression(selectAttr);
+        } else if (!ctx.children.isEmpty() && hasNonWhitespaceContent(ctx.children)) {
+            selectExpr = null;
+            sortBody = new SequenceNode(new ArrayList<>(ctx.children));
         } else {
             selectExpr = compileExpression(".");
         }
@@ -7113,6 +9994,17 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String lang = ctx.attributes.get("lang");
         String collation = ctx.attributes.get("collation");  // XSLT 2.0+ collation URI
         String stable = ctx.attributes.get("stable");
+        if (stable != null && !stable.isEmpty()) {
+            String stableTrimmed = stable.trim();
+            if (!stableTrimmed.isEmpty() && !stableTrimmed.contains("{")) {
+                if (!"yes".equals(stableTrimmed) && !"no".equals(stableTrimmed) &&
+                        !"true".equals(stableTrimmed) && !"false".equals(stableTrimmed) &&
+                        !"1".equals(stableTrimmed) && !"0".equals(stableTrimmed)) {
+                    throw new SAXException("XTSE0020: Invalid value for 'stable' attribute " +
+                        "on xsl:sort: must be yes or no, got '" + stable + "'");
+                }
+            }
+        }
         
         AttributeValueTemplate dataTypeAvt = dataType != null ? parseAvt(dataType) : null;
         AttributeValueTemplate orderAvt = order != null ? parseAvt(order) : null;
@@ -7120,7 +10012,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         AttributeValueTemplate langAvt = lang != null ? parseAvt(lang) : null;
         AttributeValueTemplate collationAvt = collation != null ? parseAvt(collation) : null;
         
-        SortSpec spec = new SortSpec(selectExpr, dataTypeAvt, orderAvt, caseOrderAvt, langAvt, collationAvt);
+        SortSpec spec = new SortSpec(selectExpr, sortBody, dataTypeAvt, orderAvt, caseOrderAvt, langAvt, collationAvt);
         spec.setHasStable(stable != null);
         return new SortSpecNode(spec);
     }
@@ -7195,20 +10087,36 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new SAXException("Invalid format AVT: " + e.getMessage(), e);
         }
         
-        // grouping attributes
-        String groupingSeparator = ctx.attributes.get("grouping-separator");
+        // grouping attributes (can be AVTs in XSLT 2.0+)
+        String groupingSepAttr = ctx.attributes.get("grouping-separator");
+        AttributeValueTemplate groupingSepAVT = null;
+        if (groupingSepAttr != null) {
+            try {
+                groupingSepAVT = AttributeValueTemplate.parse(groupingSepAttr, this);
+            } catch (XPathSyntaxException e) {
+                throw new SAXException("Invalid grouping-separator AVT: " + e.getMessage(), e);
+            }
+        }
         String groupingSizeAttr = ctx.attributes.get("grouping-size");
-        int groupingSize = 0;
+        AttributeValueTemplate groupingSizeAVT = null;
         if (groupingSizeAttr != null) {
             try {
-                groupingSize = Integer.parseInt(groupingSizeAttr);
-            } catch (NumberFormatException e) {
-                // Invalid grouping-size attribute; use default of 0 (no grouping)
+                groupingSizeAVT = AttributeValueTemplate.parse(groupingSizeAttr, this);
+            } catch (XPathSyntaxException e) {
+                throw new SAXException("Invalid grouping-size AVT: " + e.getMessage(), e);
             }
         }
         
-        // lang and letter-value for internationalization (optional)
-        String lang = ctx.attributes.get("lang");
+        // lang and letter-value for internationalization (optional, can be AVTs)
+        String langAttr = ctx.attributes.get("lang");
+        AttributeValueTemplate langAVT = null;
+        if (langAttr != null) {
+            try {
+                langAVT = AttributeValueTemplate.parse(langAttr, this);
+            } catch (XPathSyntaxException e) {
+                throw new SAXException("Invalid lang AVT: " + e.getMessage(), e);
+            }
+        }
         String letterValue = ctx.attributes.get("letter-value");
         String ordinal = ctx.attributes.get("ordinal");
         
@@ -7223,9 +10131,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
+        boolean backwardsCompatible = getEffectiveVersion() < 2.0;
         return new NumberNode(valueExpr, selectExpr, level, countPattern, fromPattern, 
-                             formatAVT, groupingSeparator, groupingSize, lang, letterValue,
-                             ordinal, startAtAVT);
+                             formatAVT, groupingSepAVT, groupingSizeAVT, langAVT, letterValue,
+                             ordinal, startAtAVT, backwardsCompatible);
     }
 
     private XSLTNode compileMessage(ElementContext ctx) throws SAXException {
@@ -7311,60 +10220,80 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
     
     /**
-     * Minimal XPath context for use-when expression evaluation.
-     * Provides only static functions (system-property, etc.) - no context node.
-     * Supports local variable bindings for quantified expressions (some/every).
+     * Minimal XPath context for use-when and static variable evaluation.
+     * Provides static functions and variable bindings. Supports context item
+     * switching for path expressions and simple map operators within static
+     * variable evaluation (e.g., parse-xml(...)//e).
      */
     private class UseWhenContext implements XPathContext {
         private final Map<String, XPathValue> localVariables;
-        private final String explicitBaseURI;  // Explicit base URI (e.g., from xml:base on variable)
+        private final String explicitBaseURI;
+        private final XPathNode contextNode;
+        private final XPathValue contextItem;
+        private final int contextPosition;
+        private final int contextSize;
         
         UseWhenContext() {
             this.localVariables = new HashMap<>();
             this.explicitBaseURI = null;
+            this.contextNode = null;
+            this.contextItem = null;
+            this.contextPosition = 0;
+            this.contextSize = 0;
         }
         
         UseWhenContext(String baseURI) {
             this.localVariables = new HashMap<>();
             this.explicitBaseURI = baseURI;
+            this.contextNode = null;
+            this.contextItem = null;
+            this.contextPosition = 0;
+            this.contextSize = 0;
         }
         
-        private UseWhenContext(Map<String, XPathValue> vars, String baseURI) {
+        private UseWhenContext(Map<String, XPathValue> vars, String baseURI,
+                XPathNode node, XPathValue item, int pos, int sz) {
             this.localVariables = vars;
             this.explicitBaseURI = baseURI;
+            this.contextNode = node;
+            this.contextItem = item;
+            this.contextPosition = pos;
+            this.contextSize = sz;
         }
         
-        @Override public XPathNode getContextNode() { return null; }
-        @Override public int getContextPosition() { return 0; }
-        @Override public int getContextSize() { return 0; }
+        @Override
+        public XPathNode getContextNode() { return contextNode; }
         
-        /**
-         * Indicates that this is a use-when static context with no context item.
-         * Expressions that access the context item should raise XPDY0002.
-         */
-        public boolean isUseWhenContext() { return true; }
+        @Override
+        public XPathValue getContextItem() { return contextItem; }
+        
+        @Override
+        public int getContextPosition() { return contextPosition; }
+        
+        @Override
+        public int getContextSize() { return contextSize; }
+        
+        @Override
+        public boolean isContextItemUndefined() {
+            return contextNode == null && contextItem == null;
+        }
         
         @Override
         public XPathValue getVariable(String namespaceURI, String localName) {
-            // Check local variables first (for quantified expressions)
             XPathValue value = localVariables.get(localName);
             if (value != null) {
                 return value;
             }
-            // Check static variables (XSLT 3.0)
             value = staticVariables.get(localName);
             if (value != null) {
                 return value;
             }
-            // In use-when context, only static variables are accessible
-            // Non-static variables should raise XPST0008
             throw new RuntimeException("XPST0008: Variable $" + localName +
                 " is not available in a use-when expression (only static variables are accessible)");
         }
         
         @Override
         public String resolveNamespacePrefix(String prefix) {
-            // Use the current namespace bindings from the stylesheet
             return namespaces.get(prefix);
         }
         
@@ -7375,29 +10304,41 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         @Override
         public XPathContext withContextNode(XPathNode node) {
-            return this;
+            return new UseWhenContext(localVariables, explicitBaseURI,
+                node, null, contextPosition, contextSize);
+        }
+        
+        @Override
+        public XPathContext withContextItem(XPathValue item) {
+            if (item != null && item.isNodeSet()) {
+                XPathNodeSet ns = item.asNodeSet();
+                if (!ns.isEmpty()) {
+                    return withContextNode(ns.iterator().next());
+                }
+            }
+            return new UseWhenContext(localVariables, explicitBaseURI,
+                null, item, contextPosition, contextSize);
         }
         
         @Override
         public XPathContext withPositionAndSize(int position, int size) {
-            return this;
+            return new UseWhenContext(localVariables, explicitBaseURI,
+                contextNode, contextItem, position, size);
         }
         
         @Override
         public XPathContext withVariable(String namespaceURI, String localName, XPathValue value) {
-            // Create new context with updated variable, preserving base URI
             Map<String, XPathValue> newVars = new HashMap<>(localVariables);
             newVars.put(localName, value);
-            return new UseWhenContext(newVars, explicitBaseURI);
+            return new UseWhenContext(newVars, explicitBaseURI,
+                contextNode, contextItem, contextPosition, contextSize);
         }
         
         @Override
         public String getStaticBaseURI() {
-            // Use explicit base URI if set (from xml:base on variable/param)
             if (explicitBaseURI != null) {
                 return explicitBaseURI;
             }
-            // Otherwise return the stylesheet's base URI (from locator or xml:base)
             if (!elementStack.isEmpty()) {
                 return elementStack.peek().baseURI;
             }
@@ -7434,9 +10375,138 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Resolve namespace prefixes in the pattern before compilation
         String resolvedPattern = resolvePatternNamespaces(pattern);
         try {
-            return PatternParser.parse(resolvedPattern, stylesheetVersion);
+            Pattern result = PatternParser.parse(resolvedPattern, stylesheetVersion);
+            validatePatternPredicates(result, pattern);
+            return result;
         } catch (IllegalArgumentException e) {
             throw new SAXException(e.getMessage());
+        }
+    }
+
+    /**
+     * Validates all predicate expressions within a parsed pattern by
+     * attempting to resolve namespace-prefixed function calls.
+     * Functions in non-standard namespaces must be declared as
+     * xsl:function or known extensions; otherwise XPST0017.
+     */
+    private void validatePatternPredicates(Pattern pat, String patternStr)
+            throws SAXException {
+        java.util.List<String> preds = new java.util.ArrayList<>();
+        collectPredicates(pat, preds);
+        for (int i = 0; i < preds.size(); i++) {
+            String pred = preds.get(i);
+            String undeclaredFunc = findUndeclaredFunction(pred);
+            if (undeclaredFunc != null) {
+                throw new SAXException(
+                    "XPST0017: Unknown function in pattern: " +
+                    patternStr);
+            }
+        }
+    }
+
+    /**
+     * Scans a predicate expression for namespace-prefixed function calls.
+     * Returns the first undeclared function name, or null if all are known.
+     * A function is considered undeclared if its namespace prefix maps to
+     * a URI with no declared xsl:function matching that local name.
+     */
+    private String findUndeclaredFunction(String pred) {
+        int len = pred.length();
+        int i = 0;
+        while (i < len) {
+            char c = pred.charAt(i);
+            if (c == '\'' || c == '"') {
+                i++;
+                while (i < len && pred.charAt(i) != c) {
+                    i++;
+                }
+                i++;
+                continue;
+            }
+            if (c == ':' && i + 1 < len && pred.charAt(i + 1) != ':') {
+                int j = i + 1;
+                while (j < len && Character.isWhitespace(pred.charAt(j))) {
+                    j++;
+                }
+                if (j < len && Character.isLetter(pred.charAt(j))) {
+                    int localStart = j;
+                    int k = j;
+                    while (k < len && (Character.isLetterOrDigit(pred.charAt(k)) ||
+                           pred.charAt(k) == '-' || pred.charAt(k) == '_')) {
+                        k++;
+                    }
+                    String localName = pred.substring(localStart, k);
+                    while (k < len && Character.isWhitespace(pred.charAt(k))) {
+                        k++;
+                    }
+                    if (k < len && pred.charAt(k) == '(') {
+                        int prefStart = i - 1;
+                        while (prefStart >= 0 &&
+                               (Character.isLetterOrDigit(pred.charAt(prefStart)) ||
+                                pred.charAt(prefStart) == '-' ||
+                                pred.charAt(prefStart) == '_')) {
+                            prefStart--;
+                        }
+                        prefStart++;
+                        String prefix = pred.substring(prefStart, i);
+                        if (!prefix.isEmpty() &&
+                            !"xs".equals(prefix) &&
+                            !"fn".equals(prefix) &&
+                            !"math".equals(prefix) &&
+                            !"map".equals(prefix) &&
+                            !"array".equals(prefix)) {
+                            String nsUri = lookupNamespaceUri(prefix);
+                            if (nsUri == null) {
+                                return prefix + ":" + localName;
+                            }
+                            if (!isKnownFunction(nsUri, localName)) {
+                                return prefix + ":" + localName;
+                            }
+                        }
+                    }
+                }
+            }
+            i++;
+        }
+        return null;
+    }
+
+    /**
+     * Checks if a function with the given namespace URI and local name
+     * is known (declared as xsl:function in the stylesheet).
+     */
+    private boolean isKnownFunction(String nsUri, String localName) {
+        return builder.hasUserFunction(nsUri, localName);
+    }
+
+    private void collectPredicates(Pattern pat, java.util.List<String> preds) {
+        if (pat instanceof AbstractPattern) {
+            String predStr = ((AbstractPattern) pat).getPredicateStr();
+            if (predStr != null) {
+                preds.add(predStr);
+            }
+        }
+        if (pat instanceof AtomicPattern) {
+            java.util.List<String> atomicPreds =
+                ((AtomicPattern) pat).getPredicates();
+            preds.addAll(atomicPreds);
+        }
+        if (pat instanceof UnionPattern) {
+            Pattern[] alts = ((UnionPattern) pat).getAlternatives();
+            for (int i = 0; i < alts.length; i++) {
+                collectPredicates(alts[i], preds);
+            }
+        }
+        if (pat instanceof PredicatedPattern) {
+            collectPredicates(((PredicatedPattern) pat).getInner(), preds);
+        }
+        if (pat instanceof IntersectPattern) {
+            collectPredicates(((IntersectPattern) pat).getLeft(), preds);
+            collectPredicates(((IntersectPattern) pat).getRight(), preds);
+        }
+        if (pat instanceof ExceptPattern) {
+            collectPredicates(((ExceptPattern) pat).getLeft(), preds);
+            collectPredicates(((ExceptPattern) pat).getRight(), preds);
         }
     }
     
@@ -8014,9 +11084,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             
             if (i > start) {
                 String token = pattern.substring(start, i);
-                String resolved = resolvePatternToken(token, inAttributeContext);
-                result.append(resolved);
-                inAttributeContext = false;  // Reset after processing name
+                // If followed by '(', this is a kind test or function call -
+                // don't apply xpath-default-namespace
+                boolean followedByParen = (i < len && pattern.charAt(i) == '(');
+                if (followedByParen) {
+                    result.append(token);
+                } else {
+                    String resolved = resolvePatternToken(token, inAttributeContext);
+                    result.append(resolved);
+                }
+                inAttributeContext = false;
             }
         }
         

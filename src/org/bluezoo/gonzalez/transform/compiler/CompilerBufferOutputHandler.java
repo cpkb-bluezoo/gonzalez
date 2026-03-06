@@ -77,6 +77,7 @@ class CompilerBufferOutputHandler implements OutputHandler {
     
     @Override
     public void namespace(String prefix, String uri) throws SAXException {
+        
         // Queue namespace if in start tag, otherwise emit immediately
         if (inStartTag) {
             pendingNamespaces.add(new String[] {

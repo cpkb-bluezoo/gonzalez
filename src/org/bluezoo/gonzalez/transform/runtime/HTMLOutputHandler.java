@@ -144,8 +144,16 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
      */
     public HTMLOutputHandler(WritableByteChannel channel, String encoding, boolean indent) {
         this.channel = channel;
-        this.encoding = encoding != null ? encoding : "UTF-8";
-        this.charset = Charset.forName(this.encoding);
+        String resolvedEncoding = encoding != null ? encoding : "UTF-8";
+        Charset resolvedCharset = StandardCharsets.UTF_8;
+        try {
+            resolvedCharset = Charset.forName(resolvedEncoding);
+        } catch (java.nio.charset.UnsupportedCharsetException e) {
+            // SESU0007: fall back to UTF-8 for unsupported encodings
+            resolvedEncoding = "UTF-8";
+        }
+        this.encoding = resolvedEncoding;
+        this.charset = resolvedCharset;
         this.indent = indent;
         this.buffer = ByteBuffer.allocate(BUFFER_SIZE);
         this.encoder = charset.newEncoder();
@@ -568,6 +576,11 @@ public final class HTMLOutputHandler implements OutputHandler, ContentHandler {
     public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
             throws SAXException {
         if (value != null) {
+            if (depth == 0 && !inAttributeContent
+                    && value instanceof org.bluezoo.gonzalez.transform.xpath.type.XPathMap) {
+                throw new SAXException(
+                    "SENR0001: Cannot serialize a map using this output method");
+            }
             // In element content, add space between adjacent atomic values (XSLT 2.0+)
             // But NOT in attribute content
             if (atomicValuePending && !inAttributeContent) {

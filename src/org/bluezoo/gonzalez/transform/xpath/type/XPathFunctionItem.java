@@ -43,6 +43,8 @@ public final class XPathFunctionItem implements XPathValue {
     private final String namespaceURI;
     private final int arity;
     private final XPathFunctionLibrary library;
+    private SequenceType[] parameterTypes;
+    private SequenceType returnType;
 
     /**
      * Creates a new function item wrapping a library function.
@@ -107,6 +109,28 @@ public final class XPathFunctionItem implements XPathValue {
      */
     public XPathFunctionLibrary getLibrary() {
         return library;
+    }
+
+    /**
+     * Returns the declared parameter types, or null if unknown.
+     */
+    public SequenceType[] getParameterTypes() {
+        return parameterTypes;
+    }
+
+    /**
+     * Returns the declared return type, or null if unknown.
+     */
+    public SequenceType getReturnType() {
+        return returnType;
+    }
+
+    /**
+     * Sets the declared parameter types and return type for type checking.
+     */
+    public void setSignature(SequenceType[] parameterTypes, SequenceType returnType) {
+        this.parameterTypes = parameterTypes;
+        this.returnType = returnType;
     }
 
     /**
