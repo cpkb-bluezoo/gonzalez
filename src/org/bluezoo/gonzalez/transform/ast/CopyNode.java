@@ -40,8 +40,11 @@ import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeWithBaseURI;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -131,12 +134,41 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                     }
                     return;
                 }
+                // XTTE3180: xsl:copy select must return at most one item
                 if (result.isNodeSet()) {
-                    // Copy each node in the node-set
-                    for (XPathNode n : result.asNodeSet().getNodes()) {
-                        executeCopyForNode(n, context, output);
+                    List<XPathNode> nodes = result.asNodeSet().getNodes();
+                    if (nodes.size() > 1) {
+                        throw new SAXException("XTTE3180: xsl:copy select " +
+                            "must return a single item, but got " +
+                            nodes.size() + " items");
                     }
-                    return;
+                    if (nodes.isEmpty()) {
+                        if (onEmptyNode != null) {
+                            onEmptyNode.execute(context, output);
+                        }
+                        return;
+                    }
+                    node = nodes.get(0);
+                } else if (result instanceof XPathSequence) {
+                    XPathSequence seq = (XPathSequence) result;
+                    if (seq.size() > 1) {
+                        throw new SAXException("XTTE3180: xsl:copy select " +
+                            "must return a single item, but got " +
+                            seq.size() + " items");
+                    }
+                    if (seq.isEmpty()) {
+                        if (onEmptyNode != null) {
+                            onEmptyNode.execute(context, output);
+                        }
+                        return;
+                    }
+                    XPathValue item = seq.get(0);
+                    if (item instanceof XPathNode) {
+                        node = (XPathNode) item;
+                    } else {
+                        output.characters(item.asString());
+                        return;
+                    }
                 } else if (result instanceof XPathNode) {
                     node = (XPathNode) result;
                 } else {
@@ -148,6 +180,14 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 throw new SAXException("Error evaluating xsl:copy select", e);
             }
         } else {
+            // XSLT 3.0 §11.9.1: if context item is an atomic value,
+            // output it as text and do not evaluate the body
+            XPathValue contextItem = context.getContextItem();
+            if (contextItem != null && !(contextItem instanceof XPathNode)
+                    && !contextItem.isNodeSet()) {
+                output.characters(contextItem.asString());
+                return;
+            }
             node = context.getContextNode();
         }
         
@@ -195,6 +235,13 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
                 String qName = prefix != null ? prefix + ":" + localName : localName;
+                
+                // Per XSLT spec, the base URI of a shallow copy is the base URI
+                // of the original node. Store it as metadata for parentless copies.
+                String origBaseUri = computeNodeBaseUri(node);
+                if (origBaseUri != null && !origBaseUri.isEmpty()) {
+                    output.setNodeBaseURI(origBaseUri);
+                }
                 
                 output.startElement(uri, localName, qName);
                 
@@ -304,6 +351,9 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 String attrLocal = node.getLocalName();
                 String attrPrefix = node.getPrefix();
                 String attrQName = attrPrefix != null ? attrPrefix + ":" + attrLocal : attrLocal;
+                if (attrPrefix != null && !attrPrefix.isEmpty() && !attrUri.isEmpty()) {
+                    output.namespace(attrPrefix, attrUri);
+                }
                 output.attribute(attrUri, attrLocal, attrQName, node.getStringValue());
                 break;
                 
@@ -316,9 +366,10 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 break;
                 
             case ROOT:
-                // Copy content only
+                // Copy content in document context (attributes not allowed)
                 if (content != null) {
-                    content.execute(context, output);
+                    content.execute(context,
+                        new DocumentContentOutputHandler(output));
                 }
                 break;
                 
@@ -339,6 +390,218 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 if (content != null) {
                     content.execute(context, output);
                 }
+        }
+    }
+    
+    /**
+     * Output handler wrapper that rejects attributes and namespace nodes
+     * at the document level (XTDE0420). These are not valid children of
+     * a document node.
+     */
+    private static class DocumentContentOutputHandler implements OutputHandler {
+        private final OutputHandler delegate;
+        private int elementDepth = 0;
+        
+        DocumentContentOutputHandler(OutputHandler delegate) {
+            this.delegate = delegate;
+        }
+        
+        @Override
+        public void startDocument() throws SAXException {
+            delegate.startDocument();
+        }
+        
+        @Override
+        public void endDocument() throws SAXException {
+            delegate.endDocument();
+        }
+        
+        @Override
+        public void startElement(String namespaceURI, String localName, String qName)
+                throws SAXException {
+            elementDepth++;
+            delegate.startElement(namespaceURI, localName, qName);
+        }
+        
+        @Override
+        public void endElement(String namespaceURI, String localName, String qName)
+                throws SAXException {
+            delegate.endElement(namespaceURI, localName, qName);
+            elementDepth--;
+        }
+        
+        @Override
+        public void attribute(String namespaceURI, String localName,
+                String qName, String value) throws SAXException {
+            if (elementDepth == 0) {
+                throw new SAXException("XTDE0420: Cannot add attribute '" +
+                    localName + "' to a document node");
+            }
+            delegate.attribute(namespaceURI, localName, qName, value);
+        }
+        
+        @Override
+        public void namespace(String prefix, String uri) throws SAXException {
+            if (elementDepth == 0) {
+                throw new SAXException("XTDE0420: Cannot add namespace node " +
+                    "to a document node");
+            }
+            delegate.namespace(prefix, uri);
+        }
+        
+        @Override
+        public void characters(String text) throws SAXException {
+            delegate.characters(text);
+        }
+        
+        @Override
+        public void charactersRaw(String text) throws SAXException {
+            delegate.charactersRaw(text);
+        }
+        
+        @Override
+        public void comment(String text) throws SAXException {
+            delegate.comment(text);
+        }
+        
+        @Override
+        public void processingInstruction(String target, String data)
+                throws SAXException {
+            delegate.processingInstruction(target, data);
+        }
+        
+        @Override
+        public void flush() throws SAXException {
+            delegate.flush();
+        }
+        
+        @Override
+        public void setElementType(String namespaceURI, String localName)
+                throws SAXException {
+            delegate.setElementType(namespaceURI, localName);
+        }
+        
+        @Override
+        public void setAttributeType(String namespaceURI, String localName)
+                throws SAXException {
+            delegate.setAttributeType(namespaceURI, localName);
+        }
+        
+        @Override
+        public void setAtomicValuePending(boolean pending) throws SAXException {
+            delegate.setAtomicValuePending(pending);
+        }
+        
+        @Override
+        public boolean isAtomicValuePending() {
+            return delegate.isAtomicValuePending();
+        }
+        
+        @Override
+        public void setInAttributeContent(boolean inAttributeContent)
+                throws SAXException {
+            delegate.setInAttributeContent(inAttributeContent);
+        }
+        
+        @Override
+        public boolean isInAttributeContent() {
+            return delegate.isInAttributeContent();
+        }
+        
+        @Override
+        public void itemBoundary() throws SAXException {
+            delegate.itemBoundary();
+        }
+    }
+
+    /**
+     * Computes the base URI of a node by walking its xml:base chain.
+     * Used to preserve the original's base URI on shallow copies.
+     */
+    private static String computeNodeBaseUri(XPathNode node) {
+        String resolved = null;
+        XPathNode current = node;
+        while (current != null) {
+            if (current.isElement()) {
+                XPathNode xmlBase = current.getAttribute(
+                    "http://www.w3.org/XML/1998/namespace", "base");
+                if (xmlBase == null) {
+                    xmlBase = current.getAttribute("", "xml:base");
+                }
+                if (xmlBase != null) {
+                    String localBase = xmlBase.getStringValue();
+                    if (localBase != null && !localBase.isEmpty()) {
+                        if (isAbsoluteUri(localBase)) {
+                            if (resolved != null) {
+                                return resolveUri(resolved, localBase);
+                            }
+                            return localBase;
+                        }
+                        if (resolved == null) {
+                            resolved = localBase;
+                        } else {
+                            resolved = resolveUri(resolved, localBase);
+                        }
+                    }
+                }
+            }
+            if (current instanceof XPathNodeWithBaseURI) {
+                String storedBase = ((XPathNodeWithBaseURI) current).getBaseURI();
+                if (storedBase != null && !storedBase.isEmpty()) {
+                    if (resolved != null) {
+                        return resolveUri(resolved, storedBase);
+                    }
+                    return storedBase;
+                }
+            }
+            if (current.getNodeType() == NodeType.ROOT) {
+                break;
+            }
+            current = current.getParent();
+        }
+        return resolved;
+    }
+
+    private static boolean isAbsoluteUri(String uri) {
+        int len = uri.length();
+        for (int i = 0; i < len; i++) {
+            char c = uri.charAt(i);
+            if (c == ':') {
+                return i > 0;
+            }
+            if (c == '/' || c == '?' || c == '#') {
+                return false;
+            }
+            if (i == 0 && !Character.isLetter(c)) {
+                return false;
+            }
+            if (i > 0 && !Character.isLetterOrDigit(c) && c != '+' && c != '-' && c != '.') {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private static String resolveUri(String relative, String base) {
+        if (relative == null || relative.isEmpty()) {
+            return base;
+        }
+        if (isAbsoluteUri(relative)) {
+            return relative;
+        }
+        try {
+            java.net.URI baseURI = new java.net.URI(base);
+            java.net.URI resolved = baseURI.resolve(relative);
+            return resolved.toString();
+        } catch (java.net.URISyntaxException e) {
+            if (base.endsWith("/")) {
+                return base + relative;
+            }
+            int lastSlash = base.lastIndexOf('/');
+            if (lastSlash >= 0) {
+                return base.substring(0, lastSlash + 1) + relative;
+            }
+            return relative;
         }
     }
 }

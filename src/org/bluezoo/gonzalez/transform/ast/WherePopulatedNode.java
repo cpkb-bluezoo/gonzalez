@@ -263,9 +263,20 @@ public class WherePopulatedNode extends XSLTInstruction {
             if (depth == 0) {
                 ItemRecord rec = new ItemRecord();
                 rec.buffer = new SAXEventBuffer();
+                if (!isEmpty) {
+                    char[] ch = text.toCharArray();
+                    rec.buffer.comment(ch, 0, ch.length);
+                }
                 rec.deepEmpty = isEmpty;
                 items.add(rec);
             } else {
+                if (currentBuffer == null) {
+                    currentBuffer = new SAXEventBuffer();
+                }
+                if (!isEmpty) {
+                    char[] ch = text.toCharArray();
+                    currentBuffer.comment(ch, 0, ch.length);
+                }
                 if (!isEmpty && depth < populatedAtDepth.length) {
                     populatedAtDepth[depth] = true;
                 }
@@ -307,7 +318,8 @@ public class WherePopulatedNode extends XSLTInstruction {
      * expects namespace() after startElement, so namespace declarations are
      * buffered and emitted after each startElement.
      */
-    private static class SAXToOutputAdapter implements org.xml.sax.ContentHandler {
+    private static class SAXToOutputAdapter
+            implements org.xml.sax.ContentHandler, org.xml.sax.ext.LexicalHandler {
         private final OutputHandler output;
         private final java.util.List<String[]> pendingNs = new java.util.ArrayList<>();
 
@@ -362,6 +374,28 @@ public class WherePopulatedNode extends XSLTInstruction {
         }
 
         public void skippedEntity(String name) throws SAXException {
+        }
+
+        public void comment(char[] ch, int start, int length) throws SAXException {
+            output.comment(new String(ch, start, length));
+        }
+
+        public void startDTD(String name, String publicId, String systemId) throws SAXException {
+        }
+
+        public void endDTD() throws SAXException {
+        }
+
+        public void startEntity(String name) throws SAXException {
+        }
+
+        public void endEntity(String name) throws SAXException {
+        }
+
+        public void startCDATA() throws SAXException {
+        }
+
+        public void endCDATA() throws SAXException {
         }
     }
 }

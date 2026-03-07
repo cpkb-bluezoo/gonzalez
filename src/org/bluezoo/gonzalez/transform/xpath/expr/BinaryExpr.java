@@ -22,7 +22,9 @@
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import org.bluezoo.gonzalez.transform.xpath.Collation;
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
@@ -831,7 +833,7 @@ public final class BinaryExpr implements Expr {
                 throw new XPathException("Not an arithmetic operator: " + operator);
         }
 
-        if (eitherIsDouble) {
+        if (eitherIsDouble || context.getXsltVersion() >= 2.0) {
             return XPathNumber.ofExplicitDouble(result);
         }
         return XPathNumber.of(result);
@@ -1557,6 +1559,99 @@ public final class BinaryExpr implements Expr {
         
         // Fallback: just return left value (shouldn't happen with proper parsing)
         return leftVal;
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        left.bindStaticTypes(context);
+        right.bindStaticTypes(context);
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        switch (operator) {
+            case AND:
+            case OR:
+            case EQUALS:
+            case NOT_EQUALS:
+            case LESS_THAN:
+            case LESS_THAN_OR_EQUAL:
+            case GREATER_THAN:
+            case GREATER_THAN_OR_EQUAL:
+            case VALUE_EQUALS:
+            case VALUE_NOT_EQUALS:
+            case VALUE_LESS_THAN:
+            case VALUE_LESS_THAN_OR_EQUAL:
+            case VALUE_GREATER_THAN:
+            case VALUE_GREATER_THAN_OR_EQUAL:
+            case NODE_IS:
+            case NODE_PRECEDES:
+            case NODE_FOLLOWS:
+                return SequenceType.BOOLEAN;
+
+            case PLUS:
+            case MINUS:
+            case MULTIPLY:
+            case DIV:
+            case MOD:
+                return inferArithmeticType();
+
+            case IDIV:
+                return SequenceType.INTEGER;
+
+            case TO:
+                return SequenceType.INTEGER_STAR;
+
+            case UNION:
+            case INTERSECT:
+            case EXCEPT:
+                return SequenceType.NODE_STAR;
+
+            case STRING_CONCAT:
+                return SequenceType.STRING;
+
+            case SIMPLE_MAP:
+            case ARROW:
+                return right.getStaticType();
+
+            default:
+                return null;
+        }
+    }
+
+    private SequenceType inferArithmeticType() {
+        SequenceType lt = left.getStaticType();
+        SequenceType rt = right.getStaticType();
+        if (lt == null || rt == null) {
+            return null;
+        }
+        boolean li = isIntegerType(lt);
+        boolean ri = isIntegerType(rt);
+        if (li && ri) {
+            if (operator == Operator.DIV) {
+                return SequenceType.DECIMAL;
+            }
+            return SequenceType.INTEGER;
+        }
+        boolean ld = isDecimalType(lt);
+        boolean rd = isDecimalType(rt);
+        if ((li || ld) && (ri || rd)) {
+            return SequenceType.DECIMAL;
+        }
+        if (lt.isNumericType() && rt.isNumericType()) {
+            return SequenceType.DOUBLE;
+        }
+        return null;
+    }
+
+    private static boolean isIntegerType(SequenceType t) {
+        return t.getItemKind() == SequenceType.ItemKind.ATOMIC
+            && "integer".equals(t.getLocalName());
+    }
+
+    private static boolean isDecimalType(SequenceType t) {
+        return t.getItemKind() == SequenceType.ItemKind.ATOMIC
+            && "decimal".equals(t.getLocalName());
     }
 
     /**

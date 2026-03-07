@@ -367,4 +367,17 @@ public interface OutputHandler {
     default void setInheritNamespaces(boolean inherit) throws SAXException {
     }
 
+    /**
+     * Sets the base URI for the next element to be created.
+     *
+     * <p>Called by xsl:copy before emitting the copy to store the original
+     * node's computed base URI as metadata on the resulting node. This is
+     * needed because xsl:copy does not copy xml:base attributes, but the
+     * spec requires the copy to inherit the original's base URI.
+     *
+     * @param uri the base URI to store on the next element
+     */
+    default void setNodeBaseURI(String uri) throws SAXException {
+    }
+
 }

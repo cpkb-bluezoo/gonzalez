@@ -23,10 +23,19 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathAnyURI;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathAtomicValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
+
+import static org.bluezoo.gonzalez.transform.xpath.function.TypeAnnotatedFunction.typed;
 
 import java.util.List;
 
@@ -40,13 +49,14 @@ public final class BooleanFunctions {
     private BooleanFunctions() {}
 
     /**
-     * XPath 1.0 boolean() function.
+     * XPath boolean() function.
      * 
-     * <p>Converts the argument to a boolean value.
+     * <p>Computes the effective boolean value (EBV) of the argument,
+     * raising FORG0006 for types without a defined EBV.
      * 
-     * <p>Signature: boolean(object) → boolean
+     * <p>Signature: boolean(item()*) → boolean
      * 
-     * @see <a href="https://www.w3.org/TR/xpath/#function-boolean">XPath 1.0 boolean()</a>
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-boolean">fn:boolean</a>
      */
     public static final Function BOOLEAN = new Function() {
         @Override public String getName() { return "boolean"; }
@@ -54,19 +64,20 @@ public final class BooleanFunctions {
         @Override public int getMaxArgs() { return 1; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
-            return XPathBoolean.of(args.get(0).asBoolean());
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            return XPathBoolean.of(effectiveBooleanValue(args.get(0)));
         }
     };
 
     /**
-     * XPath 1.0 not() function.
+     * XPath not() function.
      * 
-     * <p>Returns the logical negation of the boolean argument.
+     * <p>Returns the negation of the effective boolean value of the argument.
      * 
-     * <p>Signature: not(boolean) → boolean
+     * <p>Signature: not(item()*) → boolean
      * 
-     * @see <a href="https://www.w3.org/TR/xpath/#function-not">XPath 1.0 not()</a>
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-not">fn:not</a>
      */
     public static final Function NOT = new Function() {
         @Override public String getName() { return "not"; }
@@ -74,10 +85,77 @@ public final class BooleanFunctions {
         @Override public int getMaxArgs() { return 1; }
 
         @Override
-        public XPathValue evaluate(List<XPathValue> args, XPathContext context) {
-            return XPathBoolean.of(!args.get(0).asBoolean());
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            return XPathBoolean.of(!effectiveBooleanValue(args.get(0)));
         }
     };
+
+    /**
+     * Computes the effective boolean value per XPath 2.0+ Section 2.4.3.
+     *
+     * @param arg the value to evaluate
+     * @return the effective boolean value
+     * @throws XPathException FORG0006 if the value has no defined EBV
+     */
+    static boolean effectiveBooleanValue(XPathValue arg) throws XPathException {
+        if (arg == null) {
+            return false;
+        }
+
+        if (arg instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) arg;
+            if (seq.isEmpty()) {
+                return false;
+            }
+            XPathValue first = seq.first();
+            if (first.isNodeSet()) {
+                return true;
+            }
+            if (seq.size() > 1) {
+                throw new XPathException("FORG0006: Effective boolean value " +
+                        "is not defined for a sequence of two or more items " +
+                        "starting with an atomic value");
+            }
+            return singletonEBV(first);
+        }
+
+        if (arg.isNodeSet()) {
+            return !arg.asNodeSet().isEmpty();
+        }
+
+        return singletonEBV(arg);
+    }
+
+    /**
+     * Computes the EBV of a single (non-sequence, non-nodeset) item.
+     */
+    private static boolean singletonEBV(XPathValue item) throws XPathException {
+        if (item instanceof XPathBoolean) {
+            return ((XPathBoolean) item).getValue();
+        }
+        if (item instanceof XPathString) {
+            return !item.asString().isEmpty();
+        }
+        if (item instanceof XPathNumber) {
+            double d = item.asNumber();
+            return d != 0.0 && !Double.isNaN(d);
+        }
+        if (item instanceof XPathAnyURI) {
+            return !item.asString().isEmpty();
+        }
+        if (item instanceof XPathAtomicValue) {
+            return !item.asString().isEmpty();
+        }
+        if (item instanceof XPathResultTreeFragment) {
+            return true;
+        }
+        if (item.isNodeSet()) {
+            return !item.asNodeSet().isEmpty();
+        }
+        throw new XPathException("FORG0006: Effective boolean value " +
+                "is not defined for a value of type " + item.getClass().getSimpleName());
+    }
 
     /**
      * XPath 1.0 true() function.
@@ -180,7 +258,17 @@ public final class BooleanFunctions {
      * @return array of all boolean function implementations
      */
     public static Function[] getAll() {
-        return new Function[] { BOOLEAN, NOT, TRUE, FALSE, LANG };
+        SequenceType B = SequenceType.BOOLEAN;
+        SequenceType IS = SequenceType.ITEM_STAR;
+        SequenceType S = SequenceType.STRING;
+        SequenceType NQ = SequenceType.NODE_Q;
+        return new Function[] {
+            typed(BOOLEAN, B, IS),
+            typed(NOT,     B, IS),
+            typed(TRUE,    B),
+            typed(FALSE,   B),
+            typed(LANG,    B, S, NQ),
+        };
     }
 
 }

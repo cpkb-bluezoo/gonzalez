@@ -21,8 +21,11 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
+import org.bluezoo.gonzalez.transform.xpath.function.Function;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -45,6 +48,7 @@ public final class FunctionCall implements Expr {
     private final String localName;
     private final String resolvedNamespaceURI;
     private final List<Expr> arguments;
+    private StaticTypeContext typeContext;
 
     /**
      * Creates a function call with no namespace prefix.
@@ -171,6 +175,27 @@ public final class FunctionCall implements Expr {
 
         return new PartialFunctionItem(fullName, funcNsURI, funcLocalName,
                 arity, library, boundArgs, positions, totalArgs);
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        this.typeContext = context;
+        for (Expr arg : arguments) {
+            arg.bindStaticTypes(context);
+        }
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        if (typeContext == null) {
+            return null;
+        }
+        Function func = typeContext.resolveFunction(
+            resolvedNamespaceURI, localName, arguments.size());
+        if (func != null) {
+            return func.getReturnType();
+        }
+        return null;
     }
 
     /**

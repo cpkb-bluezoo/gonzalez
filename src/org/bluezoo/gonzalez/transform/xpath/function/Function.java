@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.List;
@@ -85,6 +86,28 @@ public interface Function {
      */
     default ArgType[] getArgumentTypes() {
         return null;  // Default: no strict type checking (XPath 1.0 compatible)
+    }
+
+    /**
+     * Returns the static return type of this function, or null if unknown.
+     * Used by the static type checker to infer expression types.
+     *
+     * @return the return sequence type, or null
+     */
+    default SequenceType getReturnType() {
+        return null;
+    }
+
+    /**
+     * Returns the declared parameter types of this function, or null if
+     * unknown. The array length should match {@link #getMaxArgs()}. For
+     * variable-argument functions the last type applies to all remaining
+     * arguments.
+     *
+     * @return array of parameter sequence types, or null
+     */
+    default SequenceType[] getParameterSequenceTypes() {
+        return null;
     }
 
     /**

@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform;
 
 import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
 import org.bluezoo.gonzalez.transform.runtime.HTMLOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -47,9 +48,13 @@ import java.nio.channels.WritableByteChannel;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 
 /**
  * JAXP Transformer implementation for Gonzalez XSLT.
@@ -83,15 +88,20 @@ public class GonzalezTransformer extends Transformer {
     
     /** Initial template name for XSLT 2.0+ initial-template support. */
     private String initialTemplate;
+    private List<InitialTemplateParam> initialTemplateParams;
     private String initialMode;
+    private boolean hasMatchSelection = true;
 
     /** Initial function for XSLT 3.0 initial-function support. */
     private String initialFunctionNsUri;
     private String initialFunctionLocalName;
-    private java.util.List<String> initialFunctionParams;
+    private List<String> initialFunctionParams;
 
     /** XPath expression to select the initial context node from the source. */
     private String initialContextSelect;
+
+    /** Registered fn:collection() mappings (URI → list of nodes). */
+    private Map<String, List<XPathNode>> collections;
 
     /** Allowed protocols for external DTD access. */
     private String accessExternalDTD = "";
@@ -171,6 +181,9 @@ public class GonzalezTransformer extends Transformer {
         // Set initial template if specified (XSLT 2.0+ feature)
         if (initialTemplate != null) {
             transformHandler.setInitialTemplate(initialTemplate);
+            if (initialTemplateParams != null) {
+                transformHandler.setInitialTemplateParams(initialTemplateParams);
+            }
         }
         
         // Set initial function if specified (XSLT 3.0 feature)
@@ -182,6 +195,7 @@ public class GonzalezTransformer extends Transformer {
         // Set initial mode if specified
         if (initialMode != null) {
             transformHandler.setInitialMode(initialMode);
+            transformHandler.setHasMatchSelection(hasMatchSelection);
         }
         
         // Set initial context select if specified
@@ -189,9 +203,17 @@ public class GonzalezTransformer extends Transformer {
             transformHandler.setInitialContextSelect(initialContextSelect);
         }
         
+        // Register collections for fn:collection()
+        if (collections != null) {
+            for (Map.Entry<String, List<XPathNode>> entry : collections.entrySet()) {
+                transformHandler.setCollection(entry.getKey(), entry.getValue());
+            }
+        }
+        
         // Parse input through the transform
         XMLReader reader = getXMLReader(source);
         reader.setContentHandler(transformHandler);
+        reader.setDTDHandler(transformHandler);
         
         // Set up PSVIProvider for type information (DTD/XSD types)
         if (reader instanceof PSVIProvider) {
@@ -434,8 +456,8 @@ public class GonzalezTransformer extends Transformer {
                     
                     // Set up character mappings if specified
                     if (stylesheet != null && !props.getUseCharacterMaps().isEmpty()) {
-                        java.util.Map<Integer, String> mappings = new java.util.HashMap<>();
-                        java.util.Set<String> visited = new java.util.HashSet<>();
+                        Map<Integer, String> mappings = new HashMap<>();
+                        Set<String> visited = new HashSet<>();
                         for (String mapName : props.getUseCharacterMaps()) {
                             collectCharacterMappings(mapName, mappings, visited);
                         }
@@ -487,8 +509,8 @@ public class GonzalezTransformer extends Transformer {
      * @param mappings the map to populate with character-to-string mappings
      * @param visited the set of already visited map names (to avoid circular references)
      */
-    private void collectCharacterMappings(String mapName, java.util.Map<Integer, String> mappings, 
-            java.util.Set<String> visited) {
+    private void collectCharacterMappings(String mapName, Map<Integer, String> mappings, 
+            Set<String> visited) {
         if (mapName == null || visited.contains(mapName)) {
             return;  // Avoid null and circular references
         }
@@ -618,6 +640,46 @@ public class GonzalezTransformer extends Transformer {
     }
 
     /**
+     * Adds a parameter to be passed to the initial template.
+     *
+     * @param nsUri the parameter namespace URI (may be null)
+     * @param localName the parameter local name
+     * @param selectExpr the XPath select expression for the value
+     * @param tunnel whether this is a tunnel parameter
+     */
+    public void addInitialTemplateParam(String nsUri, String localName,
+                                        String selectExpr, boolean tunnel) {
+        if (initialTemplateParams == null) {
+            initialTemplateParams = new ArrayList<InitialTemplateParam>();
+        }
+        initialTemplateParams.add(
+            new InitialTemplateParam(nsUri, localName, selectExpr, tunnel));
+    }
+
+    /**
+     * Represents a parameter to be passed to the initial template.
+     */
+    public static class InitialTemplateParam {
+        private final String nsUri;
+        private final String localName;
+        private final String selectExpr;
+        private final boolean tunnel;
+
+        InitialTemplateParam(String nsUri, String localName,
+                            String selectExpr, boolean tunnel) {
+            this.nsUri = nsUri;
+            this.localName = localName;
+            this.selectExpr = selectExpr;
+            this.tunnel = tunnel;
+        }
+
+        public String getNsUri() { return nsUri; }
+        public String getLocalName() { return localName; }
+        public String getSelectExpr() { return selectExpr; }
+        public boolean isTunnel() { return tunnel; }
+    }
+
+    /**
      * Sets the initial function for XSLT 3.0 support.
      * If set, the transformation starts by calling this function with the
      * supplied parameter expressions instead of applying templates.
@@ -627,7 +689,7 @@ public class GonzalezTransformer extends Transformer {
      * @param paramSelects XPath expressions for each parameter
      */
     public void setInitialFunction(String nsUri, String localName,
-                                   java.util.List<String> paramSelects) {
+                                   List<String> paramSelects) {
         this.initialFunctionNsUri = nsUri;
         this.initialFunctionLocalName = localName;
         this.initialFunctionParams = paramSelects;
@@ -653,6 +715,16 @@ public class GonzalezTransformer extends Transformer {
     }
 
     /**
+     * Sets whether an initial match selection (source document) was provided.
+     * When false and an initial mode is specified, XTDE0044 is raised.
+     *
+     * @param has true if a real source document is provided
+     */
+    public void setHasMatchSelection(boolean has) {
+        this.hasMatchSelection = has;
+    }
+
+    /**
      * Sets an XPath expression to select the initial context node from the
      * source document. When set, the transformation uses the selected node
      * instead of the document root as the initial context item.
@@ -661,6 +733,19 @@ public class GonzalezTransformer extends Transformer {
      */
     public void setInitialContextSelect(String xpath) {
         this.initialContextSelect = xpath;
+    }
+
+    /**
+     * Registers a named collection for the fn:collection() function.
+     *
+     * @param uri the collection URI
+     * @param nodes the list of nodes in the collection
+     */
+    public void setCollection(String uri, List<XPathNode> nodes) {
+        if (collections == null) {
+            collections = new HashMap<>();
+        }
+        collections.put(uri, nodes);
     }
 
     /**
@@ -761,8 +846,8 @@ public class GonzalezTransformer extends Transformer {
     private static class OutputHandlerSAXAdapter implements ContentHandler {
 
         private final OutputHandler output;
-        private final java.util.List<String[]> pendingPrefixMappings =
-            new java.util.ArrayList<String[]>();
+        private final List<String[]> pendingPrefixMappings =
+            new ArrayList<String[]>();
 
         OutputHandlerSAXAdapter(OutputHandler output) {
             this.output = output;

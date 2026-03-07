@@ -38,6 +38,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -108,6 +109,8 @@ public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
             SAXEventBuffer buffer = new SAXEventBuffer();
             content.execute(context, new BufferOutputHandler(buffer));
             value = new XPathResultTreeFragment(buffer);
+        } else if (asType != null) {
+            value = XPathSequence.EMPTY;
         } else {
             value = XPathString.of("");
         }

@@ -62,24 +62,24 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
     private final AttributeValueTemplate groupingSizeAVT;
     private final AttributeValueTemplate langAVT;
     private final String letterValue;
-    private final String ordinal;
+    private final AttributeValueTemplate ordinalAVT;
     private final AttributeValueTemplate startAtAVT; // XSLT 3.0
     private final boolean backwardsCompatible; // XSLT 1.0 BC mode
     
     public NumberNode(XPathExpression valueExpr, XPathExpression selectExpr, String level, 
               Pattern countPattern, Pattern fromPattern, AttributeValueTemplate formatAVT,
               AttributeValueTemplate groupingSepAVT, AttributeValueTemplate groupingSizeAVT,
-              AttributeValueTemplate langAVT, String letterValue, String ordinal,
+              AttributeValueTemplate langAVT, String letterValue, AttributeValueTemplate ordinalAVT,
               AttributeValueTemplate startAtAVT) {
         this(valueExpr, selectExpr, level, countPattern, fromPattern, formatAVT,
-             groupingSepAVT, groupingSizeAVT, langAVT, letterValue, ordinal,
+             groupingSepAVT, groupingSizeAVT, langAVT, letterValue, ordinalAVT,
              startAtAVT, false);
     }
     
     public NumberNode(XPathExpression valueExpr, XPathExpression selectExpr, String level, 
               Pattern countPattern, Pattern fromPattern, AttributeValueTemplate formatAVT,
               AttributeValueTemplate groupingSepAVT, AttributeValueTemplate groupingSizeAVT,
-              AttributeValueTemplate langAVT, String letterValue, String ordinal,
+              AttributeValueTemplate langAVT, String letterValue, AttributeValueTemplate ordinalAVT,
               AttributeValueTemplate startAtAVT, boolean backwardsCompatible) {
         this.valueExpr = valueExpr;
         this.selectExpr = selectExpr;
@@ -91,7 +91,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         this.groupingSizeAVT = groupingSizeAVT;
         this.langAVT = langAVT;
         this.letterValue = letterValue;
-        this.ordinal = ordinal;
+        this.ordinalAVT = ordinalAVT;
         this.startAtAVT = startAtAVT;
         this.backwardsCompatible = backwardsCompatible;
     }
@@ -850,7 +850,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
             result = String.valueOf(num);
         }
         
-        if ("yes".equals(ordinal)) {
+        if (isOrdinal(context)) {
             result = appendOrdinal(result, num, specifier, context);
         }
         
@@ -918,6 +918,18 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         return formatted;
     }
     
+    private boolean isOrdinal(TransformContext context) throws SAXException {
+        if (ordinalAVT == null) {
+            return false;
+        }
+        try {
+            String val = ordinalAVT.evaluate(context);
+            return "yes".equals(val);
+        } catch (XPathException e) {
+            throw new SAXException("Error evaluating xsl:number ordinal: " + e.getMessage(), e);
+        }
+    }
+    
     private Locale resolveLocale(TransformContext context) throws SAXException {
         String lang = null;
         if (langAVT != null) {
@@ -958,7 +970,7 @@ public class NumberNode extends XSLTInstruction implements ExpressionHolder {
         long absValue = Math.abs(num);
         
         String words;
-        if ("yes".equals(ordinal)) {
+        if (isOrdinal(context)) {
             words = dtl.toOrdinalWords((int) absValue);
         } else {
             words = dtl.toWords((int) absValue);

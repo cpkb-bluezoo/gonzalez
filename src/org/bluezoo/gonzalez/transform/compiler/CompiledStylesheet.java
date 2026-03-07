@@ -62,6 +62,7 @@ public final class CompiledStylesheet {
     private final Map<String, NamespaceAlias> namespaceAliases;  // keyed by stylesheet URI
     private final List<SpaceDeclaration> stripSpaceDeclarations;
     private final List<SpaceDeclaration> preserveSpaceDeclarations;
+    private final int ownPrecedence;
     // Legacy lists for backward compatibility
     private final List<String> stripSpaceElements;
     private final List<String> preserveSpaceElements;
@@ -106,8 +107,10 @@ public final class CompiledStylesheet {
     private final ValidationMode defaultValidation;  // from default-validation attr
     private final String baseURI;  // static base URI of the stylesheet
     private final double version;  // XSLT version (1.0, 2.0, 3.0)
+    private final double processorVersion;  // max XSLT version the processor supports
     private final String defaultCollation;  // default collation URI (XSLT 2.0+)
     private final String defaultMode;  // XSLT 3.0 default-mode from stylesheet element
+    private final String inputTypeAnnotations;  // XTSE0265 tracking
     
     // XSLT 3.0 global context item declaration
     private String globalContextItemType;  // as attribute
@@ -380,6 +383,7 @@ public final class CompiledStylesheet {
         private final Map<String, XSDSchema> importedSchemas = new HashMap<>();
         // Tracks precedences from included stylesheets that need to be updated to final precedence
         private final Set<Integer> pendingIncludePrecedences = new HashSet<>();
+        private int finalizedPrecedence = -1;
         private ValidationMode defaultValidation = ValidationMode.STRIP;
         private String baseURI;
         private double version = 1.0;
@@ -395,6 +399,9 @@ public final class CompiledStylesheet {
         private final Map<String, Integer> outputAttributePrecedence = new HashMap<>();
         private String packageVersion;  // XSLT 3.0 package version
         private String defaultMode;  // XSLT 3.0 default-mode from stylesheet element
+        private String inputTypeAnnotations;  // XTSE0265: track across modules
+        private String inputTypeAnnotationsConflict;  // XTSE0265: deferred error
+        private double processorVersion = 3.0;  // max XSLT version the processor supports
 
         /**
          * Sets the base URI of the stylesheet.
@@ -415,6 +422,19 @@ public final class CompiledStylesheet {
          */
         public Builder setVersion(double version) {
             this.version = version;
+            return this;
+        }
+
+        /**
+         * Sets the maximum XSLT version the processor supports. Used to
+         * distinguish 2.0-processor behavior from 3.0-processor behavior
+         * at runtime (e.g., XTTE1120 only applies to 2.0 processors).
+         *
+         * @param version the processor version (default 3.0)
+         * @return this builder
+         */
+        public Builder setProcessorVersion(double version) {
+            this.processorVersion = version;
             return this;
         }
 
@@ -486,6 +506,39 @@ public final class CompiledStylesheet {
         public Builder setDefaultMode(String mode) {
             this.defaultMode = mode;
             return this;
+        }
+
+        /**
+         * Sets the input-type-annotations value for XTSE0265 detection.
+         *
+         * @param value "strip", "preserve", or null
+         */
+        public void setInputTypeAnnotations(String value) {
+            this.inputTypeAnnotations = value;
+        }
+
+        /**
+         * Checks for conflicting input-type-annotations with an included/imported module.
+         * Stores the error message for the compiler to throw as SAXException.
+         */
+        void checkInputTypeAnnotations(CompiledStylesheet other) {
+            String otherIta = other.getInputTypeAnnotations();
+            if (otherIta != null && inputTypeAnnotations != null
+                    && !otherIta.equals(inputTypeAnnotations)) {
+                inputTypeAnnotationsConflict = "XTSE0265: Conflicting values of " +
+                        "input-type-annotations: '" + inputTypeAnnotations +
+                        "' and '" + otherIta + "'";
+            }
+            if (otherIta != null && inputTypeAnnotations == null) {
+                inputTypeAnnotations = otherIta;
+            }
+        }
+
+        /**
+         * Returns any input-type-annotations conflict error, or null.
+         */
+        String getInputTypeAnnotationsConflict() {
+            return inputTypeAnnotationsConflict;
         }
 
         /**
@@ -1114,13 +1167,8 @@ public final class CompiledStylesheet {
          * @return this builder
          */
         public Builder mergeInclude(CompiledStylesheet included, int includingPrecedence) {
-            // Find the maximum precedence in the included stylesheet - that's its "own" precedence
-            int includedOwnPrecedence = -1;
-            for (TemplateRule rule : included.getTemplateRules()) {
-                if (rule.getImportPrecedence() > includedOwnPrecedence) {
-                    includedOwnPrecedence = rule.getImportPrecedence();
-                }
-            }
+            // Use the included stylesheet's own precedence level
+            int includedOwnPrecedence = included.getOwnPrecedence();
             
             // Add template rules with updated precedence
             // Templates with the included stylesheet's own precedence get updated to the including precedence
@@ -1138,9 +1186,11 @@ public final class CompiledStylesheet {
                         rule.getDeclarationIndex(),
                         rule.getParameters(),
                         rule.getBody(),
-                        rule.getAsType()      // Preserve as attribute for type validation
+                        rule.getAsType(),     // Preserve as attribute for type validation
+                        rule.getVisibility()
                     );
                     adjusted.setParsedAsType(rule.getParsedAsType());
+                    adjusted.setEffectiveVersion(rule.getEffectiveVersion());
                 }
                 templateRules.add(adjusted);
                 if (adjusted.getName() != null) {
@@ -1174,22 +1224,19 @@ public final class CompiledStylesheet {
          * @return this builder
          */
         public Builder mergeIncludePending(CompiledStylesheet included) {
-            // Find the maximum precedence in the included stylesheet - that's its "own" precedence
-            int includedOwnPrecedence = -1;
-            for (TemplateRule rule : included.getTemplateRules()) {
-                if (rule.getImportPrecedence() > includedOwnPrecedence) {
-                    includedOwnPrecedence = rule.getImportPrecedence();
-                }
-            }
+            // Use the included stylesheet's own precedence level (the one assigned
+            // to its own declarations, not those inherited from its imports)
+            int includedOwnPrecedence = included.getOwnPrecedence();
             
             // Mark this precedence for later update
-            pendingIncludePrecedences.add(includedOwnPrecedence);
+            if (includedOwnPrecedence >= 0) {
+                pendingIncludePrecedences.add(includedOwnPrecedence);
+            }
             
             // Add template rules as-is (precedences will be updated later)
             for (TemplateRule rule : included.getTemplateRules()) {
                 templateRules.add(rule);
                 if (rule.getName() != null) {
-                    // For named templates, higher import precedence wins
                     TemplateRule existing = namedTemplates.get(rule.getName());
                     if (existing == null) {
                         namedTemplates.put(rule.getName(), rule);
@@ -1202,8 +1249,13 @@ public final class CompiledStylesheet {
                 }
             }
             
-            // Merge non-template components
-            mergeNonTemplates(included, false);  // false = include, not import
+            // Merge non-template components with deferred precedence: existing
+            // components are not replaced because their precedence will be
+            // finalized to a higher value later.
+            mergeNonTemplates(included, false, true);
+            
+            // XTSE0265: check for conflicting input-type-annotations
+            checkInputTypeAnnotations(included);
             
             return this;
         }
@@ -1215,7 +1267,20 @@ public final class CompiledStylesheet {
          * @param isImport true for xsl:import, false for xsl:include
          */
         private void mergeNonTemplates(CompiledStylesheet imported, boolean isImport) {
-            // Add global variables - higher import precedence wins
+            mergeNonTemplates(imported, isImport, false);
+        }
+
+        /**
+         * Merges non-template components from another stylesheet.
+         *
+         * @param imported the imported/included stylesheet
+         * @param isImport true for xsl:import, false for xsl:include
+         * @param deferPrecedence true when called from mergeIncludePending (existing
+         *        components should not be replaced because they will be finalized
+         *        to a higher precedence later)
+         */
+        private void mergeNonTemplates(CompiledStylesheet imported, boolean isImport,
+                                       boolean deferPrecedence) {
             for (GlobalVariable var : imported.getGlobalVariables()) {
                 boolean found = false;
                 for (int i = 0; i < globalVariables.size(); i++) {
@@ -1224,7 +1289,7 @@ public final class CompiledStylesheet {
                                     (existing.getNamespaceURI() != null && existing.getNamespaceURI().equals(var.getNamespaceURI()));
                     if (sameNs && existing.getLocalName().equals(var.getLocalName())) {
                         found = true;
-                        if (var.getImportPrecedence() > existing.getImportPrecedence()) {
+                        if (!deferPrecedence && var.getImportPrecedence() > existing.getImportPrecedence()) {
                             globalVariables.set(i, var);
                         }
                         break;
@@ -1243,10 +1308,12 @@ public final class CompiledStylesheet {
                 String name = entry.getKey();
                 AttributeSet existing = attributeSets.get(name);
                 if (existing != null) {
-                    // Merge: existing first, then imported (imported takes precedence for conflicts)
-                    // Since imports are processed in order, later imports override earlier ones.
-                    // In mergeWith(other), "other" takes precedence for conflicts.
-                    attributeSets.put(name, existing.mergeWith(entry.getValue()));
+                    if (deferPrecedence) {
+                        // Existing set's precedence will be finalized higher; keep it
+                        attributeSets.put(name, entry.getValue().mergeWith(existing));
+                    } else {
+                        attributeSets.put(name, existing.mergeWith(entry.getValue()));
+                    }
                 } else {
                     attributeSets.put(name, entry.getValue());
                 }
@@ -1298,7 +1365,7 @@ public final class CompiledStylesheet {
                 UserFunction existing = userFunctions.get(key);
                 if (existing == null) {
                     userFunctions.put(key, entry.getValue());
-                } else if (entry.getValue().getImportPrecedence() > existing.getImportPrecedence()) {
+                } else if (!deferPrecedence && entry.getValue().getImportPrecedence() > existing.getImportPrecedence()) {
                     userFunctions.put(key, entry.getValue());
                 }
             }
@@ -1391,12 +1458,24 @@ public final class CompiledStylesheet {
          * @return this builder
          */
         public Builder finalizePrecedence(int finalPrecedence) {
+            return finalizePrecedence(-1, finalPrecedence);
+        }
+
+        /**
+         * Finalizes template and variable precedences. Updates declarations at
+         * the old precedence, -1, or pending include precedences to the final value.
+         *
+         * @param ownPrecedence the stylesheet's initial precedence (to be promoted)
+         * @param finalPrecedence the final precedence value
+         * @return this builder
+         */
+        public Builder finalizePrecedence(int ownPrecedence, int finalPrecedence) {
+            this.finalizedPrecedence = finalPrecedence;
             for (int i = 0; i < templateRules.size(); i++) {
                 TemplateRule rule = templateRules.get(i);
-                // Update templates that need the final precedence:
-                // - Templates with -1 (main stylesheet's templates compiled before precedence was assigned)
-                // - Templates from included stylesheets (their "own" precedence marked in pendingIncludePrecedences)
-                if (rule.getImportPrecedence() == -1 || pendingIncludePrecedences.contains(rule.getImportPrecedence())) {
+                if (rule.getImportPrecedence() == -1
+                        || rule.getImportPrecedence() == ownPrecedence
+                        || pendingIncludePrecedences.contains(rule.getImportPrecedence())) {
                     TemplateRule adjusted = new TemplateRule(
                         rule.getMatchPattern(),
                         rule.getName(),
@@ -1406,13 +1485,33 @@ public final class CompiledStylesheet {
                         rule.getDeclarationIndex(),
                         rule.getParameters(),
                         rule.getBody(),
-                        rule.getAsType()      // Preserve as attribute for type validation
+                        rule.getAsType(),
+                        rule.getVisibility()
                     );
                     adjusted.setParsedAsType(rule.getParsedAsType());
+                    adjusted.setEffectiveVersion(rule.getEffectiveVersion());
                     templateRules.set(i, adjusted);
                     if (adjusted.getName() != null) {
                         namedTemplates.put(adjusted.getName(), adjusted);
                     }
+                }
+            }
+            // Also update global variables at -1, ownPrecedence, or pending include precedences
+            for (int i = 0; i < globalVariables.size(); i++) {
+                GlobalVariable var = globalVariables.get(i);
+                if (var.getImportPrecedence() == -1
+                        || var.getImportPrecedence() == ownPrecedence
+                        || pendingIncludePrecedences.contains(var.getImportPrecedence())) {
+                    globalVariables.set(i, var.withImportPrecedence(finalPrecedence));
+                }
+            }
+            // Also update user functions
+            for (Map.Entry<String, UserFunction> entry : userFunctions.entrySet()) {
+                UserFunction fn = entry.getValue();
+                if (fn.getImportPrecedence() == -1
+                        || fn.getImportPrecedence() == ownPrecedence
+                        || pendingIncludePrecedences.contains(fn.getImportPrecedence())) {
+                    entry.setValue(fn.withImportPrecedence(finalPrecedence));
                 }
             }
             pendingIncludePrecedences.clear();
@@ -1579,6 +1678,7 @@ public final class CompiledStylesheet {
         this.globalVariables = Collections.unmodifiableList(new ArrayList<>(builder.globalVariables));
         this.attributeSets = Collections.unmodifiableMap(new HashMap<>(builder.attributeSets));
         this.outputProperties = builder.outputProperties;
+        this.ownPrecedence = builder.finalizedPrecedence;
         Map<String, List<KeyDefinition>> keyDefsCopy = new HashMap<>();
         for (Map.Entry<String, List<KeyDefinition>> entry : builder.keyDefinitions.entrySet()) {
             keyDefsCopy.put(entry.getKey(), Collections.unmodifiableList(new ArrayList<>(entry.getValue())));
@@ -1618,12 +1718,14 @@ public final class CompiledStylesheet {
         this.defaultValidation = builder.defaultValidation;
         this.baseURI = builder.baseURI;
         this.version = builder.version;
+        this.processorVersion = builder.processorVersion;
         this.defaultCollation = builder.defaultCollation;
         this.globalContextItemType = builder.globalContextItemType;
         this.globalContextItemUse = builder.globalContextItemUse;
         this.packageName = builder.packageName;
         this.packageVersion = builder.packageVersion;
         this.defaultMode = builder.defaultMode;
+        this.inputTypeAnnotations = builder.inputTypeAnnotations;
         this.streamingCapability = computeStreamingCapability();
     }
 
@@ -1636,6 +1738,16 @@ public final class CompiledStylesheet {
             }
         }
         return result;
+    }
+
+    /**
+     * Returns the precedence level assigned to this stylesheet's own declarations
+     * (as opposed to declarations inherited from imports).
+     *
+     * @return the own precedence level, or -1 if not yet finalized
+     */
+    public int getOwnPrecedence() {
+        return ownPrecedence;
     }
 
     /**
@@ -1762,12 +1874,33 @@ public final class CompiledStylesheet {
     }
 
     /**
+     * Returns the maximum XSLT version the processor supports. This
+     * determines processor-level behavior such as whether XTTE1120
+     * applies (2.0 only) or atomic values are allowed in
+     * group-starting/ending-with patterns (3.0).
+     *
+     * @return the processor version (default 3.0)
+     */
+    public double getProcessorVersion() {
+        return processorVersion;
+    }
+
+    /**
      * Returns the stylesheet-level default-mode (XSLT 3.0).
      *
      * @return the default mode name, or null for unnamed mode
      */
     public String getDefaultMode() {
         return defaultMode;
+    }
+
+    /**
+     * Returns the input-type-annotations value (XSLT 2.0+).
+     *
+     * @return "strip", "preserve", or null if unspecified
+     */
+    public String getInputTypeAnnotations() {
+        return inputTypeAnnotations;
     }
 
     /**

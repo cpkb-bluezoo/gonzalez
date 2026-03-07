@@ -108,10 +108,13 @@ public final class DocumentLoader {
             List<String> stripSpace, List<String> preserveSpace,
             String allowedProtocols) {
         try {
-            // Strip fragment identifiers before resolving
-            // Per XSLT spec, fragments are stripped when determining document identity
+            // Extract fragment identifier before resolving.
+            // Per XSLT spec, the fragment selects an element by ID within
+            // the loaded document (recognize_id_as_uri_fragment feature).
+            String fragment = null;
             int fragIndex = uri.indexOf('#');
             if (fragIndex >= 0) {
+                fragment = uri.substring(fragIndex + 1);
                 uri = uri.substring(0, fragIndex);
             }
             
@@ -120,9 +123,13 @@ public final class DocumentLoader {
                 uri = uri.replace(" ", "%20");
             }
             
-            // Resolve the URI against the base URI
+            // Resolve the URI against the base URI.
+            // Empty URI (from fragment-only reference like "#id") means
+            // "the same document as the base URI".
             URI resolved;
-            if (baseUri != null && !baseUri.isEmpty()) {
+            if (uri.isEmpty() && baseUri != null && !baseUri.isEmpty()) {
+                resolved = new URI(baseUri).normalize();
+            } else if (baseUri != null && !baseUri.isEmpty()) {
                 URI base = new URI(baseUri);
                 resolved = base.resolve(uri);
             } else {
@@ -145,6 +152,9 @@ public final class DocumentLoader {
             // Check cache
             XPathNode cached = documentCache.get(cacheKey);
             if (cached != null) {
+                if (fragment != null && !fragment.isEmpty()) {
+                    return findElementById(cached, fragment);
+                }
                 return cached;
             }
             
@@ -181,7 +191,7 @@ public final class DocumentLoader {
             
             XPathNode root = builder.getRoot();
             
-            // Cache the result (with size limit to prevent memory exhaustion)
+            // Cache the full document (with size limit to prevent memory exhaustion)
             if (root != null) {
                 if (documentCache.size() >= MAX_CACHE_SIZE) {
                     documentCache.clear();
@@ -189,11 +199,42 @@ public final class DocumentLoader {
                 documentCache.put(cacheKey, root);
             }
             
+            // If a fragment identifier was specified, find the element by ID
+            if (root != null && fragment != null && !fragment.isEmpty()) {
+                return findElementById(root, fragment);
+            }
+            
             return root;
         } catch (Exception e) {
             // Return null on any error (caller decides whether to throw)
             return null;
         }
+    }
+
+    /**
+     * Finds an element in the document tree whose DTD-declared ID attribute
+     * matches the given value.
+     */
+    private static XPathNode findElementById(XPathNode node, String id) {
+        if (!(node instanceof DocumentNode)) {
+            return null;
+        }
+        DocumentNode docNode = (DocumentNode) node;
+        if (docNode.type == NodeType.ELEMENT) {
+            for (int i = 0; i < docNode.attributes.size(); i++) {
+                DocumentNode attr = docNode.attributes.get(i);
+                if ("ID".equals(attr.dtdType) && id.equals(attr.value)) {
+                    return docNode;
+                }
+            }
+        }
+        for (int i = 0; i < docNode.children.size(); i++) {
+            XPathNode found = findElementById(docNode.children.get(i), id);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
     }
 
     private static boolean isProtocolAllowed(String protocol, String allowedProtocols) {
@@ -559,6 +600,14 @@ public final class DocumentLoader {
         @Override
         public String getBaseURI() {
             return baseUri;
+        }
+
+        @Override
+        public String getDocumentURI() {
+            if (type == NodeType.ROOT) {
+                return baseUri;
+            }
+            return null;
         }
         
         @Override 

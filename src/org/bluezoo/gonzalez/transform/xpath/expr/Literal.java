@@ -24,7 +24,9 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -111,7 +113,37 @@ public final class Literal implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) {
+        // XPath 2.0 Section 3.1.1: In backwards compatible mode, a numeric
+        // literal is treated as if cast to xs:double. We use of() rather than
+        // ofExplicitDouble() so that string conversion follows XPath 1.0 rules.
+        if (value instanceof XPathNumber) {
+            double ver = context.getXsltVersion();
+            if (ver < 2.0) {
+                XPathNumber num = (XPathNumber) value;
+                if (num.isExactInteger() || num.isDecimal()) {
+                    return XPathNumber.of(num.asNumber());
+                }
+            }
+        }
         return value;
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        if (value instanceof XPathNumber) {
+            XPathNumber num = (XPathNumber) value;
+            if (num.isExactInteger()) {
+                return SequenceType.INTEGER;
+            }
+            if (num.isDecimal()) {
+                return SequenceType.DECIMAL;
+            }
+            return SequenceType.DOUBLE;
+        }
+        if (value instanceof XPathString) {
+            return SequenceType.STRING;
+        }
+        return null;
     }
 
     /**

@@ -268,6 +268,19 @@ public interface XPathContext {
     }
 
     /**
+     * Returns the maximum XSLT version the processor supports. This may
+     * differ from {@link #getXsltVersion()} when a 3.0 processor runs a
+     * 2.0 stylesheet; certain behaviors (e.g., XTDE1061 for current-group()
+     * outside for-each-group) depend on the processor version, not the
+     * stylesheet's declared version.
+     *
+     * @return the processor version (default: same as {@link #getXsltVersion()})
+     */
+    default double getProcessorVersion() {
+        return getXsltVersion();
+    }
+
+    /**
      * Returns whether the context item is explicitly undefined (e.g. inside a
      * stylesheet function body). When true, accessing the context item via '.'
      * or a location path should raise XPDY0002. This is distinct from a null

@@ -35,6 +35,7 @@ import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -110,6 +111,11 @@ public final class LocationPath implements Expr {
     }
 
     @Override
+    public SequenceType getStaticType() {
+        return SequenceType.NODE_STAR;
+    }
+
+    @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         // XPath 2.0+: Check for atomic context item with single self-step (".")
         // When the context is an atomic value, "." should return that value directly
@@ -119,23 +125,17 @@ public final class LocationPath implements Expr {
                 step.getNodeTestType() == Step.NodeTestType.NODE &&
                 !step.hasPredicates()) {
                 // This is a bare "." - check for atomic context item
-                if (context instanceof org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) {
-                    org.bluezoo.gonzalez.transform.runtime.BasicTransformContext btc = 
-                        (org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) context;
-                    XPathValue contextItem = btc.getContextItem();
-                    if (contextItem != null && !(contextItem instanceof XPathNode)) {
-                        // Context is an atomic value, return it directly
-                        return contextItem;
-                    }
+                XPathValue contextItem = context.getContextItem();
+                if (contextItem != null && !(contextItem instanceof XPathNode)) {
+                    return contextItem;
                 }
             }
         }
         
-        // XPTY0020: absolute path on non-node context item (XPath 2.0+)
-        // An absolute path (e.g., //a or /) starts from the document root, which
-        // requires the context item to be a node. Check only for absolute paths
-        // to avoid false positives in instructions that handle atomic items.
-        if (absolute && context.getXsltVersion() >= 2.0) {
+        // XPTY0020: axis step on non-node context item (XPath 2.0+)
+        // Any axis step requires the context item to be a node.
+        // The self::node() special case for '.' is already handled above.
+        if (context.getXsltVersion() >= 2.0) {
             XPathValue ctxItem = context.getContextItem();
             if (ctxItem != null && !(ctxItem instanceof XPathNode) && !ctxItem.isNodeSet()) {
                 throw new XPathException("XPTY0020: An axis step was used when the " +
@@ -271,8 +271,18 @@ public final class LocationPath implements Expr {
                 }
             }
             
-            // If we have atomic results, populate output parameter
+            // XPTY0018: path expression result contains both nodes and atomic values
+            if (hasAtomicResults && !result.isEmpty()
+                    && context.getXsltVersion() >= 2.0) {
+                throw new XPathException("XPTY0018: Path expression result " +
+                    "contains both nodes and atomic values");
+            }
+
+            // If we have atomic results, apply predicates then populate output parameter
             if (hasAtomicResults) {
+                if (!step.getPredicates().isEmpty()) {
+                    atomicResults = applyAtomicPredicates(step.getPredicates(), atomicResults, context);
+                }
                 atomicResultsOut.clear();
                 atomicResultsOut.addAll(atomicResults);
                 return Collections.emptyList();
@@ -715,15 +725,12 @@ public final class LocationPath implements Expr {
             int position = 1;
             
             for (XPathNode node : current) {
-                // Create context for predicate evaluation
                 XPathContext predContext = context
                     .withContextNode(node)
                     .withPositionAndSize(position, size);
                 
                 XPathValue result = predicate.evaluate(predContext);
                 
-                // XPath 1.0: if result is number, compare with position
-                // Otherwise, convert to boolean
                 boolean include;
                 if (result.getType() == XPathValue.Type.NUMBER) {
                     include = (result.asNumber() == position);
@@ -740,6 +747,41 @@ public final class LocationPath implements Expr {
             current = filtered;
         }
         
+        return current;
+    }
+
+    private List<XPathValue> applyAtomicPredicates(List<Expr> predicates, List<XPathValue> items,
+                                                   XPathContext context) throws XPathException {
+        List<XPathValue> current = items;
+
+        for (Expr predicate : predicates) {
+            List<XPathValue> filtered = new ArrayList<>();
+            int size = current.size();
+            int position = 1;
+
+            for (XPathValue item : current) {
+                XPathContext predContext = context
+                    .withContextItem(item)
+                    .withPositionAndSize(position, size);
+
+                XPathValue result = predicate.evaluate(predContext);
+
+                boolean include;
+                if (result.getType() == XPathValue.Type.NUMBER) {
+                    include = (result.asNumber() == position);
+                } else {
+                    include = result.asBoolean();
+                }
+
+                if (include) {
+                    filtered.add(item);
+                }
+                position++;
+            }
+
+            current = filtered;
+        }
+
         return current;
     }
 

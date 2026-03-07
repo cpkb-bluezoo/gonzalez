@@ -35,6 +35,7 @@ import java.io.OutputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.URI;
+import java.util.Map;
 
 /**
  * XSLT 2.0 xsl:result-document instruction.
@@ -68,7 +69,8 @@ import java.net.URI;
 public final class ResultDocumentNode implements XSLTNode {
 
     private final AttributeValueTemplate hrefAvt;
-    private final String format;
+    private final AttributeValueTemplate formatAvt;
+    private final Map<String, String> formatNamespaceBindings;
     private final String method;
     private final String encoding;
     private final String indent;
@@ -81,23 +83,24 @@ public final class ResultDocumentNode implements XSLTNode {
      * Creates a new result-document instruction.
      *
      * @param hrefAvt the href AVT (may be null for principal output)
-     * @param format the named format (may be null)
+     * @param formatAvt the format name AVT (may be null)
      * @param method the output method (may be null)
      * @param encoding the encoding (may be null)
      * @param indent indent setting (may be null)
      * @param content the content to output
      */
-    public ResultDocumentNode(AttributeValueTemplate hrefAvt, String format,
+    public ResultDocumentNode(AttributeValueTemplate hrefAvt, AttributeValueTemplate formatAvt,
                                String method, String encoding, String indent,
                                XSLTNode content) {
-        this(hrefAvt, format, method, encoding, indent, content, null, null, null);
+        this(hrefAvt, formatAvt, null, method, encoding, indent, content, null, null, null);
     }
 
     /**
      * Creates a new result-document instruction with validation.
      *
      * @param hrefAvt the href AVT (may be null for principal output)
-     * @param format the named format (may be null)
+     * @param formatAvt the format name AVT (may be null)
+     * @param formatNamespaceBindings in-scope namespaces for resolving format QName prefix
      * @param method the output method (may be null)
      * @param encoding the encoding (may be null)
      * @param indent indent setting (may be null)
@@ -106,12 +109,14 @@ public final class ResultDocumentNode implements XSLTNode {
      * @param typeLocalName the type annotation local name (may be null)
      * @param validation the validation mode (may be null for default)
      */
-    public ResultDocumentNode(AttributeValueTemplate hrefAvt, String format,
+    public ResultDocumentNode(AttributeValueTemplate hrefAvt, AttributeValueTemplate formatAvt,
+                               Map<String, String> formatNamespaceBindings,
                                String method, String encoding, String indent,
                                XSLTNode content, String typeNamespaceURI,
                                String typeLocalName, ValidationMode validation) {
         this.hrefAvt = hrefAvt;
-        this.format = format;
+        this.formatAvt = formatAvt;
+        this.formatNamespaceBindings = formatNamespaceBindings;
         this.method = method;
         this.encoding = encoding;
         this.indent = indent;
@@ -137,6 +142,28 @@ public final class ResultDocumentNode implements XSLTNode {
                 href = hrefAvt.evaluate(context);
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating href AVT: " + e.getMessage(), e);
+            }
+        }
+
+        // XTDE0290/XTDE1460: evaluate and validate format attribute
+        if (formatAvt != null) {
+            try {
+                String formatName = formatAvt.evaluate(context);
+                if (formatName != null && !formatName.isEmpty()) {
+                    int colonPos = formatName.indexOf(':');
+                    if (colonPos > 0) {
+                        String prefix = formatName.substring(0, colonPos);
+                        if (formatNamespaceBindings == null
+                                || !formatNamespaceBindings.containsKey(prefix)) {
+                            throw new SAXException("XTDE0290: Undeclared prefix '"
+                                    + prefix + "' in format attribute value '"
+                                    + formatName + "'");
+                        }
+                    }
+                }
+            } catch (XPathException e) {
+                throw new SAXException("Error evaluating format AVT: "
+                        + e.getMessage(), e);
             }
         }
 
@@ -265,15 +292,15 @@ public final class ResultDocumentNode implements XSLTNode {
     }
 
     /**
-     * Returns the format name.
+     * Returns the format AVT.
      *
      * <p>The format name references a named output format defined via
      * xsl:output with a name attribute.
      *
-     * @return the format name, or null if not specified
+     * @return the format AVT, or null if not specified
      */
-    public String getFormat() {
-        return format;
+    public AttributeValueTemplate getFormatAvt() {
+        return formatAvt;
     }
 
     /**

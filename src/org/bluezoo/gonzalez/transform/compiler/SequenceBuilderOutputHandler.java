@@ -66,7 +66,16 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     private boolean atomicValuePending = false;
     private boolean inAttributeContent = false;
     
+    // Base URI context for resolving relative xml:base on detached nodes
+    private String contextBaseUri;
+    // Pending base URI set by CopyNode for the next element
+    private String pendingNodeBaseUri;
+    
     public SequenceBuilderOutputHandler() {
+    }
+    
+    public SequenceBuilderOutputHandler(String contextBaseUri) {
+        this.contextBaseUri = contextBaseUri;
     }
     
     /**
@@ -110,7 +119,6 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     public void markItemBoundary() throws SAXException {
         flushPendingText();
         flushPendingAttribute();
-        // Reset atomic value pending state so next item doesn't get a space prefix
         atomicValuePending = false;
     }
     
@@ -196,7 +204,8 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
                 // Element complete - create node and add to sequence
                 elementHandler.flush();
                 
-                XPathResultTreeFragment rtf = new XPathResultTreeFragment(elementBuffer, null);
+                String rtfBase = (pendingNodeBaseUri != null) ? pendingNodeBaseUri : contextBaseUri;
+                XPathResultTreeFragment rtf = new XPathResultTreeFragment(elementBuffer, rtfBase);
                 // Convert RTF to node-set and extract the actual element node (not the root)
                 XPathNodeSet nodeSet = rtf.asNodeSet();
                 if (nodeSet != null && !nodeSet.isEmpty()) {
@@ -210,6 +219,10 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
                             XPathNode child = children.next();
                             if (child.getNodeType() == NodeType.ELEMENT) {
                                 XPathResultTreeFragment.detachNode(child);
+                                // Preserve base URI for parentless node resolution
+                                if (rtfBase != null) {
+                                    XPathResultTreeFragment.setNodeBaseURI(child, rtfBase);
+                                }
                                 items.add(new XPathNodeSet(Collections.singletonList(child)));
                                 break;
                             }
@@ -220,6 +233,7 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
                 }
                 elementBuffer = null;
                 elementHandler = null;
+                pendingNodeBaseUri = null;
             }
         }
     }
@@ -386,6 +400,41 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
         }
     }
     
+    /**
+     * Merges adjacent SequenceTextItem entries in the collected items
+     * into single text nodes, as required by XSLT sequence construction
+     * rules (adjacent text nodes in a sequence constructor are merged).
+     */
+    public void mergeAdjacentTextItems() {
+        if (items.size() < 2) {
+            return;
+        }
+        List<XPathValue> merged = new ArrayList<>();
+        StringBuilder textAccum = null;
+        for (XPathValue item : items) {
+            if (item instanceof SequenceTextItem) {
+                String t = ((SequenceTextItem) item).getStringValue();
+                if (t != null && !t.isEmpty()) {
+                    if (textAccum == null) {
+                        textAccum = new StringBuilder();
+                    }
+                    textAccum.append(t);
+                }
+            } else {
+                if (textAccum != null) {
+                    merged.add(new SequenceTextItem(textAccum.toString()));
+                    textAccum = null;
+                }
+                merged.add(item);
+            }
+        }
+        if (textAccum != null) {
+            merged.add(new SequenceTextItem(textAccum.toString()));
+        }
+        items.clear();
+        items.addAll(merged);
+    }
+
     @Override
     public boolean isInAttributeContent() {
         return inAttributeContent;
@@ -394,5 +443,14 @@ public class SequenceBuilderOutputHandler implements OutputHandler {
     @Override
     public void setInAttributeContent(boolean inAttributeContent) {
         this.inAttributeContent = inAttributeContent;
+    }
+    
+    @Override
+    public void setNodeBaseURI(String uri) throws SAXException {
+        if (elementDepth > 0 && elementHandler != null) {
+            elementHandler.setNodeBaseURI(uri);
+        } else {
+            this.pendingNodeBaseUri = uri;
+        }
     }
 }

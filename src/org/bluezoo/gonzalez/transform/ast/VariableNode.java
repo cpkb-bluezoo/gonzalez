@@ -283,6 +283,7 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
             return ((XPathNode) value).getNodeType() == NodeType.TEXT;
         }
         if (value instanceof XPathSequence) {
+            boolean hasTextNode = false;
             for (XPathValue item : (XPathSequence) value) {
                 boolean isText = (item instanceof XPathNode)
                     && ((XPathNode) item).getNodeType() == NodeType.TEXT;
@@ -292,8 +293,11 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
                 if (!isText && !isAtomic) {
                     return false;
                 }
+                if (isText) {
+                    hasTextNode = true;
+                }
             }
-            return true;
+            return hasTextNode;
         }
         return false;
     }
@@ -466,12 +470,11 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
     }
 
     private XPathValue executeSequenceConstructor(TransformContext context) throws SAXException {
-        SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler();
-        // Execute each child instruction with item boundaries
+        String baseUri = (staticBaseURI != null) ? staticBaseURI : context.getStaticBaseURI();
+        SequenceBuilderOutputHandler seqBuilder = new SequenceBuilderOutputHandler(baseUri);
         if (content.getChildren() != null) {
             for (XSLTNode child : content.getChildren()) {
                 child.execute(context, seqBuilder);
-                // Mark boundary between instructions to prevent text merging
                 seqBuilder.markItemBoundary();
             }
         }

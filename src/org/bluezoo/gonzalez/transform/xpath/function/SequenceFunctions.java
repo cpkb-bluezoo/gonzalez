@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.function;
 
 import org.bluezoo.gonzalez.transform.xpath.Collation;
+import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.expr.PartialFunctionItem;
@@ -39,6 +40,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+
+import static org.bluezoo.gonzalez.transform.xpath.function.TypeAnnotatedFunction.typed;
 
 /**
  * XPath 2.0/3.0 sequence functions.
@@ -66,53 +69,68 @@ public final class SequenceFunctions {
      * @return list of all sequence function implementations
      */
     public static List<Function> getAll() {
+        SequenceType B = SequenceType.BOOLEAN;
+        SequenceType BQ = SequenceType.BOOLEAN_Q;
+        SequenceType I = SequenceType.INTEGER;
+        SequenceType ISTAR = SequenceType.INTEGER_STAR;
+        SequenceType IS = SequenceType.ITEM_STAR;
+        SequenceType IP = SequenceType.ITEM_PLUS;
+        SequenceType IQ = SequenceType.ITEM_Q;
+        SequenceType IT = SequenceType.ITEM;
+        SequenceType S = SequenceType.STRING;
+        SequenceType SQ = SequenceType.STRING_Q;
+        SequenceType SS = SequenceType.STRING_STAR;
+        SequenceType AQ = SequenceType.ANYURI_Q;
+        SequenceType QN = SequenceType.QNAME;
+        SequenceType QNQ = SequenceType.QNAME_Q;
+        SequenceType NQ = SequenceType.NODE_Q;
+        SequenceType NS = SequenceType.NODE_STAR;
+        SequenceType AAS = SequenceType.ANY_ATOMIC_STAR;
+        SequenceType E = SequenceType.EMPTY;
+
         List<Function> functions = new ArrayList<>();
-        functions.add(EMPTY);
-        functions.add(EXISTS);
-        functions.add(SUBSEQUENCE);
-        functions.add(DISTINCT_VALUES);
-        functions.add(REVERSE);
-        functions.add(INSERT_BEFORE);
-        functions.add(REMOVE);
-        functions.add(INDEX_OF);
-        functions.add(HEAD);
-        functions.add(TAIL);
-        functions.add(COUNT);
-        functions.add(UNORDERED);
-        functions.add(ZERO_OR_ONE);
-        functions.add(ONE_OR_MORE);
-        functions.add(EXACTLY_ONE);
-        functions.add(RESOLVE_URI);
-        functions.add(BASE_URI);
-        functions.add(STATIC_BASE_URI);
-        functions.add(DOCUMENT_URI);
-        functions.add(DEEP_EQUAL);
-        // QName functions
-        functions.add(QNAME);
-        functions.add(LOCAL_NAME_FROM_QNAME);
-        functions.add(NAMESPACE_URI_FROM_QNAME);
-        functions.add(PREFIX_FROM_QNAME);
-        functions.add(IN_SCOPE_PREFIXES);
-        functions.add(NAMESPACE_URI_FOR_PREFIX);
-        functions.add(NODE_NAME);
-        functions.add(RESOLVE_QNAME);
-        functions.add(COPY_OF);
-        // XPath 2.0/3.0 additional functions
-        functions.add(ROOT);
-        functions.add(NILLED);
-        functions.add(TRACE);
-        functions.add(DEFAULT_COLLATION);
-        functions.add(PATH);
-        functions.add(COLLECTION);
-        functions.add(AVAILABLE_ENVIRONMENT_VARIABLES);
-        functions.add(ENVIRONMENT_VARIABLE);
-        functions.add(SORT);
-        functions.add(HAS_CHILDREN);
-        // XPath 3.0 higher-order function introspection
-        functions.add(FUNCTION_NAME);
-        functions.add(FUNCTION_ARITY);
-        // XPath 2.0/3.0 error function
-        functions.add(ERROR);
+        functions.add(typed(EMPTY,           B, IS));
+        functions.add(typed(EXISTS,          B, IS));
+        functions.add(typed(SUBSEQUENCE,     IS, IS, SequenceType.DOUBLE, SequenceType.DOUBLE));
+        functions.add(typed(DISTINCT_VALUES, AAS, IS, S));
+        functions.add(typed(REVERSE,         IS, IS));
+        functions.add(typed(INSERT_BEFORE,   IS, IS, I, IS));
+        functions.add(typed(REMOVE,          IS, IS, I));
+        functions.add(typed(INDEX_OF,        ISTAR, IS, SequenceType.ANY_ATOMIC, S));
+        functions.add(typed(HEAD,            IQ, IS));
+        functions.add(typed(TAIL,            IS, IS));
+        functions.add(typed(COUNT,           I, IS));
+        functions.add(typed(UNORDERED,       IS, IS));
+        functions.add(typed(ZERO_OR_ONE,     IQ, IS));
+        functions.add(typed(ONE_OR_MORE,     IP, IS));
+        functions.add(typed(EXACTLY_ONE,     IT, IS));
+        functions.add(typed(RESOLVE_URI,     AQ, SQ, S));
+        functions.add(typed(BASE_URI,        AQ, NQ));
+        functions.add(typed(STATIC_BASE_URI, AQ));
+        functions.add(typed(DOCUMENT_URI,    AQ, NQ));
+        functions.add(typed(DEEP_EQUAL,      B, IS, IS, S));
+        functions.add(typed(QNAME,           QN, SQ, S));
+        functions.add(typed(LOCAL_NAME_FROM_QNAME,       SQ, QNQ));
+        functions.add(typed(NAMESPACE_URI_FROM_QNAME,    AQ, QNQ));
+        functions.add(typed(PREFIX_FROM_QNAME,           SQ, QNQ));
+        functions.add(typed(IN_SCOPE_PREFIXES,           SS, SequenceType.NODE));
+        functions.add(typed(NAMESPACE_URI_FOR_PREFIX,    AQ, SQ, SequenceType.NODE));
+        functions.add(typed(NODE_NAME,       QNQ, NQ));
+        functions.add(typed(RESOLVE_QNAME,   QNQ, SQ, SequenceType.NODE));
+        functions.add(typed(COPY_OF,         IS, IS));
+        functions.add(typed(ROOT,            NQ, NQ));
+        functions.add(typed(NILLED,          BQ, NQ));
+        functions.add(typed(TRACE,           IS, IS, S));
+        functions.add(typed(DEFAULT_COLLATION, S));
+        functions.add(typed(PATH,            SQ, NQ));
+        functions.add(typed(COLLECTION,      NS, SQ));
+        functions.add(typed(AVAILABLE_ENVIRONMENT_VARIABLES, SS));
+        functions.add(typed(ENVIRONMENT_VARIABLE, SQ, S));
+        functions.add(typed(SORT,            IS, IS, IS, IS));
+        functions.add(typed(HAS_CHILDREN,    B, NQ));
+        functions.add(typed(FUNCTION_NAME,   QNQ, IS));
+        functions.add(typed(FUNCTION_ARITY,  I, IS));
+        functions.add(typed(ERROR,           E, QNQ, S, IS));
         return functions;
     }
 
@@ -739,6 +757,19 @@ public final class SequenceFunctions {
                 }
                 
                 current = current.getParent();
+            }
+            
+            // For parentless non-root nodes (detached from RTF), check for
+            // a stored base URI. This handles nodes from sequence construction
+            // where xsl:copy/xsl:copy-of stores the original's base URI.
+            if (node instanceof XPathNodeWithBaseURI) {
+                String storedBase = ((XPathNodeWithBaseURI) node).getBaseURI();
+                if (storedBase != null && !storedBase.isEmpty()) {
+                    if (resolved != null) {
+                        return resolveBaseUri(resolved, storedBase);
+                    }
+                    return storedBase;
+                }
             }
             return resolved;
         }
@@ -1764,6 +1795,12 @@ public final class SequenceFunctions {
                         return XPathSequence.EMPTY;
                     }
                     node = iter.next();
+                } else if (arg instanceof XPathResultTreeFragment) {
+                    XPathNodeSet ns = ((XPathResultTreeFragment) arg).asNodeSet();
+                    if (ns == null || ns.isEmpty()) {
+                        return XPathSequence.EMPTY;
+                    }
+                    return ns;
                 } else {
                     throw new XPathException("Argument to root() must be a node");
                 }
@@ -2098,17 +2135,35 @@ public final class SequenceFunctions {
 
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
-            // Collection support is implementation-defined
-            // Return empty sequence for now (most collections are not accessible in streaming context)
+            String uri;
             if (args.isEmpty()) {
+                uri = "";
+            } else {
+                XPathValue arg = args.get(0);
+                if (arg == null || (arg instanceof XPathSequence && ((XPathSequence) arg).isEmpty())) {
+                    uri = "";
+                } else {
+                    uri = arg.asString();
+                }
+            }
+
+            // Look up in the registered collections
+            if (context instanceof TransformContext) {
+                TransformContext tc = (TransformContext) context;
+                List<XPathNode> nodes = tc.getCollection(uri);
+                if (nodes != null && !nodes.isEmpty()) {
+                    List<XPathValue> items = new ArrayList<>();
+                    for (XPathNode n : nodes) {
+                        items.add(new XPathNodeSet(Collections.singletonList(n)));
+                    }
+                    return new XPathSequence(items);
+                }
+            }
+
+            // FODC0002: no collection found for the URI
+            if (uri.isEmpty()) {
                 return XPathSequence.EMPTY;
             }
-            String uri = args.get(0).asString();
-            if (uri == null || uri.isEmpty()) {
-                return XPathSequence.EMPTY;
-            }
-            // For file: URIs pointing to directories, we could list files
-            // For now, return empty - full implementation requires catalog support
             return XPathSequence.EMPTY;
         }
     };

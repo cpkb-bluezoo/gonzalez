@@ -26,15 +26,18 @@ import org.bluezoo.gonzalez.transform.xpath.XPathToken;
 /**
  * XPath binary operators with their precedence levels.
  *
- * <p>Precedence levels (higher number = higher precedence):
+ * <p>Precedence levels (higher number = higher precedence), matching
+ * the XPath 3.1 grammar production ordering:
  * <ol>
  *   <li>or (1)</li>
  *   <li>and (2)</li>
- *   <li>=, != (3)</li>
- *   <li>&lt;, &gt;, &lt;=, &gt;= (4)</li>
- *   <li>+, - (5)</li>
- *   <li>*, div, mod (6)</li>
- *   <li>| union (7)</li>
+ *   <li>=, !=, eq, ne, is, &lt;&lt;, &gt;&gt; (3)</li>
+ *   <li>&lt;, &gt;, &lt;=, &gt;=, lt, le, gt, ge, || (4)</li>
+ *   <li>to (5)</li>
+ *   <li>+, - (6)</li>
+ *   <li>*, div, idiv, mod (7)</li>
+ *   <li>|, union (8)</li>
+ *   <li>intersect, except (9)</li>
  * </ol>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
@@ -56,19 +59,19 @@ public enum Operator {
     GREATER_THAN_OR_EQUAL(">=", 4),
 
     // Additive operators
-    PLUS("+", 5),
-    MINUS("-", 5),
+    PLUS("+", 6),
+    MINUS("-", 6),
 
     // Multiplicative operators
-    MULTIPLY("*", 6),
-    DIV("div", 6),
-    IDIV("idiv", 6),  // XPath 2.0 integer division
-    MOD("mod", 6),
+    MULTIPLY("*", 7),
+    DIV("div", 7),
+    IDIV("idiv", 7),  // XPath 2.0 integer division
+    MOD("mod", 7),
 
-    // Union operator (highest binary precedence)
-    UNION("|", 7),
+    // Union operator
+    UNION("|", 8),
     
-    // XPath 2.0 range operator (between additive and multiplicative)
+    // XPath 2.0 range operator (between string-concat and additive)
     TO("to", 5),
     
     // XPath 2.0 value comparison operators (same precedence as general comparison)
@@ -84,24 +87,24 @@ public enum Operator {
     NODE_PRECEDES("<<", 3),
     NODE_FOLLOWS(">>", 3),
     
-    // XPath 2.0 set operators (between union and path)
-    INTERSECT("intersect", 8),
-    EXCEPT("except", 8),
+    // XPath 2.0 set operators (above union)
+    INTERSECT("intersect", 9),
+    EXCEPT("except", 9),
     
     // XPath 2.0 type operators (in order of precedence)
-    INSTANCE_OF("instance of", 9),
-    TREAT_AS("treat as", 10),
-    CASTABLE_AS("castable as", 11),
-    CAST_AS("cast as", 12),
+    INSTANCE_OF("instance of", 10),
+    TREAT_AS("treat as", 11),
+    CASTABLE_AS("castable as", 12),
+    CAST_AS("cast as", 13),
     
-    // XPath 3.0 string concatenation (between additive and comparison)
+    // XPath 3.0 string concatenation (between comparison and range)
     STRING_CONCAT("||", 4),
     
     // XPath 3.0 simple map operator (highest precedence)
-    SIMPLE_MAP("!", 13),
+    SIMPLE_MAP("!", 14),
     
     // XPath 3.0 arrow operator (very high precedence, right-associative)
-    ARROW("=>", 14);
+    ARROW("=>", 15);
 
     private final String symbol;
     private final int precedence;

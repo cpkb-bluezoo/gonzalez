@@ -62,6 +62,8 @@ public class ItemCollectorOutputHandler implements OutputHandler {
      */
     private int elementDepth = 0;
 
+    
+
     /**
      * Whether the last character output was from a text node.
      * Used to detect adjacent text nodes that should be merged.

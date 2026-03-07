@@ -45,10 +45,16 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 public class TryNode extends XSLTInstruction {
     private final XSLTNode tryContent;
     private final List<CatchNode> catchBlocks;
+    private final boolean rollbackOutput;
     
     public TryNode(XSLTNode tryContent, List<CatchNode> catchBlocks) {
+        this(tryContent, catchBlocks, true);
+    }
+    
+    public TryNode(XSLTNode tryContent, List<CatchNode> catchBlocks, boolean rollbackOutput) {
         this.tryContent = tryContent;
         this.catchBlocks = catchBlocks != null ? catchBlocks : Collections.emptyList();
+        this.rollbackOutput = rollbackOutput;
     }
     
     @Override public String getInstructionName() { return "try"; }
@@ -57,16 +63,165 @@ public class TryNode extends XSLTInstruction {
     
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
+        if (!rollbackOutput) {
+            executeNoRollback(context, output);
+            return;
+        }
         RecordingOutputHandler buffer = new RecordingOutputHandler();
         try {
             if (tryContent != null) {
-                tryContent.execute(context, buffer);
+                // Per XSLT 3.0 section 3.12, variables declared in the try
+                // body are not in scope within xsl:catch
+                TransformContext tryContext = context.pushVariableScope();
+                tryContent.execute(tryContext, buffer);
             }
             buffer.replayTo(output);
         } catch (SAXException e) {
             handleError(extractErrorCode(e), context, output, e);
         } catch (RuntimeException e) {
             handleError(extractErrorCode(e), context, output, e);
+        }
+    }
+    
+    private void executeNoRollback(TransformContext context, OutputHandler output) throws SAXException {
+        TrackingOutputHandler tracker = new TrackingOutputHandler(output);
+        try {
+            if (tryContent != null) {
+                TransformContext tryContext = context.pushVariableScope();
+                tryContent.execute(tryContext, tracker);
+            }
+        } catch (SAXException e) {
+            if (tracker.hasOutput()) {
+                throw new SAXException("XTDE3530: Cannot recover from error with " +
+                    "rollback-output=\"no\" because output has already been written: " +
+                    e.getMessage(), e);
+            }
+            handleError(extractErrorCode(e), context, output, e);
+        } catch (RuntimeException e) {
+            if (tracker.hasOutput()) {
+                throw new SAXException("XTDE3530: Cannot recover from error with " +
+                    "rollback-output=\"no\" because output has already been written: " +
+                    e.getMessage());
+            }
+            handleError(extractErrorCode(e), context, output, e);
+        }
+    }
+    
+    /**
+     * Output handler that delegates to a real handler and tracks whether any
+     * content-bearing output events have been written.
+     */
+    private static class TrackingOutputHandler implements OutputHandler {
+        private final OutputHandler delegate;
+        private boolean outputWritten = false;
+        
+        TrackingOutputHandler(OutputHandler delegate) {
+            this.delegate = delegate;
+        }
+        
+        boolean hasOutput() {
+            return outputWritten;
+        }
+        
+        @Override
+        public void startDocument() throws SAXException {
+            delegate.startDocument();
+        }
+        
+        @Override
+        public void endDocument() throws SAXException {
+            delegate.endDocument();
+        }
+        
+        @Override
+        public void startElement(String uri, String localName, String qName) throws SAXException {
+            outputWritten = true;
+            delegate.startElement(uri, localName, qName);
+        }
+        
+        @Override
+        public void endElement(String uri, String localName, String qName) throws SAXException {
+            delegate.endElement(uri, localName, qName);
+        }
+        
+        @Override
+        public void attribute(String uri, String localName, String qName, String value) throws SAXException {
+            outputWritten = true;
+            delegate.attribute(uri, localName, qName, value);
+        }
+        
+        @Override
+        public void namespace(String prefix, String uri) throws SAXException {
+            delegate.namespace(prefix, uri);
+        }
+        
+        @Override
+        public void characters(String text) throws SAXException {
+            if (text != null && !text.isEmpty()) {
+                outputWritten = true;
+            }
+            delegate.characters(text);
+        }
+        
+        @Override
+        public void charactersRaw(String text) throws SAXException {
+            if (text != null && !text.isEmpty()) {
+                outputWritten = true;
+            }
+            delegate.charactersRaw(text);
+        }
+        
+        @Override
+        public void comment(String text) throws SAXException {
+            outputWritten = true;
+            delegate.comment(text);
+        }
+        
+        @Override
+        public void processingInstruction(String target, String data) throws SAXException {
+            outputWritten = true;
+            delegate.processingInstruction(target, data);
+        }
+        
+        @Override
+        public void flush() throws SAXException {
+            delegate.flush();
+        }
+        
+        @Override
+        public void setElementType(String namespaceURI, String localName) throws SAXException {
+            delegate.setElementType(namespaceURI, localName);
+        }
+        
+        @Override
+        public void setAttributeType(String namespaceURI, String localName) throws SAXException {
+            delegate.setAttributeType(namespaceURI, localName);
+        }
+        
+        @Override
+        public void atomicValue(XPathValue value) throws SAXException {
+            outputWritten = true;
+            delegate.atomicValue(value);
+        }
+        
+        @Override
+        public boolean isAtomicValuePending() {
+            return delegate.isAtomicValuePending();
+        }
+        
+        @Override
+        public void setAtomicValuePending(boolean pending) throws SAXException {
+            delegate.setAtomicValuePending(pending);
+        }
+        
+        @Override
+        public boolean isInAttributeContent() {
+            return delegate.isInAttributeContent();
+        }
+        
+        @Override
+        public void setInAttributeContent(boolean inAttr) throws SAXException {
+            delegate.setInAttributeContent(inAttr);
         }
     }
     
@@ -209,9 +364,9 @@ public class TryNode extends XSLTInstruction {
                 // Bind XSLT 3.0 error variables in the err namespace
                 TransformContext catchContext = context.pushVariableScope();
                 String errNs = "http://www.w3.org/2005/xqt-errors";
-                String code = errorCodeLocalPart(errorCode);
+                String codeStr = errorCode != null ? errorCode : "";
                 String desc = (e.getMessage() != null) ? e.getMessage() : "";
-                catchContext.getVariableScope().bind(errNs, "code", new XPathString(code));
+                catchContext.getVariableScope().bind(errNs, "code", new XPathString(codeStr));
                 catchContext.getVariableScope().bind(errNs, "description", new XPathString(desc));
                 catchContext.getVariableScope().bind(errNs, "value", new XPathString(""));
                 catchContext.getVariableScope().bind(errNs, "module", new XPathString(""));

@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -57,6 +59,29 @@ public final class IfExpr implements Expr {
         this.condition = condition;
         this.thenExpr = thenExpr;
         this.elseExpr = elseExpr;
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        condition.bindStaticTypes(context);
+        thenExpr.bindStaticTypes(context);
+        elseExpr.bindStaticTypes(context);
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        SequenceType thenType = thenExpr.getStaticType();
+        SequenceType elseType = elseExpr.getStaticType();
+        if (thenType != null && elseType != null && thenType.equals(elseType)) {
+            return thenType;
+        }
+        if (thenType != null && elseType == null) {
+            return thenType;
+        }
+        if (elseType != null && thenType == null) {
+            return elseType;
+        }
+        return null;
     }
 
     @Override

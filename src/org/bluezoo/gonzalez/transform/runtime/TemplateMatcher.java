@@ -53,6 +53,7 @@ public final class TemplateMatcher {
 
     private final CompiledStylesheet stylesheet;
     private final Map<String, List<TemplateRule>> rulesByMode;
+    private final List<TemplateRule> allModeRules;
 
     /**
      * Creates a template matcher for the given stylesheet.
@@ -61,12 +62,12 @@ public final class TemplateMatcher {
      */
     public TemplateMatcher(CompiledStylesheet stylesheet) {
         this.stylesheet = stylesheet;
+        this.allModeRules = new ArrayList<>();
         this.rulesByMode = indexRulesByMode();
     }
 
     private Map<String, List<TemplateRule>> indexRulesByMode() {
         Map<String, List<TemplateRule>> map = new HashMap<>();
-        List<TemplateRule> allModeRules = new ArrayList<>();
         
         // First pass: collect all named mode keys and #all rules
         Set<String> allModeKeys = new HashSet<>();
@@ -96,8 +97,9 @@ public final class TemplateMatcher {
             }
         }
         
-        // Second pass: add #all rules to every mode bucket
+        // Second pass: add #all rules to every known mode bucket
         if (!allModeRules.isEmpty()) {
+            Collections.sort(allModeRules, TEMPLATE_PRECEDENCE_COMPARATOR);
             for (String key : allModeKeys) {
                 List<TemplateRule> modeRules = map.get(key);
                 if (modeRules == null) {
@@ -114,6 +116,23 @@ public final class TemplateMatcher {
         }
         
         return map;
+    }
+    
+    /**
+     * Returns the candidate list for a mode, creating one on the fly for
+     * previously-unseen modes that have #all rules.
+     */
+    private List<TemplateRule> getCandidates(String modeKey) {
+        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        if (candidates != null) {
+            return candidates;
+        }
+        if (!allModeRules.isEmpty()) {
+            List<TemplateRule> newBucket = new ArrayList<>(allModeRules);
+            rulesByMode.put(modeKey, newBucket);
+            return newBucket;
+        }
+        return null;
     }
     
     /**
@@ -151,7 +170,7 @@ public final class TemplateMatcher {
      */
     public TemplateRule findMatch(XPathNode node, String mode, TransformContext context) {
         String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        List<TemplateRule> candidates = getCandidates(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
             // Fall back to built-in rules
@@ -216,7 +235,7 @@ public final class TemplateMatcher {
     public TemplateRule findMatchForAtomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value, 
                                                  String mode, TransformContext context) {
         String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        List<TemplateRule> candidates = getCandidates(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
             return null;
@@ -273,7 +292,7 @@ public final class TemplateMatcher {
             org.bluezoo.gonzalez.transform.xpath.type.XPathValue value,
             String mode, TemplateRule currentRule, TransformContext context) {
         String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        List<TemplateRule> candidates = getCandidates(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
             return null;
@@ -461,7 +480,7 @@ public final class TemplateMatcher {
     public TemplateRule findNextMatch(XPathNode node, String mode, 
                                        TemplateRule currentRule, TransformContext context) {
         String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        List<TemplateRule> candidates = getCandidates(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
             return null;
@@ -529,7 +548,7 @@ public final class TemplateMatcher {
         }
         
         String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = rulesByMode.get(modeKey);
+        List<TemplateRule> candidates = getCandidates(modeKey);
         
         if (candidates == null || candidates.isEmpty()) {
             return getBuiltInRule(node, mode);

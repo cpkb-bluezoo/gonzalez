@@ -88,9 +88,15 @@ public final class MapConstructionNode extends XSLTInstruction {
         output.atomicValue(resultMap);
     }
 
-    private void mergeMapEntries(Map<String, XPathValue> target, XPathMap source) {
+    private void mergeMapEntries(Map<String, XPathValue> target, XPathMap source)
+            throws SAXException {
         for (Map.Entry<String, XPathValue> entry : source.entries()) {
-            target.put(entry.getKey(), entry.getValue());
+            String key = entry.getKey();
+            if (target.containsKey(key)) {
+                throw new SAXException("XTDE3365: Duplicate key '" + key +
+                    "' in xsl:map");
+            }
+            target.put(key, entry.getValue());
         }
     }
 }

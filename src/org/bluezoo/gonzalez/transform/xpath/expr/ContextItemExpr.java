@@ -23,7 +23,9 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import java.util.Collections;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -37,6 +39,24 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class ContextItemExpr implements Expr {
+
+    private StaticTypeContext typeContext;
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        this.typeContext = context;
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        if (typeContext != null) {
+            SequenceType cit = typeContext.getContextItemType();
+            if (cit != null) {
+                return cit;
+            }
+        }
+        return SequenceType.ITEM;
+    }
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {

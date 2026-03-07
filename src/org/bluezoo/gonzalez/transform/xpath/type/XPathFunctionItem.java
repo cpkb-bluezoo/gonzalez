@@ -146,6 +146,11 @@ public final class XPathFunctionItem implements XPathValue {
             throw new XPathException("XPTY0004: Function " + name + "#" + arity
                 + " expects " + arity + " argument(s), got " + args.size());
         }
+        // XTDE1360: dynamic call to current() is a dynamic error
+        if ("current".equals(name) && arity == 0) {
+            throw new XPathException("XTDE1360",
+                "Dynamic call to current() is not allowed");
+        }
         // Try with namespace URI first if available
         if (namespaceURI != null && !namespaceURI.isEmpty()) {
             // Extract local name from prefixed name

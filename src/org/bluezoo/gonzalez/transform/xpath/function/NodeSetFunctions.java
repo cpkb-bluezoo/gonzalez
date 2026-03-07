@@ -29,6 +29,8 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
+import static org.bluezoo.gonzalez.transform.xpath.function.TypeAnnotatedFunction.typed;
+
 /**
  * XPath 1.0 node-set functions.
  *
@@ -345,12 +347,12 @@ public final class NodeSetFunctions {
                 node = context.getContextNode();
             } else {
                 XPathValue arg = args.get(0);
-                if (!arg.isNodeSet()) {
-                    throw new XPathException("local-name() requires a node-set argument");
+                if (arg.sequenceSize() == 0) {
+                    return XPathString.EMPTY;
                 }
                 XPathNodeSet nodeSet = arg.asNodeSet();
-                if (nodeSet.isEmpty()) {
-                    return XPathString.EMPTY;
+                if (nodeSet == null || nodeSet.isEmpty()) {
+                    throw new XPathException("local-name() requires a node-set argument");
                 }
                 node = nodeSet.first();
             }
@@ -382,12 +384,12 @@ public final class NodeSetFunctions {
                 node = context.getContextNode();
             } else {
                 XPathValue arg = args.get(0);
-                if (!arg.isNodeSet()) {
-                    throw new XPathException("namespace-uri() requires a node-set argument");
+                if (arg.sequenceSize() == 0) {
+                    return XPathString.EMPTY;
                 }
                 XPathNodeSet nodeSet = arg.asNodeSet();
-                if (nodeSet.isEmpty()) {
-                    return XPathString.EMPTY;
+                if (nodeSet == null || nodeSet.isEmpty()) {
+                    throw new XPathException("namespace-uri() requires a node-set argument");
                 }
                 node = nodeSet.first();
             }
@@ -419,12 +421,12 @@ public final class NodeSetFunctions {
                 node = context.getContextNode();
             } else {
                 XPathValue arg = args.get(0);
-                if (!arg.isNodeSet()) {
-                    throw new XPathException("name() requires a node-set argument");
+                if (arg.sequenceSize() == 0) {
+                    return XPathString.EMPTY;
                 }
                 XPathNodeSet nodeSet = arg.asNodeSet();
-                if (nodeSet.isEmpty()) {
-                    return XPathString.EMPTY;
+                if (nodeSet == null || nodeSet.isEmpty()) {
+                    throw new XPathException("name() requires a node-set argument");
                 }
                 node = nodeSet.first();
             }
@@ -579,7 +581,21 @@ public final class NodeSetFunctions {
      * @return array of all node-set function implementations
      */
     public static Function[] getAll() {
-        return new Function[] { LAST, POSITION, COUNT, ID, IDREF, LOCAL_NAME, NAMESPACE_URI, NAME };
+        SequenceType I = SequenceType.INTEGER;
+        SequenceType NS = SequenceType.NODE_STAR;
+        SequenceType S = SequenceType.STRING;
+        SequenceType IS = SequenceType.ITEM_STAR;
+        SequenceType NQ = SequenceType.NODE_Q;
+        return new Function[] {
+            typed(LAST,          I),
+            typed(POSITION,      I),
+            typed(COUNT,         I, IS),
+            typed(ID,            NS, S, NQ),
+            typed(IDREF,         NS, S, NQ),
+            typed(LOCAL_NAME,    S, NQ),
+            typed(NAMESPACE_URI, S, NQ),
+            typed(NAME,          S, NQ),
+        };
     }
 
 }

@@ -59,6 +59,9 @@ import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.expr.PartialFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.expr.DynamicPartialItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
+
+import static org.bluezoo.gonzalez.transform.xpath.function.TypeAnnotatedFunction.typed;
 
 /**
  * XPath 1.0 string functions.
@@ -323,7 +326,6 @@ public final class StringFunctions {
             String str = args.get(0).asString();
             double startPos = args.get(1).asNumber();
             
-            // Handle NaN start position
             if (Double.isNaN(startPos)) {
                 return XPathString.EMPTY;
             }
@@ -331,9 +333,11 @@ public final class StringFunctions {
             // XPath spec for substring(string, startPos, length?):
             // Returns characters at position P where:
             //   P >= round(startPos) AND P < round(startPos) + round(length)
-            // Positions are 1-based.
+            // Positions are 1-based, counting Unicode code points (not UTF-16 units).
             // Note: Must compute end position in floating point before rounding,
             // because -Infinity + Infinity = NaN per IEEE 754
+            
+            int cpLen = str.codePointCount(0, str.length());
             
             double roundedStart = Math.round(startPos);
             double roundedEnd;
@@ -341,41 +345,38 @@ public final class StringFunctions {
             if (args.size() > 2) {
                 double length = args.get(2).asNumber();
                 double roundedLength = Math.round(length);
-                // Compute end position in floating point (handles infinities correctly)
                 roundedEnd = roundedStart + roundedLength;
             } else {
-                // No length means to end of string (positive infinity)
                 roundedEnd = Double.POSITIVE_INFINITY;
             }
             
-            // If either bound is NaN (e.g., -Inf + Inf), return empty
             if (Double.isNaN(roundedStart) || Double.isNaN(roundedEnd)) {
                 return XPathString.EMPTY;
             }
             
-            // If end is negative infinity or start is positive infinity, return empty
             if (roundedEnd == Double.NEGATIVE_INFINITY || 
                 roundedStart == Double.POSITIVE_INFINITY) {
                 return XPathString.EMPTY;
             }
             
-            // Clamp to valid range [1, length+1] for positions
-            // First position we want (1-based)
+            // Code-point-based positions (1-based)
             long firstPos = (roundedStart == Double.NEGATIVE_INFINITY) ? 1 : 
                 Math.max((long) roundedStart, 1);
-            // Last position + 1 (exclusive, 1-based)
             long lastPosExcl = (roundedEnd == Double.POSITIVE_INFINITY) ? 
-                str.length() + 1 : Math.min((long) roundedEnd, str.length() + 1);
+                cpLen + 1 : Math.min((long) roundedEnd, cpLen + 1);
             
-            // Convert to 0-based Java indices
-            int start = (int) (firstPos - 1);
-            int end = (int) (lastPosExcl - 1);
+            int cpStart = (int) (firstPos - 1);
+            int cpEnd = (int) (lastPosExcl - 1);
             
-            if (start >= str.length() || end <= start) {
+            if (cpStart >= cpLen || cpEnd <= cpStart) {
                 return XPathString.EMPTY;
             }
             
-            return XPathString.of(str.substring(start, end));
+            // Convert code point offsets to UTF-16 char offsets
+            int charStart = str.offsetByCodePoints(0, cpStart);
+            int charEnd = str.offsetByCodePoints(charStart, cpEnd - cpStart);
+            
+            return XPathString.of(str.substring(charStart, charEnd));
         }
     };
 
@@ -1356,12 +1357,44 @@ public final class StringFunctions {
      * @return array of all string function implementations
      */
     public static Function[] getAll() {
+        SequenceType S = SequenceType.STRING;
+        SequenceType SQ = SequenceType.STRING_Q;
+        SequenceType SS = SequenceType.STRING_STAR;
+        SequenceType B = SequenceType.BOOLEAN;
+        SequenceType BQ = SequenceType.BOOLEAN_Q;
+        SequenceType I = SequenceType.INTEGER;
+        SequenceType ISTAR = SequenceType.INTEGER_STAR;
+        SequenceType IQ = SequenceType.INTEGER_Q;
+        SequenceType D = SequenceType.DOUBLE;
+        SequenceType IS = SequenceType.ITEM_STAR;
+        SequenceType AAS = SequenceType.ANY_ATOMIC_STAR;
         return new Function[] {
-            STRING, CONCAT, STARTS_WITH, CONTAINS, SUBSTRING_BEFORE,
-            SUBSTRING_AFTER, SUBSTRING, STRING_LENGTH, NORMALIZE_SPACE, TRANSLATE,
-            DATA, STRING_JOIN, UPPER_CASE, LOWER_CASE, ENDS_WITH, MATCHES, REPLACE,
-            TOKENIZE, COMPARE, CODEPOINTS_TO_STRING, STRING_TO_CODEPOINTS,
-            ENCODE_FOR_URI, IRI_TO_URI, ESCAPE_HTML_URI, SERIALIZE, CODEPOINT_EQUAL
+            typed(STRING,              S, IS),
+            typed(CONCAT,              S, AAS, AAS),
+            typed(STARTS_WITH,         B, S, S, S),
+            typed(CONTAINS,            B, S, S, S),
+            typed(SUBSTRING_BEFORE,    S, S, S, S),
+            typed(SUBSTRING_AFTER,     S, S, S, S),
+            typed(SUBSTRING,           S, S, D, D),
+            typed(STRING_LENGTH,       I, SQ),
+            typed(NORMALIZE_SPACE,     S, SQ),
+            typed(TRANSLATE,           S, S, S, S),
+            typed(DATA,                AAS, IS),
+            typed(STRING_JOIN,         S, SS, S),
+            typed(UPPER_CASE,          S, S),
+            typed(LOWER_CASE,          S, S),
+            typed(ENDS_WITH,           B, S, S, S),
+            typed(MATCHES,             B, SQ, S, S),
+            typed(REPLACE,             S, SQ, S, S, S),
+            typed(TOKENIZE,            SS, SQ, S, S),
+            typed(COMPARE,             IQ, SQ, SQ, S),
+            typed(CODEPOINTS_TO_STRING, S, ISTAR),
+            typed(STRING_TO_CODEPOINTS, ISTAR, S),
+            typed(ENCODE_FOR_URI,      S, S),
+            typed(IRI_TO_URI,          S, S),
+            typed(ESCAPE_HTML_URI,     S, S),
+            typed(SERIALIZE,           S, IS, IS),
+            typed(CODEPOINT_EQUAL,     BQ, SQ, SQ),
         };
     }
 

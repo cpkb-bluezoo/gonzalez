@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -134,6 +136,19 @@ public final class QuantifiedExpr implements Expr {
         this.quantifier = quantifier;
         this.bindings = new ArrayList<>(bindings);
         this.satisfiesExpr = satisfiesExpr;
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        for (Binding binding : bindings) {
+            binding.getSequence().bindStaticTypes(context);
+        }
+        satisfiesExpr.bindStaticTypes(context);
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        return SequenceType.BOOLEAN;
     }
 
     @Override

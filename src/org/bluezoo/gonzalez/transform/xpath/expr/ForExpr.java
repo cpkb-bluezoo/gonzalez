@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -125,6 +127,23 @@ public final class ForExpr implements Expr {
     public ForExpr(List<Binding> bindings, Expr returnExpr) {
         this.bindings = new ArrayList<>(bindings);
         this.returnExpr = returnExpr;
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        for (Binding binding : bindings) {
+            binding.getSequence().bindStaticTypes(context);
+        }
+        returnExpr.bindStaticTypes(context);
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        SequenceType retType = returnExpr.getStaticType();
+        if (retType != null) {
+            return retType.withOccurrence(SequenceType.Occurrence.ZERO_OR_MORE);
+        }
+        return null;
     }
 
     @Override

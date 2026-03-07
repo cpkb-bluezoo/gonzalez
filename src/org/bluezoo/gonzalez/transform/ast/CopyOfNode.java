@@ -126,11 +126,15 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
             if (result instanceof XPathResultTreeFragment) {
                 XPathResultTreeFragment rtf = (XPathResultTreeFragment) result;
                 if (output instanceof SequenceBuilderOutputHandler) {
-                    // Preserve the document node identity in sequence construction
-                    ((SequenceBuilderOutputHandler) output).addItem(rtf);
+                    // Deep copy: replay all events into a new buffer to create
+                    // a new RTF with new node identity
+                    org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer copyBuffer =
+                        new org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer();
+                    rtf.getBuffer().replay(copyBuffer);
+                    XPathResultTreeFragment copy =
+                        new XPathResultTreeFragment(copyBuffer);
+                    ((SequenceBuilderOutputHandler) output).addItem(copy);
                 } else {
-                    // Normal output: replay the buffered events
-                    // For validation="strip", don't include type annotations
                     boolean includeTypes = effectiveValidation != ValidationMode.STRIP;
                     rtf.replayToOutput(output, includeTypes);
                 }
@@ -329,6 +333,10 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                     String attrUri = attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "";
                     String attrLocal = attr.getLocalName();
                     String attrPrefix = attr.getPrefix();
+                    if (attrPrefix == null 
+                            && "http://www.w3.org/XML/1998/namespace".equals(attrUri)) {
+                        attrPrefix = "xml";
+                    }
                     String attrQName = attrPrefix != null ? attrPrefix + ":" + attrLocal : attrLocal;
                     output.attribute(attrUri, attrLocal, attrQName, attr.getStringValue());
                 }
@@ -382,6 +390,9 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                 String atLocal = node.getLocalName();
                 String atPrefix = node.getPrefix();
                 String atQName = atPrefix != null ? atPrefix + ":" + atLocal : atLocal;
+                if (atPrefix != null && !atPrefix.isEmpty() && !atUri.isEmpty()) {
+                    output.namespace(atPrefix, atUri);
+                }
                 output.attribute(atUri, atLocal, atQName, node.getStringValue());
                 break;
                 

@@ -603,19 +603,92 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     private void outputSingleItem(XPathValue item, OutputHandler output) throws SAXException {
         if (item instanceof XPathResultTreeFragment) {
             ((XPathResultTreeFragment) item).replayToOutput(output);
+        } else if (item instanceof XPathNodeSet) {
+            for (XPathNode node : ((XPathNodeSet) item).getNodes()) {
+                serializeNode(node, output);
+            }
         } else if (item instanceof XPathNode) {
-            XPathNode node = (XPathNode) item;
-            if (node.getNodeType() == org.bluezoo.gonzalez.transform.xpath.type.NodeType.ATTRIBUTE) {
+            serializeNode((XPathNode) item, output);
+        } else {
+            output.atomicValue(item);
+        }
+    }
+    
+    private void serializeNode(XPathNode node, OutputHandler output) throws SAXException {
+        switch (node.getNodeType()) {
+            case ELEMENT: {
+                String uri = node.getNamespaceURI();
+                String localName = node.getLocalName();
+                String prefix = node.getPrefix();
+                String qName = (prefix != null && !prefix.isEmpty())
+                    ? prefix + ":" + localName : localName;
+                if (uri == null) {
+                    uri = "";
+                }
+                output.startElement(uri, localName, qName);
+                if (prefix != null && !prefix.isEmpty()) {
+                    output.namespace(prefix, uri);
+                }
+                Iterator<XPathNode> attrs = node.getAttributes();
+                while (attrs.hasNext()) {
+                    XPathNode attr = attrs.next();
+                    String aUri = attr.getNamespaceURI();
+                    String aLocal = attr.getLocalName();
+                    String aPrefix = attr.getPrefix();
+                    if (aUri == null) {
+                        aUri = "";
+                    }
+                    if (aPrefix != null && !aPrefix.isEmpty() && !aUri.isEmpty()) {
+                        output.namespace(aPrefix, aUri);
+                    }
+                    String aQName = (aPrefix != null && !aPrefix.isEmpty())
+                        ? aPrefix + ":" + aLocal : aLocal;
+                    output.attribute(aUri, aLocal, aQName, attr.getStringValue());
+                }
+                Iterator<XPathNode> children = node.getChildren();
+                while (children.hasNext()) {
+                    serializeNode(children.next(), output);
+                }
+                output.endElement(uri, localName, qName);
+                break;
+            }
+            case TEXT: {
+                String text = node.getStringValue();
+                if (text != null) {
+                    output.characters(text);
+                }
+                break;
+            }
+            case COMMENT: {
+                output.comment(node.getStringValue());
+                break;
+            }
+            case PROCESSING_INSTRUCTION: {
+                String target = node.getLocalName();
+                String data = node.getStringValue();
+                output.processingInstruction(target, data != null ? data : "");
+                break;
+            }
+            case ROOT: {
+                Iterator<XPathNode> children = node.getChildren();
+                while (children.hasNext()) {
+                    serializeNode(children.next(), output);
+                }
+                break;
+            }
+            case ATTRIBUTE: {
                 String nsUri = node.getNamespaceURI();
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
-                String qName = (prefix != null && !prefix.isEmpty()) ? prefix + ":" + localName : localName;
-                output.attribute(nsUri != null ? nsUri : "", localName, qName, node.getStringValue());
-            } else {
-                output.characters(node.getStringValue());
+                String qName = (prefix != null && !prefix.isEmpty())
+                    ? prefix + ":" + localName : localName;
+                output.attribute(nsUri != null ? nsUri : "", localName, qName,
+                    node.getStringValue());
+                break;
             }
-        } else {
-            output.atomicValue(item);
+            default:
+                output.characters(node.getStringValue());
+                break;
         }
     }
     

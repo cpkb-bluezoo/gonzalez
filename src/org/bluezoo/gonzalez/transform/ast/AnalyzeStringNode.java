@@ -39,6 +39,7 @@ import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -81,6 +82,7 @@ public class AnalyzeStringNode extends XSLTInstruction implements ExpressionHold
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         try {
             double xsltVersion = context.getXsltVersion();
+            double processorVersion = context.getProcessorVersion();
             
             // Evaluate and validate the select expression
             XPathValue selectResult = selectExpr.evaluate(context);
@@ -95,11 +97,11 @@ public class AnalyzeStringNode extends XSLTInstruction implements ExpressionHold
             if (flagsAvt != null) {
                 flags = flagsAvt.evaluate(context);
             }
-            int patternFlags = parseFlags(flags, xsltVersion);
+            int patternFlags = parseFlags(flags, processorVersion);
             literalFlag = flags.contains("q");
             
             // XSLT 2.0: validate regex restrictions
-            if (xsltVersion < 3.0) {
+            if (processorVersion < 3.0) {
                 validateRegexXslt20(regex);
             }
             
@@ -118,8 +120,8 @@ public class AnalyzeStringNode extends XSLTInstruction implements ExpressionHold
             }
             java.util.regex.Matcher matcher = pattern.matcher(input);
             
-            // XSLT 2.0: check for zero-length matches
-            if (xsltVersion < 3.0 && matcher.find()) {
+            // XSLT 2.0: zero-length regex matches are a dynamic error
+            if (processorVersion < 3.0 && matcher.find()) {
                 if (matcher.start() == matcher.end()) {
                     throw new SAXException("XTDE1150: The regex in " +
                         "xsl:analyze-string matches a zero-length string");
@@ -256,14 +258,17 @@ public class AnalyzeStringNode extends XSLTInstruction implements ExpressionHold
                                           java.util.regex.Matcher matcher,
                                           TransformContext context, OutputHandler output) 
             throws SAXException {
-        // Create a context where the context node has the string as its value
-        // For xsl:analyze-string, the context item is the matched/non-matched string
-        // We create a text node wrapper for this
-        XPathNode textNode = new StringContextNode(contextString);
-        TransformContext strContext = context.withContextNode(textNode);
-        // Update the XSLT current node so current() returns the matched string
-        if (strContext instanceof BasicTransformContext) {
-            strContext = ((BasicTransformContext) strContext).withXsltCurrentNode(textNode);
+        // Per XSLT spec, the context item within matching-substring and
+        // non-matching-substring is a string (xs:string), not a node.
+        // Path expressions on a string context must raise XPTY0020.
+        XPathString strItem = new XPathString(contextString);
+        TransformContext strContext;
+        if (context instanceof BasicTransformContext) {
+            BasicTransformContext btc = (BasicTransformContext) context;
+            strContext = btc.withContextItem(strItem);
+            ((BasicTransformContext) strContext).setXsltCurrentItem(strItem);
+        } else {
+            strContext = context;
         }
         // Set the regex matcher for regex-group() function access
         if (matcher != null) {

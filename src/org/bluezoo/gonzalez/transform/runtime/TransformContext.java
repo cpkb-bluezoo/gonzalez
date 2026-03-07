@@ -299,4 +299,17 @@ public interface TransformContext extends XPathContext, SchemaContext {
      */
     String getDefaultCollation();
 
+    /**
+     * Returns the collection of nodes registered for the given URI.
+     *
+     * <p>Collections are registered via the transformer factory before the
+     * transformation. The collection() function uses this to resolve
+     * collection URIs to sequences of nodes.
+     *
+     * @param uri the collection URI
+     * @return the list of nodes in the collection, or null if no collection
+     *         is registered for the URI
+     */
+    java.util.List<XPathNode> getCollection(String uri);
+
 }

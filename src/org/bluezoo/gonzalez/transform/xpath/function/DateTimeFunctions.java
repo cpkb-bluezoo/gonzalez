@@ -33,6 +33,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
+import static org.bluezoo.gonzalez.transform.xpath.function.TypeAnnotatedFunction.typed;
+
 /**
  * XPath 2.0/3.0 date and time functions.
  *
@@ -55,64 +57,55 @@ public final class DateTimeFunctions {
      * @return list of all date/time function implementations
      */
     public static List<Function> getAll() {
+        SequenceType DT = SequenceType.DATETIME;
+        SequenceType DTQ = SequenceType.DATETIME_Q;
+        SequenceType DA = SequenceType.DATE;
+        SequenceType DAQ = SequenceType.DATE_Q;
+        SequenceType TI = SequenceType.TIME;
+        SequenceType TIQ = SequenceType.TIME_Q;
+        SequenceType IQ = SequenceType.INTEGER_Q;
+        SequenceType I = SequenceType.INTEGER;
+        SequenceType DCQ = SequenceType.DECIMAL_Q;
+        SequenceType DC = SequenceType.DECIMAL;
+        SequenceType DDQ = SequenceType.DT_DURATION_Q;
+        SequenceType DD = SequenceType.DT_DURATION;
+        SequenceType DU = SequenceType.DURATION;
+        SequenceType S = SequenceType.STRING;
+        SequenceType SQ = SequenceType.STRING_Q;
+
         List<Function> functions = new ArrayList<>();
-        
-        // Current date/time functions
-        functions.add(CURRENT_DATE_TIME);
-        functions.add(CURRENT_DATE);
-        functions.add(CURRENT_TIME);
-        
-        // DateTime constructor
-        functions.add(DATE_TIME);
-        
-        // Year extraction
-        functions.add(YEAR_FROM_DATE_TIME);
-        functions.add(YEAR_FROM_DATE);
-        
-        // Month extraction
-        functions.add(MONTH_FROM_DATE_TIME);
-        functions.add(MONTH_FROM_DATE);
-        
-        // Day extraction
-        functions.add(DAY_FROM_DATE_TIME);
-        functions.add(DAY_FROM_DATE);
-        
-        // Hour extraction
-        functions.add(HOURS_FROM_DATE_TIME);
-        functions.add(HOURS_FROM_TIME);
-        
-        // Minute extraction
-        functions.add(MINUTES_FROM_DATE_TIME);
-        functions.add(MINUTES_FROM_TIME);
-        
-        // Second extraction
-        functions.add(SECONDS_FROM_DATE_TIME);
-        functions.add(SECONDS_FROM_TIME);
-        
-        // Timezone extraction
-        functions.add(TIMEZONE_FROM_DATE_TIME);
-        functions.add(TIMEZONE_FROM_DATE);
-        functions.add(TIMEZONE_FROM_TIME);
-        
-        // Duration component extraction
-        functions.add(YEARS_FROM_DURATION);
-        functions.add(MONTHS_FROM_DURATION);
-        functions.add(DAYS_FROM_DURATION);
-        functions.add(HOURS_FROM_DURATION);
-        functions.add(MINUTES_FROM_DURATION);
-        functions.add(SECONDS_FROM_DURATION);
-        
-        // Formatting functions
-        functions.add(FORMAT_DATE_TIME);
-        functions.add(FORMAT_DATE);
-        functions.add(FORMAT_TIME);
-        
-        // Timezone adjustment functions
-        functions.add(ADJUST_DATE_TIME_TO_TIMEZONE);
-        functions.add(ADJUST_DATE_TO_TIMEZONE);
-        functions.add(ADJUST_TIME_TO_TIMEZONE);
-        functions.add(IMPLICIT_TIMEZONE);
-        
+        functions.add(typed(CURRENT_DATE_TIME, DT));
+        functions.add(typed(CURRENT_DATE,      DA));
+        functions.add(typed(CURRENT_TIME,      TI));
+        functions.add(typed(DATE_TIME,         DTQ, DAQ, TIQ));
+        functions.add(typed(YEAR_FROM_DATE_TIME,   IQ, DTQ));
+        functions.add(typed(YEAR_FROM_DATE,        IQ, DAQ));
+        functions.add(typed(MONTH_FROM_DATE_TIME,  IQ, DTQ));
+        functions.add(typed(MONTH_FROM_DATE,       IQ, DAQ));
+        functions.add(typed(DAY_FROM_DATE_TIME,    IQ, DTQ));
+        functions.add(typed(DAY_FROM_DATE,         IQ, DAQ));
+        functions.add(typed(HOURS_FROM_DATE_TIME,  IQ, DTQ));
+        functions.add(typed(HOURS_FROM_TIME,       IQ, TIQ));
+        functions.add(typed(MINUTES_FROM_DATE_TIME, IQ, DTQ));
+        functions.add(typed(MINUTES_FROM_TIME,      IQ, TIQ));
+        functions.add(typed(SECONDS_FROM_DATE_TIME, DCQ, DTQ));
+        functions.add(typed(SECONDS_FROM_TIME,      DCQ, TIQ));
+        functions.add(typed(TIMEZONE_FROM_DATE_TIME, DDQ, DTQ));
+        functions.add(typed(TIMEZONE_FROM_DATE,      DDQ, DAQ));
+        functions.add(typed(TIMEZONE_FROM_TIME,      DDQ, TIQ));
+        functions.add(typed(YEARS_FROM_DURATION,     I, DU));
+        functions.add(typed(MONTHS_FROM_DURATION,    I, DU));
+        functions.add(typed(DAYS_FROM_DURATION,      I, DU));
+        functions.add(typed(HOURS_FROM_DURATION,     I, DU));
+        functions.add(typed(MINUTES_FROM_DURATION,   I, DU));
+        functions.add(typed(SECONDS_FROM_DURATION,   DC, DU));
+        functions.add(typed(FORMAT_DATE_TIME, S, DTQ, S, SQ, SQ, SQ));
+        functions.add(typed(FORMAT_DATE,      S, DAQ, S, SQ, SQ, SQ));
+        functions.add(typed(FORMAT_TIME,      S, TIQ, S, SQ, SQ, SQ));
+        functions.add(typed(ADJUST_DATE_TIME_TO_TIMEZONE, DTQ, DTQ, DDQ));
+        functions.add(typed(ADJUST_DATE_TO_TIMEZONE,      DAQ, DAQ, DDQ));
+        functions.add(typed(ADJUST_TIME_TO_TIMEZONE,      TIQ, TIQ, DDQ));
+        functions.add(typed(IMPLICIT_TIMEZONE, DD));
         return functions;
     }
 
@@ -1595,13 +1588,20 @@ public final class DateTimeFunctions {
      * @throws XPathException if conversion fails
      */
     private static XPathDateTime toDate(XPathValue value) throws XPathException {
+        // BC mode / sequence coercion: extract first item from sequences
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            if (seq.isEmpty()) {
+                return null;
+            }
+            value = seq.iterator().next();
+        }
         if (value instanceof XPathDateTime) {
             XPathDateTime dt = (XPathDateTime) value;
             if (dt.getDateTimeType() == XPathDateTime.DateTimeType.DATE) {
                 return dt;
             }
         }
-        // Try to parse as date
         return XPathDateTime.parseDate(value.asString());
     }
     
@@ -1613,13 +1613,20 @@ public final class DateTimeFunctions {
      * @throws XPathException if conversion fails
      */
     private static XPathDateTime toTime(XPathValue value) throws XPathException {
+        // BC mode / sequence coercion: extract first item from sequences
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            if (seq.isEmpty()) {
+                return null;
+            }
+            value = seq.iterator().next();
+        }
         if (value instanceof XPathDateTime) {
             XPathDateTime dt = (XPathDateTime) value;
             if (dt.getDateTimeType() == XPathDateTime.DateTimeType.TIME) {
                 return dt;
             }
         }
-        // Try to parse as time
         return XPathDateTime.parseTime(value.asString());
     }
     

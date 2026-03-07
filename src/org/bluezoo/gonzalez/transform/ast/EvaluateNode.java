@@ -187,6 +187,33 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                 }
             }
             
+            // Handle namespace-context (XTTE3170: must be a single node)
+            if (namespaceContextExpr != null) {
+                XPathValue nsCtxValue = namespaceContextExpr.evaluate(context);
+                if (nsCtxValue instanceof XPathSequence) {
+                    XPathSequence seq = (XPathSequence) nsCtxValue;
+                    if (seq.size() != 1) {
+                        throw new SAXException("XTTE3170: namespace-context " +
+                            "of xsl:evaluate must be a single node, " +
+                            "got " + seq.size() + " items");
+                    }
+                    nsCtxValue = seq.get(0);
+                }
+                if (nsCtxValue != null && nsCtxValue.isNodeSet()) {
+                    XPathNodeSet ns = nsCtxValue.asNodeSet();
+                    if (ns.size() != 1) {
+                        throw new SAXException("XTTE3170: namespace-context " +
+                            "of xsl:evaluate must be a single node, " +
+                            "got " + ns.size() + " nodes");
+                    }
+                }
+                if (nsCtxValue != null && !(nsCtxValue instanceof XPathNode)
+                        && !(nsCtxValue.isNodeSet())) {
+                    throw new SAXException("XTTE3170: namespace-context " +
+                        "of xsl:evaluate must be a node");
+                }
+            }
+            
             // Bind variables from xsl:with-param children first
             if (params != null && !params.isEmpty()) {
                 for (WithParamNode param : params) {
@@ -304,14 +331,30 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
      * Checks for functions disallowed in xsl:evaluate (XTDE3160).
      */
     private boolean containsDisallowedFunction(String exprLower) {
-        if (exprLower.contains("current(") || exprLower.contains("current ()")) {
+        if (exprLower.contains("current(") || exprLower.contains("current-group(")
+                || exprLower.contains("current-grouping-key(")
+                || exprLower.contains("current-merge-group(")
+                || exprLower.contains("current-merge-key(")) {
             return true;
         }
-        if (exprLower.contains("document(") || exprLower.contains("document ()")) {
+        if (exprLower.contains("document(") || exprLower.contains("doc(")
+                || exprLower.contains("doc-available(")
+                || exprLower.contains("collection(")
+                || exprLower.contains("uri-collection(")) {
             return true;
         }
         if (exprLower.contains("unparsed-text(") || exprLower.contains("unparsed-text-lines(")
                 || exprLower.contains("unparsed-text-available(")) {
+            return true;
+        }
+        if (exprLower.contains("system-property(") || exprLower.contains("key(")
+                || exprLower.contains("regex-group(")
+                || exprLower.contains("accumulator-before(")
+                || exprLower.contains("accumulator-after(")
+                || exprLower.contains("unparsed-entity-uri(")
+                || exprLower.contains("unparsed-entity-public-id(")
+                || exprLower.contains("available-environment-variables(")
+                || exprLower.contains("environment-variable(")) {
             return true;
         }
         return false;

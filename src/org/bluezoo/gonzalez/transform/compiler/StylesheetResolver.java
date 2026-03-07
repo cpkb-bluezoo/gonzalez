@@ -40,7 +40,10 @@ import javax.xml.transform.TransformerException;
 import javax.xml.transform.URIResolver;
 import javax.xml.transform.stream.StreamSource;
 
+import org.xml.sax.Attributes;
+import org.xml.sax.ContentHandler;
 import org.xml.sax.InputSource;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.XMLReaderFactory;
@@ -243,6 +246,13 @@ public class StylesheetResolver {
     public CompiledStylesheet resolve(String href, String baseUri, 
             boolean isImport, int importPrecedence) throws SAXException, IOException {
         
+        // Extract fragment identifier for embedded stylesheets (e.g. "doc.xml#id")
+        String fragmentId = null;
+        int hashIdx = href.indexOf('#');
+        if (hashIdx >= 0) {
+            fragmentId = href.substring(hashIdx + 1);
+        }
+
         String resolvedUri = resolveUri(href, baseUri);
         
         // Check for circular reference - only throw if currently being loaded (on the call stack)
@@ -272,7 +282,11 @@ public class StylesheetResolver {
             
             // Parse the stylesheet
             XMLReader reader = createXMLReader();
-            reader.setContentHandler(compiler);
+            ContentHandler handler = compiler;
+            if (fragmentId != null && !fragmentId.isEmpty()) {
+                handler = new EmbeddedStylesheetFilter(fragmentId, compiler);
+            }
+            reader.setContentHandler(handler);
             reader.parse(inputSource);
             
             try {
@@ -512,6 +526,208 @@ public class StylesheetResolver {
             uri = uri.substring(0, hashIndex);
         }
         return uri;
+    }
+
+    /**
+     * SAX filter for embedded stylesheets. Searches an XML document for an
+     * element whose {@code id} attribute matches a fragment identifier, then
+     * forwards only that element subtree to the delegate (typically a
+     * {@link StylesheetCompiler}).
+     *
+     * <p>Prefix mappings that appear immediately before the target element
+     * are buffered and replayed, since SAX fires {@code startPrefixMapping}
+     * before the corresponding {@code startElement}.
+     *
+     * <p>If the matched element has an {@code xml:base} attribute, it is
+     * resolved against the document URI and exposed via a wrapping
+     * {@link Locator} so that the compiler uses the correct base URI for
+     * nested includes and imports.
+     */
+    private static class EmbeddedStylesheetFilter implements ContentHandler {
+
+        private final String targetId;
+        private final ContentHandler delegate;
+        private int depth;
+        private boolean found;
+        private java.util.List<String[]> pendingPrefixes;
+        private MutableLocator locatorWrapper;
+
+        EmbeddedStylesheetFilter(String targetId, ContentHandler delegate) {
+            this.targetId = targetId;
+            this.delegate = delegate;
+            this.depth = 0;
+            this.found = false;
+            this.pendingPrefixes = new java.util.ArrayList<String[]>();
+        }
+
+        @Override
+        public void setDocumentLocator(Locator locator) {
+            locatorWrapper = new MutableLocator(locator);
+            delegate.setDocumentLocator(locatorWrapper);
+        }
+
+        @Override
+        public void startDocument() throws SAXException {
+            delegate.startDocument();
+        }
+
+        @Override
+        public void endDocument() throws SAXException {
+            delegate.endDocument();
+        }
+
+        @Override
+        public void startPrefixMapping(String prefix, String uri)
+                throws SAXException {
+            if (found) {
+                delegate.startPrefixMapping(prefix, uri);
+            } else {
+                pendingPrefixes.add(new String[] { prefix, uri });
+            }
+        }
+
+        @Override
+        public void endPrefixMapping(String prefix) throws SAXException {
+            if (found) {
+                delegate.endPrefixMapping(prefix);
+            }
+        }
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                                 Attributes atts) throws SAXException {
+            if (found) {
+                depth++;
+                delegate.startElement(uri, localName, qName, atts);
+                return;
+            }
+            String id = atts.getValue("id");
+            if (id == null) {
+                id = atts.getValue("xml:id");
+            }
+            if (targetId.equals(id)) {
+                found = true;
+                depth = 1;
+                applyXmlBase(atts);
+                for (String[] mapping : pendingPrefixes) {
+                    delegate.startPrefixMapping(mapping[0], mapping[1]);
+                }
+                pendingPrefixes.clear();
+                delegate.startElement(uri, localName, qName, atts);
+            } else {
+                pendingPrefixes.clear();
+            }
+        }
+
+        /**
+         * If the element has xml:base, resolve it against the document URI
+         * and update the locator wrapper so the compiler sees the new base.
+         */
+        private void applyXmlBase(Attributes atts) {
+            String xmlBase = atts.getValue("xml:base");
+            if (xmlBase == null || xmlBase.isEmpty() || locatorWrapper == null) {
+                return;
+            }
+            String docUri = locatorWrapper.getDelegate().getSystemId();
+            if (docUri == null || docUri.isEmpty()) {
+                return;
+            }
+            try {
+                URI base = new URI(docUri);
+                URI resolved = base.resolve(xmlBase);
+                locatorWrapper.setSystemId(resolved.toString());
+            } catch (URISyntaxException e) {
+                // ignore malformed xml:base
+            }
+        }
+
+        @Override
+        public void endElement(String uri, String localName, String qName)
+                throws SAXException {
+            if (found) {
+                depth--;
+                delegate.endElement(uri, localName, qName);
+                if (depth == 0) {
+                    found = false;
+                }
+            }
+        }
+
+        @Override
+        public void characters(char[] ch, int start, int length)
+                throws SAXException {
+            if (found) {
+                delegate.characters(ch, start, length);
+            }
+        }
+
+        @Override
+        public void ignorableWhitespace(char[] ch, int start, int length)
+                throws SAXException {
+            if (found) {
+                delegate.ignorableWhitespace(ch, start, length);
+            }
+        }
+
+        @Override
+        public void processingInstruction(String target, String data)
+                throws SAXException {
+            if (found) {
+                delegate.processingInstruction(target, data);
+            }
+        }
+
+        @Override
+        public void skippedEntity(String name) throws SAXException {
+            if (found) {
+                delegate.skippedEntity(name);
+            }
+        }
+    }
+
+    /**
+     * Locator wrapper that allows the system ID to be overridden, used to
+     * propagate {@code xml:base} from embedded stylesheet elements.
+     */
+    private static class MutableLocator implements Locator {
+
+        private final Locator delegate;
+        private String systemIdOverride;
+
+        MutableLocator(Locator delegate) {
+            this.delegate = delegate;
+        }
+
+        Locator getDelegate() {
+            return delegate;
+        }
+
+        void setSystemId(String systemId) {
+            this.systemIdOverride = systemId;
+        }
+
+        @Override
+        public String getPublicId() {
+            return delegate.getPublicId();
+        }
+
+        @Override
+        public String getSystemId() {
+            if (systemIdOverride != null) {
+                return systemIdOverride;
+            }
+            return delegate.getSystemId();
+        }
+
+        @Override
+        public int getLineNumber() {
+            return delegate.getLineNumber();
+        }
+
+        @Override
+        public int getColumnNumber() {
+            return delegate.getColumnNumber();
+        }
     }
 
 }

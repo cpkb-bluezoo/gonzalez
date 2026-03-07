@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
@@ -34,10 +35,13 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+
+import static org.bluezoo.gonzalez.transform.xpath.function.TypeAnnotatedFunction.typed;
 
 /**
  * XPath 1.0 number functions.
@@ -164,16 +168,64 @@ public final class NumberFunctions {
                 if (first instanceof XPathString && !(first instanceof XPathUntypedAtomic)) {
                     throw new XPathException("FORG0006: Cannot use string value in sum()");
                 }
-                double sum = first.asNumber();
-                if (Double.isNaN(sum)) {
-                    return XPathNumber.NaN;
-                }
+                
+                // Collect remaining items to determine result type
+                List<XPathValue> items = new ArrayList<XPathValue>();
+                items.add(first);
                 while (iter.hasNext()) {
                     XPathValue item = iter.next();
                     if (item instanceof XPathString && !(item instanceof XPathUntypedAtomic)) {
                         throw new XPathException("FORG0006: Cannot use string value in sum()");
                     }
-                    double num = item.asNumber();
+                    items.add(item);
+                }
+                
+                // Use BigDecimal when all items are decimal or integer
+                boolean allExact = true;
+                boolean hasDecimal = false;
+                for (int i = 0; i < items.size(); i++) {
+                    XPathValue item = items.get(i);
+                    if (item instanceof XPathNumber) {
+                        XPathNumber xn = (XPathNumber) item;
+                        if (xn.isDecimal()) {
+                            hasDecimal = true;
+                        } else if (!xn.isExactInteger()
+                                || xn.isFloat() || xn.isExplicitDouble()) {
+                            allExact = false;
+                            break;
+                        }
+                    } else {
+                        allExact = false;
+                        break;
+                    }
+                }
+                
+                if (allExact && hasDecimal) {
+                    BigDecimal decSum = BigDecimal.ZERO;
+                    for (int i = 0; i < items.size(); i++) {
+                        XPathNumber xn = (XPathNumber) items.get(i);
+                        BigDecimal bd = xn.getDecimalValue();
+                        if (bd != null) {
+                            decSum = decSum.add(bd);
+                        } else {
+                            BigInteger bi = xn.toBigInteger();
+                            if (bi != null) {
+                                decSum = decSum.add(new BigDecimal(bi));
+                            } else {
+                                decSum = decSum.add(
+                                    BigDecimal.valueOf(xn.asNumber()));
+                            }
+                        }
+                    }
+                    return new XPathNumber(decSum);
+                }
+                
+                double sum = first.asNumber();
+                if (Double.isNaN(sum)) {
+                    return XPathNumber.NaN;
+                }
+                for (int i = 1; i < items.size(); i++) {
+                    double num = items.get(i).asNumber();
                     if (Double.isNaN(num)) {
                         return XPathNumber.NaN;
                     }
@@ -1011,7 +1063,27 @@ public final class NumberFunctions {
      * @return array of all number function implementations
      */
     public static Function[] getAll() {
-        return new Function[] { NUMBER, SUM, FLOOR, CEILING, ROUND, ABS, ROUND_HALF_TO_EVEN, MIN, MAX, AVG, FORMAT_INTEGER };
+        SequenceType D = SequenceType.DOUBLE;
+        SequenceType DQ = SequenceType.DOUBLE_Q;
+        SequenceType NQ = SequenceType.NUMERIC_Q;
+        SequenceType N = SequenceType.NUMERIC;
+        SequenceType IS = SequenceType.ITEM_STAR;
+        SequenceType AQ = SequenceType.ANY_ATOMIC_Q;
+        SequenceType I = SequenceType.INTEGER;
+        SequenceType S = SequenceType.STRING;
+        return new Function[] {
+            typed(NUMBER,             D, IS),
+            typed(SUM,                AQ, IS, AQ),
+            typed(FLOOR,              NQ, NQ),
+            typed(CEILING,            NQ, NQ),
+            typed(ROUND,              NQ, NQ, I),
+            typed(ABS,                NQ, NQ),
+            typed(ROUND_HALF_TO_EVEN, NQ, NQ, I),
+            typed(MIN,                AQ, IS, S),
+            typed(MAX,                AQ, IS, S),
+            typed(AVG,                AQ, IS),
+            typed(FORMAT_INTEGER,     S, I, S, S),
+        };
     }
 
 }

@@ -113,6 +113,9 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     /** Maximum XSLT version the processor should advertise (-1 = no limit). */
     private double maxXsltVersion = -1;
 
+    /** Whether strict (pessimistic) static type checking is enabled (default: true). */
+    private boolean strictTypeChecking = true;
+
     /**
      * Creates a new transformer factory.
      */
@@ -186,6 +189,7 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         if (maxXsltVersion > 0) {
             compiler.setMaxProcessorVersion(maxXsltVersion);
         }
+        compiler.setStrictTypeChecking(strictTypeChecking);
 
         // Pass static parameter overrides to the compiler
         for (Map.Entry<String, String> entry : staticParameters.entrySet()) {
@@ -387,6 +391,27 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     public void setMaxXsltVersion(double version) {
         this.maxXsltVersion = version;
+    }
+
+    /**
+     * Enables or disables strict (pessimistic) static type checking.
+     * When enabled (the default), expressions that <em>might</em> fail
+     * are rejected at compile time. When disabled, only provably
+     * incompatible types are rejected.
+     *
+     * @param strict true for pessimistic checking, false for optimistic
+     */
+    public void setStrictTypeChecking(boolean strict) {
+        this.strictTypeChecking = strict;
+    }
+
+    /**
+     * Returns whether strict static type checking is enabled.
+     *
+     * @return true if strict type checking is enabled
+     */
+    public boolean isStrictTypeChecking() {
+        return strictTypeChecking;
     }
 
     /**

@@ -83,6 +83,7 @@ public class BasicTransformContext implements TransformContext {
     private final org.bluezoo.gonzalez.transform.ErrorHandlingMode errorHandlingMode;  // Error handling mode
     private boolean contextItemUndefined;  // XPDY0002: true inside xsl:function bodies
     private XPathValue xsltCurrentItem;   // The XSLT current() item for atomic for-each
+    private Map<String, List<XPathNode>> collections;  // Registered fn:collection() mappings
 
     /**
      * Creates a new transform context.
@@ -857,10 +858,24 @@ public class BasicTransformContext implements TransformContext {
      */
     @Override
     public double getXsltVersion() {
+        if (currentTemplateRule != null) {
+            double templateVersion = currentTemplateRule.getEffectiveVersion();
+            if (templateVersion > 0) {
+                return templateVersion;
+            }
+        }
         if (stylesheet != null) {
             return stylesheet.getVersion();
         }
         return 1.0;
+    }
+
+    @Override
+    public double getProcessorVersion() {
+        if (stylesheet != null) {
+            return stylesheet.getProcessorVersion();
+        }
+        return getXsltVersion();
     }
 
     @Override
@@ -923,6 +938,8 @@ public class BasicTransformContext implements TransformContext {
     private BasicTransformContext inherit(BasicTransformContext derived) {
         derived.defaultCollationOverride = this.defaultCollationOverride;
         derived.xsltCurrentItem = this.xsltCurrentItem;
+        derived.cachedCurrentDateTime = this.cachedCurrentDateTime;
+        derived.collections = this.collections;
         if (this.contextItemUndefined && derived.contextNode == null && derived.contextItem == null) {
             derived.contextItemUndefined = true;
         }
@@ -946,6 +963,27 @@ public class BasicTransformContext implements TransformContext {
         }
         if (stylesheet != null) {
             return stylesheet.getDefaultCollation();
+        }
+        return null;
+    }
+
+    /**
+     * Registers a named collection for the fn:collection() function.
+     *
+     * @param uri the collection URI
+     * @param nodes the list of nodes in the collection
+     */
+    public void setCollection(String uri, List<XPathNode> nodes) {
+        if (collections == null) {
+            collections = new java.util.HashMap<>();
+        }
+        collections.put(uri, nodes);
+    }
+
+    @Override
+    public List<XPathNode> getCollection(String uri) {
+        if (collections != null) {
+            return collections.get(uri);
         }
         return null;
     }

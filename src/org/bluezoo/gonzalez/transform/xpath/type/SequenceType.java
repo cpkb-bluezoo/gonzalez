@@ -122,12 +122,56 @@ public class SequenceType {
     
     // Common atomic types
     public static final SequenceType STRING = atomic(XS_NAMESPACE, "string", Occurrence.ONE);
+    public static final SequenceType STRING_STAR = atomic(XS_NAMESPACE, "string", Occurrence.ZERO_OR_MORE);
+    public static final SequenceType STRING_Q = atomic(XS_NAMESPACE, "string", Occurrence.ZERO_OR_ONE);
     public static final SequenceType INTEGER = atomic(XS_NAMESPACE, "integer", Occurrence.ONE);
+    public static final SequenceType INTEGER_STAR = atomic(XS_NAMESPACE, "integer", Occurrence.ZERO_OR_MORE);
+    public static final SequenceType INTEGER_Q = atomic(XS_NAMESPACE, "integer", Occurrence.ZERO_OR_ONE);
     public static final SequenceType DECIMAL = atomic(XS_NAMESPACE, "decimal", Occurrence.ONE);
+    public static final SequenceType DECIMAL_Q = atomic(XS_NAMESPACE, "decimal", Occurrence.ZERO_OR_ONE);
     public static final SequenceType DOUBLE = atomic(XS_NAMESPACE, "double", Occurrence.ONE);
+    public static final SequenceType DOUBLE_Q = atomic(XS_NAMESPACE, "double", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType FLOAT = atomic(XS_NAMESPACE, "float", Occurrence.ONE);
     public static final SequenceType BOOLEAN = atomic(XS_NAMESPACE, "boolean", Occurrence.ONE);
+    public static final SequenceType BOOLEAN_Q = atomic(XS_NAMESPACE, "boolean", Occurrence.ZERO_OR_ONE);
     public static final SequenceType DATE = atomic(XS_NAMESPACE, "date", Occurrence.ONE);
+    public static final SequenceType DATE_Q = atomic(XS_NAMESPACE, "date", Occurrence.ZERO_OR_ONE);
     public static final SequenceType DATETIME = atomic(XS_NAMESPACE, "dateTime", Occurrence.ONE);
+    public static final SequenceType DATETIME_Q = atomic(XS_NAMESPACE, "dateTime", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType TIME = atomic(XS_NAMESPACE, "time", Occurrence.ONE);
+    public static final SequenceType TIME_Q = atomic(XS_NAMESPACE, "time", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType DURATION = atomic(XS_NAMESPACE, "duration", Occurrence.ONE);
+    public static final SequenceType DURATION_Q = atomic(XS_NAMESPACE, "duration", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType ANYURI = atomic(XS_NAMESPACE, "anyURI", Occurrence.ONE);
+    public static final SequenceType ANYURI_Q = atomic(XS_NAMESPACE, "anyURI", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType QNAME = atomic(XS_NAMESPACE, "QName", Occurrence.ONE);
+    public static final SequenceType QNAME_Q = atomic(XS_NAMESPACE, "QName", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType UNTYPED_ATOMIC = atomic(XS_NAMESPACE, "untypedAtomic", Occurrence.ONE);
+    public static final SequenceType ANY_ATOMIC = atomic(XS_NAMESPACE, "anyAtomicType", Occurrence.ONE);
+    public static final SequenceType ANY_ATOMIC_Q = atomic(XS_NAMESPACE, "anyAtomicType", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType ANY_ATOMIC_STAR = atomic(XS_NAMESPACE, "anyAtomicType", Occurrence.ZERO_OR_MORE);
+    public static final SequenceType NUMERIC = atomic(XS_NAMESPACE, "numeric", Occurrence.ONE);
+    public static final SequenceType NUMERIC_Q = atomic(XS_NAMESPACE, "numeric", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType ITEM_Q = new SequenceType(ItemKind.ITEM, null, null, null, Occurrence.ZERO_OR_ONE);
+    public static final SequenceType ITEM_PLUS = new SequenceType(ItemKind.ITEM, null, null, null, Occurrence.ONE_OR_MORE);
+    public static final SequenceType NODE_Q = new SequenceType(ItemKind.NODE, null, null, null, Occurrence.ZERO_OR_ONE);
+    public static final SequenceType NODE_PLUS = new SequenceType(ItemKind.NODE, null, null, null, Occurrence.ONE_OR_MORE);
+    public static final SequenceType ELEMENT_STAR = new SequenceType(ItemKind.ELEMENT, null, null, null, Occurrence.ZERO_OR_MORE);
+    public static final SequenceType ELEMENT_Q = new SequenceType(ItemKind.ELEMENT, null, null, null, Occurrence.ZERO_OR_ONE);
+    public static final SequenceType ATTRIBUTE_STAR = new SequenceType(ItemKind.ATTRIBUTE, null, null, null, Occurrence.ZERO_OR_MORE);
+    public static final SequenceType DOCUMENT_NODE = new SequenceType(ItemKind.DOCUMENT_NODE, null, null, null, Occurrence.ONE);
+    public static final SequenceType DOCUMENT_NODE_Q = new SequenceType(ItemKind.DOCUMENT_NODE, null, null, null, Occurrence.ZERO_OR_ONE);
+    public static final SequenceType TEXT_NODE = new SequenceType(ItemKind.TEXT, null, null, null, Occurrence.ONE);
+    public static final SequenceType COMMENT_NODE = new SequenceType(ItemKind.COMMENT, null, null, null, Occurrence.ONE);
+    public static final SequenceType PI_NODE = new SequenceType(ItemKind.PROCESSING_INSTRUCTION, null, null, null, Occurrence.ONE);
+    public static final SequenceType YM_DURATION = atomic(XS_NAMESPACE, "yearMonthDuration", Occurrence.ONE);
+    public static final SequenceType YM_DURATION_Q = atomic(XS_NAMESPACE, "yearMonthDuration", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType DT_DURATION = atomic(XS_NAMESPACE, "dayTimeDuration", Occurrence.ONE);
+    public static final SequenceType DT_DURATION_Q = atomic(XS_NAMESPACE, "dayTimeDuration", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType HEX_BINARY = atomic(XS_NAMESPACE, "hexBinary", Occurrence.ONE);
+    public static final SequenceType HEX_BINARY_Q = atomic(XS_NAMESPACE, "hexBinary", Occurrence.ZERO_OR_ONE);
+    public static final SequenceType BASE64_BINARY = atomic(XS_NAMESPACE, "base64Binary", Occurrence.ONE);
+    public static final SequenceType BASE64_BINARY_Q = atomic(XS_NAMESPACE, "base64Binary", Occurrence.ZERO_OR_ONE);
     
     /**
      * Creates a sequence type.
@@ -183,6 +227,55 @@ public class SequenceType {
      */
     public static SequenceType atomic(String namespaceURI, String localName, Occurrence occurrence) {
         return new SequenceType(ItemKind.ATOMIC, namespaceURI, localName, null, occurrence);
+    }
+
+    /**
+     * Returns a copy of this type with a different occurrence indicator.
+     *
+     * @param occ the new occurrence
+     * @return a sequence type identical to this except for occurrence
+     */
+    public SequenceType withOccurrence(Occurrence occ) {
+        if (occ == this.occurrence) {
+            return this;
+        }
+        if (parameterTypes != null || returnType != null) {
+            SequenceType ft = new SequenceType(itemKind, parameterTypes, returnType, occ);
+            return ft;
+        }
+        return new SequenceType(itemKind, namespaceURI, localName, typeName, occ);
+    }
+
+    /**
+     * Returns true if this type represents an atomic numeric type
+     * (integer, decimal, float, double, or the abstract numeric type).
+     *
+     * @return true if numeric
+     */
+    public boolean isNumericType() {
+        if (itemKind != ItemKind.ATOMIC) {
+            return false;
+        }
+        if (localName == null) {
+            return false;
+        }
+        return "integer".equals(localName)
+            || "decimal".equals(localName)
+            || "float".equals(localName)
+            || "double".equals(localName)
+            || "numeric".equals(localName);
+    }
+
+    /**
+     * Returns true if this type represents xs:boolean.
+     *
+     * @return true if boolean
+     */
+    public boolean isBooleanType() {
+        if (itemKind != ItemKind.ATOMIC) {
+            return false;
+        }
+        return "boolean".equals(localName);
     }
     
     /**
@@ -313,16 +406,6 @@ public class SequenceType {
         }
         
         return result.toString().trim();
-    }
-    
-    /**
-     * Returns a copy of this sequence type with a different occurrence indicator.
-     *
-     * @param occ the new occurrence indicator
-     * @return a new sequence type with the same item kind but different occurrence
-     */
-    public SequenceType withOccurrence(Occurrence occ) {
-        return new SequenceType(itemKind, namespaceURI, localName, typeName, occ);
     }
     
     /**
@@ -1772,18 +1855,39 @@ public class SequenceType {
             return new SequenceType(ItemKind.PROCESSING_INSTRUCTION, null, piName, null, occ);
         }
         if (type.equals("document-node()") || type.startsWith("document-node(")) {
+            String docElemLocal = null;
+            String docElemNs = null;
             // Parse document-node() or document-node(element(...))
             if (type.startsWith("document-node(") && type.endsWith(")") && !type.equals("document-node()")) {
+                // Strip outer document-node( ... ) — the closing paren is matched
+                // by the last paren of the string
                 String inner = type.substring("document-node(".length(), type.length() - 1).trim();
-                // Check if it contains element(...) test
-                if (inner.startsWith("element(")) {
-                    // Parse the nested element test
-                    // For now, we accept it but don't fully parse the nested type
-                    // This allows document-node(element(name, type)) to compile
-                    // Full matching would require recursive parsing
+                if (inner.startsWith("element(") && inner.endsWith(")")) {
+                    String elemInner = inner.substring("element(".length(), inner.length() - 1).trim();
+                    if (!elemInner.isEmpty() && !elemInner.equals("*")) {
+                        int commaIdx = elemInner.indexOf(',');
+                        String namePart;
+                        if (commaIdx >= 0) {
+                            namePart = elemInner.substring(0, commaIdx).trim();
+                        } else {
+                            namePart = elemInner;
+                        }
+                        if (!namePart.equals("*")) {
+                            String[] resolved = resolvePrefixedName(namePart, namespaceResolver);
+                            docElemNs = resolved[0];
+                            docElemLocal = resolved[1];
+                        }
+                    }
+                } else if (inner.startsWith("schema-element(") && inner.endsWith(")")) {
+                    String schemaInner = inner.substring("schema-element(".length(), inner.length() - 1).trim();
+                    if (!schemaInner.isEmpty()) {
+                        String[] resolved = resolvePrefixedName(schemaInner, namespaceResolver);
+                        docElemNs = resolved[0];
+                        docElemLocal = resolved[1];
+                    }
                 }
             }
-            return new SequenceType(ItemKind.DOCUMENT_NODE, null, null, null, occ);
+            return new SequenceType(ItemKind.DOCUMENT_NODE, docElemNs, docElemLocal, null, occ);
         }
         
         // Parse element() or element(name) or element(name, type) or element(*, type)

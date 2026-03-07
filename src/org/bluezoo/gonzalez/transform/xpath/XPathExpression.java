@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.xpath;
 
 import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -77,8 +78,30 @@ public final class XPathExpression {
     public static XPathExpression compile(String expression, 
                                           XPathParser.NamespaceResolver namespaceResolver) 
             throws XPathSyntaxException {
+        return compile(expression, namespaceResolver, null);
+    }
+
+    /**
+     * Compiles an XPath expression with a namespace resolver and static
+     * type context. When a type context is provided, static type binding
+     * and checking are performed.
+     *
+     * @param expression the XPath expression string
+     * @param namespaceResolver resolver for namespace prefixes
+     * @param typeContext the static type context (may be null)
+     * @return the compiled expression
+     * @throws XPathSyntaxException if the expression is invalid or has type errors
+     */
+    public static XPathExpression compile(String expression, 
+                                          XPathParser.NamespaceResolver namespaceResolver,
+                                          StaticTypeContext typeContext) 
+            throws XPathSyntaxException {
         XPathParser parser = new XPathParser(expression, namespaceResolver);
         Expr expr = parser.parse();
+        if (typeContext != null) {
+            expr.bindStaticTypes(typeContext);
+            StaticTypeChecker.check(expr, typeContext);
+        }
         return new XPathExpression(expression, expr);
     }
 

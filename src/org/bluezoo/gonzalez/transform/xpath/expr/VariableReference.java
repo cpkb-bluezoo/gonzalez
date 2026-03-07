@@ -21,8 +21,10 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -38,6 +40,7 @@ public final class VariableReference implements Expr {
     private final String prefix;
     private final String localName;
     private final String resolvedNamespaceURI;
+    private StaticTypeContext typeContext;
 
     /**
      * Creates a variable reference with no namespace prefix.
@@ -90,6 +93,19 @@ public final class VariableReference implements Expr {
             throw new XPathException("Undefined variable: $" + 
                 (prefix != null ? prefix + ":" : "") + localName, e);
         }
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        this.typeContext = context;
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        if (typeContext == null) {
+            return null;
+        }
+        return typeContext.getVariableType(resolvedNamespaceURI, localName);
     }
 
     /**

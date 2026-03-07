@@ -54,7 +54,9 @@ import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * XPath 1.0 expression parser using the Pratt (operator precedence) algorithm.
@@ -161,8 +163,9 @@ public final class XPathParser {
         // Separate list for predicate items (to avoid mixing with function args)
         List<Expr> predicateItems;
         
-        // Unary negation count
+        // Unary negation count and whether any unary operator was used
         int negationCount;
+        boolean hasUnaryOperator;
         
         // Function call construction
         String functionPrefix;
@@ -305,9 +308,11 @@ public final class XPathParser {
      */
     private ParseContext parseOperand(ParseContext ctx, Deque<ParseContext> contextStack) 
             throws XPathSyntaxException {
-        // Handle unary operators: minus (negate) and plus (no-op)
+        // Handle unary operators: minus (negate) and plus (numeric cast)
         ctx.negationCount = 0;
+        ctx.hasUnaryOperator = false;
         while (lexer.current() == XPathToken.MINUS || lexer.current() == XPathToken.PLUS) {
+            ctx.hasUnaryOperator = true;
             if (lexer.current() == XPathToken.MINUS) {
                 ctx.negationCount++;
             }
@@ -1030,9 +1035,10 @@ public final class XPathParser {
      * Finishes an operand by applying unary negation and updating state.
      */
     private void finishOperand(ParseContext ctx, Expr operand) {
-        if (ctx.negationCount > 0) {
+        if (ctx.hasUnaryOperator) {
             operand = new UnaryExpr(operand, ctx.negationCount);
             ctx.negationCount = 0;
+            ctx.hasUnaryOperator = false;
         }
         ctx.exprStack.push(operand);
         ctx.state = ParseState.HAVE_OPERAND;
@@ -1350,11 +1356,15 @@ public final class XPathParser {
      */
     private ParseContext completePredicate(ParseContext ctx, Deque<ParseContext> contextStack, Expr result) 
             throws XPathSyntaxException {
-        ctx.predicateItems.add(result);
         lexer.expect(XPathToken.RBRACKET);
 
         // Pop back to parent context
         ParseContext parent = contextStack.pop();
+
+        // Use the parent's predicateItems list to collect predicates.
+        // The predicate context's list may have been overwritten if the
+        // predicate body contained a nested filter expression (e.g., $t[2]).
+        parent.predicateItems.add(result);
 
         // Check for more predicates
         if (lexer.current() == XPathToken.LBRACKET) {
@@ -1363,7 +1373,7 @@ public final class XPathParser {
         }
 
         // Create filter expression using predicateItems
-        Expr filter = new FilterExpr(parent.filterBase, ctx.predicateItems);
+        Expr filter = new FilterExpr(parent.filterBase, parent.predicateItems);
         parent.filterBase = filter;
         parent.state = ParseState.PATH_CONTINUATION;
         return parent;
@@ -2334,9 +2344,9 @@ public final class XPathParser {
 
             // Simple name (unprefixed)
             // Check if we have a default element namespace (from xpath-default-namespace)
-            // Note: xpath-default-namespace only applies to element names, not attribute names
-            // (attributes without a prefix are always in no namespace per XML spec)
-            if (axis != Step.Axis.ATTRIBUTE) {
+            // Note: xpath-default-namespace only applies to element names, not attribute
+            // or namespace names (attributes and namespace nodes are never in a namespace)
+            if (axis != Step.Axis.ATTRIBUTE && axis != Step.Axis.NAMESPACE) {
                 String defaultNs = namespaceResolver != null ? 
                     namespaceResolver.getDefaultElementNamespace() : null;
                 if (defaultNs != null && !defaultNs.isEmpty()) {
@@ -2836,13 +2846,55 @@ public final class XPathParser {
             localName = lexer.value();
             lexer.advance();
         } else {
-            // No prefix - just a local name
+            // No prefix — resolve using the default element/type namespace
             localName = firstPart;
+            if (namespaceResolver != null) {
+                String defaultNs = namespaceResolver.getDefaultElementNamespace();
+                if (defaultNs != null && !defaultNs.isEmpty()) {
+                    namespaceURI = defaultNs;
+                } else if (isBuiltInAtomicTypeName(localName)) {
+                    // XPST0051: unprefixed type name with no default namespace
+                    // cannot resolve to xs: types
+                    throw new XPathSyntaxException(
+                        "XPST0051: Unknown atomic type '" + localName +
+                        "' (use xs:" + localName +
+                        " or set xpath-default-namespace)",
+                        lexer.getExpression(), lexer.tokenStart() - localName.length());
+                }
+            } else {
+                // No resolver available — fall back to xs: for well-known types
+                if (isBuiltInAtomicTypeName(localName)) {
+                    namespaceURI = SequenceType.XS_NAMESPACE;
+                }
+            }
         }
         
         return new String[] { namespaceURI, localName };
     }
     
+    private static final Set<String> BUILT_IN_ATOMIC_TYPES = new HashSet<String>();
+    static {
+        String[] names = {
+            "string", "boolean", "decimal", "float", "double", "duration",
+            "dateTime", "time", "date", "gYearMonth", "gYear", "gMonthDay",
+            "gDay", "gMonth", "hexBinary", "base64Binary", "anyURI", "QName",
+            "NOTATION", "integer", "nonPositiveInteger", "negativeInteger",
+            "long", "int", "short", "byte", "nonNegativeInteger",
+            "unsignedLong", "unsignedInt", "unsignedShort", "unsignedByte",
+            "positiveInteger", "normalizedString", "token", "language",
+            "NMTOKEN", "Name", "NCName", "ID", "IDREF", "ENTITY",
+            "yearMonthDuration", "dayTimeDuration", "dateTimeStamp",
+            "untypedAtomic", "anyAtomicType"
+        };
+        for (String name : names) {
+            BUILT_IN_ATOMIC_TYPES.add(name);
+        }
+    }
+
+    private static boolean isBuiltInAtomicTypeName(String name) {
+        return BUILT_IN_ATOMIC_TYPES.contains(name);
+    }
+
     /**
      * Expects and consumes a specific token.
      */

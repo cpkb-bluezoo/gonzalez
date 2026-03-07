@@ -406,6 +406,20 @@ public final class XPathResultTreeFragment implements XPathValue {
             ((RTFNode) node).parent = null;
         }
     }
+
+    /**
+     * Sets the base URI on an RTFNode.
+     * Used to preserve base URI information when a node is detached
+     * from its RTF root (e.g., in sequence construction).
+     *
+     * @param node the node to set the base URI on
+     * @param uri the base URI
+     */
+    public static void setNodeBaseURI(XPathNode node, String uri) {
+        if (node instanceof RTFNode) {
+            ((RTFNode) node).baseUri = uri;
+        }
+    }
     
     /**
      * Builds a node tree from the SAX event buffer.

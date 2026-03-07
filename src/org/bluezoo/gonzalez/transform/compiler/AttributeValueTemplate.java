@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathParser;
 import org.bluezoo.gonzalez.transform.xpath.XPathSyntaxException;
@@ -177,6 +178,22 @@ public final class AttributeValueTemplate {
      */
     public static AttributeValueTemplate parse(String value,
             XPathParser.NamespaceResolver namespaceResolver) throws XPathSyntaxException {
+        return parse(value, namespaceResolver, null);
+    }
+
+    /**
+     * Parses an attribute value template with namespace resolution and
+     * static type checking.
+     *
+     * @param value the attribute value string
+     * @param namespaceResolver resolver for namespace prefixes in embedded expressions
+     * @param typeContext static type context for type checking (may be null)
+     * @return the parsed AVT
+     * @throws XPathSyntaxException if an embedded expression is invalid
+     */
+    public static AttributeValueTemplate parse(String value,
+            XPathParser.NamespaceResolver namespaceResolver,
+            StaticTypeContext typeContext) throws XPathSyntaxException {
         List<Part> parts = new ArrayList<>();
         StringBuilder literal = new StringBuilder();
         int i = 0;
@@ -248,7 +265,8 @@ public final class AttributeValueTemplate {
                     if (isEmptyExpression(exprStr)) {
                         parts.add(new LiteralPart(""));
                     } else {
-                        XPathExpression expr = XPathExpression.compile(exprStr, namespaceResolver);
+                        XPathExpression expr = XPathExpression.compile(exprStr,
+                                namespaceResolver, typeContext);
                         parts.add(new ExpressionPart(expr));
                     }
                     i++; // Skip closing accolade

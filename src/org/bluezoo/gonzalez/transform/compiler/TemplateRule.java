@@ -60,6 +60,7 @@ public final class TemplateRule {
     private SequenceType parsedAsType;  // Pre-parsed from asType with namespace resolution
     private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
     private volatile BufferingStrategy bufferingStrategy;  // set by StreamabilityAnalyzer
+    private double effectiveVersion = -1;  // Per-element XSLT version for BC mode (-1 = inherit)
 
     /**
      * Creates a template rule.
@@ -299,6 +300,24 @@ public final class TemplateRule {
      */
     public void setBufferingStrategy(BufferingStrategy strategy) {
         this.bufferingStrategy = strategy;
+    }
+
+    /**
+     * Returns the per-element XSLT version for backward compatibility mode.
+     *
+     * @return the effective version, or -1 if inheriting from the stylesheet
+     */
+    public double getEffectiveVersion() {
+        return effectiveVersion;
+    }
+
+    /**
+     * Sets the per-element XSLT version (from the template's version attribute).
+     *
+     * @param version the effective XSLT version
+     */
+    public void setEffectiveVersion(double version) {
+        this.effectiveVersion = version;
     }
 
     /**

@@ -70,6 +70,7 @@ public class BufferOutputHandler implements OutputHandler {
     private boolean atomicValuePending = false;
     private boolean textOutputPending = false;
     private boolean inAttributeContent = false;
+    private String customItemSeparator = null;
     
     /**
      * Creates a new buffer output handler.
@@ -162,9 +163,8 @@ public class BufferOutputHandler implements OutputHandler {
     public void characters(String text) throws SAXException {
         flushPendingElement();
         if (text != null && !text.isEmpty()) {
-            if (atomicValuePending && !inAttributeContent) {
-                buffer.characters(SPACE, 0, 1);
-            }
+            // Per XSLT 2.0 5.7.1, spaces separate adjacent atomic values only.
+            // Text nodes from xsl:value-of etc. do not get a preceding space.
             buffer.characters(text.toCharArray(), 0, text.length());
             atomicValuePending = false;
             textOutputPending = true;
@@ -245,8 +245,15 @@ public class BufferOutputHandler implements OutputHandler {
                     actualQName = actualElementPrefix + ":" + pendingLocalName;
                     
                     // Remove any existing declaration for the element's namespace with the old prefix
-                    pendingNamespaces.removeIf(n -> 
-                        elementPrefix.equals(n[0]) && pendingUri.equals(n[1]));
+                    List<String[]> filtered = new ArrayList<String[]>(pendingNamespaces.size());
+                    for (String[] n : pendingNamespaces) {
+                        boolean isOldElementNs = elementPrefix.equals(n[0]) && pendingUri.equals(n[1]);
+                        if (!isOldElementNs) {
+                            filtered.add(n);
+                        }
+                    }
+                    pendingNamespaces.clear();
+                    pendingNamespaces.addAll(filtered);
                     
                     // Add namespace declaration for the element's namespace with new prefix
                     pendingNamespaces.add(new String[]{actualElementPrefix, pendingUri});
@@ -254,6 +261,46 @@ public class BufferOutputHandler implements OutputHandler {
                     // Also update any attributes that used the old prefix
                     updateAttributePrefixes(elementPrefix, actualElementPrefix);
                     break;
+                }
+            }
+        }
+        
+        // Namespace fixup: resolve conflicting prefixes among namespace declarations.
+        // When two declarations use the same prefix but different URIs (e.g. copying
+        // attributes from different namespaces that share a prefix), rename the later one
+        // and update any attributes that reference the renamed prefix.
+        for (int i = 0; i < pendingNamespaces.size(); i++) {
+            String[] ns1 = pendingNamespaces.get(i);
+            String p1 = (ns1[0] != null) ? ns1[0] : "";
+            if (p1.isEmpty()) {
+                continue;
+            }
+            String u1 = (ns1[1] != null) ? ns1[1] : "";
+            for (int j = i + 1; j < pendingNamespaces.size(); j++) {
+                String[] ns2 = pendingNamespaces.get(j);
+                String p2 = (ns2[0] != null) ? ns2[0] : "";
+                if (!p1.equals(p2)) {
+                    continue;
+                }
+                String u2 = (ns2[1] != null) ? ns2[1] : "";
+                if (u1.equals(u2)) {
+                    // Duplicate declaration — remove
+                    pendingNamespaces.remove(j);
+                    j--;
+                    continue;
+                }
+                // Same prefix, different URI — generate a unique prefix for the later declaration
+                String oldPrefix = p2;
+                String newPrefix = generateUniquePrefix(oldPrefix);
+                ns2[0] = newPrefix;
+                // Update attributes that used the old prefix with this namespace URI
+                for (int k = 0; k < pendingAttributes.getLength(); k++) {
+                    String attrPrefix = OutputHandlerUtils.extractPrefix(pendingAttributes.getQName(k));
+                    String attrUri = pendingAttributes.getURI(k);
+                    if (oldPrefix.equals(attrPrefix) && u2.equals(attrUri)) {
+                        String attrLocal = pendingAttributes.getLocalName(k);
+                        pendingAttributes.setQName(k, newPrefix + ":" + attrLocal);
+                    }
                 }
             }
         }
@@ -324,11 +371,8 @@ public class BufferOutputHandler implements OutputHandler {
     public void atomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value) 
             throws SAXException {
         if (value != null) {
-            // XSLT 2.0+ simple content: space between adjacent items where
-            // at least one is atomic (not between adjacent text nodes)
-            if ((atomicValuePending || textOutputPending) && !inAttributeContent) {
-                flushPendingElement();
-                buffer.characters(SPACE, 0, 1);
+            if ((atomicValuePending || textOutputPending)) {
+                emitItemSeparator();
             }
             String s = value.asString();
             if (s != null && !s.isEmpty()) {
@@ -337,6 +381,29 @@ public class BufferOutputHandler implements OutputHandler {
             }
             atomicValuePending = true;
             textOutputPending = false;
+        }
+    }
+    
+    /**
+     * Sets a custom separator for items in attribute/simple content.
+     * When null, uses default behavior (space unless inAttributeContent).
+     *
+     * @param separator the separator string, or null for default behavior
+     */
+    public void setCustomItemSeparator(String separator) {
+        this.customItemSeparator = separator;
+    }
+    
+    private void emitItemSeparator() throws SAXException {
+        if (customItemSeparator != null) {
+            if (!customItemSeparator.isEmpty()) {
+                flushPendingElement();
+                char[] chars = customItemSeparator.toCharArray();
+                buffer.characters(chars, 0, chars.length);
+            }
+        } else if (!inAttributeContent) {
+            flushPendingElement();
+            buffer.characters(SPACE, 0, 1);
         }
     }
 }

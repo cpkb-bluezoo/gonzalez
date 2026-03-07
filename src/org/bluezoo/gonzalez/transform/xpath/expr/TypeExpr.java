@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.*;
 
@@ -97,6 +98,25 @@ public class TypeExpr implements Expr {
         return targetType;
     }
     
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        operand.bindStaticTypes(context);
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        switch (kind) {
+            case INSTANCE_OF:
+            case CASTABLE_AS:
+                return SequenceType.BOOLEAN;
+            case CAST_AS:
+            case TREAT_AS:
+                return targetType;
+            default:
+                return null;
+        }
+    }
+
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         XPathValue value = operand.evaluate(context);

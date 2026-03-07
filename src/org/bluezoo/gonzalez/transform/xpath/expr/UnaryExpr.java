@@ -23,7 +23,9 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import java.math.BigInteger;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -97,6 +99,20 @@ public final class UnaryExpr implements Expr {
             return XPathNumber.of(value);
         }
         return XPathNumber.of(-raw.asNumber());
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        operand.bindStaticTypes(context);
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        SequenceType t = operand.getStaticType();
+        if (t != null && t.isNumericType()) {
+            return t;
+        }
+        return null;
     }
 
     /**

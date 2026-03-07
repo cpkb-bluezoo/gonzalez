@@ -1553,6 +1553,9 @@ final class PatternParser {
             if (et.getLocalName() == null && et.getNamespaceURI() != null) {
                 return -0.25;
             }
+            if (et.getLocalName() != null && et.getNamespaceURI() == null) {
+                return -0.25;
+            }
             return 0.0;
         }
         if (nt instanceof AttributeTest) {
@@ -1561,6 +1564,9 @@ final class PatternParser {
                 return -0.5;
             }
             if (at.getLocalName() == null && at.getNamespaceURI() != null) {
+                return -0.25;
+            }
+            if (at.getLocalName() != null && at.getNamespaceURI() == null) {
                 return -0.25;
             }
             return 0.0;

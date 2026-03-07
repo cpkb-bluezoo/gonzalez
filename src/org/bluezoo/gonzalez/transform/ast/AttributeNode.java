@@ -158,15 +158,22 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
             } else if (content != null) {
                 SAXEventBuffer buffer = 
                     new SAXEventBuffer();
-                // In attribute content, atomic values are NOT space-separated
-                // Set flag to suppress space separators
                 boolean savedAttrMode = output.isInAttributeContent();
                 boolean savedPending = output.isAtomicValuePending();
                 BufferOutputHandler bufferHandler = new BufferOutputHandler(buffer);
-                bufferHandler.setInAttributeContent(true);
                 bufferHandler.setAtomicValuePending(false);
+                if (separatorAvt != null) {
+                    String sep;
+                    try {
+                        sep = separatorAvt.evaluate(evalContext);
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating separator: " + e.getMessage(), e);
+                    }
+                    bufferHandler.setCustomItemSeparator(sep);
+                } else {
+                    bufferHandler.setInAttributeContent(true);
+                }
                 content.execute(context, bufferHandler);
-                // Restore outer state
                 output.setInAttributeContent(savedAttrMode);
                 output.setAtomicValuePending(savedPending);
                 value = buffer.getTextContent();
@@ -221,9 +228,21 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
             // Since xmlns is reserved in XML, we generate an alternative prefix.
             String qName = (prefix != null) ? name : localName;
             if (!namespace.isEmpty()) {
-                if (prefix == null || prefix.isEmpty() || "xmlns".equals(prefix)) {
-                    // Generate a prefix for this namespace
-                    // Try to find an existing prefix, otherwise generate one
+                boolean needNewPrefix = (prefix == null || prefix.isEmpty() || "xmlns".equals(prefix));
+                // When namespace attribute is explicitly set, check if the prefix
+                // from the name attribute is already bound to a different namespace.
+                // Per XSLT 2.0 spec 11.9.1, the prefix must be changed if it
+                // does not correspond to the target namespace.
+                if (!needNewPrefix && nsAvt != null && prefix != null) {
+                    String boundUri = namespaceBindings.get(prefix);
+                    if (boundUri == null) {
+                        boundUri = context.resolveNamespacePrefix(prefix);
+                    }
+                    if (boundUri != null && !boundUri.equals(namespace)) {
+                        needNewPrefix = true;
+                    }
+                }
+                if (needNewPrefix) {
                     prefix = StylesheetCompiler.findOrGeneratePrefix(namespace, namespaceBindings);
                     qName = prefix + ":" + localName;
                 }

@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.ItemCollectorOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
@@ -124,11 +125,14 @@ public final class DocumentConstructorNode implements XSLTNode {
         // Create the result tree fragment
         XPathResultTreeFragment rtf = new XPathResultTreeFragment(buffer);
         
-        // If the output is a SequenceBuilderOutputHandler, add the document directly
-        // as an item. This preserves the document node structure for as="document-node()"
-        // variables. Otherwise, replay the events to the output handler.
         if (output instanceof SequenceBuilderOutputHandler) {
             ((SequenceBuilderOutputHandler) output).addItem(rtf);
+        } else if (output instanceof ItemCollectorOutputHandler) {
+            // In simple content context (e.g. inside xsl:comment), atomize
+            // the document node: its string value is the concatenation of
+            // all descendant text nodes (excludes comments, PIs, etc.)
+            String stringValue = buffer.getTextContent();
+            output.characters(stringValue);
         } else {
             rtf.replayToOutput(output, true);
         }

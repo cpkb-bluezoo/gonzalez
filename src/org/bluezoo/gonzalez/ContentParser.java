@@ -2882,8 +2882,9 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
      * an error handler (e.g. XSLT stylesheet compilation) to continue
      * while still satisfying conformance tests that expect the error.
      *
-     * <p>Namespaces 1.0 requires ASCII-only URIs (RFC 3986); non-ASCII
-     * characters (IRIs) are a fatal error. Namespaces 1.1 allows IRIs.
+     * <p>Namespaces 1.0 Third Edition allows IRIs (RFC 3987) but notes they
+     * are not universally interoperable; non-ASCII is reported as a warning.
+     * Namespaces 1.1 allows IRIs unconditionally.
      *
      * @param uri the namespace URI to validate
      * @throws SAXException if the URI violates the IRI constraint
@@ -2893,7 +2894,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             return;
         }
         if (!this.xml11 && !isAsciiOnly(uri)) {
-            throw fatalError(
+            reportValidationError(
                 "Namespace name '" + uri + "' is an IRI, not a URI " +
                 "(Namespaces in XML 1.0 \u00a7 2)");
         }

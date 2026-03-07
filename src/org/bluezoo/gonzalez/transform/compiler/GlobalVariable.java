@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.compiler;
 import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -315,12 +316,27 @@ public final class GlobalVariable {
 
     /**
      * Returns true if this parameter is required (XSLT 2.0+).
-     * A required parameter must have a value supplied at transformation time.
+     * A parameter is required if explicitly declared required="yes",
+     * or if it has an 'as' type that cannot accept empty sequence and
+     * has no select or content default (XTDE0610).
      *
      * @return true if this is a required parameter
      */
     public boolean isRequired() {
-        return required;
+        if (required) {
+            return true;
+        }
+        if (isParam && asType != null && selectExpr == null && content == null) {
+            SequenceType parsedType = SequenceType.parse(asType, null);
+            if (parsedType != null) {
+                SequenceType.Occurrence occ = parsedType.getOccurrence();
+                if (occ == SequenceType.Occurrence.ONE
+                    || occ == SequenceType.Occurrence.ONE_OR_MORE) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -344,6 +360,21 @@ public final class GlobalVariable {
         } else {
             return new GlobalVariable(name, isParam, selectExpr, content, 
                                       importPrecedence, asType, newVisibility, required, baseUri);
+        }
+    }
+
+    /**
+     * Returns a copy with a different import precedence.
+     *
+     * @param newPrecedence the new import precedence level
+     * @return a new GlobalVariable with the specified precedence
+     */
+    public GlobalVariable withImportPrecedence(int newPrecedence) {
+        if (staticValue != null) {
+            return new GlobalVariable(name, isParam, staticValue, newPrecedence, visibility);
+        } else {
+            return new GlobalVariable(name, isParam, selectExpr, content,
+                                      newPrecedence, asType, visibility, required, baseUri);
         }
     }
 

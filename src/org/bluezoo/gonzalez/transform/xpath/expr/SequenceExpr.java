@@ -12,7 +12,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -60,6 +62,21 @@ public final class SequenceExpr implements Expr {
      */
     public boolean isEmpty() {
         return items.isEmpty();
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        for (Expr item : items) {
+            item.bindStaticTypes(context);
+        }
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        if (items.isEmpty()) {
+            return SequenceType.EMPTY;
+        }
+        return SequenceType.ITEM_STAR;
     }
 
     @Override

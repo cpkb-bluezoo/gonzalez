@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -29,6 +31,11 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *
  * <p>Each expression can be evaluated against an XPath context to produce
  * a value. The expression tree is immutable after construction.
+ *
+ * <p>Expressions may also carry static type information inferred at compile
+ * time. Call {@link #bindStaticTypes(StaticTypeContext)} after parsing to
+ * propagate type context, then {@link #getStaticType()} to retrieve the
+ * inferred type.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
@@ -42,6 +49,27 @@ public interface Expr {
      * @throws XPathException if evaluation fails
      */
     XPathValue evaluate(XPathContext context) throws XPathException;
+
+    /**
+     * Returns the statically inferred type of this expression, or null if
+     * the type is unknown. A null return disables static type checking at
+     * this node.
+     *
+     * @return the inferred sequence type, or null
+     */
+    default SequenceType getStaticType() {
+        return null;
+    }
+
+    /**
+     * Propagates static type context down the expression tree.
+     * Override in nodes that need the context for type inference
+     * (e.g., variable references, function calls).
+     *
+     * @param context the static type context
+     */
+    default void bindStaticTypes(StaticTypeContext context) {
+    }
 
     /**
      * Returns a string representation of this expression for debugging.

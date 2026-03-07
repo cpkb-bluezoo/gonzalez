@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -65,6 +67,23 @@ public final class FilterExpr implements Expr {
         this.predicates = predicates != null ? 
             Collections.unmodifiableList(new ArrayList<>(predicates)) : 
             Collections.emptyList();
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        primary.bindStaticTypes(context);
+        for (Expr pred : predicates) {
+            pred.bindStaticTypes(context);
+        }
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        SequenceType t = primary.getStaticType();
+        if (t != null) {
+            return t.withOccurrence(SequenceType.Occurrence.ZERO_OR_MORE);
+        }
+        return null;
     }
 
     @Override

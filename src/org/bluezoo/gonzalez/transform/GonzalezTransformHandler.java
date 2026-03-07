@@ -90,17 +90,22 @@ public class GonzalezTransformHandler extends DefaultHandler
     
     /** Initial template name for XSLT 2.0+ initial-template support. */
     private String initialTemplate;
+    private List<GonzalezTransformer.InitialTemplateParam> initialTemplateParams;
     
     /** The initial mode for apply-templates. */
     private String initialMode;
+    private boolean hasMatchSelection = true;
 
     /** Initial function for XSLT 3.0 initial-function support. */
     private String initialFunctionNsUri;
     private String initialFunctionLocalName;
-    private java.util.List<String> initialFunctionParams;
+    private List<String> initialFunctionParams;
 
     /** XPath expression to select the initial context node from the source tree. */
     private String initialContextSelect;
+    
+    /** Registered fn:collection() mappings (URI → list of nodes). */
+    private Map<String, List<XPathNode>> collections;
     
     /** PSVIProvider for accessing schema type information (DTD/XSD types). */
     private PSVIProvider psviProvider;
@@ -113,6 +118,9 @@ public class GonzalezTransformHandler extends DefaultHandler
     private final Map<String, String> reusableNsBindings = new HashMap<>();
     private StringBuilder textBuffer = new StringBuilder();
     private Locator documentLocator;
+
+    // Buffer for unparsed entity declarations received before startDocument()
+    private List<String[]> pendingUnparsedEntities;
 
     /**
      * Creates a transform handler.
@@ -156,6 +164,16 @@ public class GonzalezTransformHandler extends DefaultHandler
     public void setInitialTemplate(String name) {
         this.initialTemplate = name;
     }
+
+    /**
+     * Sets the parameters to be passed to the initial template.
+     *
+     * @param params the initial template parameters
+     */
+    public void setInitialTemplateParams(
+            List<GonzalezTransformer.InitialTemplateParam> params) {
+        this.initialTemplateParams = params;
+    }
     
     /**
      * Sets the initial function for XSLT 3.0 support.
@@ -165,7 +183,7 @@ public class GonzalezTransformHandler extends DefaultHandler
      * @param paramSelects XPath expressions for each parameter
      */
     public void setInitialFunction(String nsUri, String localName,
-                                   java.util.List<String> paramSelects) {
+                                   List<String> paramSelects) {
         this.initialFunctionNsUri = nsUri;
         this.initialFunctionLocalName = localName;
         this.initialFunctionParams = paramSelects;
@@ -178,6 +196,29 @@ public class GonzalezTransformHandler extends DefaultHandler
      */
     public void setInitialMode(String mode) {
         this.initialMode = mode;
+    }
+
+    /**
+     * Sets whether an initial match selection (source document) was provided.
+     * When false and an initial mode is specified, XTDE0044 is raised.
+     *
+     * @param has true if a real source document is provided
+     */
+    public void setHasMatchSelection(boolean has) {
+        this.hasMatchSelection = has;
+    }
+
+    /**
+     * Registers a named collection for the fn:collection() function.
+     *
+     * @param uri the collection URI
+     * @param nodes the list of nodes in the collection
+     */
+    public void setCollection(String uri, List<XPathNode> nodes) {
+        if (collections == null) {
+            collections = new HashMap<>();
+        }
+        collections.put(uri, nodes);
     }
 
     /**
@@ -220,6 +261,13 @@ public class GonzalezTransformHandler extends DefaultHandler
         currentNode = root;
         documentOrderCounter = 1;
         pendingNamespaces.clear();
+
+        if (pendingUnparsedEntities != null) {
+            for (String[] entity : pendingUnparsedEntities) {
+                root.addUnparsedEntity(entity[0], entity[1], entity[2], entity[3]);
+            }
+            pendingUnparsedEntities = null;
+        }
         textBuffer.setLength(0);
     }
 
@@ -322,6 +370,11 @@ public class GonzalezTransformHandler extends DefaultHandler
                                    String systemId, String notationName) {
         if (root != null) {
             root.addUnparsedEntity(name, publicId, systemId, notationName);
+        } else {
+            if (pendingUnparsedEntities == null) {
+                pendingUnparsedEntities = new ArrayList<>();
+            }
+            pendingUnparsedEntities.add(new String[] { name, publicId, systemId, notationName });
         }
     }
     
@@ -507,6 +560,13 @@ public class GonzalezTransformHandler extends DefaultHandler
         BasicTransformContext context = new BasicTransformContext(
             stylesheet, contextNode, matcher, output, errorListener);
         
+        // Register collections for fn:collection()
+        if (collections != null) {
+            for (Map.Entry<String, List<XPathNode>> entry : collections.entrySet()) {
+                context.setCollection(entry.getKey(), entry.getValue());
+            }
+        }
+        
         // Wire accumulators for the main document (manager created now,
         // but initialization deferred until globals are available)
         AccumulatorManager accMgr = null;
@@ -532,6 +592,12 @@ public class GonzalezTransformHandler extends DefaultHandler
         if (initialMode != null && initialTemplate != null) {
             throw new SAXException("XTDE0047: Both initial-mode and " +
                 "initial-template were specified; only one is allowed");
+        }
+
+        // XTDE0044: initial mode specified but no initial match selection
+        if (initialMode != null && !hasMatchSelection) {
+            throw new SAXException("XTDE0044: Initial mode '" + initialMode +
+                "' was specified but no initial match selection was supplied");
         }
 
         // XSLT 3.0: if no initial mode specified, use the stylesheet's default-mode
@@ -581,7 +647,7 @@ public class GonzalezTransformHandler extends DefaultHandler
                     initialFunctionLocalName + " has private visibility");
             }
             // Evaluate parameter expressions
-            java.util.List<XPathValue> argValues = new java.util.ArrayList<>();
+            List<XPathValue> argValues = new ArrayList<>();
             if (initialFunctionParams != null) {
                 for (String paramExpr : initialFunctionParams) {
                     try {
@@ -615,9 +681,25 @@ public class GonzalezTransformHandler extends DefaultHandler
                 if (template == null) {
                     throw new SAXException("XTDE0040: Initial template '" + initialTemplate + "' not found");
                 }
+                // XTDE0060: XSLT 2.0 does not support passing tunnel params
+                // to the initial template
+                double procVersion = stylesheet.getProcessorVersion();
+                if (procVersion > 0 && procVersion < 3.0
+                        && initialTemplateParams != null) {
+                    for (GonzalezTransformer.InitialTemplateParam itp : initialTemplateParams) {
+                        if (itp.isTunnel()) {
+                            throw new SAXException(
+                                "XTDE0060: Tunnel parameters cannot be " +
+                                "passed to the initial template in XSLT " +
+                                procVersion);
+                        }
+                    }
+                }
                 // XTDE0700: initial template must not have required parameters
+                // (unless values are supplied via initial template params)
                 for (TemplateParameter templateParam : template.getParameters()) {
-                    if (templateParam.isRequired()) {
+                    if (templateParam.isRequired()
+                            && !hasSuppliedInitialParam(templateParam)) {
                         throw new SAXException("XTDE0700: Initial template parameter $" +
                             templateParam.getLocalName() + " is required but no value was supplied");
                     }
@@ -629,7 +711,7 @@ public class GonzalezTransformHandler extends DefaultHandler
                 if (template.getMatchPattern() != null) {
                     templateContext = templateContext.withCurrentTemplateRule(template);
                 }
-                bindInitialTemplateParams(template, templateContext);
+                templateContext = bindInitialTemplateParams(template, templateContext);
                 XSLTNode body = template.getBody();
                 if (body != null) {
                     body.execute(templateContext, output);
@@ -650,14 +732,15 @@ public class GonzalezTransformHandler extends DefaultHandler
                     if (xslInitialTemplate.getMatchPattern() != null) {
                         templateContext = templateContext.withCurrentTemplateRule(xslInitialTemplate);
                     }
-                    bindInitialTemplateParams(xslInitialTemplate, templateContext);
+                    templateContext = bindInitialTemplateParams(xslInitialTemplate, templateContext);
                     XSLTNode body = xslInitialTemplate.getBody();
                     if (body != null) {
                         body.execute(templateContext, output);
                     }
                 } else {
-                    // Apply templates to the root node
-                    applyTemplates(root, initialMode, context, output);
+                    // Apply templates to initial context node (may differ from
+                    // root when initialContextSelect is set)
+                    applyTemplates(contextNode, initialMode, context, output);
                 }
             }
             
@@ -666,43 +749,147 @@ public class GonzalezTransformHandler extends DefaultHandler
     }
 
     /**
-     * Binds template parameters to their default values for initial-template
-     * invocation. Since no xsl:with-param values are supplied when invoking
-     * via initial-template, all non-required params get their defaults.
+     * Checks whether a supplied initial template param matches the given
+     * template parameter (by namespace URI, local name, and tunnel flag).
      */
-    private void bindInitialTemplateParams(TemplateRule template,
+    private boolean hasSuppliedInitialParam(TemplateParameter templateParam) {
+        if (initialTemplateParams == null) {
+            return false;
+        }
+        String paramNsUri = templateParam.getNamespaceURI();
+        if (paramNsUri == null) {
+            paramNsUri = "";
+        }
+        for (GonzalezTransformer.InitialTemplateParam itp : initialTemplateParams) {
+            String itpNsUri = itp.getNsUri();
+            if (itpNsUri == null) {
+                itpNsUri = "";
+            }
+            if (itpNsUri.equals(paramNsUri)
+                    && itp.getLocalName().equals(templateParam.getLocalName())
+                    && itp.isTunnel() == templateParam.isTunnel()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Binds template parameters for initial-template invocation.
+     * If initial template params were supplied, uses them for matching
+     * parameters; otherwise falls back to default values.
+     * Tunnel params are set on the context so they propagate through
+     * subsequent template calls.
+     */
+    private TransformContext bindInitialTemplateParams(TemplateRule template,
                                            TransformContext templateContext)
         throws SAXException
     {
-        for (TemplateParameter templateParam : template.getParameters()) {
-            XPathValue defaultValue = null;
-            if (templateParam.getSelectExpr() != null) {
-                try {
-                    defaultValue = templateParam.getSelectExpr().evaluate(templateContext);
-                } catch (XPathException e) {
-                    throw new SAXException("Error evaluating param default: " +
-                        e.getMessage(), e);
+        // Set tunnel parameters from supplied initial template params
+        if (initialTemplateParams != null) {
+            Map<String, XPathValue> tunnelParams = new HashMap<String, XPathValue>();
+            for (GonzalezTransformer.InitialTemplateParam itp : initialTemplateParams) {
+                if (itp.isTunnel()) {
+                    String nsUri = itp.getNsUri();
+                    if (nsUri == null) {
+                        nsUri = "";
+                    }
+                    String expanded;
+                    if (nsUri.isEmpty()) {
+                        expanded = itp.getLocalName();
+                    } else {
+                        expanded = "{" + nsUri + "}" + itp.getLocalName();
+                    }
+                    try {
+                        XPathExpression expr = XPathExpression.compile(
+                            itp.getSelectExpr(), null);
+                        XPathValue value = expr.evaluate(templateContext);
+                        tunnelParams.put(expanded, value);
+                    } catch (Exception e) {
+                        throw new SAXException(
+                            "Error evaluating initial template param: " +
+                            e.getMessage(), e);
+                    }
                 }
-            } else if (templateParam.getDefaultContent() != null) {
-                SAXEventBuffer buffer = new SAXEventBuffer();
-                templateParam.getDefaultContent().execute(templateContext,
-                    new BufferOutputHandler(buffer));
-                defaultValue = new XPathResultTreeFragment(buffer);
-            } else {
-                defaultValue = new XPathString("");
             }
-            if (defaultValue != null) {
+            if (!tunnelParams.isEmpty()) {
+                templateContext = templateContext.withTunnelParameters(tunnelParams);
+            }
+        }
+
+        for (TemplateParameter templateParam : template.getParameters()) {
+            XPathValue value = null;
+            boolean supplied = false;
+
+            // Check for a supplied initial template param
+            if (initialTemplateParams != null) {
+                String paramNsUri = templateParam.getNamespaceURI();
+                if (paramNsUri == null) {
+                    paramNsUri = "";
+                }
+                for (GonzalezTransformer.InitialTemplateParam itp : initialTemplateParams) {
+                    String itpNsUri = itp.getNsUri();
+                    if (itpNsUri == null) {
+                        itpNsUri = "";
+                    }
+                    if (itpNsUri.equals(paramNsUri)
+                            && itp.getLocalName().equals(templateParam.getLocalName())
+                            && itp.isTunnel() == templateParam.isTunnel()) {
+                        try {
+                            XPathExpression expr = XPathExpression.compile(
+                                itp.getSelectExpr(), null);
+                            value = expr.evaluate(templateContext);
+                            supplied = true;
+                        } catch (Exception e) {
+                            throw new SAXException(
+                                "Error evaluating initial template param: " +
+                                e.getMessage(), e);
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // For tunnel params not directly supplied, check context tunnel params
+            if (!supplied && templateParam.isTunnel()) {
+                value = templateContext.getTunnelParameters().get(
+                    templateParam.getName());
+                supplied = (value != null);
+            }
+
+            // Fall back to default value
+            if (!supplied) {
+                if (templateParam.getSelectExpr() != null) {
+                    try {
+                        value = templateParam.getSelectExpr().evaluate(templateContext);
+                    } catch (XPathException e) {
+                        throw new SAXException("Error evaluating param default: " +
+                            e.getMessage(), e);
+                    }
+                } else if (templateParam.getDefaultContent() != null) {
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    templateParam.getDefaultContent().execute(templateContext,
+                        new BufferOutputHandler(buffer));
+                    value = new XPathResultTreeFragment(buffer);
+                } else {
+                    value = new XPathString("");
+                }
+            }
+
+            if (value != null) {
                 try {
-                    defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                    value = templateParam.coerceDefaultValue(value);
                 } catch (XPathException e) {
-                    throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
+                    throw new SAXException("Error coercing parameter default: " +
+                        e.getMessage(), e);
                 }
                 templateContext.getVariableScope().bind(
                     templateParam.getNamespaceURI(),
                     templateParam.getLocalName(),
-                    defaultValue);
+                    value);
             }
         }
+        return templateContext;
     }
 
     private void initializeGlobals(BasicTransformContext context) throws SAXException {
@@ -866,8 +1053,12 @@ public class GonzalezTransformHandler extends DefaultHandler
                 // Check if this is a sequence or single node type
                 if (var.isSequenceType() || var.isSingleNodeType()) {
                     // Use sequence construction to properly capture nodes
+                    String varBaseUri = var.getBaseUri();
+                    if (varBaseUri == null) {
+                        varBaseUri = context.getStaticBaseURI();
+                    }
                     SequenceBuilderOutputHandler seqBuilder = 
-                        new SequenceBuilderOutputHandler();
+                        new SequenceBuilderOutputHandler(varBaseUri);
                     var.getContent().execute(context, seqBuilder);
                     value = seqBuilder.getSequence();
                 } else {
@@ -1045,11 +1236,26 @@ public class GonzalezTransformHandler extends DefaultHandler
                     throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
                 }
             } else if (templateParam.getDefaultContent() != null) {
-                // Execute content to get RTF as default value
-                SAXEventBuffer buffer = new SAXEventBuffer();
-                BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
-                templateParam.getDefaultContent().execute(templateContext, bufferOutput);
-                defaultValue = new XPathResultTreeFragment(buffer);
+                String paramAsType = templateParam.getAsType();
+                boolean needsSequenceBuilder = paramAsType != null &&
+                    (paramAsType.startsWith("attribute(") ||
+                     paramAsType.startsWith("node("));
+                if (needsSequenceBuilder) {
+                    // Types that can include standalone attribute nodes need
+                    // SequenceBuilderOutputHandler (BufferOutputHandler rejects
+                    // attributes at document level with XTDE0420)
+                    String baseUri = context.getStaticBaseURI();
+                    SequenceBuilderOutputHandler seqBuilder =
+                        new SequenceBuilderOutputHandler(baseUri);
+                    templateParam.getDefaultContent().execute(templateContext, seqBuilder);
+                    defaultValue = seqBuilder.getSequence();
+                } else {
+                    // Execute content to get RTF as default value
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    BufferOutputHandler bufferOutput = new BufferOutputHandler(buffer);
+                    templateParam.getDefaultContent().execute(templateContext, bufferOutput);
+                    defaultValue = new XPathResultTreeFragment(buffer);
+                }
             } else {
                 defaultValue = XPathString.of("");
             }

@@ -266,12 +266,7 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                 } else {
                     val = evaluateSortBody(spec, nodeCtx);
                 }
-                // XTDE1030: xs:duration is not orderable (mixed months/seconds)
-                // xs:yearMonthDuration and xs:dayTimeDuration ARE orderable
-                if (val instanceof XPathDateTime && ((XPathDateTime) val).getDateTimeType() == XPathDateTime.DateTimeType.DURATION) {
-                    throw new XPathException(
-                        "XTDE1030: Cannot sort by xs:duration values (durations have no total order)");
-                }
+                val = validateSortKey(val, context);
                 if ("number".equals(dataTypes[j])) {
                     sortKeys[i][j] = Double.valueOf(val.asNumber());
                 } else if (val instanceof XPathDateTime) {
@@ -436,10 +431,7 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                 } else {
                     val = evaluateSortBody(spec, iterCtx);
                 }
-                if (val instanceof XPathDateTime && ((XPathDateTime) val).getDateTimeType() == XPathDateTime.DateTimeType.DURATION) {
-                    throw new XPathException(
-                        "XTDE1030: Cannot sort by xs:duration values (durations have no total order)");
-                }
+                val = validateSortKey(val, context);
                 if ("number".equals(dataTypes[j])) {
                     sortKeys[i][j] = Double.valueOf(val.asNumber());
                 } else if (val instanceof XPathDateTime) {
@@ -530,6 +522,50 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
         items.addAll(sorted);
     }
 
+    /**
+     * Validates a sort key value, enforcing XTTE1020 (single item required).
+     * In backwards-compatible mode (XSLT 1.0), a multi-item sequence uses
+     * the first item instead of raising an error.
+     */
+    private static XPathValue validateSortKey(XPathValue val, TransformContext context)
+            throws XPathException {
+        boolean bcMode = context.getStylesheet() != null
+                && context.getStylesheet().getVersion() < 2.0;
+        if (val instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) val;
+            if (seq.size() > 1) {
+                if (bcMode) {
+                    java.util.Iterator<XPathValue> it = seq.iterator();
+                    return it.next();
+                }
+                throw new XPathException("XTTE1020",
+                        "Sort key evaluated to a sequence of "
+                        + seq.size() + " items");
+            }
+        } else if (val.isNodeSet()) {
+            XPathNodeSet ns = val.asNodeSet();
+            int nsSize = 0;
+            for (java.util.Iterator<XPathNode> it = ns.iterator(); it.hasNext(); ) {
+                it.next();
+                nsSize++;
+                if (nsSize > 1) {
+                    if (bcMode) {
+                        return XPathNodeSet.of(ns.iterator().next());
+                    }
+                    throw new XPathException("XTTE1020",
+                            "Sort key evaluated to a sequence of "
+                            + "more than one item");
+                }
+            }
+        }
+        if (val instanceof XPathDateTime
+                && ((XPathDateTime) val).getDateTimeType() == XPathDateTime.DateTimeType.DURATION) {
+            throw new XPathException(
+                "XTDE1030: Cannot sort by xs:duration values (durations have no total order)");
+        }
+        return val;
+    }
+    
     /**
      * Evaluates the sequence constructor body of an xsl:sort as the sort key.
      */

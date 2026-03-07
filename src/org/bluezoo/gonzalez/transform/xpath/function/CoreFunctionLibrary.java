@@ -243,6 +243,14 @@ public final class CoreFunctionLibrary implements XPathFunctionLibrary {
         return function.getMinArgs();
     }
 
+    @Override
+    public Function getFunction(String namespaceURI, String localName, int arity) {
+        if (namespaceURI != null && !namespaceURI.isEmpty()) {
+            return null;
+        }
+        return functions.get(localName);
+    }
+
     /**
      * Returns the function with the given name.
      *

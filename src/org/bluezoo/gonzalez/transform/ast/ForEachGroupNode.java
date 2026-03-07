@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
@@ -34,6 +35,7 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
@@ -264,7 +266,14 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
 
                 XPathValue currentGroupValue = buildCurrentGroup(groupItems);
                 groupContext.getVariableScope().bind("__current_group__", currentGroupValue);
-                groupContext.getVariableScope().bind("__current_grouping_key__", entry.keyValue);
+                if (method == GroupingMethod.GROUP_BY || method == GroupingMethod.GROUP_ADJACENT) {
+                    groupContext.getVariableScope().bind("__current_grouping_key__", entry.keyValue);
+                    groupContext.getVariableScope().bind("__current_grouping_key_absent__", null);
+                } else {
+                    groupContext.getVariableScope().bind("__current_grouping_key__", null);
+                    groupContext.getVariableScope().bind("__current_grouping_key_absent__",
+                                                         XPathString.of("true"));
+                }
 
                 if (body != null) {
                     body.execute(groupContext, output);
@@ -418,11 +427,32 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
             case GROUP_ADJACENT:
                 return groupAdjacent(items, groupAdjacentExpr, context, collation);
             case GROUP_STARTING_WITH:
+                if (getProcessorVersion(context) < 3.0) {
+                    validateAllNodes(items, "group-starting-with");
+                }
                 return groupStartingWith(items, groupStartingPattern, context);
             case GROUP_ENDING_WITH:
+                if (getProcessorVersion(context) < 3.0) {
+                    validateAllNodes(items, "group-ending-with");
+                }
                 return groupEndingWith(items, groupEndingPattern, context);
             default:
                 return groupByKey(items, groupByExpr, context, collation);
+        }
+    }
+
+    /**
+     * XTTE1120: When group-starting-with or group-ending-with is used,
+     * every item in select must be a node.
+     */
+    private static void validateAllNodes(List<XPathValue> items, String attr)
+            throws XPathException {
+        for (XPathValue item : items) {
+            if (!(item instanceof XPathNode) && !item.isNodeSet()) {
+                throw new XPathException("XTTE1120",
+                        "xsl:for-each-group with " + attr +
+                        ": select contains a non-node item (" + item.asString() + ")");
+            }
         }
     }
 
@@ -476,8 +506,8 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
                             List<List<XPathValue>> itemLists,
                             String key, XPathValue keyValue, XPathValue item,
                             Collation collation) {
-        for (int j = 0; j < keyStrings.size(); j++) {
-            if (collation.equals(key, keyStrings.get(j))) {
+        for (int j = 0; j < keyValues.size(); j++) {
+            if (groupingKeysEqual(keyValue, keyValues.get(j), collation)) {
                 itemLists.get(j).add(item);
                 return;
             }
@@ -487,6 +517,67 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
         List<XPathValue> newGroup = new ArrayList<>();
         newGroup.add(item);
         itemLists.add(newGroup);
+    }
+
+    /**
+     * Compares two grouping keys using XPath eq semantics with proper numeric
+     * type promotion. Per XSLT spec section 15.3.1, two values are equal for
+     * grouping if they are both NaN or if comparing them with eq returns true.
+     */
+    private boolean groupingKeysEqual(XPathValue key1, XPathValue key2,
+                                       Collation collation) {
+        if (key1 instanceof XPathNumber && key2 instanceof XPathNumber) {
+            return numericKeysEqual((XPathNumber) key1, (XPathNumber) key2);
+        }
+        if (key1 instanceof XPathQName && key2 instanceof XPathQName) {
+            return canonicalKeyString(key1).equals(canonicalKeyString(key2));
+        }
+        String s1 = key1.asString();
+        String s2 = key2.asString();
+        return collation.equals(s1, s2);
+    }
+
+    /**
+     * Compares two numeric keys using XPath type promotion:
+     * <ul>
+     *   <li>If either is xs:double, promote both to double</li>
+     *   <li>If either is xs:float, promote both to float</li>
+     *   <li>Otherwise compare as double (integer/decimal)</li>
+     * </ul>
+     * NaN values are grouped together per XSLT spec.
+     */
+    private boolean numericKeysEqual(XPathNumber n1, XPathNumber n2) {
+        double d1 = n1.asNumber();
+        double d2 = n2.asNumber();
+        if (Double.isNaN(d1) && Double.isNaN(d2)) {
+            return true;
+        }
+        if (Double.isNaN(d1) || Double.isNaN(d2)) {
+            return false;
+        }
+
+        boolean isDouble1 = isDoubleType(n1);
+        boolean isDouble2 = isDoubleType(n2);
+        boolean isFloat1 = n1.isFloat();
+        boolean isFloat2 = n2.isFloat();
+
+        if (isDouble1 || isDouble2) {
+            return d1 == d2;
+        }
+        if (isFloat1 || isFloat2) {
+            float f1 = (float) d1;
+            float f2 = (float) d2;
+            return f1 == f2;
+        }
+        return d1 == d2;
+    }
+
+    /**
+     * Returns true if the number is a double type (neither float, decimal,
+     * nor exact integer).
+     */
+    private boolean isDoubleType(XPathNumber n) {
+        return !n.isFloat() && !n.isDecimal() && !n.isExactInteger();
     }
 
     /**
@@ -716,7 +807,14 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
 
             XPathValue currentGroupValue = buildCurrentGroup(group.items);
             itemCtx.getVariableScope().bind("__current_group__", currentGroupValue);
-            itemCtx.getVariableScope().bind("__current_grouping_key__", group.keyValue);
+            if (method == GroupingMethod.GROUP_BY || method == GroupingMethod.GROUP_ADJACENT) {
+                itemCtx.getVariableScope().bind("__current_grouping_key__", group.keyValue);
+                itemCtx.getVariableScope().bind("__current_grouping_key_absent__", null);
+            } else {
+                itemCtx.getVariableScope().bind("__current_grouping_key__", null);
+                itemCtx.getVariableScope().bind("__current_grouping_key_absent__",
+                                                 XPathString.of("true"));
+            }
 
             for (int j = 0; j < sortCount; j++) {
                 SortSpec spec = sorts.get(j);
@@ -802,6 +900,18 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
         }
 
         return cmp;
+    }
+
+    /**
+     * Returns the processor version from the compiled stylesheet. Falls back
+     * to the context's XSLT version if the stylesheet is unavailable.
+     */
+    private double getProcessorVersion(TransformContext context) {
+        CompiledStylesheet ss = context.getStylesheet();
+        if (ss != null) {
+            return ss.getProcessorVersion();
+        }
+        return context.getXsltVersion();
     }
 
     private static boolean hasAtomicItems(List<XPathValue> items) {

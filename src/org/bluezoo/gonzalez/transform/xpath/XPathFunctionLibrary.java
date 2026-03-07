@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.xpath;
 
 import java.util.List;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.function.Function;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -67,5 +68,18 @@ public interface XPathFunctionLibrary {
      * @return the argument count, or -1 for variable args
      */
     int getArgumentCount(String namespaceURI, String localName);
+
+    /**
+     * Returns the Function object for the given name and arity, or null
+     * if the function is not found. Used by the static type checker.
+     *
+     * @param namespaceURI the function namespace URI
+     * @param localName the function local name
+     * @param arity the number of arguments
+     * @return the Function, or null
+     */
+    default Function getFunction(String namespaceURI, String localName, int arity) {
+        return null;
+    }
 
 }

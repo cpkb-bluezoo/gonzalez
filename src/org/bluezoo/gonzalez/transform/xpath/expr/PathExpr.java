@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.xpath.expr;
 
+import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -68,6 +70,16 @@ public final class PathExpr implements Expr {
         }
         this.filter = filter;
         this.path = path;
+    }
+
+    @Override
+    public void bindStaticTypes(StaticTypeContext context) {
+        filter.bindStaticTypes(context);
+    }
+
+    @Override
+    public SequenceType getStaticType() {
+        return SequenceType.NODE_STAR;
     }
 
     @Override

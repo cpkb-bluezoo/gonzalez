@@ -208,6 +208,17 @@ public final class UserFunction {
     }
 
     /**
+     * Returns a copy with a different import precedence.
+     *
+     * @param newPrecedence the new import precedence level
+     * @return a new UserFunction with the specified precedence
+     */
+    public UserFunction withImportPrecedence(int newPrecedence) {
+        return new UserFunction(namespaceURI, localName, parameters, body,
+                               asType, newPrecedence, cached, visibility);
+    }
+
+    /**
      * Returns the number of parameters.
      *
      * @return the parameter count
