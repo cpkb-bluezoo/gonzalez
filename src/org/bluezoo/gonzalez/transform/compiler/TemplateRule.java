@@ -53,6 +53,7 @@ public final class TemplateRule {
     private final String mode;
     private final double priority;
     private final int importPrecedence;
+    private int minImportPrecedence = -1;  // Lowest precedence in this module's import subtree
     private final int declarationIndex;
     private final List<TemplateParameter> parameters;
     private final XSLTNode body;
@@ -61,6 +62,7 @@ public final class TemplateRule {
     private final ComponentVisibility visibility;  // XSLT 3.0 package visibility
     private volatile BufferingStrategy bufferingStrategy;  // set by StreamabilityAnalyzer
     private double effectiveVersion = -1;  // Per-element XSLT version for BC mode (-1 = inherit)
+    private CompiledStylesheet definingStylesheet;  // Package scope: stylesheet that originally defined this template
 
     /**
      * Creates a template rule.
@@ -195,6 +197,26 @@ public final class TemplateRule {
     }
 
     /**
+     * Returns the minimum import precedence for this template's module.
+     * Used by xsl:apply-imports to scope matching to the module's import subtree.
+     * When no imports exist, equals importPrecedence (no lower-precedence templates qualify).
+     *
+     * @return the minimum import precedence, or -1 if not yet set
+     */
+    public int getMinImportPrecedence() {
+        return minImportPrecedence;
+    }
+
+    /**
+     * Sets the minimum import precedence for this template's module.
+     *
+     * @param minImportPrecedence the lowest precedence in the module's import subtree
+     */
+    public void setMinImportPrecedence(int minImportPrecedence) {
+        this.minImportPrecedence = minImportPrecedence;
+    }
+
+    /**
      * Returns the declaration index (order in which templates were declared).
      * Higher index means later in the stylesheet.
      *
@@ -269,7 +291,47 @@ public final class TemplateRule {
         TemplateRule copy = new TemplateRule(matchPattern, name, mode, priority, importPrecedence,
                                declarationIndex, parameters, body, asType, newVisibility);
         copy.parsedAsType = this.parsedAsType;
+        copy.minImportPrecedence = this.minImportPrecedence;
+        copy.effectiveVersion = this.effectiveVersion;
+        copy.definingStylesheet = this.definingStylesheet;
         return copy;
+    }
+
+    /**
+     * Creates a copy of this template rule with a different import precedence.
+     *
+     * @param newPrecedence the new import precedence
+     * @return a new TemplateRule with the specified precedence
+     */
+    public TemplateRule withImportPrecedence(int newPrecedence) {
+        TemplateRule copy = new TemplateRule(matchPattern, name, mode, priority, newPrecedence,
+                               declarationIndex, parameters, body, asType, visibility);
+        copy.parsedAsType = this.parsedAsType;
+        copy.minImportPrecedence = this.minImportPrecedence;
+        copy.effectiveVersion = this.effectiveVersion;
+        copy.definingStylesheet = this.definingStylesheet;
+        return copy;
+    }
+
+    /**
+     * Returns the defining stylesheet for cross-package scope.
+     * When a template is imported from a package, it retains a reference
+     * to its original stylesheet so that private components (named templates,
+     * functions) remain accessible during execution.
+     *
+     * @return the defining stylesheet, or null if defined in the principal stylesheet
+     */
+    public CompiledStylesheet getDefiningStylesheet() {
+        return definingStylesheet;
+    }
+
+    /**
+     * Sets the defining stylesheet for cross-package scope.
+     *
+     * @param stylesheet the stylesheet that originally defined this template
+     */
+    public void setDefiningStylesheet(CompiledStylesheet stylesheet) {
+        this.definingStylesheet = stylesheet;
     }
 
     /**

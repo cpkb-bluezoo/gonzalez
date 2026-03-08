@@ -21,6 +21,9 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * XSLT 3.0 mode declaration.
  *
@@ -141,17 +144,48 @@ public final class ModeDeclaration {
 
     private final String name;
     private final boolean streamable;
+    private final boolean streamableExplicit;
     private final OnNoMatch onNoMatch;
+    private final boolean onNoMatchExplicit;
     private final OnMultipleMatch onMultipleMatch;
+    private final boolean onMultipleMatchExplicit;
     private final Visibility visibility;
+    private final boolean visibilityExplicit;
     private final String useAccumulators;
+    private final boolean useAccumulatorsExplicit;
+    private final String expandedUseAccumulators;
     private final boolean typed;
     private final boolean warning;
-    private final boolean onNoMatchExplicit;
-    private final boolean useAccumulatorsExplicit;
 
     /**
-     * Creates a new mode declaration.
+     * Creates a new mode declaration with full explicit-flag tracking.
+     */
+    ModeDeclaration(String name,
+                    boolean streamable, boolean streamableExplicit,
+                    OnNoMatch onNoMatch, boolean onNoMatchExplicit,
+                    OnMultipleMatch onMultipleMatch, boolean onMultipleMatchExplicit,
+                    Visibility visibility, boolean visibilityExplicit,
+                    String useAccumulators, boolean useAccumulatorsExplicit,
+                    String expandedUseAccumulators,
+                    boolean typed, boolean warning) {
+        this.name = name;
+        this.streamable = streamable;
+        this.streamableExplicit = streamableExplicit;
+        this.onNoMatchExplicit = onNoMatchExplicit;
+        this.onNoMatch = onNoMatch != null ? onNoMatch : OnNoMatch.TEXT_ONLY_COPY;
+        this.onMultipleMatchExplicit = onMultipleMatchExplicit;
+        this.onMultipleMatch = onMultipleMatch != null ? onMultipleMatch : OnMultipleMatch.USE_LAST;
+        this.visibilityExplicit = visibilityExplicit;
+        this.visibility = visibility != null ? visibility : Visibility.PUBLIC;
+        this.useAccumulatorsExplicit = useAccumulatorsExplicit;
+        this.useAccumulators = useAccumulators;
+        this.expandedUseAccumulators = expandedUseAccumulators;
+        this.typed = typed;
+        this.warning = warning;
+    }
+
+    /**
+     * Creates a new mode declaration (backward-compatible constructor).
      *
      * @param name the mode name (null for default mode)
      * @param streamable whether the mode is streamable
@@ -163,18 +197,16 @@ public final class ModeDeclaration {
      * @param warning whether to warn on no match (when fail)
      */
     public ModeDeclaration(String name, boolean streamable, OnNoMatch onNoMatch,
-                           OnMultipleMatch onMultipleMatch, Visibility visibility, 
+                           OnMultipleMatch onMultipleMatch, Visibility visibility,
                            String useAccumulators, boolean typed, boolean warning) {
-        this.name = name;
-        this.streamable = streamable;
-        this.onNoMatchExplicit = onNoMatch != null;
-        this.onNoMatch = onNoMatch != null ? onNoMatch : OnNoMatch.TEXT_ONLY_COPY;
-        this.onMultipleMatch = onMultipleMatch != null ? onMultipleMatch : OnMultipleMatch.USE_LAST;
-        this.visibility = visibility != null ? visibility : Visibility.PUBLIC;
-        this.useAccumulatorsExplicit = useAccumulators != null;
-        this.useAccumulators = useAccumulators;
-        this.typed = typed;
-        this.warning = warning;
+        this(name,
+             streamable, false,
+             onNoMatch, onNoMatch != null,
+             onMultipleMatch, onMultipleMatch != null,
+             visibility, visibility != null,
+             useAccumulators, useAccumulators != null,
+             null,
+             typed, warning);
     }
 
     /**
@@ -192,18 +224,149 @@ public final class ModeDeclaration {
     }
 
     /**
+     * Returns true if streamable was explicitly specified.
+     */
+    public boolean isStreamableExplicit() {
+        return streamableExplicit;
+    }
+
+    /**
+     * Returns true if visibility was explicitly specified.
+     */
+    public boolean isVisibilityExplicit() {
+        return visibilityExplicit;
+    }
+
+    /**
+     * Returns true if on-multiple-match was explicitly specified.
+     */
+    public boolean isOnMultipleMatchExplicit() {
+        return onMultipleMatchExplicit;
+    }
+
+    /**
+     * Returns the namespace-expanded form of use-accumulators, or null if not set.
+     */
+    public String getExpandedUseAccumulators() {
+        return expandedUseAccumulators;
+    }
+
+    /**
      * Merges this mode declaration with an imported one.
      * Explicitly-set attributes on this declaration take priority;
      * unset attributes are inherited from the imported declaration.
      */
     public ModeDeclaration mergeWith(ModeDeclaration imported) {
+        boolean mergedStreamable = this.streamableExplicit
+            ? this.streamable : imported.streamable;
+        boolean mergedStreamableExplicit = this.streamableExplicit
+            || imported.streamableExplicit;
+
         OnNoMatch mergedOnNoMatch = this.onNoMatchExplicit
-            ? this.onNoMatch : imported.onNoMatch;
+            ? this.onNoMatch : (imported.onNoMatchExplicit ? imported.onNoMatch : null);
+        boolean mergedOnNoMatchExplicit = this.onNoMatchExplicit
+            || imported.onNoMatchExplicit;
+
+        OnMultipleMatch mergedOnMultipleMatch = this.onMultipleMatchExplicit
+            ? this.onMultipleMatch
+            : (imported.onMultipleMatchExplicit ? imported.onMultipleMatch : null);
+        boolean mergedOnMultipleMatchExplicit = this.onMultipleMatchExplicit
+            || imported.onMultipleMatchExplicit;
+
+        Visibility mergedVisibility = this.visibilityExplicit
+            ? this.visibility
+            : (imported.visibilityExplicit ? imported.visibility : null);
+        boolean mergedVisibilityExplicit = this.visibilityExplicit
+            || imported.visibilityExplicit;
+
         String mergedUseAccumulators = this.useAccumulatorsExplicit
             ? this.useAccumulators : imported.useAccumulators;
-        return new ModeDeclaration(this.name, this.streamable,
-            mergedOnNoMatch, this.onMultipleMatch, this.visibility,
-            mergedUseAccumulators, this.typed, this.warning);
+        boolean mergedUseAccumulatorsExplicit = this.useAccumulatorsExplicit
+            || imported.useAccumulatorsExplicit;
+        String mergedExpandedUseAccumulators = this.useAccumulatorsExplicit
+            ? this.expandedUseAccumulators : imported.expandedUseAccumulators;
+
+        return new ModeDeclaration(this.name,
+            mergedStreamable, mergedStreamableExplicit,
+            mergedOnNoMatch, mergedOnNoMatchExplicit,
+            mergedOnMultipleMatch, mergedOnMultipleMatchExplicit,
+            mergedVisibility, mergedVisibilityExplicit,
+            mergedUseAccumulators, mergedUseAccumulatorsExplicit,
+            mergedExpandedUseAccumulators,
+            this.typed || imported.typed,
+            this.warning || imported.warning);
+    }
+
+    /**
+     * Detects per-attribute conflicts between this declaration and another
+     * at the same import precedence. Returns a map of attribute-name to error
+     * message for each conflict, or null if there are no conflicts.
+     */
+    public Map<String, String> detectConflictsWith(ModeDeclaration other) {
+        Map<String, String> conflicts = null;
+        String modeKey = name != null ? name : "#default";
+
+        if (this.streamableExplicit && other.streamableExplicit
+                && this.streamable != other.streamable) {
+            conflicts = new HashMap<>();
+            conflicts.put("streamable",
+                "XTSE0545: Conflicting values for streamable on mode '"
+                + modeKey + "': '" + this.streamable + "' vs '"
+                + other.streamable + "'");
+        }
+
+        if (this.onNoMatchExplicit && other.onNoMatchExplicit
+                && this.onNoMatch != other.onNoMatch) {
+            if (conflicts == null) {
+                conflicts = new HashMap<>();
+            }
+            conflicts.put("on-no-match",
+                "XTSE0545: Conflicting values for on-no-match on mode '"
+                + modeKey + "': '" + this.onNoMatch + "' vs '"
+                + other.onNoMatch + "'");
+        }
+
+        if (this.onMultipleMatchExplicit && other.onMultipleMatchExplicit
+                && this.onMultipleMatch != other.onMultipleMatch) {
+            if (conflicts == null) {
+                conflicts = new HashMap<>();
+            }
+            conflicts.put("on-multiple-match",
+                "XTSE0545: Conflicting values for on-multiple-match on mode '"
+                + modeKey + "': '" + this.onMultipleMatch + "' vs '"
+                + other.onMultipleMatch + "'");
+        }
+
+        if (this.visibilityExplicit && other.visibilityExplicit
+                && this.visibility != other.visibility) {
+            if (conflicts == null) {
+                conflicts = new HashMap<>();
+            }
+            conflicts.put("visibility",
+                "XTSE0545: Conflicting values for visibility on mode '"
+                + modeKey + "': '" + this.visibility + "' vs '"
+                + other.visibility + "'");
+        }
+
+        if (this.useAccumulatorsExplicit && other.useAccumulatorsExplicit) {
+            String thisExpanded = this.expandedUseAccumulators != null
+                ? this.expandedUseAccumulators
+                : (this.useAccumulators != null ? this.useAccumulators : "");
+            String otherExpanded = other.expandedUseAccumulators != null
+                ? other.expandedUseAccumulators
+                : (other.useAccumulators != null ? other.useAccumulators : "");
+            if (!thisExpanded.equals(otherExpanded)) {
+                if (conflicts == null) {
+                    conflicts = new HashMap<>();
+                }
+                conflicts.put("use-accumulators",
+                    "XTSE0545: Conflicting values for use-accumulators on mode '"
+                    + modeKey + "': '" + thisExpanded + "' vs '"
+                    + otherExpanded + "'");
+            }
+        }
+
+        return conflicts;
     }
 
     /**
@@ -299,8 +462,14 @@ public final class ModeDeclaration {
                 vis = Visibility.PUBLIC;
                 break;
         }
-        return new ModeDeclaration(name, streamable, onNoMatch, onMultipleMatch,
-                                   vis, useAccumulators, typed, warning);
+        return new ModeDeclaration(name,
+            streamable, streamableExplicit,
+            onNoMatch, onNoMatchExplicit,
+            onMultipleMatch, onMultipleMatchExplicit,
+            vis, true,
+            useAccumulators, useAccumulatorsExplicit,
+            expandedUseAccumulators,
+            typed, warning);
     }
 
     /**
@@ -348,10 +517,15 @@ public final class ModeDeclaration {
     public static class Builder {
         private String name;
         private boolean streamable = false;
+        private boolean streamableSet = false;
         private OnNoMatch onNoMatch = OnNoMatch.TEXT_ONLY_COPY;
+        private boolean onNoMatchSet = false;
         private OnMultipleMatch onMultipleMatch = OnMultipleMatch.USE_LAST;
+        private boolean onMultipleMatchSet = false;
         private Visibility visibility = Visibility.PUBLIC;
+        private boolean visibilitySet = false;
         private String useAccumulators;
+        private String expandedUseAccumulators;
         private boolean typed = false;
         private boolean warning = false;
 
@@ -374,6 +548,7 @@ public final class ModeDeclaration {
          */
         public Builder streamable(boolean streamable) {
             this.streamable = streamable;
+            this.streamableSet = true;
             return this;
         }
 
@@ -385,6 +560,7 @@ public final class ModeDeclaration {
          */
         public Builder onNoMatch(OnNoMatch onNoMatch) {
             this.onNoMatch = onNoMatch;
+            this.onNoMatchSet = onNoMatch != null;
             return this;
         }
 
@@ -395,7 +571,9 @@ public final class ModeDeclaration {
          * @return this builder
          */
         public Builder onNoMatch(String value) {
-            this.onNoMatch = OnNoMatch.parse(value);
+            OnNoMatch parsed = OnNoMatch.parse(value);
+            this.onNoMatch = parsed;
+            this.onNoMatchSet = parsed != null;
             return this;
         }
 
@@ -407,6 +585,7 @@ public final class ModeDeclaration {
          */
         public Builder onMultipleMatch(OnMultipleMatch onMultipleMatch) {
             this.onMultipleMatch = onMultipleMatch;
+            this.onMultipleMatchSet = onMultipleMatch != null;
             return this;
         }
 
@@ -420,6 +599,7 @@ public final class ModeDeclaration {
             OnMultipleMatch parsed = OnMultipleMatch.parse(value);
             if (parsed != null) {
                 this.onMultipleMatch = parsed;
+                this.onMultipleMatchSet = true;
             }
             return this;
         }
@@ -432,6 +612,7 @@ public final class ModeDeclaration {
          */
         public Builder visibility(Visibility visibility) {
             this.visibility = visibility;
+            this.visibilitySet = visibility != null;
             return this;
         }
 
@@ -442,7 +623,9 @@ public final class ModeDeclaration {
          * @return this builder
          */
         public Builder visibility(String value) {
-            this.visibility = Visibility.parse(value);
+            Visibility parsed = Visibility.parse(value);
+            this.visibility = parsed;
+            this.visibilitySet = parsed != null;
             return this;
         }
 
@@ -454,6 +637,17 @@ public final class ModeDeclaration {
          */
         public Builder useAccumulators(String accumulators) {
             this.useAccumulators = accumulators;
+            return this;
+        }
+
+        /**
+         * Sets the namespace-expanded accumulator names for conflict detection.
+         *
+         * @param expanded the expanded accumulator names
+         * @return this builder
+         */
+        public Builder expandedUseAccumulators(String expanded) {
+            this.expandedUseAccumulators = expanded;
             return this;
         }
 
@@ -485,8 +679,18 @@ public final class ModeDeclaration {
          * @return the mode declaration
          */
         public ModeDeclaration build() {
-            return new ModeDeclaration(name, streamable, onNoMatch, onMultipleMatch,
-                                        visibility, useAccumulators, typed, warning);
+            OnNoMatch effectiveOnNoMatch = onNoMatchSet ? onNoMatch : null;
+            OnMultipleMatch effectiveOnMultipleMatch = onMultipleMatchSet
+                ? onMultipleMatch : null;
+            Visibility effectiveVisibility = visibilitySet ? visibility : null;
+            return new ModeDeclaration(name,
+                streamable, streamableSet,
+                effectiveOnNoMatch, onNoMatchSet,
+                effectiveOnMultipleMatch, onMultipleMatchSet,
+                effectiveVisibility, visibilitySet,
+                useAccumulators, useAccumulators != null,
+                expandedUseAccumulators,
+                typed, warning);
         }
     }
 

@@ -119,7 +119,7 @@ public class GonzalezTemplates implements Templates {
      *
      * @return the stylesheet
      */
-    CompiledStylesheet getStylesheet() {
+    public CompiledStylesheet getStylesheet() {
         return stylesheet;
     }
 

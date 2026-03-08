@@ -82,4 +82,27 @@ public interface XPathFunctionLibrary {
         return null;
     }
 
+    /**
+     * Invokes a bound user function with a TransformContext.
+     * Default implementation throws; overridden by XSLTFunctionLibrary.
+     */
+    default XPathValue invokeUserFunction(
+            org.bluezoo.gonzalez.transform.compiler.UserFunction function,
+            List<XPathValue> args,
+            org.bluezoo.gonzalez.transform.runtime.TransformContext context)
+            throws XPathException {
+        throw new XPathException("User functions not supported by this library");
+    }
+
+    /**
+     * Invokes a bound user function with a plain XPathContext.
+     * Default implementation throws; overridden by XSLTFunctionLibrary.
+     */
+    default XPathValue invokeUserFunctionStandalone(
+            org.bluezoo.gonzalez.transform.compiler.UserFunction function,
+            List<XPathValue> args, XPathContext context)
+            throws XPathException {
+        throw new XPathException("User functions not supported by this library");
+    }
+
 }

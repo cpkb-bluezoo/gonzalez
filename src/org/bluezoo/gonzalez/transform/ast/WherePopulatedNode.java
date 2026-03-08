@@ -182,8 +182,10 @@ public class WherePopulatedNode extends XSLTInstruction {
                 childrenPopulated = populatedAtDepth[depth];
             }
             depth--;
-            if (childrenPopulated && depth >= 0 && depth < populatedAtDepth.length) {
-                populatedAtDepth[depth] = true;
+            if (depth >= 0 && depth < populatedAtDepth.length) {
+                if (depth >= 1 || childrenPopulated) {
+                    populatedAtDepth[depth] = true;
+                }
             }
             if (depth == 0) {
                 ItemRecord rec = new ItemRecord();
@@ -277,9 +279,6 @@ public class WherePopulatedNode extends XSLTInstruction {
                     char[] ch = text.toCharArray();
                     currentBuffer.comment(ch, 0, ch.length);
                 }
-                if (!isEmpty && depth < populatedAtDepth.length) {
-                    populatedAtDepth[depth] = true;
-                }
             }
         }
 
@@ -299,9 +298,6 @@ public class WherePopulatedNode extends XSLTInstruction {
                     currentBuffer = new SAXEventBuffer();
                 }
                 currentBuffer.processingInstruction(target, data);
-                if (!isEmpty && depth < populatedAtDepth.length) {
-                    populatedAtDepth[depth] = true;
-                }
             }
         }
 

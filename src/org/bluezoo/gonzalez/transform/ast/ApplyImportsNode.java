@@ -31,6 +31,7 @@ import java.util.Set;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
@@ -65,10 +66,23 @@ public class ApplyImportsNode extends XSLTInstruction {
     @Override public void execute(TransformContext context, 
                                   OutputHandler output) throws SAXException {
         TemplateRule currentRule = context.getCurrentTemplateRule();
-        XPathNode currentNode = context.getXsltCurrentNode();
         
-        if (currentRule == null || currentNode == null) {
-            // XTDE0560: xsl:apply-imports is not allowed when the current template rule is absent
+        if (currentRule == null) {
+            throw new SAXException("XTDE0560: xsl:apply-imports cannot be used when there is no current template rule");
+        }
+
+        // Check for atomic value context
+        if (context instanceof BasicTransformContext) {
+            XPathValue contextItem = ((BasicTransformContext) context).getContextItem();
+            if (contextItem != null && !(contextItem instanceof XPathNode)
+                    && !contextItem.isNodeSet()) {
+                executeApplyImportsForAtomic(contextItem, currentRule, context, output);
+                return;
+            }
+        }
+        
+        XPathNode currentNode = context.getXsltCurrentNode();
+        if (currentNode == null) {
             throw new SAXException("XTDE0560: xsl:apply-imports cannot be used when there is no current template rule");
         }
         
@@ -183,12 +197,8 @@ public class ApplyImportsNode extends XSLTInstruction {
                     } catch (XPathException e) {
                         throw new SAXException("Error evaluating parameter default: " + e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    templateParam.getDefaultContent().execute(execContext, new BufferOutputHandler(buffer));
-                    defaultValue = new XPathResultTreeFragment(buffer);
                 } else {
-                    defaultValue = new XPathString("");
+                    defaultValue = templateParam.evaluateDefaultContent(execContext);
                 }
                 if (defaultValue != null) {
                     try {
@@ -288,13 +298,8 @@ public class ApplyImportsNode extends XSLTInstruction {
                     throw new SAXException(
                         "Error evaluating parameter default: " + e.getMessage(), e);
                 }
-            } else if (templateParam.getDefaultContent() != null) {
-                SAXEventBuffer buffer = new SAXEventBuffer();
-                templateParam.getDefaultContent().execute(execContext,
-                    new BufferOutputHandler(buffer));
-                defaultValue = new XPathResultTreeFragment(buffer);
             } else {
-                defaultValue = new XPathString("");
+                defaultValue = templateParam.evaluateDefaultContent(execContext);
             }
             try {
                 defaultValue = templateParam.coerceDefaultValue(defaultValue);
@@ -452,5 +457,58 @@ public class ApplyImportsNode extends XSLTInstruction {
             default:
                 break;
         }
+    }
+
+    /**
+     * Handles apply-imports when the context item is an atomic value.
+     * Finds the next imported template matching the atomic value, or
+     * falls back to the built-in template (outputs string value).
+     */
+    private void executeApplyImportsForAtomic(XPathValue atomicValue,
+            TemplateRule currentRule, TransformContext context,
+            OutputHandler output) throws SAXException {
+        TemplateMatcher matcher = context.getTemplateMatcher();
+        TemplateRule importedRule = matcher.findImportMatchForAtomicValue(
+            atomicValue, context.getCurrentMode(), currentRule, context);
+
+        if (importedRule == null) {
+            // Built-in template for atomic values: output string value
+            String sv = atomicValue.asString();
+            if (sv != null && !sv.isEmpty()) {
+                output.characters(sv);
+            }
+            return;
+        }
+
+        TransformContext execContext = context.pushVariableScope()
+            .withCurrentTemplateRule(importedRule);
+
+        // Process template parameters
+        for (TemplateParameter templateParam : importedRule.getParameters()) {
+            XPathValue defaultValue = null;
+            if (templateParam.getSelectExpr() != null) {
+                try {
+                    defaultValue = templateParam.getSelectExpr().evaluate(execContext);
+                } catch (XPathException e) {
+                    throw new SAXException(
+                        "Error evaluating parameter default: " + e.getMessage(), e);
+                }
+            } else {
+                defaultValue = templateParam.evaluateDefaultContent(execContext);
+            }
+            if (defaultValue != null) {
+                try {
+                    defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                } catch (XPathException e) {
+                    throw new SAXException(
+                        "Error coercing parameter default: " + e.getMessage(), e);
+                }
+                execContext.getVariableScope().bind(
+                    templateParam.getNamespaceURI(),
+                    templateParam.getLocalName(), defaultValue);
+            }
+        }
+
+        importedRule.getBody().execute(execContext, output);
     }
 }

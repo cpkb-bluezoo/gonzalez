@@ -37,7 +37,9 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -89,9 +91,6 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
                 }
             }
             
-            // XTDE0450: function items cannot appear in a result tree
-            checkForFunctionItems(result);
-            
             if (result instanceof XPathResultTreeFragment) {
                 // Result tree fragment - replay the buffered events
                 XPathResultTreeFragment rtf = (XPathResultTreeFragment) result;
@@ -125,9 +124,13 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
                     first = false;
                 }
                 output.setAtomicValuePending(false);
+            } else if (result instanceof XPathArray) {
+                flattenArray((XPathArray) result, output);
+            } else if (result instanceof XPathFunctionItem) {
+                throw new SAXException("XTDE0450: " +
+                    "A result tree cannot contain a function item");
             } else {
-                // For atomic values, use atomicValue() which handles spacing
-                // Adjacent atomic values are separated by a single space (but NOT in attribute content)
+                // For atomic values (and maps), use atomicValue() which handles spacing
                 output.atomicValue(result);
             }
         } catch (XPathException e) {
@@ -145,25 +148,51 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
         } else if (item instanceof XPathResultTreeFragment) {
             ((XPathResultTreeFragment) item).replayToOutput(output);
             output.setAtomicValuePending(false);
+        } else if (item instanceof XPathArray) {
+            flattenArray((XPathArray) item, output);
+        } else if (item instanceof XPathFunctionItem) {
+            throw new SAXException("XTDE0450: " +
+                "A result tree cannot contain a function item");
         } else {
-            // Atomic value - use atomicValue() which handles spacing
+            // Atomic value (and maps) - use atomicValue() which handles spacing
             output.atomicValue(item);
         }
     }
     
+    /**
+     * Flattens an array recursively, outputting each member.
+     * Per XSLT 3.0 spec section 20.1: arrays in content sequences
+     * are replaced by their members, recursively.
+     */
+    private void flattenArray(XPathArray array, OutputHandler output) throws SAXException {
+        for (XPathValue member : array.members()) {
+            if (member instanceof XPathArray) {
+                flattenArray((XPathArray) member, output);
+            } else {
+                outputSequenceItem(member, output, false);
+            }
+        }
+    }
+    
     private void checkForFunctionItems(XPathValue result) throws SAXException {
-        if (result instanceof XPathFunctionItem) {
+        if (isFunctionItem(result)) {
             throw new SAXException("XTDE0450: " +
                 "A result tree cannot contain a function item");
         }
         if (result instanceof XPathSequence) {
             for (XPathValue item : (XPathSequence) result) {
-                if (item instanceof XPathFunctionItem) {
+                if (isFunctionItem(item)) {
                     throw new SAXException("XTDE0450: " +
                         "A result tree cannot contain a function item");
                 }
             }
         }
+    }
+    
+    private boolean isFunctionItem(XPathValue value) {
+        return value instanceof XPathFunctionItem
+            || value instanceof XPathMap
+            || value instanceof XPathArray;
     }
     
     private void outputNode(XPathNode node, OutputHandler output) throws SAXException {

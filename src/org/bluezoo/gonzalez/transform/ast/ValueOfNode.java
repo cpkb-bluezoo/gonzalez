@@ -36,6 +36,7 @@ import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -90,6 +91,9 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
             if (result == null) {
                 return;
             }
+            
+            // FOTY0013: Maps and arrays cannot be atomized
+            checkNotFunctionItem(result);
             
             // Evaluate separator AVT at runtime
             String separator = separatorAvt != null ? separatorAvt.evaluate(context) : null;
@@ -199,5 +203,24 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
             }
         }
         return false;
+    }
+
+    /**
+     * FOTY0013: Maps are function items and cannot be atomized.
+     * Arrays can be atomized (produces the atomized members) per XPath 3.1.
+     */
+    private void checkNotFunctionItem(XPathValue result) throws SAXException {
+        if (result instanceof XPathMap) {
+            throw new SAXException("FOTY0013: " +
+                "An item of type map(*) has no string value");
+        }
+        if (result instanceof XPathSequence) {
+            for (XPathValue item : (XPathSequence) result) {
+                if (item instanceof XPathMap) {
+                    throw new SAXException("FOTY0013: " +
+                        "An item of type map(*) has no string value");
+                }
+            }
+        }
     }
 }

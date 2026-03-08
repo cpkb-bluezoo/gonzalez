@@ -616,6 +616,62 @@ public final class XPathNumber implements XPathValue {
     }
 
     /**
+     * Strict XDM type checking for 'instance of' expressions.
+     * Rejects values with known incompatible types (e.g., exact integers are
+     * NOT instances of xs:double). Plain untyped numbers are accepted for any
+     * numeric type since Gonzalez does not fully track types through operations.
+     *
+     * @param xsTypeName the local name of the XSD type
+     * @return true if this number matches (or is compatible with) that type
+     */
+    public boolean isStrictInstanceOfNumericType(String xsTypeName) {
+        if (xsTypeName == null) {
+            return false;
+        }
+        switch (xsTypeName) {
+            case "double":
+                // Reject values definitively typed as integer or decimal
+                if (isExactInteger() || isDecimal()) {
+                    return false;
+                }
+                return true;
+
+            case "float":
+                // Reject values definitively typed as integer, decimal, or explicit double
+                if (isExactInteger() || isDecimal() || isExplicitDouble) {
+                    return false;
+                }
+                return true;
+
+            case "decimal":
+                // Accept integers (subtype) and decimals
+                // Reject only explicit float/double
+                if (isFloat || isExplicitDouble) {
+                    return false;
+                }
+                return true;
+
+            case "integer":
+            case "int":
+            case "long":
+            case "short":
+            case "byte":
+            case "nonNegativeInteger":
+            case "nonPositiveInteger":
+            case "positiveInteger":
+            case "negativeInteger":
+            case "unsignedInt":
+            case "unsignedLong":
+            case "unsignedShort":
+            case "unsignedByte":
+                return isInteger();
+
+            default:
+                return false;
+        }
+    }
+
+    /**
      * Compares this number with another object for equality.
      *
      * <p>Two numbers are equal if they have the same value. NaN values are

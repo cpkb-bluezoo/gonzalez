@@ -34,7 +34,9 @@ import javax.xml.transform.ErrorListener;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
+import org.bluezoo.gonzalez.transform.compiler.AccumulatorDefinition;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.ModeDeclaration;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
@@ -82,8 +84,12 @@ public class BasicTransformContext implements TransformContext {
     private final java.util.Set<String> usedResultUris;  // Track URIs for XTDE1490
     private final org.bluezoo.gonzalez.transform.ErrorHandlingMode errorHandlingMode;  // Error handling mode
     private boolean contextItemUndefined;  // XPDY0002: true inside xsl:function bodies
+    private boolean dynamicEvaluation;    // true inside xsl:evaluate (restricts function access)
+    private boolean insideMergeAction;    // true inside xsl:merge-action body (for XTDE3480)
     private XPathValue xsltCurrentItem;   // The XSLT current() item for atomic for-each
     private Map<String, List<XPathNode>> collections;  // Registered fn:collection() mappings
+    private Map<String, OutputHandler> resultDocumentCollector;  // fn:transform() secondary capture
+    private Map<CompiledStylesheet, Map<String, XPathValue>> packageGlobalVariables;  // Pre-evaluated package globals
 
     /**
      * Creates a new transform context.
@@ -439,6 +445,36 @@ public class BasicTransformContext implements TransformContext {
     }
 
     /**
+     * Returns true if running inside xsl:evaluate (dynamic evaluation).
+     * Private stylesheet functions must not be called in this mode.
+     */
+    public boolean isDynamicEvaluation() {
+        return dynamicEvaluation;
+    }
+
+    /**
+     * Sets the dynamic evaluation flag for xsl:evaluate context.
+     */
+    public void setDynamicEvaluation(boolean dynamicEval) {
+        this.dynamicEvaluation = dynamicEval;
+    }
+
+    /**
+     * Returns true if currently inside an xsl:merge-action body.
+     * Used to validate current-merge-group()/current-merge-key() calls.
+     */
+    public boolean isInsideMergeAction() {
+        return insideMergeAction;
+    }
+
+    /**
+     * Sets the merge-action flag.
+     */
+    public void setInsideMergeAction(boolean inside) {
+        this.insideMergeAction = inside;
+    }
+
+    /**
      * Creates a new context with the specified position and size.
      *
      * @param position the context position (1-based)
@@ -478,15 +514,40 @@ public class BasicTransformContext implements TransformContext {
 
     /**
      * Creates a new context with the specified current template rule.
+     * If the rule was imported from a package, automatically switches
+     * to the defining stylesheet for cross-package component resolution.
      *
      * @param rule the template rule being executed
      * @return a new context with the specified template rule
      */
     @Override
     public TransformContext withCurrentTemplateRule(TemplateRule rule) {
-        return inherit(new BasicTransformContext(stylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+        CompiledStylesheet effectiveStylesheet = stylesheet;
+        if (rule != null && rule.getDefiningStylesheet() != null) {
+            effectiveStylesheet = rule.getDefiningStylesheet();
+        }
+        BasicTransformContext result = (BasicTransformContext) inherit(new BasicTransformContext(effectiveStylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, rule, staticBaseURI,
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
+        // XTDE3480: entering a new template clears merge-action context
+        result.insideMergeAction = false;
+        return result;
+    }
+
+    /**
+     * Creates a new context with the specified stylesheet for component resolution.
+     * Used for cross-package execution where a function or template needs to
+     * resolve calls against its defining package's stylesheet.
+     *
+     * @param newStylesheet the stylesheet to use
+     * @return a new context with the specified stylesheet
+     */
+    @Override
+    public TransformContext withStylesheet(CompiledStylesheet newStylesheet) {
+        return inherit(new BasicTransformContext(newStylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
+            currentMode, variableScope, functionLibrary, templateMatcher,
+            outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
             runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
     }
 
@@ -609,6 +670,12 @@ public class BasicTransformContext implements TransformContext {
         }
         
         XPathValue value = variableScope.lookup(namespaceURI, localName);
+        if (value == null && packageGlobalVariables != null) {
+            Map<String, XPathValue> pkgVars = packageGlobalVariables.get(stylesheet);
+            if (pkgVars != null) {
+                value = pkgVars.get(varKey);
+            }
+        }
         if (value == null) {
             throw new XPathVariableException(namespaceURI, localName);
         }
@@ -800,7 +867,10 @@ public class BasicTransformContext implements TransformContext {
     @Override
     public XPathValue getAccumulatorBefore(String name) {
         if (accumulatorManager != null) {
-            return accumulatorManager.getAccumulatorBefore(name, contextNode);
+            checkAccumulatorAvailableInMode(name);
+            checkAccumulatorStreamable(name);
+            String resolved = resolveAccumulatorName(name);
+            return accumulatorManager.getAccumulatorBefore(resolved, contextNode);
         }
         return null;
     }
@@ -814,9 +884,105 @@ public class BasicTransformContext implements TransformContext {
     @Override
     public XPathValue getAccumulatorAfter(String name) {
         if (accumulatorManager != null) {
-            return accumulatorManager.getAccumulatorAfter(name, contextNode);
+            checkAccumulatorAvailableInMode(name);
+            checkAccumulatorStreamable(name);
+            String resolved = resolveAccumulatorName(name);
+            return accumulatorManager.getAccumulatorAfter(resolved, contextNode);
         }
         return null;
+    }
+
+    /**
+     * XTDE3362: checks that the named accumulator is available in the
+     * current mode's use-accumulators declaration. Throws RuntimeException
+     * if the mode explicitly excludes it.
+     */
+    private void checkAccumulatorAvailableInMode(String name) {
+        if (currentMode == null || stylesheet == null) {
+            return;
+        }
+        ModeDeclaration modeDecl = stylesheet.getModeDeclaration(currentMode);
+        if (modeDecl == null) {
+            return;
+        }
+        if (!modeDecl.isUseAccumulatorsExplicit()) {
+            return;
+        }
+        String useAcc = modeDecl.getUseAccumulators();
+        if (useAcc == null) {
+            throw new RuntimeException("XTDE3362: Accumulator '" + name +
+                "' is not available in mode '" + currentMode + "'");
+        }
+        String trimmed = useAcc.trim();
+        if ("#all".equals(trimmed)) {
+            return;
+        }
+        // Check if the accumulator name is in the whitespace-separated list.
+        // Also try resolving the name to match the declared form.
+        String resolved = resolveAccumulatorName(name);
+        boolean found = false;
+        int start = 0;
+        int len = trimmed.length();
+        while (start < len) {
+            int end = trimmed.indexOf(' ', start);
+            if (end < 0) {
+                end = len;
+            }
+            String token = trimmed.substring(start, end);
+            if (token.equals(name) || token.equals(resolved)) {
+                found = true;
+                break;
+            }
+            start = end + 1;
+        }
+        if (!found) {
+            throw new RuntimeException("XTDE3362: Accumulator '" + name +
+                "' is not available in mode '" + currentMode + "'");
+        }
+    }
+
+    /**
+     * XTDE3362: Checks that a non-streamable accumulator is not accessed
+     * when the context node is in a streamed document.
+     */
+    private void checkAccumulatorStreamable(String name) {
+        if (accumulatorManager == null || !accumulatorManager.isStreamingMode()) {
+            return;
+        }
+        String resolved = resolveAccumulatorName(name);
+        if (stylesheet != null) {
+            AccumulatorDefinition def = stylesheet.getAccumulators().get(resolved);
+            if (def != null && !def.isStreamable()) {
+                throw new RuntimeException("XTDE3362: Cannot access non-streamable " +
+                    "accumulator '" + name + "' in a streamed document");
+            }
+        }
+    }
+
+    /**
+     * Resolves an accumulator QName to the key stored in AccumulatorManager.
+     * When the calling module uses a different prefix than the declaring module,
+     * the direct lookup fails. This method resolves the prefix to namespace URI
+     * and matches by expanded name.
+     */
+    private String resolveAccumulatorName(String name) {
+        if (accumulatorManager.hasAccumulator(name)) {
+            return name;
+        }
+        int colonIdx = name.indexOf(':');
+        if (colonIdx > 0) {
+            String prefix = name.substring(0, colonIdx);
+            String local = name.substring(colonIdx + 1);
+            String nsUri = resolveNamespacePrefix(prefix);
+            if (nsUri != null) {
+                String expandedName = "{" + nsUri + "}" + local;
+                String key = accumulatorManager.findKeyByExpandedName(expandedName);
+                if (key != null) {
+                    return key;
+                }
+            }
+        }
+        return name;
     }
 
     /**
@@ -901,6 +1067,23 @@ public class BasicTransformContext implements TransformContext {
         }
     }
 
+    /**
+     * Sets a collector for fn:transform() secondary output capture.
+     * When set, xsl:result-document writes to in-memory buffers
+     * instead of files.
+     */
+    public void setResultDocumentCollector(Map<String, OutputHandler> collector) {
+        this.resultDocumentCollector = collector;
+    }
+
+    /**
+     * Returns the result document collector, or null if not in
+     * fn:transform() context.
+     */
+    public Map<String, OutputHandler> getResultDocumentCollector() {
+        return resultDocumentCollector;
+    }
+
     @Override
     public void setPrincipalOutput(OutputHandler output) {
         // Note: This method is deprecated since principalOutput is now immutable
@@ -940,10 +1123,28 @@ public class BasicTransformContext implements TransformContext {
         derived.xsltCurrentItem = this.xsltCurrentItem;
         derived.cachedCurrentDateTime = this.cachedCurrentDateTime;
         derived.collections = this.collections;
-        if (this.contextItemUndefined && derived.contextNode == null && derived.contextItem == null) {
+        derived.resultDocumentCollector = this.resultDocumentCollector;
+        derived.packageGlobalVariables = this.packageGlobalVariables;
+        derived.dynamicEvaluation = this.dynamicEvaluation;
+        derived.insideMergeAction = this.insideMergeAction;
+        if (this.contextItemUndefined &&
+                derived.contextNode == this.contextNode &&
+                derived.contextItem == this.contextItem) {
             derived.contextItemUndefined = true;
         }
         return derived;
+    }
+
+    /**
+     * Sets the pre-evaluated global variables for package stylesheets.
+     * Keyed by package CompiledStylesheet, values are variable maps using
+     * the same key format as VariableScope ({namespaceURI}localName).
+     *
+     * @param globals the package global variables map
+     */
+    public void setPackageGlobalVariables(
+            Map<CompiledStylesheet, Map<String, XPathValue>> globals) {
+        this.packageGlobalVariables = globals;
     }
 
     /**

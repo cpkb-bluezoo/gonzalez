@@ -113,6 +113,12 @@ public final class StringFunctions {
         public XPathValue evaluate(List<XPathValue> args, XPathContext context)
                 throws XPathException {
             if (args.isEmpty()) {
+                // XPath 2.0+: context item may be an atomic value (e.g. in simple map)
+                XPathValue contextItem = context.getContextItem();
+                if (contextItem != null && !contextItem.isNodeSet()
+                        && !(contextItem instanceof XPathNode)) {
+                    return XPathString.of(contextItem.asString());
+                }
                 return XPathString.of(context.getContextNode().getStringValue());
             }
             XPathValue arg = args.get(0);

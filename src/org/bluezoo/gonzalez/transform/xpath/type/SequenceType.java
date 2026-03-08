@@ -1824,6 +1824,21 @@ public class SequenceType {
             type = type.substring(0, type.length() - 1).trim();
         }
         
+        // Strip grouping parentheses: (function(...) as R) -> function(...) as R
+        if (type.startsWith("(") && type.endsWith(")")) {
+            int matchPos = findMatchingParen(type, 0);
+            if (matchPos == type.length() - 1) {
+                String inner = type.substring(1, type.length() - 1).trim();
+                SequenceType innerType = parse(inner, namespaceResolver);
+                if (innerType != null) {
+                    if (occ != Occurrence.ONE) {
+                        return innerType.withOccurrence(occ);
+                    }
+                    return innerType;
+                }
+            }
+        }
+        
         // Parse empty-sequence()
         if (type.equals("empty-sequence()")) {
             return EMPTY;

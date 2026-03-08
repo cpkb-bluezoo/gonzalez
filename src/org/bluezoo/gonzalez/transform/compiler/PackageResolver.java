@@ -209,6 +209,16 @@ public class PackageResolver {
                 // This might be okay if we resolved via a different mechanism
             }
 
+            // XTSE3000: Verify compiled package version matches the constraint
+            if (compiledVersion != null && !"*".equals(versionConstraint)
+                    && !versionConstraint.contains("*")) {
+                if (!matchesVersion(compiledVersion, versionConstraint)) {
+                    throw new SAXException("XTSE3000: No package matching name '" +
+                        packageName + "' version " + versionConstraint +
+                        " (found version " + compiledVersion + ")");
+                }
+            }
+
             // Cache the package
             cachePackage(pkg);
 

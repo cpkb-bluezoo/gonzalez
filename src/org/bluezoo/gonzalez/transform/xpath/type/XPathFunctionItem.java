@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import org.bluezoo.gonzalez.transform.compiler.UserFunction;
+import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
@@ -45,6 +47,7 @@ public final class XPathFunctionItem implements XPathValue {
     private final XPathFunctionLibrary library;
     private SequenceType[] parameterTypes;
     private SequenceType returnType;
+    private UserFunction boundUserFunction;
 
     /**
      * Creates a new function item wrapping a library function.
@@ -134,6 +137,15 @@ public final class XPathFunctionItem implements XPathValue {
     }
 
     /**
+     * Binds a user function for cross-stylesheet invocation.
+     * When set, the function item can be invoked without requiring
+     * the calling context to have this function in its library.
+     */
+    public void setBoundUserFunction(UserFunction uf) {
+        this.boundUserFunction = uf;
+    }
+
+    /**
      * Invokes this function with the given arguments.
      *
      * @param args the arguments
@@ -150,6 +162,14 @@ public final class XPathFunctionItem implements XPathValue {
         if ("current".equals(name) && arity == 0) {
             throw new XPathException("XTDE1360",
                 "Dynamic call to current() is not allowed");
+        }
+        // Self-contained user function (from fn:transform() etc.)
+        if (boundUserFunction != null) {
+            if (context instanceof TransformContext) {
+                return library.invokeUserFunction(boundUserFunction, args,
+                    (TransformContext) context);
+            }
+            return library.invokeUserFunctionStandalone(boundUserFunction, args, context);
         }
         // Try with namespace URI first if available
         if (namespaceURI != null && !namespaceURI.isEmpty()) {

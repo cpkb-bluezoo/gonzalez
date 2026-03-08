@@ -89,7 +89,9 @@ public class GonzalezTransformer extends Transformer {
     /** Initial template name for XSLT 2.0+ initial-template support. */
     private String initialTemplate;
     private List<InitialTemplateParam> initialTemplateParams;
+    private boolean hasInitialContextItem = true;
     private String initialMode;
+    private String initialModeSelect;
     private boolean hasMatchSelection = true;
 
     /** Initial function for XSLT 3.0 initial-function support. */
@@ -181,6 +183,7 @@ public class GonzalezTransformer extends Transformer {
         // Set initial template if specified (XSLT 2.0+ feature)
         if (initialTemplate != null) {
             transformHandler.setInitialTemplate(initialTemplate);
+            transformHandler.setHasInitialContextItem(hasInitialContextItem);
             if (initialTemplateParams != null) {
                 transformHandler.setInitialTemplateParams(initialTemplateParams);
             }
@@ -196,6 +199,12 @@ public class GonzalezTransformer extends Transformer {
         if (initialMode != null) {
             transformHandler.setInitialMode(initialMode);
             transformHandler.setHasMatchSelection(hasMatchSelection);
+            if (initialModeSelect != null) {
+                transformHandler.setInitialModeSelect(initialModeSelect);
+            }
+            if (initialTemplateParams != null) {
+                transformHandler.setInitialTemplateParams(initialTemplateParams);
+            }
         }
         
         // Set initial context select if specified
@@ -640,6 +649,16 @@ public class GonzalezTransformer extends Transformer {
     }
 
     /**
+     * Sets whether a real initial context item is available.
+     * When false, accessing the focus in the initial template raises XPDY0002.
+     *
+     * @param has true if an initial context item was provided
+     */
+    public void setHasInitialContextItem(boolean has) {
+        this.hasInitialContextItem = has;
+    }
+
+    /**
      * Adds a parameter to be passed to the initial template.
      *
      * @param nsUri the parameter namespace URI (may be null)
@@ -712,6 +731,17 @@ public class GonzalezTransformer extends Transformer {
      */
     public String getInitialMode() {
         return initialMode;
+    }
+
+    /**
+     * Sets an XPath expression for the initial match selection.
+     * When set with an initial mode, applies templates to the result of this
+     * expression instead of the document root.
+     *
+     * @param xpath the XPath expression for the initial match selection
+     */
+    public void setInitialModeSelect(String xpath) {
+        this.initialModeSelect = xpath;
     }
 
     /**

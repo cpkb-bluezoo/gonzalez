@@ -682,6 +682,7 @@ public final class XPathParser {
         lexer.expect(XPathToken.LPAREN);
 
         List<String> paramNames = new ArrayList<String>();
+        List<String> paramTypes = new ArrayList<String>();
 
         if (lexer.current() != XPathToken.RPAREN) {
             // Parse first parameter
@@ -689,24 +690,29 @@ public final class XPathParser {
             String paramName = expectNCNameOrKeyword();
             paramNames.add(paramName);
 
-            // Skip optional type annotation: "as <SequenceType>"
-            skipParamTypeAnnotation();
+            paramTypes.add(captureParamTypeAnnotation());
 
             // Parse additional parameters
             while (lexer.match(XPathToken.COMMA)) {
                 lexer.expect(XPathToken.DOLLAR);
                 paramName = expectNCNameOrKeyword();
                 paramNames.add(paramName);
-                skipParamTypeAnnotation();
+                paramTypes.add(captureParamTypeAnnotation());
             }
         }
 
         lexer.expect(XPathToken.RPAREN);
 
-        // Skip optional return type annotation: "as <SequenceType>"
+        String returnType = null;
+        // Capture optional return type annotation: "as <SequenceType>"
         if (lexer.current() == XPathToken.AS) {
+            int startPos = lexer.tokenStart();
             lexer.advance(); // consume 'as'
+            int typeStart = lexer.tokenStart();
             skipSequenceType();
+            int typeEnd = lexer.tokenStart();
+            String expr = lexer.getExpression();
+            returnType = expr.substring(typeStart, typeEnd).trim();
         }
 
         lexer.expect(XPathToken.LBRACE);
@@ -720,7 +726,7 @@ public final class XPathParser {
 
         lexer.expect(XPathToken.RBRACE);
 
-        return new InlineFunctionExpr(paramNames, body);
+        return new InlineFunctionExpr(paramNames, paramTypes, returnType, body);
     }
 
     /**
@@ -731,6 +737,22 @@ public final class XPathParser {
             lexer.advance(); // consume 'as'
             skipSequenceType();
         }
+    }
+
+    /**
+     * Captures an optional "as SequenceType" annotation, returning the type
+     * text or null if no annotation is present.
+     */
+    private String captureParamTypeAnnotation() throws XPathSyntaxException {
+        if (lexer.current() != XPathToken.AS) {
+            return null;
+        }
+        lexer.advance(); // consume 'as'
+        int typeStart = lexer.tokenStart();
+        skipSequenceType();
+        int typeEnd = lexer.tokenStart();
+        String expr = lexer.getExpression();
+        return expr.substring(typeStart, typeEnd).trim();
     }
 
     /**
@@ -2516,7 +2538,7 @@ public final class XPathParser {
         String namespaceURI = null;
         String localName = null;
         QName typeName = null;  // For element(name, type) or attribute(name, type)
-        java.util.List funcParamTypes = null;  // For function(T1, T2, ...) as R
+        List funcParamTypes = null;  // For function(T1, T2, ...) as R
         SequenceType funcReturnType = null;
         
         XPathToken token = lexer.current();
@@ -2699,7 +2721,7 @@ public final class XPathParser {
                         expectToken(XPathToken.RPAREN, ")");
                     } else if (lexer.current() == XPathToken.RPAREN) {
                         // function() as R - zero-arity typed function
-                        funcParamTypes = new java.util.ArrayList();
+                        funcParamTypes = new ArrayList();
                         lexer.advance();
                         if (lexer.current() == XPathToken.AS) {
                             lexer.advance();
@@ -2707,7 +2729,7 @@ public final class XPathParser {
                         }
                     } else {
                         // function(T1, T2, ...) as R
-                        funcParamTypes = new java.util.ArrayList();
+                        funcParamTypes = new ArrayList();
                         funcParamTypes.add(parseSequenceType());
                         while (lexer.current() == XPathToken.COMMA) {
                             lexer.advance();

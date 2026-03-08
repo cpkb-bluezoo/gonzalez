@@ -241,6 +241,19 @@ public interface TransformContext extends XPathContext, SchemaContext {
     TransformContext withNoTunnelParameters();
 
     /**
+     * Creates a new context with the specified stylesheet.
+     *
+     * <p>This is used when executing user-defined functions or templates
+     * imported from a package. The function body needs to resolve calls
+     * against its defining package's stylesheet (which includes private
+     * components) rather than the principal stylesheet.
+     *
+     * @param stylesheet the stylesheet to use for component resolution
+     * @return a new context with the specified stylesheet
+     */
+    TransformContext withStylesheet(CompiledStylesheet stylesheet);
+
+    /**
      * Returns the principal output handler for the transformation.
      *
      * <p>The principal output is the main output destination for the transformation.

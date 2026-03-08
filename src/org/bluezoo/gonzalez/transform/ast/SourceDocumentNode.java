@@ -95,6 +95,7 @@ public final class SourceDocumentNode implements XSLTNode {
     private final String validation;  // "strict", "lax", "preserve", "strip", or null
     private final String useAccumulators;
     private final XSLTNode body;
+    private String staticBaseURI;
 
     /**
      * Creates a new source-document instruction.
@@ -107,6 +108,8 @@ public final class SourceDocumentNode implements XSLTNode {
      */
     public boolean isStreamable() { return streamable; }
     public XSLTNode getContent() { return body; }
+
+    public void setStaticBaseURI(String uri) { this.staticBaseURI = uri; }
 
     public SourceDocumentNode(AttributeValueTemplate hrefAvt, boolean streamable,
                               String validation, String useAccumulators, XSLTNode body) {
@@ -163,6 +166,7 @@ public final class SourceDocumentNode implements XSLTNode {
                     && !context.getStylesheet().getAccumulators().isEmpty()) {
                 AccumulatorManager mgr = new AccumulatorManager(
                     context.getStylesheet(), context);
+                mgr.initialize();
                 mgr.setStreamingMode(true);
                 streamCtx.setAccumulatorManager(mgr);
             }
@@ -226,8 +230,10 @@ public final class SourceDocumentNode implements XSLTNode {
      * Resolves the href relative to the static base URI.
      */
     private String resolveHref(String href, TransformContext context) throws SAXException {
-        // Get the static base URI from the context
-        String baseUri = context.getStaticBaseURI();
+        String baseUri = staticBaseURI;
+        if (baseUri == null) {
+            baseUri = context.getStaticBaseURI();
+        }
         if (baseUri == null) {
             CompiledStylesheet stylesheet = context.getStylesheet();
             if (stylesheet != null) {

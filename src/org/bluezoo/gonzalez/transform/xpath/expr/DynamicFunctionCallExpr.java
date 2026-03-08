@@ -131,8 +131,9 @@ public final class DynamicFunctionCallExpr implements Expr {
         }
         if (baseValue instanceof XPathArray) {
             XPathArray array = (XPathArray) baseValue;
-            if (args.isEmpty()) {
-                throw new XPathException("XPTY0004: Array requires exactly one argument for lookup");
+            if (args.size() != 1) {
+                throw new XPathException("XPTY0004: Array requires exactly one argument " +
+                    "for lookup, but " + args.size() + " were supplied");
             }
             XPathValue keyVal = args.get(0).evaluate(context);
             int index = (int) keyVal.asNumber();
@@ -143,8 +144,9 @@ public final class DynamicFunctionCallExpr implements Expr {
         }
         if (baseValue instanceof XPathMap) {
             XPathMap map = (XPathMap) baseValue;
-            if (args.isEmpty()) {
-                throw new XPathException("XPTY0004: Map requires exactly one argument for lookup");
+            if (args.size() != 1) {
+                throw new XPathException("XPTY0004: Map requires exactly one argument " +
+                    "for lookup, but " + args.size() + " were supplied");
             }
             XPathValue keyVal = args.get(0).evaluate(context);
             String key = keyVal.asString();

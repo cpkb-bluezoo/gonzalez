@@ -39,6 +39,8 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 public final class InlineFunctionExpr implements Expr {
 
     private final List<String> paramNames;
+    private final List<String> paramTypes;
+    private final String returnType;
     private final Expr body;
 
     /**
@@ -49,6 +51,24 @@ public final class InlineFunctionExpr implements Expr {
      */
     public InlineFunctionExpr(List<String> paramNames, Expr body) {
         this.paramNames = paramNames;
+        this.paramTypes = null;
+        this.returnType = null;
+        this.body = body;
+    }
+
+    /**
+     * Creates an inline function expression with type annotations.
+     *
+     * @param paramNames the parameter variable names (without $)
+     * @param paramTypes the parameter type annotations (may contain nulls)
+     * @param returnType the return type annotation (may be null)
+     * @param body the function body expression
+     */
+    public InlineFunctionExpr(List<String> paramNames, List<String> paramTypes,
+            String returnType, Expr body) {
+        this.paramNames = paramNames;
+        this.paramTypes = paramTypes;
+        this.returnType = returnType;
         this.body = body;
     }
 
@@ -63,7 +83,7 @@ public final class InlineFunctionExpr implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
-        return new InlineFunctionItem(paramNames, body, context);
+        return new InlineFunctionItem(paramNames, paramTypes, returnType, body, context);
     }
 
     @Override

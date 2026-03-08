@@ -169,6 +169,16 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                     needSpace = copySequenceItem(iter.next(), output,
                         effectiveValidation, effectiveCopyNamespaces, needSpace);
                 }
+            } else if (result instanceof XPathNode) {
+                // Single node value (e.g. attribute from xsl:function)
+                deepCopyNode((XPathNode) result, output, effectiveValidation,
+                    effectiveCopyNamespaces, 0);
+            } else if (result.isNodeSet()) {
+                XPathNodeSet nodeSet = result.asNodeSet();
+                for (XPathNode node : nodeSet.getNodes()) {
+                    deepCopyNode(node, output, effectiveValidation,
+                        effectiveCopyNamespaces, 0);
+                }
             } else {
                 // For non-node-sets, output as text
                 output.characters(result.asString());

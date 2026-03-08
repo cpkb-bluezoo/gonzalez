@@ -27,6 +27,7 @@ import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.function.Function;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.ArrayList;
@@ -148,12 +149,33 @@ public final class FunctionCall implements Expr {
         final int[] placeholderPositions = new int[arguments.size()];
         int placeholderCount = 0;
 
+        // Look up parameter types for bound argument validation
+        Function funcDef = library.getFunction(namespaceURI, localName, arguments.size());
+        SequenceType[] funcParamTypes = null;
+        if (funcDef != null) {
+            funcParamTypes = funcDef.getParameterSequenceTypes();
+        }
+
         for (int i = 0; i < arguments.size(); i++) {
-            if (arguments.get(i) instanceof ArgumentPlaceholder) {
+            Expr argExpr = arguments.get(i);
+            if (argExpr instanceof ArgumentPlaceholder) {
                 placeholderPositions[placeholderCount] = i;
                 placeholderCount++;
             } else {
-                boundArgs[i] = arguments.get(i).evaluate(context);
+                boundArgs[i] = argExpr.evaluate(context);
+                // Validate bound argument against declared parameter type
+                if (funcParamTypes != null && i < funcParamTypes.length
+                        && funcParamTypes[i] != null && boundArgs[i] != null) {
+                    if (!funcParamTypes[i].matches(boundArgs[i])) {
+                        Class argClass = boundArgs[i].getClass();
+                        String typeName = argClass.getSimpleName();
+                        throw new XPathException("XPTY0004: Partial application: "
+                            + "argument " + (i + 1) + " has type "
+                            + typeName
+                            + " which is not valid for parameter type "
+                            + funcParamTypes[i]);
+                    }
+                }
             }
         }
 

@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
+import org.bluezoo.gonzalez.transform.xpath.function.Function;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -107,6 +108,7 @@ public final class NamedFunctionRefExpr implements Expr {
             }
             XPathFunctionItem funcItem = new XPathFunctionItem(fullName, itemURI, arity, library);
             setUserFunctionSignature(funcItem, itemURI, context);
+            bindUserFunction(funcItem, itemURI, context);
             return funcItem;
         }
         if (library.hasFunction(null, fullName)) {
@@ -118,6 +120,7 @@ public final class NamedFunctionRefExpr implements Expr {
         if (effectiveURI != null && !effectiveURI.isEmpty()) {
             XPathFunctionItem funcItem = new XPathFunctionItem(fullName, effectiveURI, arity, library);
             setUserFunctionSignature(funcItem, effectiveURI, context);
+            bindUserFunction(funcItem, effectiveURI, context);
             return funcItem;
         }
         
@@ -129,6 +132,91 @@ public final class NamedFunctionRefExpr implements Expr {
      */
     private void setUserFunctionSignature(XPathFunctionItem funcItem,
                                           String nsURI, XPathContext context) {
+        // Try user function first
+        if (context instanceof TransformContext) {
+            TransformContext tc = (TransformContext) context;
+            CompiledStylesheet stylesheet = tc.getStylesheet();
+            if (stylesheet != null) {
+                UserFunction uf = stylesheet.getUserFunction(nsURI, localName, arity);
+                if (uf != null) {
+                    List params = uf.getParameters();
+                    SequenceType[] paramTypes = new SequenceType[params.size()];
+                    for (int i = 0; i < params.size(); i++) {
+                        UserFunction.FunctionParameter fp = (UserFunction.FunctionParameter) params.get(i);
+                        String asType = fp.getAsType();
+                        if (asType != null && !asType.isEmpty()) {
+                            SequenceType pt = SequenceType.parse(asType, null);
+                            if (pt != null) {
+                                paramTypes[i] = pt;
+                            } else {
+                                paramTypes[i] = SequenceType.ITEM_STAR;
+                            }
+                        } else {
+                            paramTypes[i] = SequenceType.ITEM_STAR;
+                        }
+                    }
+                    SequenceType returnType = SequenceType.ITEM_STAR;
+                    String asType = uf.getAsType();
+                    if (asType != null && !asType.isEmpty()) {
+                        SequenceType rt = SequenceType.parse(asType, null);
+                        if (rt != null) {
+                            returnType = rt;
+                        }
+                    }
+                    funcItem.setSignature(paramTypes, returnType);
+                    return;
+                }
+            }
+        }
+        // Fall back to built-in function signature from the function library
+        XPathFunctionLibrary library = context.getFunctionLibrary();
+        if (library != null) {
+            setBuiltInFunctionSignature(funcItem, nsURI, library);
+        }
+    }
+
+    /**
+     * Sets parameter/return types on a function item from built-in function metadata.
+     */
+    private void setBuiltInFunctionSignature(XPathFunctionItem funcItem,
+                                             String nsURI, XPathFunctionLibrary library) {
+        Function func = library.getFunction(nsURI, localName, arity);
+        if (func == null && (nsURI == null || nsURI.isEmpty() || FN_NAMESPACE.equals(nsURI))) {
+            func = library.getFunction(null, localName, arity);
+        }
+        if (func == null) {
+            return;
+        }
+        SequenceType retType = func.getReturnType();
+        SequenceType[] paramSeqTypes = func.getParameterSequenceTypes();
+        if (retType == null && paramSeqTypes == null) {
+            return;
+        }
+        SequenceType returnType = retType != null ? retType : SequenceType.ITEM_STAR;
+        SequenceType[] paramTypes;
+        if (paramSeqTypes != null) {
+            paramTypes = new SequenceType[arity];
+            for (int i = 0; i < arity; i++) {
+                if (i < paramSeqTypes.length) {
+                    paramTypes[i] = paramSeqTypes[i];
+                } else {
+                    paramTypes[i] = SequenceType.ITEM_STAR;
+                }
+            }
+        } else {
+            paramTypes = new SequenceType[arity];
+            for (int i = 0; i < arity; i++) {
+                paramTypes[i] = SequenceType.ITEM_STAR;
+            }
+        }
+        funcItem.setSignature(paramTypes, returnType);
+    }
+
+    /**
+     * Binds the actual UserFunction to the function item for cross-stylesheet portability.
+     */
+    private void bindUserFunction(XPathFunctionItem funcItem,
+                                  String nsURI, XPathContext context) {
         if (!(context instanceof TransformContext)) {
             return;
         }
@@ -138,34 +226,9 @@ public final class NamedFunctionRefExpr implements Expr {
             return;
         }
         UserFunction uf = stylesheet.getUserFunction(nsURI, localName, arity);
-        if (uf == null) {
-            return;
+        if (uf != null) {
+            funcItem.setBoundUserFunction(uf);
         }
-        List params = uf.getParameters();
-        SequenceType[] paramTypes = new SequenceType[params.size()];
-        for (int i = 0; i < params.size(); i++) {
-            UserFunction.FunctionParameter fp = (UserFunction.FunctionParameter) params.get(i);
-            String asType = fp.getAsType();
-            if (asType != null && !asType.isEmpty()) {
-                SequenceType pt = SequenceType.parse(asType, null);
-                if (pt != null) {
-                    paramTypes[i] = pt;
-                } else {
-                    paramTypes[i] = SequenceType.ITEM_STAR;
-                }
-            } else {
-                paramTypes[i] = SequenceType.ITEM_STAR;
-            }
-        }
-        SequenceType returnType = SequenceType.ITEM_STAR;
-        String asType = uf.getAsType();
-        if (asType != null && !asType.isEmpty()) {
-            SequenceType rt = SequenceType.parse(asType, null);
-            if (rt != null) {
-                returnType = rt;
-            }
-        }
-        funcItem.setSignature(paramTypes, returnType);
     }
 
     @Override

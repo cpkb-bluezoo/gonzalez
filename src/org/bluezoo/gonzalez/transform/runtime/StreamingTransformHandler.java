@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.runtime;
 
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
@@ -219,6 +220,7 @@ public final class StreamingTransformHandler implements ContentHandler {
      * Fires accumulator rules on any pending text child nodes of the current element.
      * Called before startElement and endElement to ensure text node accumulators
      * fire at the correct point in document order.
+     * Also applies xsl:strip-space rules to remove whitespace-only text nodes.
      */
     private void firePendingTextAccumulators() throws SAXException {
         if (!hasPendingText || currentNode == null) {
@@ -226,15 +228,45 @@ public final class StreamingTransformHandler implements ContentHandler {
         }
         hasPendingText = false;
 
-        AccumulatorManager mgr = streamingContext.getAccumulatorManager();
-        if (mgr == null) {
+        StreamingNode lastChild = currentNode.getLastChild();
+        if (lastChild == null || !lastChild.isText()) {
             return;
         }
 
-        StreamingNode lastChild = currentNode.getLastChild();
-        if (lastChild != null && lastChild.isText()) {
+        if (shouldStripText(lastChild.getStringValue())) {
+            currentNode.removeLastChild();
+            return;
+        }
+
+        AccumulatorManager mgr = streamingContext.getAccumulatorManager();
+        if (mgr != null) {
             mgr.notifyTextNode(lastChild);
         }
+    }
+
+    /**
+     * Checks if whitespace-only text should be stripped based on xsl:strip-space rules.
+     */
+    private boolean shouldStripText(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                return false;
+            }
+        }
+        if (currentNode == null || !currentNode.isElement()) {
+            return false;
+        }
+        CompiledStylesheet stylesheet = streamingContext.getStylesheet();
+        if (stylesheet == null) {
+            return false;
+        }
+        String nsUri = currentNode.getNamespaceURI();
+        String localName = currentNode.getLocalName();
+        return stylesheet.shouldStripWhitespace(nsUri, localName);
     }
 
     /**

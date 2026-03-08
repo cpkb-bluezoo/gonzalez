@@ -34,6 +34,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathAtomicValue;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
@@ -228,6 +229,19 @@ public final class BinaryExpr implements Expr {
         boolean leftHasNumeric = containsNumericValue(leftVal);
         boolean rightHasNumeric = containsNumericValue(rightVal);
 
+        // XPath 2.0+: xs:string vs numeric is XPTY0004 (only xs:untypedAtomic
+        // is promoted). Check before atomizing to strings so type info is preserved.
+        if (isXPath2) {
+            if (leftHasNumeric && containsTypedString(rightVal)) {
+                throw new XPathException(
+                    "XPTY0004: Cannot compare xs:string with numeric value");
+            }
+            if (rightHasNumeric && containsTypedString(leftVal)) {
+                throw new XPathException(
+                    "XPTY0004: Cannot compare xs:string with numeric value");
+            }
+        }
+
         List<String> leftAtoms = atomizeToList(leftVal);
         List<String> rightAtoms = atomizeToList(rightVal);
         
@@ -274,6 +288,26 @@ public final class BinaryExpr implements Expr {
             while (it.hasNext()) {
                 XPathValue item = it.next();
                 if (item instanceof XPathNumber) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks if a value is or contains an explicitly typed xs:string
+     * (as opposed to xs:untypedAtomic which can be promoted in comparisons).
+     */
+    private static boolean containsTypedString(XPathValue val) {
+        if (val instanceof XPathString && !(val instanceof XPathUntypedAtomic)) {
+            return true;
+        }
+        if (val instanceof XPathSequence) {
+            Iterator<XPathValue> it = val.sequenceIterator();
+            while (it.hasNext()) {
+                XPathValue item = it.next();
+                if (item instanceof XPathString && !(item instanceof XPathUntypedAtomic)) {
                     return true;
                 }
             }
@@ -763,8 +797,10 @@ public final class BinaryExpr implements Expr {
             return evaluateDateTimeArithmetic(leftVal, rightVal);
         }
         
-        // Use exact integer arithmetic when both operands are exact integers
-        if (leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
+        // Use exact integer/decimal arithmetic when both operands are exact
+        // In XPath 1.0 backward compat mode, div always returns xs:double
+        boolean xpath1CompatDiv = context.getXsltVersion() < 2.0 && operator == Operator.DIV;
+        if (!xpath1CompatDiv && leftVal instanceof XPathNumber && rightVal instanceof XPathNumber) {
             XPathNumber leftXn = (XPathNumber) leftVal;
             XPathNumber rightXn = (XPathNumber) rightVal;
             if (leftXn.isExactInteger() && rightXn.isExactInteger()) {
@@ -1161,7 +1197,14 @@ public final class BinaryExpr implements Expr {
             rightVal = ((XPathSequence) rightVal).iterator().next();
         }
         
-        // Atomize node-sets: a single-node node-set becomes its string value
+        // Atomize operands: single nodes become their string value
+        // (representing xs:untypedAtomic in a basic XSLT processor)
+        if (leftVal instanceof XPathNode) {
+            leftVal = XPathString.of(((XPathNode) leftVal).getStringValue());
+        }
+        if (rightVal instanceof XPathNode) {
+            rightVal = XPathString.of(((XPathNode) rightVal).getStringValue());
+        }
         if (leftVal.isNodeSet() && !(leftVal instanceof XPathNode)) {
             XPathNodeSet ns = leftVal.asNodeSet();
             if (ns.size() == 1) {
@@ -1229,16 +1272,29 @@ public final class BinaryExpr implements Expr {
             }
         }
         
-        // Mixed types or other types: try numeric first, fall back to string
-        // This provides XPath 1.0-like behavior for compatibility
+        // XPath 2.0: xs:string vs numeric in a value comparison is a type
+        // error (the operator mapping table B.2 has no matching entry).
+        // This arises when untypedAtomic (from node atomization) meets
+        // a typed numeric value -- the untypedAtomic is cast to xs:double
+        // but the resulting xs:double vs xs:integer has no B.2 entry
+        // without type promotion, which is a static analysis concept.
+        if ((leftType == XPathValue.Type.STRING && rightType == XPathValue.Type.NUMBER)
+                || (leftType == XPathValue.Type.NUMBER && rightType == XPathValue.Type.STRING)) {
+            throw new XPathException("XPTY0004: Value comparison requires " +
+                "operands of compatible types, but got " + leftType +
+                " and " + rightType);
+        }
+
+        // Other mixed types: try numeric first, fall back to string.
+        // Handles cases like xs:anyURI eq xs:string (anyURI promotes to
+        // string), xs:boolean comparisons, and other ATOMIC types.
         double leftNum = leftVal.asNumber();
         double rightNum = rightVal.asNumber();
-        
+
         if (!Double.isNaN(leftNum) && !Double.isNaN(rightNum)) {
             return XPathBoolean.of(compareValuesNumeric(leftNum, rightNum));
         }
-        
-        // String comparison as fallback, with collation support
+
         String defaultUri = context.getDefaultCollation();
         if (defaultUri != null) {
             Collation collation = Collation.forUri(defaultUri);

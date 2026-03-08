@@ -21,12 +21,15 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.List;
 
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
@@ -106,9 +109,19 @@ public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
         if (selectExpr != null) {
             value = selectExpr.evaluate(context);
         } else if (content != null) {
-            SAXEventBuffer buffer = new SAXEventBuffer();
-            content.execute(context, new BufferOutputHandler(buffer));
-            value = new XPathResultTreeFragment(buffer);
+            if (requiresSequenceConstruction()) {
+                value = executeSequenceConstructor(context);
+                if (value instanceof XPathSequence) {
+                    XPathSequence seq = (XPathSequence) value;
+                    if (seq.size() == 1) {
+                        value = seq.iterator().next();
+                    }
+                }
+            } else {
+                SAXEventBuffer buffer = new SAXEventBuffer();
+                content.execute(context, new BufferOutputHandler(buffer));
+                value = new XPathResultTreeFragment(buffer);
+            }
         } else if (asType != null) {
             value = XPathSequence.EMPTY;
         } else {
@@ -178,7 +191,7 @@ public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
                         case "float":
                             return new XPathNumber(Float.parseFloat(stringValue), true);
                         case "decimal":
-                            return new XPathNumber(new java.math.BigDecimal(stringValue));
+                            return new XPathNumber(new BigDecimal(stringValue));
                         case "integer":
                         case "int":
                         case "long":
@@ -186,7 +199,7 @@ public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
                             try {
                                 return XPathNumber.ofInteger(Long.parseLong(stringValue));
                             } catch (NumberFormatException nfe) {
-                                return XPathNumber.ofInteger(new java.math.BigInteger(stringValue));
+                                return XPathNumber.ofInteger(new BigInteger(stringValue));
                             }
                         case "boolean":
                             return XPathBoolean.of("true".equals(stringValue) || "1".equals(stringValue));
@@ -214,5 +227,39 @@ public class WithParamNode extends XSLTInstruction implements ExpressionHolder {
         }
         
         return value;
+    }
+
+    /**
+     * Checks if the declared type requires sequence construction mode
+     * instead of result tree fragment mode. Types like map(*), array(*),
+     * function(*), item(), and sequence types need their values preserved
+     * rather than serialized as SAX events.
+     */
+    private boolean requiresSequenceConstruction() {
+        if (asType == null) {
+            return false;
+        }
+        String type = asType.trim();
+        if (type.startsWith("map(") || type.startsWith("array(")
+                || type.startsWith("function(")) {
+            return true;
+        }
+        if (type.equals("item()") || type.startsWith("item()")) {
+            return true;
+        }
+        return false;
+    }
+
+    private XPathValue executeSequenceConstructor(TransformContext context)
+            throws SAXException {
+        SequenceBuilderOutputHandler seqBuilder =
+            new SequenceBuilderOutputHandler();
+        if (content.getChildren() != null) {
+            for (XSLTNode child : content.getChildren()) {
+                child.execute(context, seqBuilder);
+                seqBuilder.markItemBoundary();
+            }
+        }
+        return seqBuilder.getSequence();
     }
 }

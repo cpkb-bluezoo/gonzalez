@@ -146,11 +146,50 @@ public class TypeExpr implements Expr {
         // Pass schema context if available (XPathContext may be a TransformContext which implements SchemaContext)
         SchemaContext schemaContext = (context instanceof SchemaContext) ? (SchemaContext) context : SchemaContext.NONE;
         boolean matches = targetType.matches(value, schemaContext);
+        if (matches) {
+            // Apply strict XDM type rules for numeric types
+            // The general matches() uses promotion rules, but instance of must be strict
+            matches = applyStrictNumericInstanceOf(value);
+        }
         if (matches && isUserDefinedType()) {
             // For user-defined types, also validate against facets
             matches = validateAgainstSchemaType(value, context);
         }
         return XPathBoolean.of(matches);
+    }
+
+    /**
+     * Applies strict XDM numeric type checking for 'instance of'.
+     * In XDM, xs:integer is NOT promotable to xs:double for instance of checks.
+     */
+    private boolean applyStrictNumericInstanceOf(XPathValue value) {
+        if (targetType.getItemKind() != SequenceType.ItemKind.ATOMIC) {
+            return true;
+        }
+        String localName = targetType.getLocalName();
+        if (localName == null) {
+            return true;
+        }
+        if (!"double".equals(localName) && !"float".equals(localName) &&
+            !"decimal".equals(localName)) {
+            return true;
+        }
+        // For sequences, check each item
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (item instanceof XPathNumber) {
+                    if (!((XPathNumber) item).isStrictInstanceOfNumericType(localName)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        if (value instanceof XPathNumber) {
+            return ((XPathNumber) value).isStrictInstanceOfNumericType(localName);
+        }
+        return true;
     }
     
     /**

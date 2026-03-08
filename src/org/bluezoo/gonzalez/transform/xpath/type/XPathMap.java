@@ -45,6 +45,7 @@ public final class XPathMap implements XPathValue {
     public static final XPathMap EMPTY = new XPathMap(new LinkedHashMap<String, XPathValue>());
 
     private final Map<String, XPathValue> entries;
+    private Map<String, XPathValue> typedKeys;
 
     /**
      * Creates a map from the given entries.
@@ -53,6 +54,30 @@ public final class XPathMap implements XPathValue {
      */
     public XPathMap(Map<String, XPathValue> entries) {
         this.entries = new LinkedHashMap<String, XPathValue>(entries);
+    }
+
+    /**
+     * Creates a map with both string entries and original typed keys.
+     *
+     * @param entries the map entries (keys are string representations)
+     * @param typedKeys map from string key to original typed XPathValue key
+     */
+    public XPathMap(Map<String, XPathValue> entries, Map<String, XPathValue> typedKeys) {
+        this.entries = new LinkedHashMap<String, XPathValue>(entries);
+        this.typedKeys = new LinkedHashMap<String, XPathValue>(typedKeys);
+    }
+
+    /**
+     * Returns the original typed key value for a given string key, if available.
+     *
+     * @param key the string key
+     * @return the original typed key value, or null
+     */
+    public XPathValue getTypedKey(String key) {
+        if (typedKeys == null) {
+            return null;
+        }
+        return typedKeys.get(key);
     }
 
     /**

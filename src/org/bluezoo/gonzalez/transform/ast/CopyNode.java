@@ -195,7 +195,12 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
             return;
         }
         
-        executeCopyForNode(node, context, output);
+        // XSLT 3.0 §11.9.1: when select is present, current template rule becomes null
+        TransformContext effectiveContext = context;
+        if (selectExpr != null) {
+            effectiveContext = context.withCurrentTemplateRule(null);
+        }
+        executeCopyForNode(node, effectiveContext, output);
     }
     
     private void executeCopyForNode(XPathNode node, TransformContext context, 

@@ -26,6 +26,7 @@ import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.ComponentVisibility;
 import org.bluezoo.gonzalez.transform.compiler.GlobalVariable;
+import org.bluezoo.gonzalez.transform.compiler.ModeDeclaration;
 import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 import org.bluezoo.gonzalez.transform.compiler.TemplateParameter;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
@@ -92,8 +93,11 @@ public class GonzalezTransformHandler extends DefaultHandler
     private String initialTemplate;
     private List<GonzalezTransformer.InitialTemplateParam> initialTemplateParams;
     
+    private boolean hasInitialContextItem = true;
+    
     /** The initial mode for apply-templates. */
     private String initialMode;
+    private String initialModeSelect;
     private boolean hasMatchSelection = true;
 
     /** Initial function for XSLT 3.0 initial-function support. */
@@ -166,6 +170,16 @@ public class GonzalezTransformHandler extends DefaultHandler
     }
 
     /**
+     * Sets whether a real initial context item is available.
+     * When false, accessing the focus in the initial template raises XPDY0002.
+     *
+     * @param has true if an initial context item was provided
+     */
+    public void setHasInitialContextItem(boolean has) {
+        this.hasInitialContextItem = has;
+    }
+
+    /**
      * Sets the parameters to be passed to the initial template.
      *
      * @param params the initial template parameters
@@ -206,6 +220,15 @@ public class GonzalezTransformHandler extends DefaultHandler
      */
     public void setHasMatchSelection(boolean has) {
         this.hasMatchSelection = has;
+    }
+
+    /**
+     * Sets an XPath expression for the initial match selection.
+     *
+     * @param xpath the XPath expression
+     */
+    public void setInitialModeSelect(String xpath) {
+        this.initialModeSelect = xpath;
     }
 
     /**
@@ -630,6 +653,15 @@ public class GonzalezTransformHandler extends DefaultHandler
                 throw new SAXException("XTDE0045: Initial mode '" + initialMode +
                     "' is not declared in the stylesheet");
             }
+            // XTDE0045: private mode cannot be used as initial mode
+            ModeDeclaration modeDecl = stylesheet.getModeDeclaration(initialMode);
+            if (modeDecl != null) {
+                ModeDeclaration.Visibility vis = modeDecl.getVisibility();
+                if (vis == ModeDeclaration.Visibility.PRIVATE) {
+                    throw new SAXException("XTDE0045: Initial mode '" + initialMode +
+                        "' has private visibility and cannot be used as an initial mode");
+                }
+            }
         }
 
         // Check for initial function (XSLT 3.0 feature)
@@ -668,7 +700,17 @@ public class GonzalezTransformHandler extends DefaultHandler
             }
             List<UserFunction.FunctionParameter> params = func.getParameters();
             for (int i = 0; i < params.size() && i < argValues.size(); i++) {
-                funcContext.getVariableScope().bind(params.get(i).getNamespaceURI(), params.get(i).getLocalName(), argValues.get(i));
+                XPathValue argVal = argValues.get(i);
+                String paramAsType = params.get(i).getAsType();
+                if (paramAsType != null) {
+                    SequenceType expectedType = SequenceType.parse(paramAsType, null);
+                    if (expectedType != null && !expectedType.matches(argVal)) {
+                        throw new SAXException("XPTY0004: Initial function parameter $" +
+                            params.get(i).getLocalName() + ": required type is " +
+                            paramAsType + ", supplied value does not match");
+                    }
+                }
+                funcContext.getVariableScope().bind(params.get(i).getNamespaceURI(), params.get(i).getLocalName(), argVal);
             }
             // Execute the function body directly to the output
             XSLTNode body = func.getBody();
@@ -706,6 +748,12 @@ public class GonzalezTransformHandler extends DefaultHandler
                 }
                 // Execute the named initial template
                 TransformContext templateContext = context.pushVariableScope();
+                // XPDY0002: when no initial context item was provided,
+                // accessing the focus inside the template is a dynamic error
+                if (!hasInitialContextItem) {
+                    templateContext = templateContext.withContextNode(null);
+                    ((BasicTransformContext) templateContext).setContextItemUndefined(true);
+                }
                 // If the template also has a match pattern, invoke as if matched
                 // (XSLT 3.0 §2.4: current template rule is set)
                 if (template.getMatchPattern() != null) {
@@ -737,9 +785,14 @@ public class GonzalezTransformHandler extends DefaultHandler
                     if (body != null) {
                         body.execute(templateContext, output);
                     }
+                } else if (initialModeSelect != null) {
+                    applyTemplatesWithInitialSelect(
+                        contextNode, initialMode, initialModeSelect, context, output);
+                } else if (initialTemplateParams != null && !initialTemplateParams.isEmpty()
+                        && initialMode != null) {
+                    applyTemplatesWithInitialModeParams(
+                        contextNode, initialMode, context, output);
                 } else {
-                    // Apply templates to initial context node (may differ from
-                    // root when initialContextSelect is set)
                     applyTemplates(contextNode, initialMode, context, output);
                 }
             }
@@ -866,13 +919,8 @@ public class GonzalezTransformHandler extends DefaultHandler
                         throw new SAXException("Error evaluating param default: " +
                             e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    templateParam.getDefaultContent().execute(templateContext,
-                        new BufferOutputHandler(buffer));
-                    value = new XPathResultTreeFragment(buffer);
                 } else {
-                    value = new XPathString("");
+                    value = templateParam.evaluateDefaultContent(templateContext);
                 }
             }
 
@@ -890,6 +938,136 @@ public class GonzalezTransformHandler extends DefaultHandler
             }
         }
         return templateContext;
+    }
+
+    /**
+     * Applies templates to the initial node with initial-mode params.
+     * Finds the matching template, then binds the initial-mode params
+     * to the template's declared parameters (instead of using defaults).
+     */
+    private void applyTemplatesWithInitialModeParams(XPathNode node,
+            String mode, BasicTransformContext context,
+            OutputHandler output) throws SAXException
+    {
+        AccumulatorManager accMgr = context.getAccumulatorManager();
+        if (accMgr != null) {
+            accMgr.notifyStartElement(node);
+        }
+
+        TransformContext nodeContext = context.withXsltCurrentNode(node);
+        nodeContext = ((BasicTransformContext) nodeContext).withMode(mode);
+
+        TemplateRule rule = matcher.findMatch(node, mode, nodeContext);
+        if (rule != null && !TemplateMatcher.isBuiltIn(rule)) {
+            TransformContext execContext = nodeContext.pushVariableScope()
+                .withCurrentTemplateRule(rule);
+
+            // Evaluate supplied param values
+            Map<String, XPathValue> suppliedNonTunnel =
+                new HashMap<String, XPathValue>();
+            Map<String, XPathValue> suppliedTunnel =
+                new HashMap<String, XPathValue>();
+            for (GonzalezTransformer.InitialTemplateParam itp
+                    : initialTemplateParams) {
+                String nsUri = itp.getNsUri();
+                if (nsUri == null) {
+                    nsUri = "";
+                }
+                String expanded;
+                if (nsUri.isEmpty()) {
+                    expanded = itp.getLocalName();
+                } else {
+                    expanded = "{" + nsUri + "}" + itp.getLocalName();
+                }
+                XPathValue value;
+                try {
+                    XPathExpression expr = XPathExpression.compile(
+                        itp.getSelectExpr(), null);
+                    value = expr.evaluate(execContext);
+                } catch (Exception e) {
+                    throw new SAXException(
+                        "Error evaluating initial mode param: " +
+                        e.getMessage(), e);
+                }
+                if (itp.isTunnel()) {
+                    suppliedTunnel.put(expanded, value);
+                } else {
+                    suppliedNonTunnel.put(expanded, value);
+                }
+            }
+
+            if (!suppliedTunnel.isEmpty()) {
+                execContext = execContext.withTunnelParameters(suppliedTunnel);
+            }
+
+            // Bind template params: use supplied values where available,
+            // fall back to defaults otherwise.
+            for (TemplateParameter templateParam : rule.getParameters()) {
+                XPathValue value = null;
+                boolean found = false;
+                String paramName = templateParam.getName();
+
+                if (templateParam.isTunnel()) {
+                    value = suppliedTunnel.get(paramName);
+                    if (value == null) {
+                        value = execContext.getTunnelParameters().get(paramName);
+                    }
+                    found = (value != null);
+                } else {
+                    value = suppliedNonTunnel.get(paramName);
+                    found = (value != null);
+                }
+
+                if (!found) {
+                    if (templateParam.isRequired()) {
+                        throw new SAXException("XTDE0700: Template parameter $" +
+                            templateParam.getLocalName() +
+                            " is required but no value was supplied");
+                    }
+                    if (templateParam.getSelectExpr() != null) {
+                        try {
+                            value = templateParam.getSelectExpr()
+                                .evaluate(execContext);
+                        } catch (XPathException e) {
+                            throw new SAXException(
+                                "Error evaluating param default: " +
+                                e.getMessage(), e);
+                        }
+                    } else if (templateParam.getDefaultContent() != null) {
+                        SAXEventBuffer buffer = new SAXEventBuffer();
+                        BufferOutputHandler bufferOutput =
+                            new BufferOutputHandler(buffer);
+                        templateParam.getDefaultContent()
+                            .execute(execContext, bufferOutput);
+                        value = new XPathResultTreeFragment(buffer);
+                    }
+                }
+
+                if (value != null) {
+                    try {
+                        value = templateParam.coerceDefaultValue(value);
+                    } catch (XPathException e) {
+                        throw new SAXException(
+                            "Error coercing parameter: " +
+                            e.getMessage(), e);
+                    }
+                    execContext.getVariableScope().bind(
+                        templateParam.getNamespaceURI(),
+                        templateParam.getLocalName(),
+                        value);
+                }
+            }
+
+            rule.getBody().execute(execContext, output);
+        } else if (rule != null) {
+            executeBuiltInTemplate(
+                TemplateMatcher.getBuiltInType(rule), node,
+                (BasicTransformContext) nodeContext, output);
+        }
+
+        if (accMgr != null) {
+            accMgr.notifyEndElement(node);
+        }
     }
 
     private void initializeGlobals(BasicTransformContext context) throws SAXException {
@@ -1001,6 +1179,89 @@ public class GonzalezTransformHandler extends DefaultHandler
             String key = makeVarKey(var);
             if (!evaluated.contains(key)) {
                 throw new SAXException("XTDE0640: Circular reference detected involving variable: " + var.getName());
+            }
+        }
+        
+        // Pre-evaluate global variables for package stylesheets.
+        // Templates/functions imported from packages may reference their own
+        // package-private globals which aren't in the principal stylesheet.
+        initializePackageGlobals(context);
+    }
+    
+    private void initializePackageGlobals(BasicTransformContext context)
+            throws SAXException {
+        // Collect all unique package stylesheets transitively referenced by
+        // templates/functions through the definingStylesheet chain
+        Set<CompiledStylesheet> pkgStylesheets = new HashSet<CompiledStylesheet>();
+        collectPackageStylesheets(stylesheet, pkgStylesheets);
+        if (pkgStylesheets.isEmpty()) {
+            return;
+        }
+        
+        Map<CompiledStylesheet, Map<String, XPathValue>> allPkgGlobals =
+            new HashMap<CompiledStylesheet, Map<String, XPathValue>>();
+        
+        for (CompiledStylesheet pkgSheet : pkgStylesheets) {
+            Map<String, XPathValue> pkgVars = new HashMap<String, XPathValue>();
+            List<GlobalVariable> pkgGlobals = pkgSheet.getGlobalVariables();
+            
+            // Multi-pass evaluation like the principal globals
+            Set<String> pkgEvaluated = new HashSet<String>();
+            BasicTransformContext pkgContext = (BasicTransformContext)
+                context.withStylesheet(pkgSheet);
+            
+            boolean pkgProgress = true;
+            while (pkgProgress) {
+                pkgProgress = false;
+                for (GlobalVariable var : pkgGlobals) {
+                    String key = makeVarKey(var);
+                    if (pkgEvaluated.contains(key)) {
+                        continue;
+                    }
+                    try {
+                        XPathValue value = evaluateGlobalVariable(
+                            var, pkgContext, new HashSet<String>(), pkgEvaluated);
+                        if (value != null) {
+                            pkgVars.put(key, value);
+                            pkgContext.setVariable(
+                                var.getNamespaceURI(), var.getLocalName(), value);
+                            pkgEvaluated.add(key);
+                            pkgProgress = true;
+                        }
+                    } catch (Exception e) {
+                        // Variable depends on another not yet evaluated
+                        boolean isUndefined = containsUndefinedVariableException(e);
+                        if (!isUndefined) {
+                            throw new SAXException(
+                                "Error evaluating package variable: " +
+                                var.getName(), e);
+                        }
+                    }
+                }
+            }
+            
+            if (!pkgVars.isEmpty()) {
+                allPkgGlobals.put(pkgSheet, pkgVars);
+            }
+        }
+        
+        if (!allPkgGlobals.isEmpty()) {
+            context.setPackageGlobalVariables(allPkgGlobals);
+        }
+    }
+    
+    private void collectPackageStylesheets(CompiledStylesheet sheet,
+            Set<CompiledStylesheet> collected) {
+        for (TemplateRule rule : sheet.getTemplateRules()) {
+            CompiledStylesheet ds = rule.getDefiningStylesheet();
+            if (ds != null && ds != stylesheet && collected.add(ds)) {
+                collectPackageStylesheets(ds, collected);
+            }
+        }
+        for (UserFunction func : sheet.getUserFunctions().values()) {
+            CompiledStylesheet ds = func.getDefiningStylesheet();
+            if (ds != null && ds != stylesheet && collected.add(ds)) {
+                collectPackageStylesheets(ds, collected);
             }
         }
     }
@@ -1172,6 +1433,94 @@ public class GonzalezTransformHandler extends DefaultHandler
     private static class CircularReferenceException extends Exception {
         CircularReferenceException(String varName) {
             super("Circular reference: " + varName);
+        }
+    }
+
+    /**
+     * Evaluates the initial-mode select expression and applies templates
+     * to each item in the resulting sequence. The global context item
+     * remains the document root for variable evaluation.
+     */
+    private void applyTemplatesWithInitialSelect(XPathNode globalContext,
+            String mode, String selectXPath,
+            BasicTransformContext context, OutputHandler output) throws SAXException {
+        try {
+            XPathExpression selectExpr;
+            try {
+                selectExpr = XPathExpression.compile(selectXPath, null);
+            } catch (Exception e) {
+                throw new SAXException("Error compiling initial-mode select: "
+                    + e.getMessage(), e);
+            }
+            XPathValue selectResult = selectExpr.evaluate(context);
+
+            // Collect nodes and atomic values separately
+            List<XPathNode> nodeItems = new ArrayList<>();
+            List<XPathValue> atomicItems = new ArrayList<>();
+            // Track items in order: true=node, false=atomic
+            List<Object> orderedItems = new ArrayList<>();
+
+            if (selectResult instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) selectResult;
+                for (int i = 0; i < seq.size(); i++) {
+                    XPathValue val = seq.get(i);
+                    if (val instanceof XPathNode) {
+                        orderedItems.add(val);
+                    } else {
+                        orderedItems.add(val);
+                    }
+                }
+            } else if (selectResult instanceof XPathNodeSet) {
+                XPathNodeSet ns = (XPathNodeSet) selectResult;
+                for (XPathNode n : ns.getNodes()) {
+                    orderedItems.add(n);
+                }
+            } else if (selectResult.isNodeSet()) {
+                XPathNodeSet ns = selectResult.asNodeSet();
+                for (XPathNode n : ns.getNodes()) {
+                    orderedItems.add(n);
+                }
+            } else {
+                orderedItems.add(selectResult);
+            }
+
+            int size = orderedItems.size();
+            int position = 1;
+            for (Object item : orderedItems) {
+                if (item instanceof XPathNode) {
+                    XPathNode node = (XPathNode) item;
+                    BasicTransformContext nodeCtx = (BasicTransformContext) context
+                        .withXsltCurrentNode(node)
+                        .withPositionAndSize(position, size);
+                    if (mode != null) {
+                        nodeCtx = (BasicTransformContext) nodeCtx.withMode(mode);
+                    }
+                    TemplateRule rule = matcher.findMatch(node, mode, nodeCtx);
+                    if (rule != null) {
+                        executeTemplate(rule, node, nodeCtx, output);
+                    }
+                } else {
+                    XPathValue val = (XPathValue) item;
+                    BasicTransformContext atomicCtx = context.withContextItem(val);
+                    atomicCtx.setXsltCurrentItem(val);
+                    atomicCtx = (BasicTransformContext) atomicCtx
+                        .withPositionAndSize(position, size);
+                    if (mode != null) {
+                        atomicCtx = (BasicTransformContext) atomicCtx.withMode(mode);
+                    }
+                    TemplateRule rule = matcher.findMatchForAtomicValue(
+                        val, mode, atomicCtx);
+                    if (rule != null) {
+                        TransformContext execCtx = atomicCtx.pushVariableScope()
+                            .withCurrentTemplateRule(rule);
+                        rule.getBody().execute(execCtx, output);
+                    }
+                }
+                position++;
+            }
+        } catch (XPathException e) {
+            throw new SAXException("Error evaluating initial-mode select: "
+                + e.getMessage(), e);
         }
     }
 
@@ -1476,6 +1825,9 @@ public class GonzalezTransformHandler extends DefaultHandler
             case "fail":
                 throw new SAXException("XTDE0555: No matching template found for node: " +
                     node.getNodeType() + " (mode has on-no-match='fail')");
+            case "typed-fail":
+                throw new SAXException("XTTE3100: Node " + node.getLocalName() +
+                    " is untyped, but mode has typed='yes'");
 
         }
     }

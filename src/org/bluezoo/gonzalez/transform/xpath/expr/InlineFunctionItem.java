@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 import java.util.List;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -39,6 +40,8 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 public final class InlineFunctionItem implements XPathValue {
 
     private final List<String> paramNames;
+    private final List<String> paramTypeStrings;
+    private final String returnTypeString;
     private final Expr body;
     private final XPathContext closureContext;
 
@@ -51,8 +54,70 @@ public final class InlineFunctionItem implements XPathValue {
      */
     InlineFunctionItem(List<String> paramNames, Expr body, XPathContext closureContext) {
         this.paramNames = paramNames;
+        this.paramTypeStrings = null;
+        this.returnTypeString = null;
         this.body = body;
         this.closureContext = closureContext;
+    }
+
+    /**
+     * Creates an inline function item with type annotations.
+     *
+     * @param paramNames the parameter names (without $)
+     * @param paramTypeStrings the parameter type annotation strings (may contain nulls)
+     * @param returnTypeString the return type annotation string (may be null)
+     * @param body the body expression
+     * @param closureContext the context captured at definition time
+     */
+    InlineFunctionItem(List<String> paramNames, List<String> paramTypeStrings,
+            String returnTypeString, Expr body, XPathContext closureContext) {
+        this.paramNames = paramNames;
+        this.paramTypeStrings = paramTypeStrings;
+        this.returnTypeString = returnTypeString;
+        this.body = body;
+        this.closureContext = closureContext;
+    }
+
+    /**
+     * Returns the parameter types as parsed SequenceTypes, or null if
+     * no type annotations were present.
+     */
+    public SequenceType[] getParameterTypes() {
+        if (paramTypeStrings == null) {
+            return null;
+        }
+        boolean hasAny = false;
+        for (String s : paramTypeStrings) {
+            if (s != null) {
+                hasAny = true;
+                break;
+            }
+        }
+        if (!hasAny) {
+            return null;
+        }
+        SequenceType[] result = new SequenceType[paramTypeStrings.size()];
+        for (int i = 0; i < paramTypeStrings.size(); i++) {
+            String ts = paramTypeStrings.get(i);
+            if (ts != null && !ts.isEmpty()) {
+                SequenceType st = SequenceType.parse(ts, null);
+                result[i] = st != null ? st : SequenceType.ITEM_STAR;
+            } else {
+                result[i] = SequenceType.ITEM_STAR;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Returns the return type as a parsed SequenceType, or null if
+     * no return type annotation was present.
+     */
+    public SequenceType getReturnType() {
+        if (returnTypeString == null || returnTypeString.isEmpty()) {
+            return null;
+        }
+        return SequenceType.parse(returnTypeString, null);
     }
 
     /**

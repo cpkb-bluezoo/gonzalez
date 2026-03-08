@@ -22,15 +22,11 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.regex.PatternSyntaxException;
-
-import javax.xml.transform.ErrorListener;
-import javax.xml.transform.TransformerConfigurationException;
-import javax.xml.transform.TransformerException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
@@ -41,8 +37,15 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.StringTokenizer;
+import java.util.TreeSet;
+import java.util.regex.PatternSyntaxException;
+
+import javax.xml.transform.ErrorListener;
+import javax.xml.transform.TransformerConfigurationException;
+import javax.xml.transform.TransformerException;
 
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
@@ -62,6 +65,7 @@ import org.bluezoo.gonzalez.schema.xsd.XSDType;
 import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
 import org.bluezoo.gonzalez.transform.ast.BreakNode;
 import org.bluezoo.gonzalez.transform.ast.DocumentConstructorNode;
+import org.bluezoo.gonzalez.transform.ast.DynamicValueOfNode;
 import org.bluezoo.gonzalez.transform.ast.EvaluateNode;
 import org.bluezoo.gonzalez.transform.ast.ForEachGroupNode;
 import org.bluezoo.gonzalez.transform.ast.ForkNode;
@@ -125,7 +129,6 @@ import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TemplateMatcher;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.ValidationMode;
-import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
@@ -146,6 +149,12 @@ import org.bluezoo.gonzalez.transform.xpath.expr.PathExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.expr.TypeExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.ForExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.IfExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.LetExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Literal;
+import org.bluezoo.gonzalez.transform.xpath.expr.SequenceExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.UnaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.VariableReference;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -205,6 +214,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     private final StylesheetResolver resolver;
     private final String baseUri;
     private int importPrecedence = -1;  // Set lazily after imports are processed
+    private int minImportedPrecedence = -1;  // Lowest precedence from imported modules
     private int localTemplateCounter = 0;  // Fallback counter when no resolver
     private boolean importsAllowed = true;
     private boolean precedenceAssigned = false;
@@ -213,6 +223,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     // Tracks explicit mode attribute values for XTSE0545 conflict detection
     // Key: "modeName|attrName", Value: explicit attribute value
     private final Map<String, String> modeAttributeValues = new HashMap<>();
+    
+    // Deferred pattern predicate validations (resolved after all xsl:function are registered)
+    private final List<String[]> deferredPatternValidations = new ArrayList<>();
     
     // Tracks whether the current template being compiled has a match/name pattern
     // Used by xsl:context-item to detect invalid use="absent" in match-only templates
@@ -305,9 +318,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         Map<String, Set<String>> attrs = new HashMap<>();
         Set<String> standard = Collections.emptySet();
         
-        try (java.io.InputStream is = StylesheetCompiler.class.getResourceAsStream("/META-INF/xslt-attributes.properties")) {
+        try (InputStream is = StylesheetCompiler.class.getResourceAsStream("/META-INF/xslt-attributes.properties")) {
             if (is != null) {
-                java.util.Properties props = new java.util.Properties();
+                Properties props = new Properties();
                 props.load(is);
                 
                 for (String key : props.stringPropertyNames()) {
@@ -328,7 +341,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     }
                 }
             }
-        } catch (java.io.IOException e) {
+        } catch (IOException e) {
             // Properties file not found - attribute validation will be skipped
         }
         
@@ -486,7 +499,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (resolver != null) {
             finalPrecedence = resolver.nextPrecedence();
         }
-        builder.finalizePrecedence(importPrecedence, finalPrecedence);
+        builder.finalizePrecedence(importPrecedence, finalPrecedence, minImportedPrecedence);
         // XTSE3350: check for unresolved duplicate accumulator names
         // Only validate at the principal stylesheet level, not in imported modules
         if (isPrincipalStylesheet) {
@@ -517,6 +530,25 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             throw new TransformerConfigurationException(e.getMessage(), e);
         }
         
+        // XTSE3080: An executable package must not have abstract components
+        try {
+            validateNoAbstractComponents(stylesheet);
+        } catch (SAXException e) {
+            throw new TransformerConfigurationException(e.getMessage(), e);
+        }
+        
+        // XTSE3010/XTSE3020: Validate xsl:expose declarations
+        try {
+            validateExposeDeclarations(stylesheet);
+        } catch (SAXException e) {
+            throw new TransformerConfigurationException(e.getMessage(), e);
+        }
+        
+        // Store package resolver for fn:transform() access
+        if (packageResolver != null) {
+            stylesheet.setPackageResolver(packageResolver);
+        }
+        
         return stylesheet;
     }
 
@@ -534,6 +566,128 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 throw new SAXException("XTSE3085: " + displayName
                     + " is used but not declared (declared-modes is enabled)");
             }
+        }
+    }
+
+    /**
+     * XTSE3080: An executable (top-level) package must not contain abstract components.
+     * Abstract components can only appear in library packages intended to be used
+     * via xsl:use-package with overrides.
+     */
+    private void validateNoAbstractComponents(CompiledStylesheet stylesheet) throws SAXException {
+        if (!isPrincipalStylesheet) {
+            return;
+        }
+        for (TemplateRule rule : stylesheet.getTemplateRules()) {
+            if (rule.getVisibility() == ComponentVisibility.ABSTRACT) {
+                String name = rule.getName();
+                if (name == null) {
+                    name = "(match template)";
+                }
+                throw new SAXException("XTSE3080: Abstract template '" + name +
+                    "' found in executable package");
+            }
+        }
+        for (UserFunction func : stylesheet.getUserFunctions().values()) {
+            if (func.getVisibility() == ComponentVisibility.ABSTRACT) {
+                throw new SAXException("XTSE3080: Abstract function '" +
+                    func.getLocalName() + "' found in executable package");
+            }
+        }
+    }
+
+    /**
+     * XTSE3010/XTSE3020: Validates xsl:expose declarations against the stylesheet components.
+     *
+     * <p>XTSE3010: The exposed visibility must be compatible with the component's
+     * potential visibility (e.g., cannot make a private component public).
+     *
+     * <p>XTSE3020: A non-wildcard name in xsl:expose must match at least one component.
+     */
+    private void validateExposeDeclarations(CompiledStylesheet stylesheet) throws SAXException {
+        if (exposeDeclarations.isEmpty()) {
+            return;
+        }
+        
+        Set<String> templateNames = new HashSet<>();
+        for (TemplateRule rule : stylesheet.getTemplateRules()) {
+            if (rule.getName() != null) {
+                templateNames.add(rule.getName());
+            }
+        }
+        
+        Set<String> functionNames = new HashSet<>(stylesheet.getUserFunctions().keySet());
+        
+        for (ExposeDeclaration expose : exposeDeclarations) {
+            String namesPattern = expose.namesPattern;
+            boolean isWildcard = "*".equals(namesPattern);
+            
+            if (!isWildcard) {
+                boolean matched = false;
+                String[] names = namesPattern.trim().split("\\s+");
+                for (String name : names) {
+                    if ("*".equals(name)) {
+                        matched = true;
+                        continue;
+                    }
+                    boolean nameMatched = false;
+                    if (expose.componentType == AcceptDeclaration.ComponentType.TEMPLATE
+                            || expose.componentType == AcceptDeclaration.ComponentType.ALL) {
+                        if (templateNames.contains(name)) {
+                            nameMatched = true;
+                        }
+                    }
+                    if (expose.componentType == AcceptDeclaration.ComponentType.FUNCTION
+                            || expose.componentType == AcceptDeclaration.ComponentType.ALL) {
+                        if (functionNames.contains(name)) {
+                            nameMatched = true;
+                        }
+                    }
+                    if (nameMatched) {
+                        matched = true;
+                        validateExposeCompatibility(stylesheet, expose.componentType, 
+                            name, expose.visibility);
+                    }
+                }
+                if (!matched) {
+                    throw new SAXException("XTSE3020: xsl:expose matches no " +
+                        expose.componentType + " components with names '" + namesPattern + "'");
+                }
+            }
+        }
+    }
+
+    /**
+     * XTSE3010: Validates that the exposed visibility is compatible with the
+     * component's declared (potential) visibility.
+     */
+    private void validateExposeCompatibility(CompiledStylesheet stylesheet,
+            AcceptDeclaration.ComponentType componentType, String name,
+            ComponentVisibility exposed) throws SAXException {
+        ComponentVisibility declared = null;
+        if (componentType == AcceptDeclaration.ComponentType.TEMPLATE
+                || componentType == AcceptDeclaration.ComponentType.ALL) {
+            for (TemplateRule rule : stylesheet.getTemplateRules()) {
+                if (name.equals(rule.getName())) {
+                    declared = rule.getVisibility();
+                    break;
+                }
+            }
+        }
+        if (declared == null) {
+            return;
+        }
+        if (declared == ComponentVisibility.PRIVATE && exposed == ComponentVisibility.PUBLIC) {
+            throw new SAXException("XTSE3010: Cannot expose private template '" + name +
+                "' as public");
+        }
+        if (declared == ComponentVisibility.PRIVATE && exposed == ComponentVisibility.FINAL) {
+            throw new SAXException("XTSE3010: Cannot expose private template '" + name +
+                "' as final");
+        }
+        if (declared == ComponentVisibility.PRIVATE && exposed == ComponentVisibility.ABSTRACT) {
+            throw new SAXException("XTSE3010: Cannot expose private template '" + name +
+                "' as abstract");
         }
     }
 
@@ -622,6 +776,13 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     }
                 }
 
+                // XTSE3430: Validate for-each-group within streaming
+                // templates for non-motionless keys, patterns, and
+                // current-group() usage violations
+                if (body != null) {
+                    validateStreamingForEachGroup(body, 0);
+                }
+
                 // XTSE3430: Match patterns in streamable modes must be
                 // motionless — predicates that depend on position, last(),
                 // or string value are not motionless
@@ -706,31 +867,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+        if (node instanceof CopyNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+                ((CopyNode) node).getContent();
             if (containsNumberInstruction(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+        if (node instanceof ForEachNode) {
             XSLTNode body =
-                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+                ((ForEachNode) node).getBody();
             if (containsNumberInstruction(body, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+        if (node instanceof IfNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+                ((IfNode) node).getContent();
             if (containsNumberInstruction(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
-            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
-                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
-            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
                 XSLTNode wContent = when.getContent();
                 if (containsNumberInstruction(wContent, depth + 1)) {
                     return true;
@@ -741,9 +901,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+        if (node instanceof ElementNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+                ((ElementNode) node).getContent();
             if (containsNumberInstruction(content, depth + 1)) {
                 return true;
             }
@@ -963,6 +1123,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
             }
         }
+        // current() in a pattern predicate refers to the context item
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            if ("current".equals(fc.getLocalName())) {
+                List<Expr> args = fc.getArguments();
+                if (args == null || args.isEmpty()) {
+                    return true;
+                }
+            }
+        }
         return false;
     }
 
@@ -1023,7 +1193,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (expr instanceof LocationPath) {
             LocationPath lp = (LocationPath) expr;
-            java.util.List<Step> steps = lp.getSteps();
+            List<Step> steps = lp.getSteps();
             for (int i = 0; i < steps.size(); i++) {
                 Step.Axis axis = steps.get(i).getAxis();
                 if (axis == Step.Axis.PARENT || axis == Step.Axis.ANCESTOR
@@ -1044,7 +1214,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (expr instanceof FunctionCall) {
             FunctionCall fc = (FunctionCall) expr;
-            java.util.List<Expr> args = fc.getArguments();
+            List<Expr> args = fc.getArguments();
             for (int i = 0; i < args.size(); i++) {
                 if (hasAncestorAxisStep(args.get(i))) {
                     return true;
@@ -1062,15 +1232,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (expr == null) {
             return true;
         }
-        if (expr instanceof org.bluezoo.gonzalez.transform.xpath.expr.Literal) {
+        if (expr instanceof Literal) {
             return true;
         }
-        if (expr instanceof org.bluezoo.gonzalez.transform.xpath.expr.VariableReference) {
+        if (expr instanceof VariableReference) {
             return true;
         }
         if (expr instanceof LocationPath) {
             LocationPath lp = (LocationPath) expr;
-            java.util.List<Step> steps = lp.getSteps();
+            List<Step> steps = lp.getSteps();
             for (int i = 0; i < steps.size(); i++) {
                 Step.Axis axis = steps.get(i).getAxis();
                 if (axis == Step.Axis.PARENT || axis == Step.Axis.ANCESTOR
@@ -1096,7 +1266,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (expr instanceof FunctionCall) {
             FunctionCall fc = (FunctionCall) expr;
-            java.util.List<Expr> args = fc.getArguments();
+            List<Expr> args = fc.getArguments();
             for (int i = 0; i < args.size(); i++) {
                 if (!allPathsUseAncestorAttributeOnly(args.get(i))) {
                     return false;
@@ -1109,7 +1279,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (!allPathsUseAncestorAttributeOnly(fe.getPrimary())) {
                 return false;
             }
-            java.util.List<Expr> preds = fe.getPredicates();
+            List<Expr> preds = fe.getPredicates();
             for (int i = 0; i < preds.size(); i++) {
                 if (!allPathsUseAncestorAttributeOnly(preds.get(i))) {
                     return false;
@@ -1133,7 +1303,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (node instanceof ApplyTemplatesNode) {
             ApplyTemplatesNode at = (ApplyTemplatesNode) node;
-            java.util.List<XPathExpression> exprs = at.getExpressions();
+            List<XPathExpression> exprs = at.getExpressions();
             if (exprs != null && !exprs.isEmpty()) {
                 XPathExpression selectExpr = exprs.get(0);
                 if (isDirectCrawlingSelect(selectExpr)) {
@@ -1141,10 +1311,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
-            org.bluezoo.gonzalez.transform.ast.ForEachNode fe =
-                (org.bluezoo.gonzalez.transform.ast.ForEachNode) node;
-            java.util.List<XPathExpression> exprs = fe.getExpressions();
+        if (node instanceof ForEachNode) {
+            ForEachNode fe = (ForEachNode) node;
+            List<XPathExpression> exprs = fe.getExpressions();
             if (exprs != null && !exprs.isEmpty()) {
                 XPathExpression selectExpr = exprs.get(0);
                 if (isDirectCrawlingSelect(selectExpr)) {
@@ -1157,7 +1326,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         // Check ExpressionHolder for FLWOR with descendant axis in bindings
         if (node instanceof ExpressionHolder) {
-            java.util.List<XPathExpression> exprs =
+            List<XPathExpression> exprs =
                 ((ExpressionHolder) node).getExpressions();
             if (exprs != null) {
                 for (int i = 0; i < exprs.size(); i++) {
@@ -1171,7 +1340,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         // Recurse into children
         if (node instanceof SequenceNode) {
-            java.util.List<XSLTNode> children =
+            List<XSLTNode> children =
                 ((SequenceNode) node).getChildren();
             if (children != null) {
                 for (int i = 0; i < children.size(); i++) {
@@ -1182,24 +1351,23 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+        if (node instanceof CopyNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+                ((CopyNode) node).getContent();
             if (containsCrawlingInstruction(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+        if (node instanceof IfNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+                ((IfNode) node).getContent();
             if (containsCrawlingInstruction(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
-            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
-                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
-            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
                 if (containsCrawlingInstruction(when.getContent(), depth + 1)) {
                     return true;
                 }
@@ -1208,16 +1376,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+        if (node instanceof ElementNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+                ((ElementNode) node).getContent();
             if (containsCrawlingInstruction(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.VariableNode) {
+        if (node instanceof VariableNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.VariableNode) node).getContent();
+                ((VariableNode) node).getContent();
             if (containsCrawlingInstruction(content, depth + 1)) {
                 return true;
             }
@@ -1229,16 +1397,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+        if (node instanceof ForEachNode) {
             XSLTNode body =
-                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+                ((ForEachNode) node).getBody();
             if (containsCrawlingInstruction(body, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.AttributeNode) {
+        if (node instanceof AttributeNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.AttributeNode) node).getContent();
+                ((AttributeNode) node).getContent();
             if (containsCrawlingInstruction(content, depth + 1)) {
                 return true;
             }
@@ -1263,7 +1431,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (expr instanceof LocationPath) {
             LocationPath lp = (LocationPath) expr;
-            java.util.List<Step> steps = lp.getSteps();
+            List<Step> steps = lp.getSteps();
             for (int i = 0; i < steps.size(); i++) {
                 Step.Axis axis = steps.get(i).getAxis();
                 if (axis == Step.Axis.DESCENDANT
@@ -1303,7 +1471,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             return false;
         }
         if (node instanceof ExpressionHolder) {
-            java.util.List<XPathExpression> exprs =
+            List<XPathExpression> exprs =
                 ((ExpressionHolder) node).getExpressions();
             if (exprs != null) {
                 for (int i = 0; i < exprs.size(); i++) {
@@ -1320,7 +1488,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         if (node instanceof SequenceNode) {
-            java.util.List<XSLTNode> children =
+            List<XSLTNode> children =
                 ((SequenceNode) node).getChildren();
             if (children != null) {
                 for (int i = 0; i < children.size(); i++) {
@@ -1336,31 +1504,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+        if (node instanceof ElementNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+                ((ElementNode) node).getContent();
             if (bodyHasConsumingExpr(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+        if (node instanceof CopyNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+                ((CopyNode) node).getContent();
             if (bodyHasConsumingExpr(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+        if (node instanceof IfNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+                ((IfNode) node).getContent();
             if (bodyHasConsumingExpr(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
-            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
-                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
-            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
                 if (bodyHasConsumingExpr(when.getContent(), depth + 1)) {
                     return true;
                 }
@@ -1369,16 +1536,16 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.AttributeNode) {
+        if (node instanceof AttributeNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.AttributeNode) node).getContent();
+                ((AttributeNode) node).getContent();
             if (bodyHasConsumingExpr(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+        if (node instanceof ForEachNode) {
             XSLTNode body =
-                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+                ((ForEachNode) node).getBody();
             if (bodyHasConsumingExpr(body, depth + 1)) {
                 return true;
             }
@@ -1397,7 +1564,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (expr instanceof ForExpr) {
             ForExpr fe = (ForExpr) expr;
-            java.util.List<ForExpr.Binding> bindings = fe.getBindings();
+            List<ForExpr.Binding> bindings = fe.getBindings();
             for (int i = 0; i < bindings.size(); i++) {
                 Expr seq = bindings.get(i).getSequence();
                 if (StreamingClassifier.containsDescendantAxis(seq)) {
@@ -1413,7 +1580,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         if (expr instanceof FunctionCall) {
             FunctionCall fc = (FunctionCall) expr;
-            java.util.List<Expr> args = fc.getArguments();
+            List<Expr> args = fc.getArguments();
             for (int i = 0; i < args.size(); i++) {
                 if (containsCrawlingFlwor(args.get(i))) {
                     return true;
@@ -1425,7 +1592,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             if (containsCrawlingFlwor(fe.getPrimary())) {
                 return true;
             }
-            java.util.List<Expr> preds = fe.getPredicates();
+            List<Expr> preds = fe.getPredicates();
             for (int i = 0; i < preds.size(); i++) {
                 if (containsCrawlingFlwor(preds.get(i))) {
                     return true;
@@ -1467,31 +1634,30 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 }
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.CopyNode) {
+        if (node instanceof CopyNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.CopyNode) node).getContent();
+                ((CopyNode) node).getContent();
             if (containsBackwardsCompatInstruction(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ForEachNode) {
+        if (node instanceof ForEachNode) {
             XSLTNode body =
-                ((org.bluezoo.gonzalez.transform.ast.ForEachNode) node).getBody();
+                ((ForEachNode) node).getBody();
             if (containsBackwardsCompatInstruction(body, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.IfNode) {
+        if (node instanceof IfNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.IfNode) node).getContent();
+                ((IfNode) node).getContent();
             if (containsBackwardsCompatInstruction(content, depth + 1)) {
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ChooseNode) {
-            org.bluezoo.gonzalez.transform.ast.ChooseNode choose =
-                (org.bluezoo.gonzalez.transform.ast.ChooseNode) node;
-            for (org.bluezoo.gonzalez.transform.ast.WhenNode when : choose.getWhens()) {
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
                 XSLTNode wContent = when.getContent();
                 if (containsBackwardsCompatInstruction(wContent, depth + 1)) {
                     return true;
@@ -1502,9 +1668,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return true;
             }
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.ElementNode) {
+        if (node instanceof ElementNode) {
             XSLTNode content =
-                ((org.bluezoo.gonzalez.transform.ast.ElementNode) node).getContent();
+                ((ElementNode) node).getContent();
             if (containsBackwardsCompatInstruction(content, depth + 1)) {
                 return true;
             }
@@ -1803,6 +1969,807 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 "xsl:fork is not streamable: current-group() used in " +
                 "higher-order operand");
         }
+    }
+
+    /**
+     * XTSE3430: Validates xsl:for-each-group nodes within a streaming
+     * context for streamability violations.
+     *
+     * <p>Only checks patterns that are clearly non-streamable:
+     * <ul>
+     *   <li>Two current-group() calls in the same expression</li>
+     *   <li>Climbing from current-group() (parent/ancestor axis)</li>
+     *   <li>current-group() in nested xsl:source-document or
+     *       xsl:copy</li>
+     *   <li>Non-motionless pattern predicate when the population
+     *       is not grounded</li>
+     *   <li>Non-motionless key when the population is not grounded
+     *       and the key navigates to child text</li>
+     * </ul>
+     */
+    private void validateStreamingForEachGroup(XSLTNode node, int depth)
+            throws SAXException {
+        if (node == null || depth > 50) {
+            return;
+        }
+
+        if (node instanceof ForEachGroupNode) {
+            ForEachGroupNode feg = (ForEachGroupNode) node;
+            boolean groundedPopulation = isGroundedPopulation(feg);
+
+            // Only validate patterns/keys when population is NOT
+            // grounded (copy-of makes items fully available)
+            if (!groundedPopulation) {
+                // Non-motionless pattern for group-starting-with
+                // when population is child elements (not text nodes)
+                Pattern startPat = feg.getGroupStartingPattern();
+                if (startPat != null) {
+                    String patStr = startPat.toString();
+                    boolean matchesText = patStr.startsWith("text()");
+                    if (!matchesText) {
+                        if (hasNonMotionlessPredicate(startPat)) {
+                            throw new SAXException("XTSE3430: Streaming " +
+                                "xsl:for-each-group group-starting-with " +
+                                "pattern '" + patStr +
+                                "' is not motionless");
+                        }
+                        // position()/last() in pattern predicates are
+                        // non-streamable (require sibling counting)
+                        if (patternUsesPosition(startPat)) {
+                            throw new SAXException("XTSE3430: Streaming " +
+                                "xsl:for-each-group group-starting-with " +
+                                "pattern '" + patStr +
+                                "' uses position()/last() which " +
+                                "requires sibling counting");
+                        }
+                    }
+                }
+
+                // Non-motionless key for group-adjacent (only flag
+                // path expressions with slash, e.g. "PRICE/text()")
+                XPathExpression adjExpr = feg.getGroupAdjacentExpr();
+                if (adjExpr != null) {
+                    String keyStr = adjExpr.getExpressionString();
+                    if (keyStr != null && keyStr.contains("/")) {
+                        if (!keyStr.trim().startsWith("@")) {
+                            throw new SAXException("XTSE3430: Streaming " +
+                                "xsl:for-each-group group-adjacent " +
+                                "key '" + keyStr + "' is not motionless");
+                        }
+                    }
+                }
+            }
+
+            // Body checks
+            XSLTNode body = feg.getBody();
+            if (body != null) {
+                // Two current-group() in same expression
+                // (only when population is NOT grounded)
+                if (!groundedPopulation) {
+                    if (hasMultipleCurrentGroupInSameExpr(body, 0)) {
+                        throw new SAXException("XTSE3430: Streaming " +
+                            "xsl:for-each-group body references " +
+                            "current-group() multiple times in the " +
+                            "same expression");
+                    }
+                }
+
+                // current-group() in nested source-document or
+                // context-changing xsl:copy (only when population is
+                // NOT grounded, since grounded items are safe anywhere)
+                if (!groundedPopulation) {
+                    if (containsCurrentGroupRef(body, 0)) {
+                        if (hasCurrentGroupInNestedContext(body, 0)) {
+                            throw new SAXException("XTSE3430: Streaming " +
+                                "xsl:for-each-group uses " +
+                                "current-group() inside a nested " +
+                                "streaming or context-changing " +
+                                "instruction");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Recurse into child nodes
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    validateStreamingForEachGroup(children.get(i),
+                        depth + 1);
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            validateStreamingForEachGroup(
+                ((ForEachNode) node).getBody(), depth + 1);
+        }
+        if (node instanceof IfNode) {
+            validateStreamingForEachGroup(
+                ((IfNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                validateStreamingForEachGroup(
+                    when.getContent(), depth + 1);
+            }
+            validateStreamingForEachGroup(
+                choose.getOtherwise(), depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            validateStreamingForEachGroup(
+                ((LiteralResultElement) node).getContent(), depth + 1);
+        }
+        if (node instanceof CopyNode) {
+            validateStreamingForEachGroup(
+                ((CopyNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            validateStreamingForEachGroup(
+                ((ElementNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            validateStreamingForEachGroup(
+                ((VariableNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ResultDocumentNode) {
+            validateStreamingForEachGroup(
+                ((ResultDocumentNode) node).getContent(), depth + 1);
+        }
+    }
+
+    /**
+     * Checks if a pattern uses position() or last() in a predicate.
+     * In streaming group-starting-with/group-ending-with, these
+     * require sibling counting which is not available.
+     */
+    private static boolean patternUsesPosition(Pattern pat) {
+        if (pat == null) {
+            return false;
+        }
+        String patStr = pat.toString();
+        return patStr.contains("position()") ||
+            patStr.contains("last()");
+    }
+
+    /**
+     * Checks if the population of a for-each-group is grounded
+     * (uses copy-of() or similar).
+     */
+    private boolean isGroundedPopulation(ForEachGroupNode feg) {
+        XPathExpression sel = feg.getSelect();
+        if (sel == null) {
+            return false;
+        }
+        String s = sel.getExpressionString();
+        return s != null && s.contains("copy-of(");
+    }
+
+    /**
+     * Checks if any single expression in the body has 2+ current-group()
+     * calls where at least one is not grounded (not inside copy-of).
+     */
+    private boolean hasMultipleCurrentGroupInSameExpr(XSLTNode node,
+            int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            for (XPathExpression expr : exprs) {
+                if (expr != null) {
+                    String s = expr.getExpressionString();
+                    if (s != null) {
+                        int total = countOccurrences(s,
+                            "current-group()");
+                        if (total > 1) {
+                            // If all occurrences are grounded (inside
+                            // copy-of()), double consumption is OK
+                            if (!allCurrentGroupGrounded(s)) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (hasMultipleCurrentGroupInSameExpr(
+                            children.get(i), depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            return hasMultipleCurrentGroupInSameExpr(
+                ((ForEachNode) node).getBody(), depth + 1);
+        }
+        if (node instanceof IfNode) {
+            return hasMultipleCurrentGroupInSameExpr(
+                ((IfNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                if (hasMultipleCurrentGroupInSameExpr(
+                        when.getContent(), depth + 1)) {
+                    return true;
+                }
+            }
+            return hasMultipleCurrentGroupInSameExpr(
+                choose.getOtherwise(), depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            return hasMultipleCurrentGroupInSameExpr(
+                ((LiteralResultElement) node).getContent(), depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            return hasMultipleCurrentGroupInSameExpr(
+                ((ElementNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof CopyNode) {
+            return hasMultipleCurrentGroupInSameExpr(
+                ((CopyNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            return hasMultipleCurrentGroupInSameExpr(
+                ((VariableNode) node).getContent(), depth + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Checks if all current-group() references in an expression are
+     * inside a copy-of() call (making them grounded). Uses parenthesis
+     * depth tracking.
+     */
+    private static boolean allCurrentGroupGrounded(String expr) {
+        String target = "current-group()";
+        int idx = expr.indexOf(target);
+        while (idx >= 0) {
+            // Check if this occurrence is inside a copy-of() call
+            // by searching backwards for "copy-of(" and verifying
+            // the parenthesis depth
+            if (!isInsideCopyOf(expr, idx)) {
+                return false;
+            }
+            idx = expr.indexOf(target, idx + target.length());
+        }
+        return true;
+    }
+
+    /**
+     * Checks if a position in the expression is inside a copy-of() call
+     * by looking at the nesting of copy-of( calls before this position.
+     */
+    private static boolean isInsideCopyOf(String expr, int pos) {
+        // Walk backwards from pos looking for "copy-of(" at any
+        // nesting level. Track parenthesis depth to know if we're
+        // still inside the copy-of call.
+        int parenDepth = 0;
+        for (int i = pos - 1; i >= 0; i--) {
+            char c = expr.charAt(i);
+            if (c == ')') {
+                parenDepth++;
+            } else if (c == '(') {
+                if (parenDepth > 0) {
+                    parenDepth--;
+                } else {
+                    // We're at an open paren that matches
+                    // Check if preceded by "copy-of"
+                    String before = expr.substring(
+                        Math.max(0, i - 7), i).trim();
+                    if (before.endsWith("copy-of")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Counts non-overlapping occurrences of a substring.
+     */
+    private static int countOccurrences(String str, String sub) {
+        int count = 0;
+        int idx = str.indexOf(sub);
+        while (idx >= 0) {
+            count++;
+            idx = str.indexOf(sub, idx + sub.length());
+        }
+        return count;
+    }
+
+    /**
+     * Checks if any expression in the subtree references current-group().
+     * Unlike countCurrentGroupCalls, this method recurses into ALL
+     * node types including CopyNode, ResultDocumentNode, etc.
+     */
+    private boolean containsCurrentGroupRef(XSLTNode node, int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    int calls = StreamingClassifier.countFunctionCalls(
+                        exprs.get(i), "current-group");
+                    if (calls > 0) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof LiteralResultElement) {
+            LiteralResultElement lre = (LiteralResultElement) node;
+            Map<String, AttributeValueTemplate> attrs = lre.getAttributes();
+            if (attrs != null) {
+                List<XPathExpression> avtExprs =
+                    new ArrayList<XPathExpression>();
+                for (AttributeValueTemplate avt : attrs.values()) {
+                    avt.collectExpressions(avtExprs);
+                }
+                for (int i = 0; i < avtExprs.size(); i++) {
+                    int calls = StreamingClassifier.countFunctionCalls(
+                        avtExprs.get(i), "current-group");
+                    if (calls > 0) {
+                        return true;
+                    }
+                }
+            }
+            if (containsCurrentGroupRef(lre.getContent(), depth + 1)) {
+                return true;
+            }
+        }
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children =
+                ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (containsCurrentGroupRef(children.get(i),
+                            depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            return containsCurrentGroupRef(
+                ((ForEachNode) node).getBody(), depth + 1);
+        }
+        if (node instanceof IfNode) {
+            return containsCurrentGroupRef(
+                ((IfNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                if (containsCurrentGroupRef(
+                        when.getContent(), depth + 1)) {
+                    return true;
+                }
+            }
+            return containsCurrentGroupRef(
+                choose.getOtherwise(), depth + 1);
+        }
+        if (node instanceof CopyNode) {
+            return containsCurrentGroupRef(
+                ((CopyNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            return containsCurrentGroupRef(
+                ((ElementNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            return containsCurrentGroupRef(
+                ((VariableNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ResultDocumentNode) {
+            return containsCurrentGroupRef(
+                ((ResultDocumentNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof SourceDocumentNode) {
+            return containsCurrentGroupRef(
+                ((SourceDocumentNode) node).getContent(), depth + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Checks if a for-each-group body has current-group() inside a nested
+     * xsl:source-document or xsl:copy instruction (higher-order context).
+     */
+    private boolean hasCurrentGroupInNestedContext(XSLTNode node,
+            int depth) {
+        if (node == null || depth > 50) {
+            return false;
+        }
+
+        // current-group() inside nested xsl:source-document
+        if (node instanceof SourceDocumentNode) {
+            return containsCurrentGroupRef(
+                ((SourceDocumentNode) node).getContent(), 0);
+        }
+
+        // current-group() inside xsl:copy with select (context change)
+        if (node instanceof CopyNode) {
+            CopyNode copy = (CopyNode) node;
+            // Only flag when xsl:copy has a select attribute, which
+            // changes the context item (higher-order operand)
+            List<XPathExpression> copyExprs = copy.getExpressions();
+            boolean hasSelect = !copyExprs.isEmpty();
+            if (hasSelect) {
+                return containsCurrentGroupRef(copy.getContent(), 0);
+            }
+            // Without select, recurse normally
+            return hasCurrentGroupInNestedContext(
+                copy.getContent(), depth + 1);
+        }
+
+        // Recurse
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    if (hasCurrentGroupInNestedContext(children.get(i),
+                            depth + 1)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            return hasCurrentGroupInNestedContext(
+                ((ForEachNode) node).getBody(), depth + 1);
+        }
+        if (node instanceof IfNode) {
+            return hasCurrentGroupInNestedContext(
+                ((IfNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                if (hasCurrentGroupInNestedContext(
+                        when.getContent(), depth + 1)) {
+                    return true;
+                }
+            }
+            return hasCurrentGroupInNestedContext(
+                choose.getOtherwise(), depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            return hasCurrentGroupInNestedContext(
+                ((LiteralResultElement) node).getContent(), depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            return hasCurrentGroupInNestedContext(
+                ((ElementNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            return hasCurrentGroupInNestedContext(
+                ((VariableNode) node).getContent(), depth + 1);
+        }
+        if (node instanceof ResultDocumentNode) {
+            XSLTNode rdContent =
+                ((ResultDocumentNode) node).getContent();
+            return hasCurrentGroupInNestedContext(rdContent, depth + 1);
+        }
+        // Don't recurse into nested for-each-group (it has its own scope)
+        return false;
+    }
+
+    /**
+     * XTSE3430: Validates that calls to user functions with declared
+     * streamability within a streaming body have compliant arguments.
+     *
+     * <p>For shallow-descent functions called within streaming contexts:
+     * <ul>
+     *   <li>The first argument must not use parent/ancestor axis
+     *       (climbing)</li>
+     *   <li>Second and subsequent arguments must not be consuming
+     *       (e.g. child axis wildcard)</li>
+     * </ul>
+     */
+    private void validateStreamableFunctionCallSites(XSLTNode node,
+            int depth) throws SAXException {
+        if (node == null || depth > 50) {
+            return;
+        }
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            if (exprs != null) {
+                for (int i = 0; i < exprs.size(); i++) {
+                    XPathExpression xpe = exprs.get(i);
+                    if (xpe != null && xpe.getCompiledExpr() != null) {
+                        checkExprForStreamableFunctionCalls(
+                            xpe.getCompiledExpr());
+                    }
+                }
+            }
+        }
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    validateStreamableFunctionCallSites(
+                        children.get(i), depth + 1);
+                }
+            }
+        }
+        if (node instanceof ForEachNode) {
+            XSLTNode body =
+                ((ForEachNode) node).getBody();
+            validateStreamableFunctionCallSites(body, depth + 1);
+        }
+        if (node instanceof IfNode) {
+            XSLTNode content =
+                ((IfNode) node).getContent();
+            validateStreamableFunctionCallSites(content, depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                validateStreamableFunctionCallSites(when.getContent(), depth + 1);
+            }
+            validateStreamableFunctionCallSites(choose.getOtherwise(), depth + 1);
+        }
+        if (node instanceof CopyNode) {
+            XSLTNode content =
+                ((CopyNode) node).getContent();
+            validateStreamableFunctionCallSites(content, depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            XSLTNode content =
+                ((ElementNode) node).getContent();
+            validateStreamableFunctionCallSites(content, depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            XSLTNode content =
+                ((LiteralResultElement) node).getContent();
+            validateStreamableFunctionCallSites(content, depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            XSLTNode content =
+                ((VariableNode) node).getContent();
+            validateStreamableFunctionCallSites(content, depth + 1);
+        }
+    }
+
+    /**
+     * Walks an expression tree looking for calls to streamable user
+     * functions, validating their arguments for streaming compliance.
+     */
+    private void checkExprForStreamableFunctionCalls(Expr expr)
+            throws SAXException {
+        if (expr == null) {
+            return;
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String nsUri = fc.getResolvedNamespaceURI();
+            String localName = fc.getLocalName();
+            if (nsUri != null && !nsUri.isEmpty()) {
+                List<Expr> args = fc.getArguments();
+                int arity = args.size();
+                if (builder.hasUserFunction(nsUri, localName)) {
+                    UserFunction uf = findUserFunction(nsUri, localName,
+                        arity);
+                    if (uf != null && uf.getStreamability() != null &&
+                            !"unclassified".equals(uf.getStreamability())) {
+                        validateStreamableFunctionArgs(fc, uf);
+                    }
+                }
+            }
+            // Also check arguments recursively
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                checkExprForStreamableFunctionCalls(args.get(i));
+            }
+            return;
+        }
+        // Recurse into sub-expressions
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            checkExprForStreamableFunctionCalls(be.getLeft());
+            checkExprForStreamableFunctionCalls(be.getRight());
+        } else if (expr instanceof UnaryExpr) {
+            checkExprForStreamableFunctionCalls(
+                ((UnaryExpr) expr).getOperand());
+        } else if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            checkExprForStreamableFunctionCalls(pe.getFilter());
+            checkExprForStreamableFunctionCalls(pe.getPath());
+        } else if (expr instanceof FilterExpr) {
+            FilterExpr fe = (FilterExpr) expr;
+            checkExprForStreamableFunctionCalls(fe.getPrimary());
+            List<Expr> preds = fe.getPredicates();
+            for (int i = 0; i < preds.size(); i++) {
+                checkExprForStreamableFunctionCalls(preds.get(i));
+            }
+        } else if (expr instanceof IfExpr) {
+            IfExpr ie = (IfExpr) expr;
+            checkExprForStreamableFunctionCalls(ie.getCondition());
+            checkExprForStreamableFunctionCalls(ie.getThenExpr());
+            checkExprForStreamableFunctionCalls(ie.getElseExpr());
+        } else if (expr instanceof SequenceExpr) {
+            List<Expr> items = ((SequenceExpr) expr).getItems();
+            for (int i = 0; i < items.size(); i++) {
+                checkExprForStreamableFunctionCalls(items.get(i));
+            }
+        } else if (expr instanceof ForExpr) {
+            ForExpr fe = (ForExpr) expr;
+            List<ForExpr.Binding> bindings = fe.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                checkExprForStreamableFunctionCalls(
+                    bindings.get(i).getSequence());
+            }
+            checkExprForStreamableFunctionCalls(fe.getReturnExpr());
+        } else if (expr instanceof LetExpr) {
+            LetExpr le = (LetExpr) expr;
+            List<LetExpr.Binding> bindings = le.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                checkExprForStreamableFunctionCalls(
+                    bindings.get(i).getValue());
+            }
+            checkExprForStreamableFunctionCalls(le.getReturnExpr());
+        }
+    }
+
+    /**
+     * Finds a UserFunction by namespace, local name, and arity.
+     */
+    private UserFunction findUserFunction(String nsUri, String localName,
+            int arity) {
+        String key = nsUri + "#" + localName + "#" + arity;
+        Map<String, UserFunction> functions = builder.getUserFunctions();
+        return functions.get(key);
+    }
+
+    /**
+     * Validates that the arguments to a streamable function call comply
+     * with streaming rules.
+     */
+    private void validateStreamableFunctionArgs(FunctionCall fc,
+            UserFunction uf) throws SAXException {
+        List<Expr> args = fc.getArguments();
+        String funcName = fc.getPrefix() != null
+            ? fc.getPrefix() + ":" + fc.getLocalName()
+            : fc.getLocalName();
+
+        // First argument must not use parent/ancestor axis (climbing)
+        if (!args.isEmpty()) {
+            Expr firstArg = args.get(0);
+            if (containsClimbingAxis(firstArg)) {
+                throw new SAXException("XTSE3430: Call to " +
+                    "streamable function '" + funcName +
+                    "' has a climbing first argument (parent/ancestor " +
+                    "axis) in streaming context");
+            }
+            // For absorbing functions, first argument must not use
+            // descendant axis (crawling)
+            if (containsCrawlingAxis(firstArg)) {
+                throw new SAXException("XTSE3430: Call to " +
+                    "streamable function '" + funcName +
+                    "' has a crawling argument (descendant axis) " +
+                    "in streaming context");
+            }
+        }
+
+        // Second and subsequent arguments must not be consuming
+        // (child axis navigation that consumes streamed nodes)
+        for (int i = 1; i < args.size(); i++) {
+            Expr arg = args.get(i);
+            if (isConsumingExpression(arg)) {
+                throw new SAXException("XTSE3430: Call to " +
+                    "streamable function '" + funcName +
+                    "' has a consuming argument in position " + (i + 1) +
+                    " in streaming context");
+            }
+        }
+    }
+
+    /**
+     * Checks if an expression contains a parent or ancestor axis step
+     * (climbing expression in streaming terminology).
+     */
+    private boolean containsClimbingAxis(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step.Axis axis = steps.get(i).getAxis();
+                if (axis == Step.Axis.PARENT ||
+                        axis == Step.Axis.ANCESTOR ||
+                        axis == Step.Axis.ANCESTOR_OR_SELF) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            boolean result = containsClimbingAxis(pe.getFilter());
+            if (!result) {
+                result = containsClimbingAxis(pe.getPath());
+            }
+            return result;
+        }
+        return false;
+    }
+
+    /**
+     * Checks if an expression contains a descendant or descendant-or-self
+     * axis step (crawling expression in streaming terminology).
+     */
+    private boolean containsCrawlingAxis(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step.Axis axis = steps.get(i).getAxis();
+                if (axis == Step.Axis.DESCENDANT ||
+                        axis == Step.Axis.DESCENDANT_OR_SELF) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            boolean result = containsCrawlingAxis(pe.getFilter());
+            if (!result) {
+                result = containsCrawlingAxis(pe.getPath());
+            }
+            return result;
+        }
+        return false;
+    }
+
+    /**
+     * Checks if an expression is a consuming expression (navigates into
+     * child nodes) in a streaming context. Wildcard child selections
+     * like {@code *} are consuming.
+     */
+    private boolean isConsumingExpression(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            for (int i = 0; i < steps.size(); i++) {
+                Step.Axis axis = steps.get(i).getAxis();
+                if (axis == Step.Axis.CHILD ||
+                        axis == Step.Axis.DESCENDANT ||
+                        axis == Step.Axis.DESCENDANT_OR_SELF) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            boolean result = isConsumingExpression(pe.getFilter());
+            if (!result) {
+                result = isConsumingExpression(pe.getPath());
+            }
+            return result;
+        }
+        return false;
     }
 
     /**
@@ -2389,6 +3356,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 throw new SAXException("Error creating simplified stylesheet template: " + e.getMessage(), e);
             }
         }
+        
+        // Validate deferred pattern predicates now that all xsl:function
+        // declarations have been registered (handles forward references)
+        validateDeferredPatternPredicates();
     }
 
     @Override
@@ -3585,7 +4556,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Extract fallback for the default case (unknown elements in FC mode need fallback).
         List<XSLTNode> fallbackNodes = new ArrayList<>();
         if (!hasRestrictedContentModel(ctx.localName)) {
-            java.util.Iterator<XSLTNode> fbIter = ctx.children.iterator();
+            Iterator<XSLTNode> fbIter = ctx.children.iterator();
             while (fbIter.hasNext()) {
                 XSLTNode child = fbIter.next();
                 if (child instanceof FallbackNode) {
@@ -3852,16 +4823,14 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 return new SequenceNode(ctx.children);
                 
             case "try": {
-                double effectiveVersion = Math.min(stylesheetVersion, maxProcessorVersion);
-                if (effectiveVersion < 3.0) {
+                if (maxProcessorVersion < 3.0) {
                     return compileUnknownXSLTInstruction(ctx, fallbackNodes);
                 }
                 validateNotTopLevel(ctx.localName);
                 return compileTry(ctx);
             }
             case "catch": {
-                double effectiveVersion = Math.min(stylesheetVersion, maxProcessorVersion);
-                if (effectiveVersion < 3.0) {
+                if (maxProcessorVersion < 3.0) {
                     return compileUnknownXSLTInstruction(ctx, fallbackNodes);
                 }
             }
@@ -4650,7 +5619,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (streamableAttr != null && !streamableAttr.isEmpty()) {
             validateYesOrNo("xsl:accumulator", "streamable", streamableAttr);
         }
-        boolean streamable = !"no".equals(streamableAttr);  // Default is yes
+        boolean streamable;
+        boolean explicitlyStreamable = false;
+        if (streamableAttr == null) {
+            streamable = true;
+        } else {
+            String sv = streamableAttr.trim();
+            streamable = "yes".equals(sv) || "true".equals(sv) || "1".equals(sv);
+            explicitlyStreamable = streamable;
+        }
         
         String expandedName = expandQName(name.trim());
         
@@ -4675,6 +5652,22 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // XTSE0010: accumulator must have at least one accumulator-rule
         if (ruleCount == 0) {
             throw new SAXException("XTSE0010: xsl:accumulator must have at least one xsl:accumulator-rule child");
+        }
+
+        // XTSE3430: streamable accumulator rule patterns must be motionless
+        if (explicitlyStreamable) {
+            for (XSLTNode child : ctx.children) {
+                if (child instanceof AccumulatorRuleNode) {
+                    AccumulatorRuleNode ruleNode = (AccumulatorRuleNode) child;
+                    Pattern rulePat = ruleNode.getPattern();
+                    if (rulePat != null && hasNonMotionlessPredicate(rulePat)) {
+                        throw new SAXException(
+                            "XTSE3430: Accumulator rule pattern '" + rulePat +
+                            "' in streamable accumulator '" + name +
+                            "' is not motionless");
+                    }
+                }
+            }
         }
         
         builder.addAccumulator(accBuilder.build());
@@ -4728,13 +5721,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             || "1".equals(streamableAttr);
         ModeDeclaration.Builder modeBuilder = new ModeDeclaration.Builder()
             .name(name)
-            .streamable(isStreamable)
             .onNoMatch(onNoMatchAttr)
             .onMultipleMatch(onMultipleMatchAttr)
             .visibility(visibilityAttr)
             .useAccumulators(useAccumulators)
             .typed("yes".equals(typedAttr))
             .warning("yes".equals(warningOnNoMatch));
+        if (streamableAttr != null) {
+            modeBuilder.streamable(isStreamable);
+        }
+        if (useAccumulators != null) {
+            modeBuilder.expandedUseAccumulators(expandAccumulatorNames(useAccumulators));
+        }
         
         builder.addModeDeclaration(modeBuilder.build());
     }
@@ -4750,7 +5748,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             return trimmed;
         }
         String[] tokens = trimmed.split("\\s+");
-        java.util.TreeSet<String> expanded = new java.util.TreeSet<>();
+        TreeSet<String> expanded = new TreeSet<String>();
         for (String token : tokens) {
             expanded.add(expandQName(token));
         }
@@ -4772,8 +5770,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         String trackKey = modeKey + "|" + attrName;
         String existing = modeAttributeValues.get(trackKey);
         if (existing != null && !existing.equals(attrValue)) {
-            throw new SAXException("XTSE0545: Conflicting values for " + attrName +
-                " on mode '" + modeKey + "': '" + existing + "' vs '" + attrValue + "'");
+            String message = "XTSE0545: Conflicting values for " + attrName +
+                " on mode '" + modeKey + "': '" + existing + "' vs '" + attrValue + "'";
+            builder.recordModeConflict(modeKey, attrName, message);
         }
         modeAttributeValues.put(trackKey, attrValue);
     }
@@ -4880,8 +5879,33 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         
         SequenceNode body = new SequenceNode(bodyNodes);
         
+        // XSLT 3.0: Validate streamability attribute
+        String streamabilityAttr = ctx.attributes.get("streamability");
+        String streamability = null;
+        if (streamabilityAttr != null && !streamabilityAttr.isEmpty()) {
+            streamability = streamabilityAttr.trim();
+            if (!"unclassified".equals(streamability)) {
+                // XTSE3155: Streamable function must have at least one parameter
+                if (params.isEmpty()) {
+                    throw new SAXException("XTSE3155: xsl:function with " +
+                        "streamability='" + streamability + "' must have " +
+                        "at least one parameter");
+                }
+                if ("shallow-descent".equals(streamability) ||
+                        "deep-descent".equals(streamability)) {
+                    validateDescentFunction(params, bodyNodes, name);
+                }
+                if ("absorbing".equals(streamability)) {
+                    validateAbsorbingFunction(params, bodyNodes, name);
+                }
+            }
+        }
+
         UserFunction function = new UserFunction(
             namespaceURI, localName, params, body, asType, importPrecedence, cached, funcVisibility);
+        if (streamability != null) {
+            function.setStreamability(streamability);
+        }
         try {
             builder.addUserFunction(function);
         } catch (javax.xml.transform.TransformerConfigurationException e) {
@@ -4889,6 +5913,424 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
     }
     
+    /**
+     * XTSE3430: Validates constraints on a shallow-descent or deep-descent
+     * streamable function declaration.
+     *
+     * <p>For shallow-descent functions, the spec requires:
+     * <ul>
+     *   <li>The first parameter must be declared as node()</li>
+     *   <li>The body must not use descendant axis (crawling)</li>
+     *   <li>The body must produce nodes, not atomic values (striding)</li>
+     *   <li>The body must not reference the first parameter multiple
+     *       times (consuming)</li>
+     * </ul>
+     */
+    private void validateDescentFunction(
+            List<UserFunction.FunctionParameter> params,
+            List<XSLTNode> bodyNodes, String funcName) throws SAXException {
+        // First parameter must be typed as a single node
+        UserFunction.FunctionParameter firstParam = params.get(0);
+        String firstParamType = firstParam.getAsType();
+        if (!isSingleNodeType(firstParamType)) {
+            throw new SAXException("XTSE3430: First parameter of " +
+                "shallow-descent function '" + funcName + "' must be " +
+                "declared as a single node type (e.g. node(), element())");
+        }
+
+        // Check body expressions for streaming violations
+        for (XSLTNode node : bodyNodes) {
+            validateDescentFunctionBody(node, funcName, firstParam.getName(), 0);
+        }
+    }
+
+    /**
+     * Recursively checks a shallow-descent function body for streaming
+     * violations: descendant axis usage, atomic-returning expressions,
+     * and multi-access patterns.
+     */
+    private void validateDescentFunctionBody(XSLTNode node, String funcName,
+            String firstParamName, int depth) throws SAXException {
+        if (node == null || depth > 30) {
+            return;
+        }
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            for (XPathExpression expr : exprs) {
+                String exprStr = expr.toString();
+
+                // Body must not use descendant axis (crawling)
+                if (containsDescendantAxis(exprStr)) {
+                    throw new SAXException("XTSE3430: Body of " +
+                        "shallow-descent function '" + funcName +
+                        "' uses descendant axis (crawling expression)");
+                }
+
+                // Body must return nodes, not atomic values
+                if (returnsAtomicValue(exprStr, firstParamName)) {
+                    throw new SAXException("XTSE3430: Body of " +
+                        "shallow-descent function '" + funcName +
+                        "' returns an atomic value (non-striding result)");
+                }
+
+                // Body must not access the first parameter multiple times
+                if (hasNonConsumingAccess(exprStr, firstParamName)) {
+                    throw new SAXException("XTSE3430: Body of " +
+                        "shallow-descent function '" + funcName +
+                        "' has a non-consuming access pattern");
+                }
+            }
+        }
+        // Recurse into child nodes
+        if (node instanceof SequenceNode) {
+            for (XSLTNode child : ((SequenceNode) node).getChildren()) {
+                validateDescentFunctionBody(child, funcName,
+                    firstParamName, depth + 1);
+            }
+        }
+    }
+
+    /**
+     * XTSE3430: Validates constraints on an absorbing streamable function.
+     *
+     * <p>For absorbing functions:
+     * <ul>
+     *   <li>If the first parameter is a sequence type, the body must not
+     *       have multiple references to it (each reference consumes the
+     *       stream)</li>
+     *   <li>The body must not return the parameter node directly
+     *       (non-grounded return)</li>
+     *   <li>The body must not use the path() function (requires
+     *       ancestor access)</li>
+     * </ul>
+     */
+    private void validateAbsorbingFunction(
+            List<UserFunction.FunctionParameter> params,
+            List<XSLTNode> bodyNodes, String funcName) throws SAXException {
+        UserFunction.FunctionParameter firstParam = params.get(0);
+        String paramName = firstParam.getName();
+        String paramType = firstParam.getAsType();
+
+        // Collect all expression strings from the body
+        List<String> exprStrings = new ArrayList<>();
+        collectExpressionStrings(bodyNodes, exprStrings, 0);
+
+        // Check for path() function in body (non-streamable)
+        for (String exprStr : exprStrings) {
+            if (containsPathFunctionCall(exprStr)) {
+                throw new SAXException("XTSE3430: Body of absorbing " +
+                    "function '" + funcName + "' uses the path() " +
+                    "function which requires ancestor access");
+            }
+        }
+
+        // Check for non-grounded return (returning the parameter directly
+        // from an xsl:sequence instruction)
+        if (hasNonGroundedSequenceReturn(bodyNodes, paramName, 0)) {
+            throw new SAXException("XTSE3430: Body of absorbing " +
+                "function '" + funcName + "' can return the " +
+                "streaming parameter directly (non-grounded result)");
+        }
+
+        // For sequence parameters (node()*, element()*), multiple
+        // references to the parameter are not allowed because the
+        // stream cannot be rewound.
+        boolean isSequenceParam = paramType != null &&
+            (paramType.trim().endsWith("*") || paramType.trim().endsWith("+"));
+        if (isSequenceParam) {
+            int totalRefs = 0;
+            for (String exprStr : exprStrings) {
+                totalRefs += countParamReferences(exprStr, paramName);
+            }
+            if (totalRefs > 1) {
+                throw new SAXException("XTSE3430: Body of absorbing " +
+                    "function '" + funcName + "' has multiple " +
+                    "references to sequence parameter '$" + paramName +
+                    "' (stream cannot be rewound)");
+            }
+
+            // A single reference with a variable-based predicate inside
+            // a loop (e.g. "for $i in ... return ...$param[$i]...")
+            // accesses the sequence multiple times.
+            for (String exprStr : exprStrings) {
+                if (hasLoopBasedPredicateAccess(exprStr, paramName)) {
+                    throw new SAXException("XTSE3430: Body of absorbing " +
+                        "function '" + funcName + "' has a consuming " +
+                        "reference to parameter '$" + paramName +
+                        "' in a loop");
+                }
+            }
+        }
+    }
+
+    /**
+     * Collects all expression strings from a list of XSLT nodes,
+     * recursing into all container node types.
+     */
+    private void collectExpressionStrings(List<XSLTNode> nodes,
+            List<String> result, int depth) {
+        if (depth > 30) {
+            return;
+        }
+        for (XSLTNode node : nodes) {
+            collectNodeExpressionStrings(node, result, depth);
+        }
+    }
+
+    /**
+     * Collects expression strings from a single XSLT node and its
+     * children, recursing into all container node types.
+     */
+    private void collectNodeExpressionStrings(XSLTNode node,
+            List<String> result, int depth) {
+        if (node == null || depth > 30) {
+            return;
+        }
+        if (node instanceof ExpressionHolder) {
+            List<XPathExpression> exprs =
+                ((ExpressionHolder) node).getExpressions();
+            for (XPathExpression expr : exprs) {
+                if (expr != null) {
+                    result.add(expr.getExpressionString());
+                }
+            }
+        }
+        if (node instanceof SequenceNode) {
+            List<XSLTNode> children = ((SequenceNode) node).getChildren();
+            for (int i = 0; i < children.size(); i++) {
+                collectNodeExpressionStrings(children.get(i), result,
+                    depth + 1);
+            }
+        }
+        if (node instanceof CopyNode) {
+            XSLTNode content =
+                ((CopyNode) node).getContent();
+            collectNodeExpressionStrings(content, result, depth + 1);
+        }
+        if (node instanceof ElementNode) {
+            XSLTNode content =
+                ((ElementNode) node).getContent();
+            collectNodeExpressionStrings(content, result, depth + 1);
+        }
+        if (node instanceof LiteralResultElement) {
+            XSLTNode content =
+                ((LiteralResultElement) node).getContent();
+            collectNodeExpressionStrings(content, result, depth + 1);
+        }
+        if (node instanceof ForEachNode) {
+            XSLTNode body =
+                ((ForEachNode) node).getBody();
+            collectNodeExpressionStrings(body, result, depth + 1);
+        }
+        if (node instanceof IfNode) {
+            XSLTNode content =
+                ((IfNode) node).getContent();
+            collectNodeExpressionStrings(content, result, depth + 1);
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                collectNodeExpressionStrings(when.getContent(), result,
+                    depth + 1);
+            }
+            collectNodeExpressionStrings(choose.getOtherwise(), result,
+                depth + 1);
+        }
+        if (node instanceof VariableNode) {
+            XSLTNode content =
+                ((VariableNode) node).getContent();
+            collectNodeExpressionStrings(content, result, depth + 1);
+        }
+    }
+
+    /**
+     * Checks if an expression string calls the path() function.
+     */
+    private boolean containsPathFunctionCall(String expr) {
+        int idx = expr.indexOf("path(");
+        while (idx >= 0) {
+            if (idx == 0 || !Character.isLetterOrDigit(expr.charAt(idx - 1))) {
+                return true;
+            }
+            idx = expr.indexOf("path(", idx + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Checks the function body for xsl:sequence instructions that can
+     * return the streaming parameter node directly (non-grounded).
+     * Only xsl:sequence is checked — expressions in xsl:apply-templates,
+     * xsl:copy, etc. are not direct returns.
+     */
+    private boolean hasNonGroundedSequenceReturn(List<XSLTNode> nodes,
+            String paramName, int depth) {
+        if (depth > 30) {
+            return false;
+        }
+        for (XSLTNode node : nodes) {
+            if (node instanceof SequenceOutputNode) {
+                List<XPathExpression> exprs =
+                    ((ExpressionHolder) node).getExpressions();
+                for (XPathExpression expr : exprs) {
+                    if (expr != null) {
+                        String exprStr = expr.getExpressionString();
+                        if (hasNonGroundedReturn(exprStr, paramName)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            if (node instanceof SequenceNode) {
+                boolean result = hasNonGroundedSequenceReturn(
+                    ((SequenceNode) node).getChildren(), paramName,
+                    depth + 1);
+                if (result) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks if an expression string can return the parameter directly.
+     * Detects "else $param" at the end of an if-expression branch or
+     * "$param" as the entire expression.
+     */
+    private boolean hasNonGroundedReturn(String expr, String paramName) {
+        String paramRef = "$" + paramName;
+        String trimmed = expr.trim();
+        // Strip trailing close parens (if-expression nesting)
+        while (trimmed.endsWith(")")) {
+            trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+        }
+        if (trimmed.endsWith("else " + paramRef)) {
+            return true;
+        }
+        if (trimmed.equals(paramRef)) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Counts the number of references to a parameter in an expression.
+     */
+    private int countParamReferences(String expr, String paramName) {
+        String paramRef = "$" + paramName;
+        int count = 0;
+        int idx = expr.indexOf(paramRef);
+        while (idx >= 0) {
+            int afterIdx = idx + paramRef.length();
+            if (afterIdx >= expr.length() ||
+                    (!Character.isLetterOrDigit(expr.charAt(afterIdx)) &&
+                     expr.charAt(afterIdx) != '_' &&
+                     expr.charAt(afterIdx) != '-')) {
+                count++;
+            }
+            idx = expr.indexOf(paramRef, idx + 1);
+        }
+        return count;
+    }
+
+    /**
+     * Checks if the parameter is accessed with a variable-based predicate
+     * inside a loop construct (e.g. "for $i in 1 to 3 return ...$param[$i]").
+     */
+    private boolean hasLoopBasedPredicateAccess(String expr, String paramName) {
+        String paramRef = "$" + paramName;
+        boolean hasForLoop = expr.contains("for $") && expr.contains("return");
+        if (!hasForLoop) {
+            return false;
+        }
+        // Check for $param[$...] pattern (predicate with variable)
+        int idx = expr.indexOf(paramRef);
+        while (idx >= 0) {
+            int afterIdx = idx + paramRef.length();
+            if (afterIdx < expr.length() && expr.charAt(afterIdx) == '[') {
+                int closeBracket = expr.indexOf(']', afterIdx);
+                if (closeBracket > afterIdx) {
+                    String predicate = expr.substring(afterIdx + 1, closeBracket);
+                    if (predicate.contains("$")) {
+                        return true;
+                    }
+                }
+            }
+            idx = expr.indexOf(paramRef, idx + 1);
+        }
+        return false;
+    }
+
+    /**
+     * Returns true if the type string represents a single node type
+     * (node(), element(), element(name), document-node(), etc.)
+     * without occurrence indicators.
+     */
+    private boolean isSingleNodeType(String typeStr) {
+        if (typeStr == null) {
+            return false;
+        }
+        String t = typeStr.trim();
+        if (t.endsWith("*") || t.endsWith("+") || t.endsWith("?")) {
+            return false;
+        }
+        return t.startsWith("node(") || t.startsWith("element(") ||
+            t.startsWith("document-node(") || t.startsWith("text(") ||
+            t.startsWith("comment(") || t.startsWith("attribute(") ||
+            t.startsWith("processing-instruction(") ||
+            t.startsWith("namespace-node(");
+    }
+
+    /**
+     * Heuristic check for expressions that return atomic values rather
+     * than nodes, where an aggregate function is applied directly to the
+     * first parameter (e.g. sum($n), count($n)).
+     */
+    private boolean returnsAtomicValue(String expr, String paramName) {
+        String paramRef = "$" + paramName;
+        String[] atomicFunctions = {
+            "sum(", "count(", "avg(", "min(", "max(",
+            "string-length(", "number("
+        };
+        for (String func : atomicFunctions) {
+            String pattern = func + paramRef;
+            int idx = expr.indexOf(pattern);
+            if (idx >= 0) {
+                int afterIdx = idx + pattern.length();
+                if (afterIdx >= expr.length()) {
+                    return true;
+                }
+                char ch = expr.charAt(afterIdx);
+                if (!Character.isLetterOrDigit(ch) && ch != '_' && ch != '-') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks if an expression contains a non-consuming access pattern
+     * such as the simple map operator (!) referencing the first parameter,
+     * which would cause the node to be accessed multiple times.
+     */
+    private boolean hasNonConsumingAccess(String expr, String paramName) {
+        String paramRef = "$" + paramName;
+        int bangIdx = expr.indexOf('!');
+        if (bangIdx < 0) {
+            return false;
+        }
+        // Check if right side of ! references the parameter
+        // Pattern: "... ! $param..." where left side is multi-valued
+        String rightSide = expr.substring(bangIdx + 1).trim();
+        if (rightSide.startsWith(paramRef)) {
+            return true;
+        }
+        return false;
+    }
+
     /**
      * Compiles an xsl:accumulator-rule element.
      */
@@ -5332,12 +6774,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * treated as top-level declarations for compilation purposes.
      */
     private boolean isInsideOverride() {
-        if (elementStack.isEmpty()) {
-            return false;
-        }
-        ElementContext parent = elementStack.peek();
-        if (XSLT_NS.equals(parent.namespaceURI) && "override".equals(parent.localName)) {
-            return true;
+        for (ElementContext ancestor : elementStack) {
+            if (XSLT_NS.equals(ancestor.namespaceURI)
+                    && "override".equals(ancestor.localName)) {
+                return true;
+            }
         }
         return false;
     }
@@ -5508,7 +6949,19 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             // Pass -1 to indicate the imported stylesheet should assign its own precedence
             CompiledStylesheet imported = resolver.resolve(href, getEffectiveBaseUri(), true, -1);
             if (imported != null) {
-                builder.merge(imported, true);
+                // Track the minimum precedence from imported modules for apply-imports scoping
+                for (TemplateRule tr : imported.getTemplateRules()) {
+                    int prec = tr.getImportPrecedence();
+                    if (minImportedPrecedence < 0 || prec < minImportedPrecedence) {
+                        minImportedPrecedence = prec;
+                    }
+                }
+                // XSLT 3.0 allows imports after other declarations. In that case,
+                // the imported module has a higher counter value but should have
+                // LOWER effective precedence. Defer replacement so finalizePrecedence
+                // can promote the importing module's declarations to win.
+                boolean lateImport = precedenceAssigned;
+                builder.merge(imported, true, lateImport);
                 // Propagate static variables from imported module into parent scope
                 for (GlobalVariable gv : imported.getGlobalVariables()) {
                     if (gv.isStatic()) {
@@ -5846,8 +7299,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         @Override
-        public void execute(org.bluezoo.gonzalez.transform.runtime.TransformContext context,
-                           org.bluezoo.gonzalez.transform.runtime.OutputHandler output) {
+        public void execute(TransformContext context, OutputHandler output) {
             // Accept declarations don't execute at runtime
         }
         
@@ -5895,8 +7347,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         @Override
-        public void execute(org.bluezoo.gonzalez.transform.runtime.TransformContext context,
-                           org.bluezoo.gonzalez.transform.runtime.OutputHandler output) {
+        public void execute(TransformContext context, OutputHandler output) {
             // Override declarations don't execute at runtime
         }
         
@@ -5918,11 +7369,28 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                                         List<OverrideDeclaration> overrides) 
             throws SAXException, TransformerConfigurationException {
         
+        // Ensure our own import precedence is assigned so we know the baseline
+        ensurePrecedenceAssigned();
+        
+        // Compute precedence remapping for imported templates.
+        // Templates from the used package must have lower import precedence
+        // than the using stylesheet's own templates (including overrides),
+        // so that overrides win over non-overridden templates when both match.
+        int maxPkgPrec = 0;
+        for (TemplateRule t : pkg.getStylesheet().getTemplateRules()) {
+            int prec = t.getImportPrecedence();
+            if (prec > maxPkgPrec) {
+                maxPkgPrec = prec;
+            }
+        }
+        int pkgPrecOffset = importPrecedence - maxPkgPrec - 1;
+        
         // Create a set of overridden component keys for quick lookup
-        Set<String> overriddenTemplates = new HashSet<>();
-        Set<String> overriddenFunctions = new HashSet<>();
-        Set<String> overriddenVariables = new HashSet<>();
-        Set<String> overriddenAttributeSets = new HashSet<>();
+        Set<String> overriddenTemplates = new HashSet<String>();
+        Set<String> overriddenFunctions = new HashSet<String>();
+        Set<String> overriddenVariables = new HashSet<String>();
+        Set<String> overriddenAttributeSets = new HashSet<String>();
+        boolean addedXslOriginal = false;
         
         for (OverrideDeclaration override : overrides) {
             switch (override.getType()) {
@@ -5946,69 +7414,248 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        // Validate that overridden templates are public or abstract (XTSE3060)
-        if (!overriddenTemplates.isEmpty()) {
-            Map<String, TemplateRule> allNamedTemplates = new HashMap<>();
-            for (TemplateRule t : pkg.getStylesheet().getTemplateRules()) {
-                if (t.getName() != null) {
-                    allNamedTemplates.put(t.getName(), t);
-                }
+        // Build a map of all templates in the package for override validation.
+        // Index by both name and match-pattern+mode since overrides can
+        // identify the base template by either mechanism.
+        Map<String, TemplateRule> allNamedTemplates = new HashMap<String, TemplateRule>();
+        for (TemplateRule t : pkg.getStylesheet().getTemplateRules()) {
+            if (t.getName() != null) {
+                allNamedTemplates.put(t.getName(), t);
             }
-            
+            if (t.getMatchPattern() != null) {
+                String tMode = t.getMode() != null ? t.getMode() : "#default";
+                String patternKey = t.getMatchPattern().toString() + "#" + tMode;
+                allNamedTemplates.put(patternKey, t);
+            }
+        }
+        
+        // Validate overrides: XTSE3058 (match) and XTSE3060 (visibility).
+        // Match-only templates that don't match are added as new templates
+        // (per XSLT 3.0 spec section 3.6.6), not errors.
+        Set<String> newOverrideTemplates = new HashSet<String>();
+        if (!overriddenTemplates.isEmpty()) {
             for (String overriddenKey : overriddenTemplates) {
                 TemplateRule orig = allNamedTemplates.get(overriddenKey);
-                if (orig != null) {
-                    ComponentVisibility vis = pkg.getTemplateVisibility(orig);
-                    if (!vis.isAccessible()) {
-                        throw new SAXException("XTSE3060: Cannot override template '" +
-                            overriddenKey + "' because its visibility is " + vis);
+                if (orig == null) {
+                    // Named templates must match (XTSE3058); match-only
+                    // templates that don't match are added as new templates
+                    boolean isNamedKey = !overriddenKey.contains("#");
+                    if (isNamedKey) {
+                        throw new SAXException("XTSE3058: Override template '" +
+                            overriddenKey +
+                            "' does not match any component in package '" +
+                            pkg.getPackageName() + "'");
+                    }
+                    newOverrideTemplates.add(overriddenKey);
+                    continue;
+                }
+                String acceptName = orig.getName() != null
+                        ? orig.getName() : overriddenKey;
+                ComponentVisibility vis = getEffectiveTemplateVisibility(
+                        pkg, orig, accepts, acceptName);
+                if (!vis.isAccessible()) {
+                    throw new SAXException("XTSE3060: Cannot override template '" +
+                        overriddenKey + "' because its visibility is " + vis);
+                }
+                // XTSE3070: Check signature compatibility (return type)
+                for (OverrideDeclaration od : overrides) {
+                    if (od.getType() == OverrideDeclaration.OverrideType.TEMPLATE
+                            && overriddenKey.equals(od.getOriginalComponentKey())) {
+                        TemplateRule overrideRule = od.getOverrideTemplate();
+                        if (overrideRule != null && orig.getAsType() != null
+                                && overrideRule.getAsType() != null) {
+                            String origAs = orig.getAsType().trim();
+                            String overrideAs = overrideRule.getAsType().trim();
+                            if (!origAs.equals(overrideAs)) {
+                                throw new SAXException("XTSE3070: Override template '" +
+                                    overriddenKey +
+                                    "' has incompatible return type '" +
+                                    overrideAs + "' (original is '" + origAs + "')");
+                            }
+                        }
                     }
                 }
             }
         }
-
-        // Import public templates (not overridden, not hidden by accept)
-        for (TemplateRule template : pkg.getPublicTemplates()) {
-            String key = getTemplateKey(template);
-            if (overriddenTemplates.contains(key)) {
-                // Keep the original under xsl:original for call-template
-                String origName = "{" + XSLT_NS + "}original";
-                TemplateRule origTemplate = new TemplateRule(
-                    null, origName,
-                    template.getMode(), template.getPriority(),
-                    template.getImportPrecedence(),
-                    template.getDeclarationIndex(),
-                    template.getParameters(),
-                    template.getBody(),
-                    template.getAsType(),
-                    template.getVisibility());
-                origTemplate.setEffectiveVersion(template.getEffectiveVersion());
-                builder.addTemplateRule(origTemplate);
+        // Remove new-addition templates from the overridden set so they
+        // are not skipped during the import phase
+        overriddenTemplates.removeAll(newOverrideTemplates);
+        
+        // XTSE3030/XTSE3040/XTSE3051: Validate accept declarations
+        Set<String> allComponentNames = new HashSet<String>(allNamedTemplates.keySet());
+        for (UserFunction f : pkg.getStylesheet().getUserFunctions().values()) {
+            allComponentNames.add("{" + f.getNamespaceURI() + "}" + f.getLocalName());
+        }
+        for (ModeDeclaration m : pkg.getStylesheet().getModeDeclarations().values()) {
+            String modeName = m.getName() != null ? m.getName() : "#default";
+            allComponentNames.add(modeName);
+        }
+        
+        for (AcceptDeclaration accept : accepts) {
+            String namesAttr = accept.getNamesPattern();
+            if (namesAttr == null || "*".equals(namesAttr.trim())) {
                 continue;
             }
-            ComponentVisibility vis = getAcceptedVisibility(
-                accepts, AcceptDeclaration.ComponentType.TEMPLATE, 
-                template.getName() != null ? template.getName() : key);
+            String[] names = namesAttr.trim().split("\\s+");
+            boolean anyMatched = false;
+            for (String name : names) {
+                if ("*".equals(name) || name.endsWith(":*")) {
+                    anyMatched = true;
+                    continue;
+                }
+                // *:localname — wildcard namespace, specific local name
+                if (name.startsWith("*:")) {
+                    String localPart = name.substring(2);
+                    for (String compName : allComponentNames) {
+                        int braceClose = compName.lastIndexOf('}');
+                        String compLocal = braceClose >= 0
+                                ? compName.substring(braceClose + 1)
+                                : compName;
+                        if (localPart.equals(compLocal)) {
+                            anyMatched = true;
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                boolean found = allComponentNames.contains(name);
+                if (found) {
+                    anyMatched = true;
+                    // XTSE3040: Check visibility compatibility
+                    TemplateRule tmpl = allNamedTemplates.get(name);
+                    if (tmpl != null) {
+                        ComponentVisibility origVis = tmpl.getVisibility();
+                        ComponentVisibility acceptVis = accept.getVisibility();
+                        if (origVis == ComponentVisibility.PRIVATE
+                                && acceptVis != ComponentVisibility.HIDDEN) {
+                            throw new SAXException("XTSE3040: Cannot accept private " +
+                                "template '" + name + "' with visibility '" + acceptVis + "'");
+                        }
+                    }
+                    // XTSE3051: Check if name matches an override in the same xsl:use-package
+                    if (overriddenTemplates.contains(name)
+                            || overriddenFunctions.contains(name)) {
+                        throw new SAXException("XTSE3051: xsl:accept name '" + name +
+                            "' matches a component declared in xsl:override");
+                    }
+                }
+            }
+            if (!anyMatched) {
+                throw new SAXException("XTSE3030: xsl:accept matches no components " +
+                    "in package '" + pkg.getPackageName() + "' with names '" + namesAttr + "'");
+            }
+        }
+
+        // Import templates: iterate ALL templates from the package and
+        // determine effective visibility using accepts then package defaults.
+        // Imported templates get remapped import precedence so they are lower
+        // than the using stylesheet's own templates (including overrides).
+        CompiledStylesheet pkgStylesheet = pkg.getStylesheet();
+        for (TemplateRule template : pkgStylesheet.getTemplateRules()) {
+            String key = getTemplateKey(template);
+            String acceptName = template.getName() != null
+                    ? template.getName() : key;
+            ComponentVisibility pkgVis = pkg.getTemplateVisibility(template);
+            // Private components in the used package are not visible to the
+            // using package and cannot be matched by xsl:accept (XTSE3040)
+            if (!pkgVis.isAccessible()) {
+                continue;
+            }
+            ComponentVisibility vis = getEffectiveTemplateVisibility(
+                    pkg, template, accepts, acceptName);
+            if (vis == ComponentVisibility.HIDDEN) {
+                continue;
+            }
+            // Skip internal xsl:original templates from prior overrides
+            String xslOriginal = "{" + XSLT_NS + "}original";
+            if (xslOriginal.equals(template.getName())) {
+                continue;
+            }
+            // Check if overridden by name, pattern+mode, or name+mode
+            boolean isOverridden = overriddenTemplates.contains(key);
+            if (!isOverridden && template.getMatchPattern() != null) {
+                String tMode = template.getMode() != null
+                        ? template.getMode() : "#default";
+                String patternKey = template.getMatchPattern().toString()
+                        + "#" + tMode;
+                isOverridden = overriddenTemplates.contains(patternKey);
+            }
+            if (!isOverridden && template.getName() != null
+                    && template.getMode() != null) {
+                String nameMode = template.getName() + "#" + template.getMode();
+                isOverridden = overriddenTemplates.contains(nameMode);
+            }
+            if (isOverridden) {
+                String origName = "{" + XSLT_NS + "}original";
+                boolean alreadyOriginal = origName.equals(template.getName());
+                int remappedPrec = pkgPrecOffset + template.getImportPrecedence();
+                if (!addedXslOriginal && !alreadyOriginal) {
+                    // Keep as named xsl:original for xsl:call-template access
+                    TemplateRule origTemplate = new TemplateRule(
+                        null, origName,
+                        template.getMode(), template.getPriority(),
+                        remappedPrec,
+                        template.getDeclarationIndex(),
+                        template.getParameters(),
+                        template.getBody(),
+                        template.getAsType(),
+                        template.getVisibility());
+                    origTemplate.setEffectiveVersion(template.getEffectiveVersion());
+                    origTemplate.setDefiningStylesheet(pkgStylesheet);
+                    builder.addTemplateRule(origTemplate);
+                    addedXslOriginal = true;
+                }
+                // Also keep the original with its match pattern at lower
+                // precedence so xsl:next-match can find it
+                if (template.getMatchPattern() != null) {
+                    TemplateRule matchable = template.withImportPrecedence(remappedPrec)
+                            .withVisibility(vis);
+                    matchable.setDefiningStylesheet(pkgStylesheet);
+                    builder.addTemplateRule(matchable);
+                }
+                continue;
+            }
             if (vis != ComponentVisibility.HIDDEN) {
-                builder.addTemplateRule(template.withVisibility(vis));
+                int remappedPrec = pkgPrecOffset + template.getImportPrecedence();
+                TemplateRule imported = template.withImportPrecedence(remappedPrec)
+                        .withVisibility(vis);
+                imported.setDefiningStylesheet(pkgStylesheet);
+                builder.addTemplateRule(imported);
             }
         }
         
-        // Import public functions (not overridden, not hidden by accept)
-        for (UserFunction function : pkg.getPublicFunctions()) {
+        // Import functions: iterate ALL functions, use accepts then package
+        // visibility to determine effective visibility.
+        // Set defining stylesheet so cross-package calls can resolve private deps.
+        for (UserFunction function : pkgStylesheet.getUserFunctions().values()) {
             String key = function.getKey();
             if (overriddenFunctions.contains(key)) {
-                continue; // Skip - overridden
+                continue;
             }
             String funcName = "{" + function.getNamespaceURI() + "}" + function.getLocalName();
-            ComponentVisibility vis = getAcceptedVisibility(
-                accepts, AcceptDeclaration.ComponentType.FUNCTION, funcName);
-            if (vis != ComponentVisibility.HIDDEN) {
-                try {
-                    builder.addUserFunction(function.withVisibility(vis));
-                } catch (javax.xml.transform.TransformerConfigurationException e) {
-                    throw new SAXException(e.getMessage(), e);
+            ComponentVisibility funcPkgVis = pkg.getFunctionVisibility(function);
+            // Private components in the used package are not visible to the
+            // using package and cannot be matched by xsl:accept (XTSE3040)
+            if (!funcPkgVis.isAccessible()) {
+                continue;
+            }
+            ComponentVisibility vis = funcPkgVis;
+            for (AcceptDeclaration accept : accepts) {
+                if (accept.matchesType(AcceptDeclaration.ComponentType.FUNCTION)
+                        && accept.matchesName(funcName)) {
+                    vis = accept.getVisibility();
+                    break;
                 }
+            }
+            if (vis == ComponentVisibility.HIDDEN) {
+                continue;
+            }
+            try {
+                UserFunction imported = function.withVisibility(vis);
+                imported.setDefiningStylesheet(pkgStylesheet);
+                builder.addUserFunction(imported);
+            } catch (javax.xml.transform.TransformerConfigurationException e) {
+                throw new SAXException(e.getMessage(), e);
             }
         }
         
@@ -6064,6 +7711,38 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         // No accept matches - use the component's default visibility
         return ComponentVisibility.PUBLIC;
+    }
+
+    /**
+     * Returns true if any xsl:accept declaration explicitly matches the
+     * given component type and name. Used to distinguish "accepted as private"
+     * (should be imported) from "inherently private" (should not be imported).
+     */
+    private boolean isExplicitlyAccepted(AcceptDeclaration.ComponentType type,
+            String name, List<AcceptDeclaration> accepts) {
+        for (AcceptDeclaration accept : accepts) {
+            if (accept.matchesType(type) && accept.matchesName(name)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Returns the effective visibility of a template for override validation.
+     * Checks xsl:accept declarations first (which can elevate a private
+     * component to public), falling back to the package's own visibility.
+     */
+    private ComponentVisibility getEffectiveTemplateVisibility(
+            CompiledPackage pkg, TemplateRule template,
+            List<AcceptDeclaration> accepts, String acceptName) {
+        for (AcceptDeclaration accept : accepts) {
+            if (accept.matchesType(AcceptDeclaration.ComponentType.TEMPLATE)
+                    && accept.matchesName(acceptName)) {
+                return accept.getVisibility();
+            }
+        }
+        return pkg.getTemplateVisibility(template);
     }
 
     /**
@@ -6188,10 +7867,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         currentTemplateHasMatch = (match != null);
         
         // XSLT 3.0: visibility attribute for package components
-        // Default is PRIVATE within xsl:package, PUBLIC for a stylesheet
+        // Default is PRIVATE within xsl:package, PUBLIC for a stylesheet.
+        // Override templates inherit the original's visibility (public/abstract),
+        // so they default to PUBLIC within xsl:override.
         String visibilityAttr = resolveStaticShadowAttribute(ctx, "visibility");
-        ComponentVisibility visibility = (packageName != null)
-            ? ComponentVisibility.PRIVATE : ComponentVisibility.PUBLIC;
+        ComponentVisibility visibility;
+        if (isInsideOverride()) {
+            visibility = ComponentVisibility.PUBLIC;
+        } else if (packageName != null) {
+            visibility = ComponentVisibility.PRIVATE;
+        } else {
+            visibility = ComponentVisibility.PUBLIC;
+        }
         if (visibilityAttr != null && !visibilityAttr.isEmpty()) {
             try {
                 visibility = ComponentVisibility.parse(visibilityAttr);
@@ -6206,6 +7893,25 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             String effectiveDefault = ctx.defaultMode;
             if (effectiveDefault != null && !"#unnamed".equals(effectiveDefault)) {
                 mode = effectiveDefault;
+            }
+        }
+        
+        // Per XSLT 3.0 spec 3.5.3.1: if no explicit visibility attribute,
+        // inherit visibility from the declared mode
+        if (visibilityAttr == null && packageName != null && !isInsideOverride()
+                && match != null) {
+            String effectiveMode = mode;
+            if (effectiveMode == null) {
+                effectiveMode = ctx.defaultMode;
+            }
+            if (effectiveMode != null) {
+                ModeDeclaration modeDecl = builder.getModeDeclaration(effectiveMode);
+                if (modeDecl != null) {
+                    ComponentVisibility modeVis = modeDecl.getComponentVisibility();
+                    if (modeVis != null) {
+                        visibility = modeVis;
+                    }
+                }
             }
         }
         
@@ -6374,6 +8080,35 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         boolean inOverride = isInsideOverride();
         if (inOverride && pendingOverrideDeclarations == null) {
             pendingOverrideDeclarations = new ArrayList<>();
+        }
+        
+        // XTSE3440: Template rules in xsl:override must not use #all, #unnamed,
+        // or #default (when default mode is the unnamed mode), or omit mode
+        // (when the default mode is the unnamed mode).
+        if (inOverride && match != null) {
+            if (mode != null) {
+                String trimmedMode = mode.trim();
+                String[] modeTokens = trimmedMode.split("\\s+");
+                for (String token : modeTokens) {
+                    if ("#all".equals(token) || "#unnamed".equals(token)) {
+                        throw new SAXException("XTSE3440: Template rule in xsl:override " +
+                            "must not use mode='" + token + "'");
+                    }
+                    if ("#default".equals(token)) {
+                        String effectiveDefault = ctx.defaultMode;
+                        if (effectiveDefault == null || "#unnamed".equals(effectiveDefault)) {
+                            throw new SAXException("XTSE3440: Template rule in xsl:override " +
+                                "must not use mode='#default' when the default mode is unnamed");
+                        }
+                    }
+                }
+            } else {
+                String effectiveDefault = ctx.defaultMode;
+                if (effectiveDefault == null || "#unnamed".equals(effectiveDefault)) {
+                    throw new SAXException("XTSE3440: Template rule in xsl:override " +
+                        "must not omit the mode attribute when the default mode is unnamed");
+                }
+            }
         }
 
         if (pattern instanceof UnionPattern && priorityStr == null) {
@@ -6616,12 +8351,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * Parses a validation attribute value into a ValidationMode, enforcing
      * XTSE1660 for Basic (non-schema-aware) processors.
      *
-     * <p>In XSLT 2.0, a Basic processor must reject validation="strict",
-     * "lax", and "preserve" as XTSE1660. In XSLT 3.0, only "strict" is
-     * rejected; "lax" and "preserve" are treated as "strip" (section 3.6.3).
-     *
-     * <p>The processor version ({@code maxProcessorVersion}) determines which
-     * rules apply, not the stylesheet's declared version.
+     * <p>validation="strict" always requires a schema-aware processor.
+     * For XSLT 3.0 processors, "lax" and "preserve" are treated as "strip"
+     * (section 3.6.3). For XSLT 2.0, all three are static errors.
      *
      * @param value the validation attribute value (may be null)
      * @param elementName the name of the element (for error messages)
@@ -6723,6 +8455,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                             "' cannot be used in the name '" + qname + "'");
                     }
                 }
+                if (uri.isEmpty()) {
+                    return localPart;
+                }
                 return "{" + uri + "}" + localPart;
             }
         }
@@ -6765,7 +8500,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                "http://www.w3.org/XML/1998/namespace".equals(uri) ||
                "http://www.w3.org/2001/XMLSchema".equals(uri) ||
                "http://www.w3.org/2001/XMLSchema-instance".equals(uri) ||
-               "http://www.w3.org/2005/xpath-functions".equals(uri);
+               "http://www.w3.org/2005/xpath-functions".equals(uri) ||
+               "http://www.w3.org/2005/xpath-functions/map".equals(uri) ||
+               "http://www.w3.org/2005/xpath-functions/array".equals(uri) ||
+               "http://www.w3.org/2005/xpath-functions/math".equals(uri);
     }
 
     private void processOutputElement(ElementContext ctx) throws SAXException {
@@ -7455,7 +9193,18 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             return null;
         }
         
-        return new VariableNode(varName.getURI(), varName.getLocalName(), selectExpr, content, asType);
+        // Pre-parse 'as' type with namespace resolution while bindings are available
+        SequenceType parsedAsType = null;
+        if (asType != null && !asType.trim().isEmpty()) {
+            final Map<String, String> nsBindings = ctx.namespaceBindings;
+            parsedAsType = SequenceType.parse(asType.trim(), new java.util.function.Function<String, String>() {
+                @Override
+                public String apply(String prefix) {
+                    return nsBindings.get(prefix);
+                }
+            });
+        }
+        return new VariableNode(varName.getURI(), varName.getLocalName(), selectExpr, content, asType, parsedAsType);
     }
 
     private XSLTNode compileParam(ElementContext ctx, boolean isTopLevel) throws SAXException {
@@ -7512,12 +9261,12 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         }
         
         // XTSE0090: required attribute on function params not allowed in XSLT 2.0
-        if (requiredAttr != null && stylesheetVersion < 3.0) {
+        if (requiredAttr != null && maxProcessorVersion < 3.0) {
             ElementContext parent = elementStack.isEmpty() ? null : elementStack.peek();
             if (parent != null && XSLT_NS.equals(parent.namespaceURI)
                     && "function".equals(parent.localName)) {
                 throw new SAXException("XTSE0090: required attribute is not allowed " +
-                    "on xsl:param inside xsl:function in XSLT " + stylesheetVersion);
+                    "on xsl:param inside xsl:function in XSLT " + maxProcessorVersion);
             }
         }
         
@@ -7910,7 +9659,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (ctx.hasShadowAttribute("select")) {
             String shadowSelect = ctx.shadowAttributes.get("select");
             AttributeValueTemplate selectAvt = parseAvt(shadowSelect);
-            return new org.bluezoo.gonzalez.transform.ast.DynamicValueOfNode(
+            return new DynamicValueOfNode(
                 selectAvt, disableEscaping, separatorStr);
         }
         
@@ -7945,6 +9694,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
 
+        // XSLT 2.0 and earlier: xsl:value-of requires select or content
+        if (maxProcessorVersion < 3.0) {
+            throw new SAXException("XTSE0870: xsl:value-of must have either " +
+                "a select attribute or a sequence constructor");
+        }
         // XSLT 3.0: empty xsl:value-of with no select and no content produces empty string
         return new ValueOfNode(compileExpression("''"), disableEscaping,
             separatorAvt, true);
@@ -8519,6 +10273,11 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     }
 
     private XSLTNode compileApplyImports(ElementContext ctx) throws SAXException {
+        // XTSE3460: xsl:apply-imports is not allowed in a template within xsl:override
+        if (isInsideOverride()) {
+            throw new SAXException("XTSE3460: xsl:apply-imports is not allowed in a " +
+                "template declared within xsl:override (use xsl:next-match instead)");
+        }
         // XSLT 2.0+: xsl:apply-imports can have xsl:with-param children
         List<WithParamNode> params = new ArrayList<>();
         for (XSLTNode child : ctx.children) {
@@ -8736,8 +10495,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (node instanceof CopyNode) {
             String uas = ((CopyNode) node).getUseAttributeSetsString();
             if (uas != null && !uas.isEmpty()) {
-                java.util.StringTokenizer st =
-                    new java.util.StringTokenizer(uas);
+                StringTokenizer st = new StringTokenizer(uas);
                 while (st.hasMoreTokens()) {
                     refs.add(st.nextToken());
                 }
@@ -8748,8 +10506,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         if (node instanceof ElementNode) {
             String uas = ((ElementNode) node).getUseAttributeSetsString();
             if (uas != null && !uas.isEmpty()) {
-                java.util.StringTokenizer st =
-                    new java.util.StringTokenizer(uas);
+                StringTokenizer st = new StringTokenizer(uas);
                 while (st.hasMoreTokens()) {
                     refs.add(st.nextToken());
                 }
@@ -8767,9 +10524,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 ((LiteralResultElement) node).getContent(), refs,
                 depth + 1);
         }
-        if (node instanceof org.bluezoo.gonzalez.transform.ast.SequenceNode) {
-            org.bluezoo.gonzalez.transform.ast.SequenceNode seq =
-                (org.bluezoo.gonzalez.transform.ast.SequenceNode) node;
+        if (node instanceof SequenceNode) {
+            SequenceNode seq = (SequenceNode) node;
             List<XSLTNode> children = seq.getChildren();
             if (children != null) {
                 for (int i = 0; i < children.size(); i++) {
@@ -8907,9 +10663,19 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
 
             // XTSE3430: Validate fork-specific streaming constraints
             validateForkStreamability(body, 0);
+
+            // XTSE3430: Validate calls to streamable functions
+            validateStreamableFunctionCallSites(body, 0);
+
+            // XTSE3430: Validate for-each-group streaming constraints
+            validateStreamingForEachGroup(body, 0);
         }
 
-        return new SourceDocumentNode(hrefAvt, streamable, validation, useAccumulators, body);
+        SourceDocumentNode result = new SourceDocumentNode(hrefAvt, streamable, validation, useAccumulators, body);
+        if (ctx.baseURI != null) {
+            result.setStaticBaseURI(ctx.baseURI);
+        }
+        return result;
     }
 
     /**
@@ -9034,7 +10800,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         
-        boolean sortBeforeMerge = "yes".equals(sortBeforeMergeStr) || "true".equals(sortBeforeMergeStr);
+        boolean sortBeforeMerge = "yes".equals(sortBeforeMergeStr) || "true".equals(sortBeforeMergeStr)
+            || "1".equals(sortBeforeMergeStr);
         boolean streamable = "yes".equals(streamableStr) || "true".equals(streamableStr);
         
         // XTSE0010: xsl:merge-source must be a child of xsl:merge
@@ -9368,9 +11135,9 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                     // was inherited (e.g. from call-template). Wrap the node
                     // for type checking. Skip for use="optional" since the
                     // inherited node is not an explicit context item.
-                    java.util.List<XPathNode> nodes = new java.util.ArrayList<XPathNode>();
+                    List<XPathNode> nodes = new ArrayList<XPathNode>();
                     nodes.add(contextNode);
-                    itemToCheck = new org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet(nodes);
+                    itemToCheck = new XPathNodeSet(nodes);
                 }
                 if (itemToCheck != null && !parsedType.matches(itemToCheck)) {
                     throw new org.xml.sax.SAXException(
@@ -9863,7 +11630,8 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
                 WithParamNode wp = (WithParamNode) child;
                 params.add(new EvaluateNode.WithParamNode(
                     wp.getNamespaceURI(), wp.getLocalName(), 
-                    wp.getSelectExpr(), wp.getContent()));
+                    wp.getSelectExpr(), wp.getContent(),
+                    wp.getAsType()));
             }
         }
         
@@ -9928,12 +11696,29 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         public void execute(TransformContext context, OutputHandler output) throws SAXException {
             try {
                 XPathValue result = expr.evaluate(context);
-                if (result != null) {
-                    String str = result.asString();
-                    if (str != null && !str.isEmpty()) {
-                        output.characters(str);
+                if (result == null) {
+                    return;
+                }
+                if (output instanceof SequenceBuilderOutputHandler) {
+                    SequenceBuilderOutputHandler seqBuilder =
+                        (SequenceBuilderOutputHandler) output;
+                    if (!seqBuilder.isInsideElement()) {
+                        if (result instanceof XPathSequence) {
+                            for (XPathValue item : (XPathSequence) result) {
+                                seqBuilder.addItem(item);
+                            }
+                        } else if (result instanceof XPathNodeSet) {
+                            for (XPathNode node : ((XPathNodeSet) result).getNodes()) {
+                                seqBuilder.addItem(
+                                    new XPathNodeSet(Collections.singletonList(node)));
+                            }
+                        } else {
+                            seqBuilder.addItem(result);
+                        }
+                        return;
                     }
                 }
+                output.atomicValue(result);
             } catch (XPathException e) {
                 throw new SAXException(e.getMessage(), e);
             }
@@ -10862,12 +12647,15 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         // Resolve namespace prefixes in the pattern before compilation
         String resolvedPattern = resolvePatternNamespaces(pattern);
         try {
-            double patternVersion = stylesheetVersion;
+            // Per XSLT 3.0 §5.5.3: "A pattern is always interpreted according
+            // to the rules of the host language version", i.e. the processor's
+            // version, not the stylesheet's version attribute.
+            double patternVersion = 3.0;
             if (maxProcessorVersion > 0 && maxProcessorVersion < patternVersion) {
                 patternVersion = maxProcessorVersion;
             }
             Pattern result = PatternParser.parse(resolvedPattern, patternVersion);
-            validatePatternPredicates(result, pattern);
+            deferPatternPredicateValidation(result, pattern);
             return result;
         } catch (IllegalArgumentException e) {
             throw new SAXException(e.getMessage());
@@ -10880,19 +12668,98 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * Functions in non-standard namespaces must be declared as
      * xsl:function or known extensions; otherwise XPST0017.
      */
-    private void validatePatternPredicates(Pattern pat, String patternStr)
+    private void deferPatternPredicateValidation(Pattern pat, String patternStr)
             throws SAXException {
-        java.util.List<String> preds = new java.util.ArrayList<>();
+        List<String> preds = new ArrayList<String>();
         collectPredicates(pat, preds);
         for (int i = 0; i < preds.size(); i++) {
             String pred = preds.get(i);
-            String undeclaredFunc = findUndeclaredFunction(pred);
-            if (undeclaredFunc != null) {
+            // Resolve function namespace URIs now (while prefix mappings are in scope)
+            List<String[]> funcRefs = resolveFunctionReferences(pred);
+            for (int j = 0; j < funcRefs.size(); j++) {
+                String[] ref = funcRefs.get(j);
+                // ref[0] = nsUri, ref[1] = localName, ref[2] = patternStr
+                deferredPatternValidations.add(new String[]{ref[0], ref[1], patternStr});
+            }
+        }
+    }
+
+    private List<String[]> resolveFunctionReferences(String pred)
+            throws SAXException {
+        List<String[]> refs = new ArrayList<String[]>();
+        int len = pred.length();
+        int i = 0;
+        while (i < len) {
+            char c = pred.charAt(i);
+            if (c == '\'' || c == '"') {
+                i++;
+                while (i < len && pred.charAt(i) != c) {
+                    i++;
+                }
+                i++;
+                continue;
+            }
+            if (c == ':' && i + 1 < len && pred.charAt(i + 1) != ':') {
+                int j = i + 1;
+                while (j < len && Character.isWhitespace(pred.charAt(j))) {
+                    j++;
+                }
+                if (j < len && Character.isLetter(pred.charAt(j))) {
+                    int localStart = j;
+                    int k = j;
+                    while (k < len && (Character.isLetterOrDigit(pred.charAt(k)) ||
+                           pred.charAt(k) == '-' || pred.charAt(k) == '_')) {
+                        k++;
+                    }
+                    String localName = pred.substring(localStart, k);
+                    while (k < len && Character.isWhitespace(pred.charAt(k))) {
+                        k++;
+                    }
+                    if (k < len && pred.charAt(k) == '(') {
+                        int prefStart = i - 1;
+                        while (prefStart >= 0 &&
+                               (Character.isLetterOrDigit(pred.charAt(prefStart)) ||
+                                pred.charAt(prefStart) == '-' ||
+                                pred.charAt(prefStart) == '_')) {
+                            prefStart--;
+                        }
+                        prefStart++;
+                        String prefix = pred.substring(prefStart, i);
+                        if (!prefix.isEmpty() &&
+                            !"xs".equals(prefix) &&
+                            !"fn".equals(prefix) &&
+                            !"math".equals(prefix) &&
+                            !"map".equals(prefix) &&
+                            !"array".equals(prefix)) {
+                            String nsUri = lookupNamespaceUri(prefix);
+                            if (nsUri == null) {
+                                throw new SAXException(
+                                    "XPST0017: Unknown namespace prefix '" + prefix +
+                                    "' in pattern function call");
+                            }
+                            refs.add(new String[]{nsUri, localName});
+                        }
+                    }
+                }
+            }
+            i++;
+        }
+        return refs;
+    }
+
+    private void validateDeferredPatternPredicates() throws SAXException {
+        for (int i = 0; i < deferredPatternValidations.size(); i++) {
+            String[] entry = deferredPatternValidations.get(i);
+            String nsUri = entry[0];
+            String localName = entry[1];
+            String patternStr = entry[2];
+            if (!isKnownFunction(nsUri, localName)) {
                 throw new SAXException(
                     "XPST0017: Unknown function in pattern: " +
                     patternStr);
             }
         }
+        deferredPatternValidations.clear();
     }
 
     /**
@@ -10970,7 +12837,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
         return builder.hasUserFunction(nsUri, localName);
     }
 
-    private void collectPredicates(Pattern pat, java.util.List<String> preds) {
+    private void collectPredicates(Pattern pat, List<String> preds) {
         if (pat instanceof AbstractPattern) {
             String predStr = ((AbstractPattern) pat).getPredicateStr();
             if (predStr != null) {
@@ -10978,7 +12845,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
             }
         }
         if (pat instanceof AtomicPattern) {
-            java.util.List<String> atomicPreds =
+            List<String> atomicPreds =
                 ((AtomicPattern) pat).getPredicates();
             preds.addAll(atomicPreds);
         }
@@ -11290,7 +13157,7 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
      * Splits a pattern by union operator (|) at the top level.
      */
     private String[] splitPatternByUnion(String pattern) {
-        java.util.List<String> parts = new java.util.ArrayList<>();
+        List<String> parts = new ArrayList<String>();
         int depth = 0;
         int start = 0;
         for (int i = 0; i < pattern.length(); i++) {

@@ -32,6 +32,7 @@ import org.xml.sax.SAXException;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.compiler.TemplateParameter;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
@@ -71,9 +72,16 @@ public class CallTemplateNode extends XSLTInstruction {
             throw new SAXException("Template not found: " + name);
         }
         
-        // Push variable scope
-        TransformContext callContext = 
-            context.pushVariableScope();
+        // Push variable scope, switching to the template's defining stylesheet
+        // if it comes from a package (so package-private dependencies are visible)
+        TransformContext callContext = context.pushVariableScope();
+        if (template.getDefiningStylesheet() != null) {
+            callContext = callContext.withStylesheet(template.getDefiningStylesheet());
+        }
+        // XTDE3480: current-merge-group/key not available in called templates
+        if (callContext instanceof BasicTransformContext) {
+            ((BasicTransformContext) callContext).setInsideMergeAction(false);
+        }
         
         // XSLT 2.0 tunnel parameter support for call-template
         // Collect new tunnel parameters from with-param nodes
@@ -181,13 +189,8 @@ public class CallTemplateNode extends XSLTInstruction {
                     } catch (XPathException e) {
                         throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    // Execute content to get RTF as default value
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    templateParam.getDefaultContent().execute(callContext, new BufferOutputHandler(buffer));
-                    defaultValue = new XPathResultTreeFragment(buffer);
                 } else {
-                    defaultValue = new XPathString("");
+                    defaultValue = templateParam.evaluateDefaultContent(callContext);
                 }
                 if (defaultValue != null) {
                     callContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
@@ -253,6 +256,14 @@ public class CallTemplateNode extends XSLTInstruction {
                 + name + "' is " + asType + "; supplied value is empty sequence");
         }
         if (!isEmpty) {
+            // XTTE0505: cardinality check - if the type requires exactly
+            // one item but the result is a multi-item sequence, fail
+            int itemCount = getReturnItemCount(result);
+            if (itemCount > 1 && !expectedType.allowsMany()) {
+                throw new SAXException("XTTE0505: Required item type of named template '"
+                    + name + "' is " + asType
+                    + "; supplied value contains " + itemCount + " items");
+            }
             XPathValue checkVal = result;
             if (result instanceof XPathNode || result instanceof XPathNodeSet) {
                 checkVal = new XPathUntypedAtomic(result.asString());
@@ -266,6 +277,16 @@ public class CallTemplateNode extends XSLTInstruction {
                 }
             }
         }
+    }
+
+    private int getReturnItemCount(XPathValue result) {
+        if (result == null) {
+            return 0;
+        }
+        if (result instanceof XPathSequence) {
+            return ((XPathSequence) result).size();
+        }
+        return 1;
     }
 
     private boolean isValidatableAtomicType(String localName) {

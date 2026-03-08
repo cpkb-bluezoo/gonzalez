@@ -36,6 +36,7 @@ import org.bluezoo.gonzalez.transform.compiler.ModeDeclaration;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
  * Matches nodes to template rules.
@@ -63,7 +64,11 @@ public final class TemplateMatcher {
     public TemplateMatcher(CompiledStylesheet stylesheet) {
         this.stylesheet = stylesheet;
         this.allModeRules = new ArrayList<>();
-        this.rulesByMode = indexRulesByMode();
+        if (stylesheet != null) {
+            this.rulesByMode = indexRulesByMode();
+        } else {
+            this.rulesByMode = new HashMap<>();
+        }
     }
 
     private Map<String, List<TemplateRule>> indexRulesByMode() {
@@ -377,6 +382,12 @@ public final class TemplateMatcher {
             return BUILTIN_SHALLOW_SKIP_RULE;
         }
         
+        // XTTE3100: typed="yes" requires all nodes to be schema-typed.
+        // As a Basic XSLT processor, all nodes are untyped.
+        if (modeDecl.isTyped() && node.isElement()) {
+            return BUILTIN_TYPED_FAIL_RULE;
+        }
+        
         switch (onNoMatch) {
             case SHALLOW_COPY:
                 return BUILTIN_SHALLOW_COPY_RULE;
@@ -421,6 +432,7 @@ public final class TemplateMatcher {
     private static final TemplateRule BUILTIN_DEEP_COPY_RULE = createBuiltInRule("deep-copy");
     private static final TemplateRule BUILTIN_SHALLOW_SKIP_RULE = createBuiltInRule("shallow-skip");
     private static final TemplateRule BUILTIN_FAIL_RULE = createBuiltInRule("fail");
+    private static final TemplateRule BUILTIN_TYPED_FAIL_RULE = createBuiltInRule("typed-fail");
 
     /**
      * Normalizes a mode name to the key used in the rulesByMode map.
@@ -555,14 +567,18 @@ public final class TemplateMatcher {
         }
         
         int currentPrecedence = currentRule.getImportPrecedence();
+        int minPrecedence = currentRule.getMinImportPrecedence();
         
         // Find the highest-precedence template that:
         // 1. Has LOWER import precedence than the current template
-        // 2. Matches the node
+        // 2. Falls within the current module's import subtree (>= minImportPrecedence)
+        // 3. Matches the node
         // Since candidates are sorted by precedence (highest first), we scan
         // until we find one with lower precedence that matches
         for (TemplateRule rule : candidates) {
-            if (rule.getImportPrecedence() < currentPrecedence) {
+            int rulePrec = rule.getImportPrecedence();
+            if (rulePrec < currentPrecedence
+                    && (minPrecedence < 0 || rulePrec >= minPrecedence)) {
                 if (rule.getMatchPattern().matches(node, context)) {
                     return rule;
                 }
@@ -571,6 +587,40 @@ public final class TemplateMatcher {
         
         // No matching template from imports - fall through to built-in rules
         return getBuiltInRule(node, mode);
+    }
+
+    /**
+     * Finds a matching template from imported stylesheets for an atomic value.
+     * Used by xsl:apply-imports when the context item is an atomic value.
+     */
+    public TemplateRule findImportMatchForAtomicValue(XPathValue value,
+            String mode, TemplateRule currentRule, TransformContext context) {
+        if (currentRule == null) {
+            return null;
+        }
+
+        String modeKey = normalizeModeKey(mode);
+        List<TemplateRule> candidates = getCandidates(modeKey);
+
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+
+        int currentPrecedence = currentRule.getImportPrecedence();
+        int minPrecedence = currentRule.getMinImportPrecedence();
+
+        for (TemplateRule rule : candidates) {
+            int rulePrec = rule.getImportPrecedence();
+            if (rulePrec < currentPrecedence
+                    && (minPrecedence < 0 || rulePrec >= minPrecedence)) {
+                if (rule.getMatchPattern().canMatchAtomicValues()
+                        && rule.getMatchPattern().matchesAtomicValue(value, context)) {
+                    return rule;
+                }
+            }
+        }
+
+        return null;
     }
 
 }

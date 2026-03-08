@@ -21,18 +21,31 @@
 
 package org.bluezoo.gonzalez.transform.xpath.function;
 
+import org.bluezoo.gonzalez.transform.GonzalezTemplates;
+import org.bluezoo.gonzalez.transform.GonzalezTransformHandler;
+import org.bluezoo.gonzalez.transform.GonzalezTransformerFactory;
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
+import org.bluezoo.gonzalez.transform.compiler.CompiledPackage;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.GlobalVariable;
+import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
+import org.bluezoo.gonzalez.transform.compiler.PackageResolver;
+import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.compiler.ComponentVisibility;
 import org.bluezoo.gonzalez.transform.compiler.KeyDefinition;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.UserFunction;
 import org.bluezoo.gonzalez.transform.ErrorHandlingMode;
+import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.DocumentLoader;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.TemplateMatcher;
+import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
+import org.bluezoo.gonzalez.transform.runtime.StreamingNode;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
@@ -62,30 +75,44 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathAnyURI;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathTypeException;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UnsupportedEncodingException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.net.URLConnection;
+import java.nio.charset.Charset;
+import java.nio.charset.UnsupportedCharsetException;
+import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.text.DecimalFormat;
 import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Comparator;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.xml.parsers.SAXParser;
 import javax.xml.parsers.SAXParserFactory;
+import javax.xml.transform.Source;
+import javax.xml.transform.Templates;
+import javax.xml.transform.stream.StreamSource;
 
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
@@ -195,6 +222,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         map.put("filter",        typed(new FilterFunction(), IS, IS, IS));
         map.put("for-each-pair", typed(new ForEachPairFunction(), IS, IS, IS, IS));
         map.put("sort",          typed(new SortFunction(), IS, IS, IS, IS));
+        map.put("apply",         typed(new ApplyFunction(), IS, IS, IS));
+        map.put("transform",    typed(new TransformFunction(), IS, IS));
 
         this.xsltFunctions = Collections.unmodifiableMap(map);
     }
@@ -290,6 +319,19 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             if (stylesheet != null) {
                 UserFunction userFunc = stylesheet.getUserFunction(namespaceURI, localName, args.size());
                 if (userFunc != null) {
+                    // XTDE3160: private functions not callable from xsl:evaluate
+                    if (transformContext instanceof BasicTransformContext) {
+                        BasicTransformContext btc = (BasicTransformContext) transformContext;
+                        if (btc.isDynamicEvaluation()) {
+                            ComponentVisibility vis = userFunc.getVisibility();
+                            if (vis == ComponentVisibility.PRIVATE
+                                    || vis == ComponentVisibility.HIDDEN) {
+                                throw new XPathException(
+                                    "XTDE3160: Cannot call private function "
+                                    + localName + " from xsl:evaluate");
+                            }
+                        }
+                    }
                     return invokeUserFunction(userFunc, args, transformContext);
                 }
             }
@@ -421,23 +463,23 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                             throw new XPathException("Cannot convert " + d + " to xs:integer");
                         }
                         if (argNum.isDecimal()) {
-                            java.math.BigDecimal bd = argNum.getDecimalValue();
-                            java.math.BigInteger bi = bd.toBigInteger();
+                            BigDecimal bd = argNum.getDecimalValue();
+                            BigInteger bi = bd.toBigInteger();
                             return XPathNumber.ofInteger(bi);
                         }
                         return XPathNumber.ofInteger((long) d);
                     }
                     String intStr = value.trim();
                     if (intStr.indexOf('.') >= 0) {
-                        java.math.BigDecimal bd = new java.math.BigDecimal(intStr);
-                        java.math.BigInteger bi = bd.toBigInteger();
+                        BigDecimal bd = new BigDecimal(intStr);
+                        BigInteger bi = bd.toBigInteger();
                         return XPathNumber.ofInteger(bi);
                     }
                     try {
                         long intValue = Long.parseLong(intStr);
                         return XPathNumber.ofInteger(intValue);
                     } catch (NumberFormatException e2) {
-                        java.math.BigInteger bi = new java.math.BigInteger(intStr);
+                        BigInteger bi = new BigInteger(intStr);
                         return XPathNumber.ofInteger(bi);
                     }
                 } catch (NumberFormatException e) {
@@ -450,13 +492,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                         if (argNum.isDecimal()) {
                             return argNum;
                         }
-                        return new XPathNumber(java.math.BigDecimal.valueOf(argNum.asNumber()));
+                        return new XPathNumber(BigDecimal.valueOf(argNum.asNumber()));
                     }
                     String decStr = value.trim();
                     if (decStr.indexOf('e') >= 0 || decStr.indexOf('E') >= 0) {
                         throw new XPathException("FORG0001: Invalid xs:decimal: " + value);
                     }
-                    return new XPathNumber(new java.math.BigDecimal(decStr));
+                    return new XPathNumber(new BigDecimal(decStr));
                 } catch (NumberFormatException e) {
                     throw new XPathException("FORG0001: Invalid xs:decimal: " + value);
                 }
@@ -1006,7 +1048,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             throw new XPathException("array:remove requires 2 arguments");
         }
         // Positions can be a single integer or a sequence of integers
-        java.util.Set<Integer> positions = new java.util.HashSet<Integer>();
+        Set<Integer> positions = new HashSet<Integer>();
         Iterator<XPathValue> posIter = args.get(1).sequenceIterator();
         while (posIter.hasNext()) {
             int pos = (int) posIter.next().asNumber();
@@ -1173,7 +1215,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         for (int i = 0; i < indices.length; i++) {
             indices[i] = Integer.valueOf(i);
         }
-        java.util.Arrays.sort(indices, new java.util.Comparator<Integer>() {
+        Arrays.sort(indices, new Comparator<Integer>() {
             @Override
             public int compare(Integer a, Integer b) {
                 String keyA = keys.get(a.intValue());
@@ -1307,8 +1349,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
      * @return the function result as a Result Tree Fragment
      * @throws XPathException if function execution fails
      */
-    private XPathValue invokeUserFunction(UserFunction function, List<XPathValue> args, 
-                                          TransformContext context) throws XPathException {
+    public XPathValue invokeUserFunction(UserFunction function, List<XPathValue> args, 
+                                         TransformContext context) throws XPathException {
         // Check for cached result if caching is enabled
         String cacheKey = null;
         if (function.isCached()) {
@@ -1325,12 +1367,24 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         // and unnamed mode (erratum XT.E19: mode="#current" in function reverts to default)
         TransformContext funcContext = context.pushVariableScope().withNoTunnelParameters()
             .withContextNode(null).withRegexMatcher(null).withMode(null);
-        if (funcContext instanceof org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) {
-            ((org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) funcContext)
+        // For functions imported from packages, execute with the defining
+        // package's stylesheet so private functions/templates are accessible
+        CompiledStylesheet definingStylesheet = function.getDefiningStylesheet();
+        if (definingStylesheet != null) {
+            funcContext = funcContext.withStylesheet(definingStylesheet);
+        }
+        if (funcContext instanceof BasicTransformContext) {
+            ((BasicTransformContext) funcContext)
                 .setContextItemUndefined(true);
         }
         
-        // Bind parameters to arguments, coercing and type-checking as needed
+        // Bind parameters to arguments, coercing and type-checking as needed.
+        // In dynamic evaluation (xsl:evaluate), xs:string cannot promote to
+        // numeric types per XSLT 3.0 spec — only xs:untypedAtomic can.
+        boolean isDynamic = false;
+        if (context instanceof BasicTransformContext) {
+            isDynamic = ((BasicTransformContext) context).isDynamicEvaluation();
+        }
         List<UserFunction.FunctionParameter> params = function.getParameters();
         for (int i = 0; i < params.size() && i < args.size(); i++) {
             XPathValue argVal = args.get(i);
@@ -1338,6 +1392,16 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             if (argVal instanceof XPathUntypedAtomic) {
                 argVal = coerceUntypedAtomic((XPathUntypedAtomic) argVal, paramType);
             } else if (paramType != null && !paramType.isEmpty()) {
+                if (isDynamic && argVal instanceof XPathString
+                        && isNumericParamType(paramType)) {
+                    throw new XPathException("XPTY0004: Required item type of "
+                        + "parameter $" + params.get(i).getName() + " is "
+                        + paramType + "; supplied value has type xs:string");
+                }
+                // Validate function-typed parameters against declared type
+                if (paramType.contains("function(")) {
+                    validateFunctionTypeParam(argVal, paramType, params.get(i).getName());
+                }
                 argVal = coerceArgument(argVal, paramType, params.get(i).getName());
             }
             funcContext.getVariableScope().bind(params.get(i).getNamespaceURI(), params.get(i).getLocalName(), argVal);
@@ -1353,8 +1417,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             // so node-sets from xsl:sequence are not collapsed into RTFs.
             if (asType == null || isAtomicOrSequenceType(asType)) {
                 // Use sequence construction mode to preserve item boundaries
-                org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler output = 
-                    new org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler();
+                SequenceBuilderOutputHandler output = 
+                    new SequenceBuilderOutputHandler();
                 function.getBody().execute(funcContext, output);
                 // When an explicit 'as' type is declared, merge adjacent text
                 // items produced by consecutive instructions in the function
@@ -1413,6 +1477,41 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
     }
     
     /**
+     * Invokes a user-defined function with a plain XPathContext (no TransformContext).
+     * Used for cross-stylesheet function references (e.g., from fn:transform() results
+     * invoked in a static/use-when evaluation context).
+     */
+    public XPathValue invokeUserFunctionStandalone(UserFunction function,
+            List<XPathValue> args, XPathContext context) throws XPathException {
+        try {
+            SequenceBuilderOutputHandler output = new SequenceBuilderOutputHandler();
+            BasicTransformContext funcContext = new BasicTransformContext(
+                null, null, new TemplateMatcher(null), output, null);
+            funcContext.setContextItemUndefined(true);
+
+            List<UserFunction.FunctionParameter> params = function.getParameters();
+            for (int i = 0; i < params.size() && i < args.size(); i++) {
+                XPathValue argVal = args.get(i);
+                String paramType = params.get(i).getAsType();
+                if (argVal instanceof XPathUntypedAtomic) {
+                    argVal = coerceUntypedAtomic((XPathUntypedAtomic) argVal, paramType);
+                } else if (paramType != null && !paramType.isEmpty()) {
+                    argVal = coerceArgument(argVal, paramType, params.get(i).getName());
+                }
+                funcContext.getVariableScope().bind(
+                    params.get(i).getNamespaceURI(),
+                    params.get(i).getLocalName(), argVal);
+            }
+
+            function.getBody().execute(funcContext, output);
+            return output.getSequence();
+        } catch (org.xml.sax.SAXException e) {
+            throw new XPathException("Error executing function " +
+                function.getLocalName() + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
      * Builds a cache key for a function call (for memoized functions).
      *
      * @param function the function being called
@@ -1434,7 +1533,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         String strVal = value.asString();
         if ("decimal".equals(type)) {
             try {
-                return new XPathNumber(new java.math.BigDecimal(strVal));
+                return new XPathNumber(new BigDecimal(strVal));
             } catch (NumberFormatException e) {
                 return value;
             }
@@ -1452,7 +1551,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 try {
                     return XPathNumber.ofInteger(Long.parseLong(strVal));
                 } catch (NumberFormatException e2) {
-                    return XPathNumber.ofInteger(new java.math.BigInteger(strVal));
+                    return XPathNumber.ofInteger(new BigInteger(strVal));
                 }
             } catch (NumberFormatException e) {
                 return value;
@@ -1468,6 +1567,26 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
      * Coerces a function argument to the declared parameter type, raising
      * XTTE0790 if the value cannot be converted.
      */
+    private boolean isNumericParamType(String asType) {
+        String baseType = asType.trim();
+        if (baseType.endsWith("*") || baseType.endsWith("+") || baseType.endsWith("?")) {
+            baseType = baseType.substring(0, baseType.length() - 1).trim();
+        }
+        if (baseType.startsWith("xs:")) {
+            baseType = baseType.substring(3);
+        }
+        return "integer".equals(baseType) || "int".equals(baseType)
+            || "long".equals(baseType) || "short".equals(baseType)
+            || "byte".equals(baseType) || "decimal".equals(baseType)
+            || "double".equals(baseType) || "float".equals(baseType)
+            || "nonNegativeInteger".equals(baseType)
+            || "positiveInteger".equals(baseType)
+            || "nonPositiveInteger".equals(baseType)
+            || "negativeInteger".equals(baseType)
+            || "unsignedLong".equals(baseType) || "unsignedInt".equals(baseType)
+            || "unsignedShort".equals(baseType) || "unsignedByte".equals(baseType);
+    }
+    
     private XPathValue coerceArgument(XPathValue value, String asType, String paramName)
             throws XPathException {
         String type = asType.trim();
@@ -1498,9 +1617,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                         || "unsignedShort".equals(baseType) || "unsignedByte".equals(baseType)) {
                     return XPathNumber.ofInteger(Long.parseLong(strVal.trim()));
                 } else if ("decimal".equals(baseType)) {
-                    return new XPathNumber(new java.math.BigDecimal(strVal.trim()));
+                    String trimmedVal = strVal.trim();
+                    return new XPathNumber(new BigDecimal(trimmedVal));
                 } else {
-                    return XPathNumber.of(Double.parseDouble(strVal.trim()));
+                    String trimmedVal = strVal.trim();
+                    return XPathNumber.of(Double.parseDouble(trimmedVal));
                 }
             } catch (NumberFormatException e) {
                 throw new XPathException("XTTE0790: Cannot convert string '" + strVal
@@ -1521,6 +1642,26 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         // Atomize node values to string when target type is xs:string
         if ("string".equals(baseType)
                 && (value instanceof XPathNode || value.isNodeSet())) {
+            // For sequence types (xs:string*, xs:string+), atomize each
+            // node individually to produce a sequence of strings
+            boolean isSequenceType = type.endsWith("*") || type.endsWith("+");
+            if (isSequenceType && value instanceof XPathNodeSet) {
+                XPathNodeSet ns = (XPathNodeSet) value;
+                if (ns.isEmpty()) {
+                    return XPathSequence.empty();
+                }
+                List<XPathValue> strings = new ArrayList<>();
+                for (int n = 0; n < ns.size(); n++) {
+                    XPathNode node = ns.get(n);
+                    if (node != null) {
+                        strings.add(new XPathString(node.getStringValue()));
+                    }
+                }
+                if (strings.isEmpty()) {
+                    return XPathSequence.empty();
+                }
+                return new XPathSequence(strings);
+            }
             return new XPathString(value.asString());
         }
         // XTTE0790: reject values incompatible with date/time types
@@ -1538,12 +1679,188 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         return value;
     }
 
+    /**
+     * Validates that a function item (or sequence of function items) is
+     * coercion-compatible with the declared function type of a parameter.
+     * Throws XPTY0004 only if the types are fundamentally incompatible
+     * (e.g., xs:integer return where xs:string is expected).
+     * Per XSLT 3.0, function coercion succeeds if the arity matches;
+     * type errors only arise when the coerced function is actually invoked.
+     * However, if the function's declared signature is known and the types
+     * are from incompatible families, we raise the error early.
+     */
+    private void validateFunctionTypeParam(XPathValue value, String paramType,
+            String paramName) throws XPathException {
+        SequenceType expectedType = SequenceType.parse(paramType, null);
+        if (expectedType == null) {
+            return;
+        }
+        if (expectedType.getItemKind() != SequenceType.ItemKind.FUNCTION) {
+            return;
+        }
+        SequenceType[] expectedParams = expectedType.getParameterTypes();
+        SequenceType expectedReturn = expectedType.getReturnType();
+        if (expectedParams == null) {
+            return;
+        }
+        List<XPathValue> items = new ArrayList<XPathValue>();
+        if (value instanceof XPathSequence) {
+            for (XPathValue item : (XPathSequence) value) {
+                items.add(item);
+            }
+        } else {
+            items.add(value);
+        }
+        for (XPathValue item : items) {
+            SequenceType[] actualParams = null;
+            SequenceType actualReturn = null;
+            if (item instanceof XPathFunctionItem) {
+                XPathFunctionItem fi = (XPathFunctionItem) item;
+                actualParams = fi.getParameterTypes();
+                actualReturn = fi.getReturnType();
+            } else if (item instanceof InlineFunctionItem) {
+                InlineFunctionItem inl = (InlineFunctionItem) item;
+                actualParams = inl.getParameterTypes();
+                actualReturn = inl.getReturnType();
+            }
+            if (actualParams == null && actualReturn == null) {
+                continue;
+            }
+            int actualArity = actualParams != null ? actualParams.length : -1;
+            if (actualArity >= 0 && actualArity != expectedParams.length) {
+                throw new XPathException("XPTY0004: Required item type of "
+                    + "parameter $" + paramName + " is " + paramType
+                    + "; supplied function has wrong arity");
+            }
+            // Check return type compatibility (covariant):
+            // actual return must be coercible to expected return
+            if (expectedReturn != null && !isCoercionCompatible(actualReturn, expectedReturn)) {
+                throw new XPathException("XPTY0004: Required item type of "
+                    + "parameter $" + paramName + " is " + paramType
+                    + "; supplied function does not match");
+            }
+            // Check parameter type compatibility (contravariant):
+            // expected param must be coercible to actual param
+            if (actualParams == null) {
+                continue;
+            }
+            for (int p = 0; p < expectedParams.length && p < actualParams.length; p++) {
+                if (!isCoercionCompatible(expectedParams[p], actualParams[p])) {
+                    throw new XPathException("XPTY0004: Required item type of "
+                        + "parameter $" + paramName + " is " + paramType
+                        + "; supplied function does not match");
+                }
+            }
+        }
+    }
+
+    /**
+     * Checks if a source type can be coerced to a target type under function
+     * coercion rules. More permissive than subtype: allows numeric promotion
+     * and same-family types with different occurrences, but rejects
+     * cross-family coercions (e.g., xs:integer to xs:string).
+     */
+    private static boolean isCoercionCompatible(SequenceType source, SequenceType target) {
+        if (source == null || target == null) {
+            return true;
+        }
+        // item() or item()* etc. is universally compatible
+        if (source.getItemKind() == SequenceType.ItemKind.ITEM
+                || target.getItemKind() == SequenceType.ItemKind.ITEM) {
+            return true;
+        }
+        // Both must be atomic for detailed checking
+        if (source.getItemKind() != SequenceType.ItemKind.ATOMIC
+                || target.getItemKind() != SequenceType.ItemKind.ATOMIC) {
+            return true;
+        }
+        String sourceLocal = source.getLocalName();
+        String targetLocal = target.getLocalName();
+        if (sourceLocal == null || targetLocal == null) {
+            return true;
+        }
+        // anyAtomicType is compatible with anything
+        if ("anyAtomicType".equals(sourceLocal) || "anyAtomicType".equals(targetLocal)) {
+            return true;
+        }
+        // Same type (ignoring occurrence) is always compatible
+        if (sourceLocal.equals(targetLocal)) {
+            return true;
+        }
+        // Numeric family: all numeric types are promotion-compatible
+        if (isNumericFamily(sourceLocal) && isNumericFamily(targetLocal)) {
+            return true;
+        }
+        // String family: string subtypes are compatible
+        if (isStringFamily(sourceLocal) && isStringFamily(targetLocal)) {
+            return true;
+        }
+        // anyURI -> string promotion
+        if ("anyURI".equals(sourceLocal) && isStringFamily(targetLocal)) {
+            return true;
+        }
+        if ("anyURI".equals(targetLocal) && isStringFamily(sourceLocal)) {
+            return true;
+        }
+        // untypedAtomic can be promoted to any type
+        if ("untypedAtomic".equals(sourceLocal)) {
+            return true;
+        }
+        // Different families: incompatible
+        return false;
+    }
+
+    private static boolean isNumericFamily(String localName) {
+        return "integer".equals(localName) || "decimal".equals(localName)
+            || "float".equals(localName) || "double".equals(localName)
+            || "numeric".equals(localName) || "long".equals(localName)
+            || "int".equals(localName) || "short".equals(localName)
+            || "byte".equals(localName) || "nonNegativeInteger".equals(localName)
+            || "positiveInteger".equals(localName) || "nonPositiveInteger".equals(localName)
+            || "negativeInteger".equals(localName) || "unsignedLong".equals(localName)
+            || "unsignedInt".equals(localName) || "unsignedShort".equals(localName)
+            || "unsignedByte".equals(localName);
+    }
+
+    private static boolean isStringFamily(String localName) {
+        return "string".equals(localName) || "normalizedString".equals(localName)
+            || "token".equals(localName) || "language".equals(localName)
+            || "NMTOKEN".equals(localName) || "Name".equals(localName)
+            || "NCName".equals(localName) || "ID".equals(localName)
+            || "IDREF".equals(localName) || "ENTITY".equals(localName);
+    }
+
     private String buildCacheKey(UserFunction function, List<XPathValue> args) {
         StringBuilder sb = new StringBuilder();
         sb.append(function.getKey());
         for (XPathValue arg : args) {
             sb.append("|");
-            sb.append(arg != null ? arg.asString() : "null");
+            if (arg == null) {
+                sb.append("null");
+            } else if (arg instanceof XPathQName) {
+                XPathQName qn = (XPathQName) arg;
+                sb.append("Q{");
+                String ns = qn.getNamespaceURI();
+                if (ns != null) {
+                    sb.append(ns);
+                }
+                sb.append("}");
+                sb.append(qn.getLocalName());
+            } else if (arg instanceof XPathNode) {
+                sb.append("node@");
+                sb.append(System.identityHashCode(arg));
+            } else if (arg instanceof XPathNodeSet) {
+                sb.append("ns@");
+                sb.append(System.identityHashCode(arg));
+            } else if (arg instanceof XPathMap) {
+                sb.append("map@");
+                sb.append(System.identityHashCode(arg));
+            } else if (arg instanceof InlineFunctionItem || arg instanceof PartialFunctionItem) {
+                sb.append("fn@");
+                sb.append(System.identityHashCode(arg));
+            } else {
+                sb.append(arg.asString());
+            }
         }
         return sb.toString();
     }
@@ -2472,9 +2789,12 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             String absoluteUri = null;
             try {
                 if (baseUri != null && !baseUri.isEmpty()) {
-                    absoluteUri = new java.net.URI(baseUri).resolve(uri).toString();
+                    URI baseUriObj = new URI(baseUri);
+                    URI resolved = baseUriObj.resolve(uri);
+                    absoluteUri = resolved.toString();
                 } else {
-                    absoluteUri = new java.net.URI(uri).toString();
+                    URI uriObj = new URI(uri);
+                    absoluteUri = uriObj.toString();
                 }
             } catch (Exception e) {
                 // Fall through to DocumentLoader which does its own resolution
@@ -2590,9 +2910,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             // Get decimal format from stylesheet if available
             CompiledStylesheet.DecimalFormatInfo decFormat = null;
-            if (context instanceof org.bluezoo.gonzalez.transform.runtime.TransformContext) {
-                org.bluezoo.gonzalez.transform.runtime.TransformContext tc = 
-                    (org.bluezoo.gonzalez.transform.runtime.TransformContext) context;
+            if (context instanceof TransformContext) {
+                TransformContext tc = (TransformContext) context;
                 CompiledStylesheet stylesheet = tc.getStylesheet();
                 if (stylesheet != null) {
                     decFormat = stylesheet.getDecimalFormat(formatName);
@@ -2711,7 +3030,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 
                 DecimalFormat df = new DecimalFormat(javaPattern, symbols);
                 df.setGroupingUsed(false);
-                java.math.BigDecimal bd = java.math.BigDecimal.valueOf(number);
+                BigDecimal bd = BigDecimal.valueOf(number);
                 String result = df.format(bd);
                 
                 if (!hasExplicitNegativeSubpattern && number < 0) {
@@ -2776,7 +3095,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
          * Splits a pattern by the pattern separator, but not within quoted literals.
          */
         private String[] splitPattern(String pattern, char patternSep) {
-            java.util.List<String> parts = new java.util.ArrayList<>();
+            List<String> parts = new ArrayList<String>();
             StringBuilder current = new StringBuilder();
             boolean inQuote = false;
             
@@ -2953,7 +3272,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             // Find grouping separator positions within the integer part,
             // measuring from the rightmost digit position
-            java.util.List<Integer> sepPositions = new java.util.ArrayList<>();
+            List<Integer> sepPositions = new ArrayList<Integer>();
             int digitCount = 0;
             for (int i = intPart.length() - 1; i >= 0; i--) {
                 char c = intPart.charAt(i);
@@ -3026,7 +3345,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             if (groupingSizes[0] == -1) {
                 // Unequal grouping: use explicit positions only
-                java.util.Set<Integer> positions = new java.util.HashSet<>();
+                Set<Integer> positions = new HashSet<Integer>();
                 for (int i = 1; i < groupingSizes.length; i++) {
                     positions.add(groupingSizes[i]);
                 }
@@ -3325,11 +3644,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     return XPathString.of("1.1");
                 }
                 if ("package-name".equals(localName) || "package-version".equals(localName)) {
-                    if (context instanceof org.bluezoo.gonzalez.transform.runtime.TransformContext) {
-                        org.bluezoo.gonzalez.transform.runtime.TransformContext tc =
-                            (org.bluezoo.gonzalez.transform.runtime.TransformContext) context;
-                        org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet stylesheet =
-                            tc.getStylesheet();
+                    if (context instanceof TransformContext) {
+                        TransformContext tc = (TransformContext) context;
+                        CompiledStylesheet stylesheet = tc.getStylesheet();
                         if (stylesheet != null) {
                             if ("package-name".equals(localName)) {
                                 String pkgName = stylesheet.getPackageName();
@@ -4178,9 +4495,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     "context node is not a document node");
             }
             String entityName = args.get(0).asString();
-            if (root instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
-                org.bluezoo.gonzalez.transform.runtime.StreamingNode docNode =
-                    (org.bluezoo.gonzalez.transform.runtime.StreamingNode) root;
+            if (root instanceof StreamingNode) {
+                StreamingNode docNode = (StreamingNode) root;
                 String[] entity = docNode.getUnparsedEntity(entityName);
                 if (entity != null && entity[1] != null) {
                     String systemId = entity[1];
@@ -4188,8 +4504,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     String docUri = docNode.getDocumentURI();
                     if (docUri != null && !docUri.isEmpty()) {
                         try {
-                            java.net.URI base = new java.net.URI(docUri);
-                            java.net.URI resolved = base.resolve(systemId);
+                            URI base = new URI(docUri);
+                            URI resolved = base.resolve(systemId);
                             return XPathString.of(resolved.toString());
                         } catch (Exception e) {
                             return XPathString.of(systemId);
@@ -4225,9 +4541,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                     "context node is not a document node");
             }
             String entityName = args.get(0).asString();
-            if (root instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
-                org.bluezoo.gonzalez.transform.runtime.StreamingNode docNode =
-                    (org.bluezoo.gonzalez.transform.runtime.StreamingNode) root;
+            if (root instanceof StreamingNode) {
+                StreamingNode docNode = (StreamingNode) root;
                 String[] entity = docNode.getUnparsedEntity(entityName);
                 if (entity != null && entity[0] != null) {
                     return XPathString.of(entity[0]);
@@ -4247,7 +4562,9 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
      */
     private static void validateAccumulatorContext(XPathContext context) throws XPathException {
         XPathValue contextItem = context.getContextItem();
-        if (contextItem != null && !(contextItem instanceof XPathNode)) {
+        if (contextItem != null && !(contextItem instanceof XPathNode)
+                && !contextItem.isNodeSet()
+                && !(contextItem instanceof XPathResultTreeFragment)) {
             throw new XPathException("XTTE3360: accumulator-before/after " +
                 "requires context item to be a node, but got " +
                 contextItem.getClass().getSimpleName());
@@ -4416,6 +4733,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // XTDE3480: only valid directly inside xsl:merge-action, not in called templates
+            if (context instanceof BasicTransformContext) {
+                if (!((BasicTransformContext) context).isInsideMergeAction()) {
+                    throw new XPathException("XTDE3480: current-merge-group() "
+                        + "is not available outside xsl:merge-action");
+                }
+            }
             if (args.isEmpty()) {
                 XPathValue group = context.getVariable(null, "__current_merge_group__");
                 if (group != null) {
@@ -4474,11 +4798,17 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            // XTDE3480: only valid directly inside xsl:merge-action, not in called templates
+            if (context instanceof BasicTransformContext) {
+                if (!((BasicTransformContext) context).isInsideMergeAction()) {
+                    throw new XPathException("XTDE3480: current-merge-key() "
+                        + "is not available outside xsl:merge-action");
+                }
+            }
             XPathValue key = context.getVariable(null, "__current_merge_key__");
             if (key != null) {
                 return key;
             }
-            // Return empty string if not in merge context
             return XPathString.of("");
         }
     }
@@ -4661,7 +4991,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 case "float":
                     return new XPathNumber(parseXPathDouble(value));
                 case "decimal":
-                    return new XPathNumber(new java.math.BigDecimal(value));
+                    return new XPathNumber(new BigDecimal(value));
                     
                 case "integer":
                 case "int":
@@ -4678,13 +5008,13 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 case "unsignedByte":
                     String intStr = value.trim();
                     if (intStr.indexOf('.') >= 0) {
-                        java.math.BigDecimal bd = new java.math.BigDecimal(intStr);
+                        BigDecimal bd = new BigDecimal(intStr);
                         return XPathNumber.ofInteger(bd.toBigInteger());
                     }
                     try {
                         return XPathNumber.ofInteger(Long.parseLong(intStr));
                     } catch (NumberFormatException nfe) {
-                        return XPathNumber.ofInteger(new java.math.BigInteger(intStr));
+                        return XPathNumber.ofInteger(new BigInteger(intStr));
                     }
                     
                 case "boolean":
@@ -4928,31 +5258,33 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             try {
                 String baseUri = context.getStaticBaseURI();
-                java.net.URI uri;
+                URI uri;
                 if (baseUri != null && !baseUri.isEmpty()) {
-                    uri = new java.net.URI(baseUri).resolve(href);
+                    URI baseUriObj = new URI(baseUri);
+                    uri = baseUriObj.resolve(href);
                 } else {
-                    uri = new java.net.URI(href);
+                    uri = new URI(href);
                 }
                 
                 byte[] bytes;
-                java.nio.file.Path path;
-                if ("file".equals(uri.getScheme())) {
-                    path = java.nio.file.Paths.get(uri);
-                    bytes = java.nio.file.Files.readAllBytes(path);
-                } else if (uri.getScheme() == null) {
-                    path = java.nio.file.Paths.get(href);
-                    bytes = java.nio.file.Files.readAllBytes(path);
+                Path path;
+                String scheme = uri.getScheme();
+                if ("file".equals(scheme)) {
+                    path = Paths.get(uri);
+                    bytes = Files.readAllBytes(path);
+                } else if (scheme == null) {
+                    path = Paths.get(href);
+                    bytes = Files.readAllBytes(path);
                 } else {
                     // Follow redirects (including HTTP→HTTPS)
                     String httpEncoding = null;
-                    java.net.URL url = uri.toURL();
-                    java.io.InputStream is;
+                    URL url = uri.toURL();
+                    InputStream is;
                     int redirects = 0;
                     while (true) {
-                        java.net.URLConnection urlConn = url.openConnection();
-                        if (urlConn instanceof java.net.HttpURLConnection) {
-                            java.net.HttpURLConnection httpConn = (java.net.HttpURLConnection) urlConn;
+                        URLConnection urlConn = url.openConnection();
+                        if (urlConn instanceof HttpURLConnection) {
+                            HttpURLConnection httpConn = (HttpURLConnection) urlConn;
                             httpConn.setInstanceFollowRedirects(false);
                             int code = httpConn.getResponseCode();
                             if (code >= 300 && code < 400 && redirects < 5) {
@@ -4961,7 +5293,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                                 if (location == null) {
                                     throw new IOException("Redirect with no Location header");
                                 }
-                                url = new java.net.URL(url, location);
+                                url = new URL(url, location);
                                 redirects++;
                                 continue;
                             }
@@ -4976,7 +5308,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                         is = urlConn.getInputStream();
                         break;
                     }
-                    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
                     byte[] buffer = new byte[IO_BUFFER_SIZE];
                     int len;
                     while ((len = is.read(buffer)) != -1) {
@@ -5001,7 +5333,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 throw e;
             } catch (URISyntaxException e) {
                 throw new XPathException("FOUT1170: Invalid URI: " + href);
-            } catch (java.nio.charset.UnsupportedCharsetException e) {
+            } catch (UnsupportedCharsetException e) {
                 String enc = explicitEncoding != null ? explicitEncoding : "UTF-8";
                 throw new XPathException("FOUT1190: Unsupported encoding: " + enc);
             } catch (IOException e) {
@@ -5060,7 +5392,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             }
         }
         
-        java.nio.charset.Charset charset = java.nio.charset.Charset.forName(detectedEncoding);
+        Charset charset = Charset.forName(detectedEncoding);
         return new String(bytes, offset, bytes.length - offset, charset);
     }
     
@@ -5083,7 +5415,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         String header;
         try {
             header = new String(bytes, 0, limit, "US-ASCII");
-        } catch (java.io.UnsupportedEncodingException e) {
+        } catch (UnsupportedEncodingException e) {
             return null;
         }
         int declEnd = header.indexOf("?>");
@@ -5182,34 +5514,36 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             
             try {
                 // Check if encoding is valid
-                java.nio.charset.Charset.forName(encoding);
+                Charset.forName(encoding);
                 
                 // Resolve relative URI against static base URI
                 String baseUri = context.getStaticBaseURI();
-                java.net.URI uri;
+                URI uri;
                 if (baseUri != null && !baseUri.isEmpty()) {
-                    uri = new java.net.URI(baseUri).resolve(href);
+                    URI baseUriObj = new URI(baseUri);
+                    uri = baseUriObj.resolve(href);
                 } else {
-                    uri = new java.net.URI(href);
+                    uri = new URI(href);
                 }
                 
                 // Check if file exists
-                java.nio.file.Path path;
-                if ("file".equals(uri.getScheme())) {
-                    path = java.nio.file.Paths.get(uri);
-                    return XPathBoolean.of(java.nio.file.Files.exists(path) && 
-                                           java.nio.file.Files.isReadable(path));
-                } else if (uri.getScheme() == null) {
-                    path = java.nio.file.Paths.get(href);
-                    return XPathBoolean.of(java.nio.file.Files.exists(path) && 
-                                           java.nio.file.Files.isReadable(path));
+                Path path;
+                String scheme = uri.getScheme();
+                if ("file".equals(scheme)) {
+                    path = Paths.get(uri);
+                    boolean available = Files.exists(path) && Files.isReadable(path);
+                    return XPathBoolean.of(available);
+                } else if (scheme == null) {
+                    path = Paths.get(href);
+                    boolean available = Files.exists(path) && Files.isReadable(path);
+                    return XPathBoolean.of(available);
                 } else {
                     // For http/https, try to open connection (follow redirects)
                     try {
-                        java.net.URL url = uri.toURL();
+                        URL url = uri.toURL();
                         int redirects = 0;
                         while (redirects < 5) {
-                            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+                            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                             conn.setRequestMethod("HEAD");
                             conn.setInstanceFollowRedirects(false);
                             int responseCode = conn.getResponseCode();
@@ -5219,7 +5553,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                                 if (location == null) {
                                     return XPathBoolean.FALSE;
                                 }
-                                url = new java.net.URL(url, location);
+                                url = new URL(url, location);
                                 redirects++;
                             } else {
                                 conn.disconnect();
@@ -5236,7 +5570,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 }
             } catch (URISyntaxException e) {
                 return XPathBoolean.FALSE;
-            } catch (java.nio.charset.UnsupportedCharsetException e) {
+            } catch (UnsupportedCharsetException e) {
                 return XPathBoolean.FALSE;
             } catch (InvalidPathException e) {
                 return XPathBoolean.FALSE;
@@ -5373,15 +5707,15 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 return snapshotNode((XPathNode) arg);
             }
             if (arg instanceof XPathNodeSet) {
-                java.util.List<XPathNode> results = new java.util.ArrayList<>();
-                java.util.Iterator<XPathNode> iter = ((XPathNodeSet) arg).iterator();
+                List<XPathNode> results = new ArrayList<XPathNode>();
+                Iterator<XPathNode> iter = ((XPathNodeSet) arg).iterator();
                 while (iter.hasNext()) {
                     XPathNode n = iter.next();
                     XPathValue snap = snapshotNode(n);
                     if (snap instanceof XPathNode) {
                         results.add((XPathNode) snap);
                     } else if (snap instanceof XPathNodeSet) {
-                        java.util.Iterator<XPathNode> si = ((XPathNodeSet) snap).iterator();
+                        Iterator<XPathNode> si = ((XPathNodeSet) snap).iterator();
                         while (si.hasNext()) {
                             results.add(si.next());
                         }
@@ -5394,8 +5728,8 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             }
             if (arg instanceof XPathSequence) {
                 XPathSequence seq = (XPathSequence) arg;
-                java.util.List<XPathValue> results = new java.util.ArrayList<>();
-                java.util.Iterator<XPathValue> iter = seq.iterator();
+                List<XPathValue> results = new ArrayList<XPathValue>();
+                Iterator<XPathValue> iter = seq.iterator();
                 while (iter.hasNext()) {
                     XPathValue item = iter.next();
                     if (item instanceof XPathNode) {
@@ -5414,10 +5748,109 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
         }
         
         private XPathValue snapshotNode(XPathNode node) {
-            // Per XSLT 3.0 spec, snapshot returns the node itself
-            // (in tree-based mode, the full tree is already navigable)
-            return XPathNodeSet.of(node);
+            // Deep copy the target node and eagerly initialize all descendants
+            // so that document order IDs are assigned in tree traversal order
+            SequenceFunctions.CopiedNode targetCopy = new SequenceFunctions.CopiedNode(node);
+            targetCopy.deepInitialize();
+
+            // Collect ancestors from node's parent up to root
+            List<XPathNode> ancestors = new ArrayList<XPathNode>();
+            XPathNode ancestor = node.getParent();
+            while (ancestor != null) {
+                ancestors.add(ancestor);
+                ancestor = ancestor.getParent();
+            }
+
+            if (ancestors.isEmpty()) {
+                return XPathNodeSet.of(targetCopy);
+            }
+
+            // Build snapshot tree from target up to root.
+            // Each ancestor is a shallow copy with only one child.
+            XPathNode currentChild = targetCopy;
+            for (int i = 0; i < ancestors.size(); i++) {
+                SnapshotAncestorNode shallowCopy = new SnapshotAncestorNode(
+                    ancestors.get(i), currentChild);
+                if (currentChild instanceof SequenceFunctions.CopiedNode) {
+                    ((SequenceFunctions.CopiedNode) currentChild).setParent(shallowCopy);
+                } else if (currentChild instanceof SnapshotAncestorNode) {
+                    ((SnapshotAncestorNode) currentChild).setParent(shallowCopy);
+                }
+                currentChild = shallowCopy;
+            }
+
+            return XPathNodeSet.of(targetCopy);
         }
+    }
+
+    /**
+     * Shallow copy of an ancestor node for snapshot trees.
+     * Contains the original's attributes and namespaces but only one child
+     * (the path leading to the snapshot target).
+     */
+    static class SnapshotAncestorNode implements XPathNode {
+        private final XPathNode original;
+        private final XPathNode onlyChild;
+        private XPathNode parent;
+        private static long snapshotId = Long.MAX_VALUE / 4;
+        private final long uniqueId;
+
+        SnapshotAncestorNode(XPathNode original, XPathNode onlyChild) {
+            this.original = original;
+            this.onlyChild = onlyChild;
+            this.uniqueId = snapshotId++;
+        }
+
+        void setParent(XPathNode parent) {
+            this.parent = parent;
+        }
+
+        @Override public NodeType getNodeType() { return original.getNodeType(); }
+        @Override public String getNamespaceURI() { return original.getNamespaceURI(); }
+        @Override public String getLocalName() { return original.getLocalName(); }
+        @Override public String getPrefix() { return original.getPrefix(); }
+
+        @Override
+        public String getStringValue() {
+            return onlyChild.getStringValue();
+        }
+
+        @Override public XPathNode getParent() { return parent; }
+        @Override public XPathNode getFollowingSibling() { return null; }
+        @Override public XPathNode getPrecedingSibling() { return null; }
+
+        @Override
+        public Iterator<XPathNode> getChildren() {
+            return Collections.<XPathNode>singletonList(onlyChild).iterator();
+        }
+
+        @Override
+        public Iterator<XPathNode> getAttributes() {
+            return original.getAttributes();
+        }
+
+        @Override
+        public Iterator<XPathNode> getNamespaces() {
+            return original.getNamespaces();
+        }
+
+        @Override public long getDocumentOrder() { return uniqueId; }
+
+        @Override
+        public boolean isSameNode(XPathNode other) {
+            return this == other;
+        }
+
+        @Override
+        public XPathNode getRoot() {
+            XPathNode node = this;
+            while (node.getParent() != null) {
+                node = node.getParent();
+            }
+            return node;
+        }
+
+        @Override public boolean isFullyNavigable() { return true; }
     }
 
     // ========================================================================
@@ -5448,6 +5881,11 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 if (opts instanceof XPathMap) {
                     XPathMap map = (XPathMap) opts;
                     validateJsonOptions(map);
+                    boolean validate = extractBooleanOption(map, "validate");
+                    if (validate) {
+                        throw new XPathException("FOJS0004: json-to-xml validate " +
+                            "option requires a schema-aware processor");
+                    }
                     escape = extractBooleanOption(map, "escape");
                     XPathValue dupVal = map.get("duplicates");
                     if (dupVal != null) {
@@ -6347,7 +6785,7 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
             for (int i = 0; i < indices.length; i++) {
                 indices[i] = Integer.valueOf(i);
             }
-            java.util.Arrays.sort(indices, new java.util.Comparator<Integer>() {
+            Arrays.sort(indices, new Comparator<Integer>() {
                 @Override
                 public int compare(Integer a, Integer b) {
                     String keyA = keys.get(a.intValue());
@@ -6365,6 +6803,509 @@ public final class XSLTFunctionLibrary implements XPathFunctionLibrary {
                 return sorted.get(0);
             }
             return new XPathSequence(sorted);
+        }
+    }
+
+    /**
+     * XPath 3.1 fn:apply($function, $array) - invokes a function with arguments
+     * supplied as an array.
+     */
+    private static class ApplyFunction implements Function {
+        @Override
+        public String getName() { return "apply"; }
+        @Override
+        public int getMinArgs() { return 2; }
+        @Override
+        public int getMaxArgs() { return 2; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
+            XPathValue funcItem = args.get(0);
+            XPathValue arrayArg = args.get(1);
+            if (!(arrayArg instanceof XPathArray)) {
+                throw new XPathException("XPTY0004: Second argument to fn:apply must be an array");
+            }
+            XPathArray array = (XPathArray) arrayArg;
+            List<XPathValue> callArgs = new ArrayList<XPathValue>(array.size());
+            for (XPathValue member : array.members()) {
+                callArgs.add(member);
+            }
+            return invokeFunctionItem(funcItem, callArgs, context, "apply");
+        }
+    }
+
+    // ========================================================================
+    // XPath 3.0 fn:transform()
+    // ========================================================================
+
+    /**
+     * XPath 3.0 fn:transform($options as map(*)) as map(*).
+     *
+     * <p>Invokes a dynamic XSLT transformation and returns a map containing
+     * the transformation results. Supports stylesheet-location, package-name,
+     * initial-template, initial-match-selection, source-node, and various
+     * delivery formats.
+     */
+    private static class TransformFunction implements Function {
+        @Override
+        public String getName() { return "transform"; }
+        @Override
+        public int getMinArgs() { return 1; }
+        @Override
+        public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            XPathValue optionsArg = args.get(0);
+            if (!(optionsArg instanceof XPathMap)) {
+                throw new XPathException("FOXT0001: fn:transform argument must be a map");
+            }
+            XPathMap options = (XPathMap) optionsArg;
+
+            String stylesheetLocation = stringOption(options, "stylesheet-location");
+            String packageName = stringOption(options, "package-name");
+            String packageVersion = stringOption(options, "package-version");
+            String deliveryFormat = stringOption(options, "delivery-format");
+            if (deliveryFormat == null) {
+                deliveryFormat = "document";
+            }
+            XPathValue initialTemplateVal = options.get("initial-template");
+            XPathValue initialMatchSelection = options.get("initial-match-selection");
+            XPathValue sourceNode = options.get("source-node");
+
+            String baseUri = context.getStaticBaseURI();
+
+            try {
+                CompiledStylesheet stylesheet = compileStylesheet(
+                    stylesheetLocation, packageName, packageVersion,
+                    baseUri, context);
+
+                return executeTransformation(stylesheet, initialTemplateVal,
+                    initialMatchSelection, sourceNode, deliveryFormat,
+                    baseUri, context);
+            } catch (SAXException e) {
+                throw new XPathException("FOXT0003: " + e.getMessage());
+            } catch (Exception e) {
+                throw new XPathException("FOXT0003: Transform failed: " + e.getMessage());
+            }
+        }
+
+        private static String stringOption(XPathMap options, String key) {
+            XPathValue val = options.get(key);
+            if (val == null) {
+                return null;
+            }
+            if (val instanceof XPathSequence
+                    && ((XPathSequence) val).isEmpty()) {
+                return null;
+            }
+            return val.asString();
+        }
+
+        private static CompiledStylesheet compileStylesheet(
+                String stylesheetLocation, String packageName,
+                String packageVersion, String baseUri, XPathContext context)
+                throws Exception {
+            if (stylesheetLocation != null) {
+                String resolvedUri = resolveUri(stylesheetLocation, baseUri);
+                GonzalezTransformerFactory factory = new GonzalezTransformerFactory();
+                // Propagate package resolver from calling context
+                if (context instanceof TransformContext) {
+                    CompiledStylesheet callerSheet =
+                        ((TransformContext) context).getStylesheet();
+                    if (callerSheet != null
+                            && callerSheet.getPackageResolver() != null) {
+                        factory.setPackageResolver(
+                            callerSheet.getPackageResolver());
+                    }
+                }
+                StreamSource source = new StreamSource(resolvedUri);
+                Templates templates = factory.newTemplates(source);
+                return ((GonzalezTemplates) templates)
+                    .getStylesheet();
+            }
+            if (packageName != null) {
+                return compileFromPackage(packageName, packageVersion,
+                    baseUri, context);
+            }
+            throw new SAXException("FOXT0001: stylesheet-location or " +
+                "package-name is required");
+        }
+
+        private static CompiledStylesheet compileFromPackage(
+                String packageName, String packageVersion,
+                String baseUri, XPathContext context) throws Exception {
+            if (packageVersion == null) {
+                packageVersion = "*";
+            }
+            PackageResolver resolver = null;
+            if (context instanceof TransformContext) {
+                CompiledStylesheet callerSheet =
+                    ((TransformContext) context).getStylesheet();
+                if (callerSheet != null) {
+                    resolver = callerSheet.getPackageResolver();
+                }
+            }
+            if (resolver == null) {
+                resolver = new PackageResolver();
+            }
+            // Register package locations from the test catalog
+            // The resolver already has locations from the calling context
+            CompiledPackage pkg = resolver.resolve(
+                packageName, packageVersion, baseUri);
+            return pkg.getStylesheet();
+        }
+
+        private static String resolveUri(String href, String baseUri) {
+            if (href == null) {
+                return null;
+            }
+            try {
+                URI hrefUri = new URI(href);
+                if (hrefUri.isAbsolute()) {
+                    return href;
+                }
+            } catch (URISyntaxException e) {
+                // Not valid URI, treat as relative
+            }
+            if (baseUri != null && !baseUri.isEmpty()) {
+                try {
+                    URI base = new URI(baseUri);
+                    URI resolved = base.resolve(href);
+                    return resolved.toString();
+                } catch (URISyntaxException e) {
+                    // Fall through
+                }
+            }
+            return href;
+        }
+
+        private static XPathValue executeTransformation(
+                CompiledStylesheet stylesheet, XPathValue initialTemplateVal,
+                XPathValue initialMatchSelection, XPathValue sourceNode,
+                String deliveryFormat, String baseUri, XPathContext context)
+                throws Exception {
+            boolean raw = "raw".equals(deliveryFormat);
+            boolean serialized = "serialized".equals(deliveryFormat);
+
+            SequenceBuilderOutputHandler seqOutput = new SequenceBuilderOutputHandler();
+            OutputHandler primaryOutput;
+            ByteArrayOutputStream serializedStream = null;
+
+            if (serialized) {
+                serializedStream = new ByteArrayOutputStream();
+                OutputProperties props = stylesheet.getOutputProperties();
+                primaryOutput = new XMLWriterOutputHandler(serializedStream, props);
+            } else {
+                primaryOutput = seqOutput;
+            }
+
+            // Set up secondary output collector
+            Map<String, OutputHandler> secondaryCollector =
+                new LinkedHashMap<String, OutputHandler>();
+
+            // Build context for inner transformation
+            TemplateMatcher matcher = new TemplateMatcher(stylesheet);
+            BasicTransformContext innerContext = new BasicTransformContext(
+                stylesheet, null, matcher, primaryOutput, null);
+            innerContext.setResultDocumentCollector(secondaryCollector);
+
+            // Initialize global variables
+            initializeGlobals(stylesheet, innerContext);
+
+            // For raw delivery, skip document wrapping so function items
+            // and other XDM values are preserved directly
+            if (!raw) {
+                primaryOutput.startDocument();
+            }
+
+            if (initialTemplateVal != null) {
+                executeInitialTemplate(stylesheet, initialTemplateVal,
+                    innerContext, primaryOutput, sourceNode);
+            } else if (initialMatchSelection != null) {
+                executeInitialMatchSelection(stylesheet, initialMatchSelection,
+                    matcher, innerContext, primaryOutput);
+            } else if (sourceNode != null) {
+                executeWithSourceNode(stylesheet, sourceNode,
+                    matcher, innerContext, primaryOutput);
+            } else {
+                throw new SAXException("FOXT0001: initial-template, " +
+                    "initial-match-selection, or source-node is required");
+            }
+
+            if (!raw) {
+                primaryOutput.endDocument();
+            }
+
+            // Build result map
+            Map<String, XPathValue> resultMap =
+                new LinkedHashMap<String, XPathValue>();
+            if (serialized) {
+                resultMap.put("output",
+                    XPathString.of(serializedStream.toString("UTF-8")));
+            } else if (raw) {
+                XPathValue seq = seqOutput.getSequence();
+                resultMap.put("output", seq);
+            } else {
+                XPathValue seq = seqOutput.getSequence();
+                XPathResultTreeFragment rtf = wrapAsDocument(seq);
+                resultMap.put("output", rtf);
+            }
+
+            // Add secondary outputs
+            for (Map.Entry<String, OutputHandler> entry
+                    : secondaryCollector.entrySet()) {
+                String uri = entry.getKey();
+                OutputHandler handler = entry.getValue();
+                if (serialized) {
+                    // For serialized, we need to serialize the buffered content
+                    XPathValue secVal = replayToString(handler, stylesheet);
+                    resultMap.put(uri, secVal);
+                } else {
+                    XPathValue secVal = replayToSequence(handler);
+                    if (raw) {
+                        resultMap.put(uri, secVal);
+                    } else {
+                        resultMap.put(uri, wrapAsDocument(secVal));
+                    }
+                }
+            }
+
+            return new XPathMap(resultMap);
+        }
+
+        private static void initializeGlobals(CompiledStylesheet stylesheet,
+                BasicTransformContext context) throws SAXException {
+            context.setThrowOnUndefinedVariable(true);
+            List<GlobalVariable> allVars = stylesheet.getGlobalVariables();
+            Set<String> evaluated = new HashSet<String>();
+            boolean progress = true;
+            while (progress) {
+                progress = false;
+                for (GlobalVariable var : allVars) {
+                    String key = var.getName();
+                    if (evaluated.contains(key)) {
+                        continue;
+                    }
+                    try {
+                        XPathValue value = null;
+                        if (var.getSelectExpr() != null) {
+                            value = var.getSelectExpr().evaluate(context);
+                        } else if (var.getContent() != null) {
+                            SequenceBuilderOutputHandler varOutput =
+                                new SequenceBuilderOutputHandler();
+                            var.getContent().execute(context, varOutput);
+                            value = varOutput.getSequence();
+                        } else if (var.isParam() && !var.isRequired()) {
+                            value = XPathString.of("");
+                        }
+                        if (value != null) {
+                            context.setVariable(var.getNamespaceURI(),
+                                var.getLocalName(), value);
+                            evaluated.add(key);
+                            progress = true;
+                        }
+                    } catch (Exception e) {
+                        // Forward reference - try later
+                    }
+                }
+            }
+            context.setThrowOnUndefinedVariable(false);
+        }
+
+        private static void executeInitialTemplate(
+                CompiledStylesheet stylesheet, XPathValue templateQName,
+                BasicTransformContext context, OutputHandler output,
+                XPathValue sourceNode) throws SAXException {
+            String templateName;
+            if (templateQName instanceof XPathQName) {
+                XPathQName qn = (XPathQName) templateQName;
+                String nsUri = qn.getNamespaceURI();
+                String local = qn.getLocalName();
+                if (nsUri != null && !nsUri.isEmpty()) {
+                    templateName = "{" + nsUri + "}" + local;
+                } else {
+                    templateName = local;
+                }
+            } else {
+                templateName = templateQName.asString();
+            }
+
+            TemplateRule template = stylesheet.getNamedTemplate(templateName);
+            if (template == null) {
+                throw new SAXException("FOXT0003: Initial template '" +
+                    templateName + "' not found");
+            }
+
+            TransformContext execContext = context.pushVariableScope();
+            if (sourceNode != null && sourceNode instanceof XPathNode) {
+                execContext = execContext.withContextNode((XPathNode) sourceNode);
+            } else if (sourceNode != null && sourceNode instanceof XPathNodeSet) {
+                XPathNodeSet ns = (XPathNodeSet) sourceNode;
+                if (!ns.isEmpty()) {
+                    execContext = execContext.withContextNode(ns.getNodes().get(0));
+                }
+            } else {
+                execContext = execContext.withContextNode(null);
+                if (execContext instanceof BasicTransformContext) {
+                    ((BasicTransformContext) execContext)
+                        .setContextItemUndefined(true);
+                }
+            }
+
+            XSLTNode body = template.getBody();
+            if (body != null) {
+                body.execute(execContext, output);
+            }
+        }
+
+        private static void executeInitialMatchSelection(
+                CompiledStylesheet stylesheet, XPathValue selection,
+                TemplateMatcher matcher, BasicTransformContext context,
+                OutputHandler output) throws SAXException {
+            List<XPathValue> items = new ArrayList<XPathValue>();
+            if (selection instanceof XPathSequence) {
+                for (XPathValue item : (XPathSequence) selection) {
+                    items.add(item);
+                }
+            } else if (selection instanceof XPathNodeSet) {
+                for (XPathNode node : ((XPathNodeSet) selection).getNodes()) {
+                    items.add(new XPathNodeSet(
+                        Collections.singletonList(node)));
+                }
+            } else {
+                items.add(selection);
+            }
+
+            int position = 1;
+            int size = items.size();
+            for (XPathValue item : items) {
+                if (item instanceof XPathNode) {
+                    XPathNode node = (XPathNode) item;
+                    TransformContext nodeCtx = context
+                        .withXsltCurrentNode(node)
+                        .withPositionAndSize(position, size);
+                    TemplateRule rule = matcher.findMatch(node, null, nodeCtx);
+                    if (rule != null && rule.getBody() != null) {
+                        TransformContext execCtx = nodeCtx
+                            .pushVariableScope()
+                            .withCurrentTemplateRule(rule);
+                        rule.getBody().execute(execCtx, output);
+                    }
+                } else if (item instanceof XPathNodeSet) {
+                    XPathNodeSet ns = (XPathNodeSet) item;
+                    if (!ns.isEmpty()) {
+                        XPathNode node = ns.getNodes().get(0);
+                        TransformContext nodeCtx = context
+                            .withXsltCurrentNode(node)
+                            .withPositionAndSize(position, size);
+                        TemplateRule rule = matcher.findMatch(
+                            node, null, nodeCtx);
+                        if (rule != null && rule.getBody() != null) {
+                            TransformContext execCtx = nodeCtx
+                                .pushVariableScope()
+                                .withCurrentTemplateRule(rule);
+                            rule.getBody().execute(execCtx, output);
+                        }
+                    }
+                } else {
+                    TransformContext atomicCtx = context
+                        .withContextItem(item)
+                        .withPositionAndSize(position, size);
+                    TemplateRule rule = matcher.findMatchForAtomicValue(
+                        item, null, atomicCtx);
+                    if (rule != null && rule.getBody() != null) {
+                        TransformContext execCtx = atomicCtx
+                            .pushVariableScope()
+                            .withCurrentTemplateRule(rule);
+                        rule.getBody().execute(execCtx, output);
+                    }
+                }
+                position++;
+            }
+        }
+
+        private static void executeWithSourceNode(
+                CompiledStylesheet stylesheet, XPathValue sourceNode,
+                TemplateMatcher matcher, BasicTransformContext context,
+                OutputHandler output) throws SAXException {
+            XPathNode node = null;
+            if (sourceNode instanceof XPathNode) {
+                node = (XPathNode) sourceNode;
+            } else if (sourceNode instanceof XPathNodeSet) {
+                XPathNodeSet ns = (XPathNodeSet) sourceNode;
+                if (!ns.isEmpty()) {
+                    node = ns.getNodes().get(0);
+                }
+            }
+            if (node == null) {
+                throw new SAXException("FOXT0003: source-node must be a node");
+            }
+            // Apply templates to the source node (default mode)
+            TransformContext nodeCtx = context.withXsltCurrentNode(node)
+                .withPositionAndSize(1, 1);
+            TemplateRule rule = matcher.findMatch(node, null, nodeCtx);
+            if (rule != null && rule.getBody() != null) {
+                TransformContext execCtx = nodeCtx.pushVariableScope()
+                    .withCurrentTemplateRule(rule);
+                rule.getBody().execute(execCtx, output);
+            }
+        }
+
+        private static XPathResultTreeFragment wrapAsDocument(XPathValue seq)
+                throws SAXException {
+            SAXEventBuffer buffer = new SAXEventBuffer();
+            BufferOutputHandler bufOutput = new BufferOutputHandler(buffer);
+            bufOutput.startDocument();
+            if (seq instanceof XPathResultTreeFragment) {
+                ((XPathResultTreeFragment) seq).replayToOutput(bufOutput);
+            } else if (seq instanceof XPathSequence) {
+                for (XPathValue item : (XPathSequence) seq) {
+                    if (item instanceof XPathResultTreeFragment) {
+                        ((XPathResultTreeFragment) item).replayToOutput(bufOutput);
+                    } else {
+                        bufOutput.characters(item.asString());
+                    }
+                }
+            } else if (seq != null) {
+                bufOutput.characters(seq.asString());
+            }
+            bufOutput.endDocument();
+            return new XPathResultTreeFragment(buffer, null);
+        }
+
+        private static XPathValue replayToSequence(OutputHandler handler)
+                throws SAXException {
+            if (handler instanceof BufferOutputHandler) {
+                BufferOutputHandler buf = (BufferOutputHandler) handler;
+                SAXEventBuffer buffer = buf.getBuffer();
+                return new XPathResultTreeFragment(buffer, null);
+            }
+            return XPathSequence.EMPTY;
+        }
+
+        private static XPathValue replayToString(OutputHandler handler,
+                CompiledStylesheet stylesheet) throws SAXException {
+            if (handler instanceof BufferOutputHandler) {
+                BufferOutputHandler buf = (BufferOutputHandler) handler;
+                SAXEventBuffer buffer = buf.getBuffer();
+                try {
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    OutputProperties props = stylesheet.getOutputProperties();
+                    XMLWriterOutputHandler serOutput =
+                        new XMLWriterOutputHandler(baos, props);
+                    XPathResultTreeFragment rtf =
+                        new XPathResultTreeFragment(buffer, null);
+                    serOutput.startDocument();
+                    rtf.replayToOutput(serOutput);
+                    serOutput.endDocument();
+                    return XPathString.of(baos.toString("UTF-8"));
+                } catch (Exception e) {
+                    return XPathString.of("");
+                }
+            }
+            return XPathString.of("");
         }
     }
 }

@@ -54,6 +54,8 @@ public final class UserFunction {
     private final int importPrecedence;
     private final boolean cached; // XSLT 3.0 cache="yes" attribute
     private final ComponentVisibility visibility; // XSLT 3.0 package visibility
+    private String streamability; // XSLT 3.0 streamability attribute
+    private CompiledStylesheet definingStylesheet;  // Package scope for cross-package invocations
 
     /**
      * Creates a new user-defined function.
@@ -197,14 +199,55 @@ public final class UserFunction {
     }
 
     /**
+     * Returns the streamability declaration (XSLT 3.0).
+     *
+     * @return the streamability value, or null if not declared
+     */
+    public String getStreamability() {
+        return streamability;
+    }
+
+    /**
+     * Sets the streamability declaration (XSLT 3.0).
+     *
+     * @param streamability the streamability value
+     */
+    public void setStreamability(String streamability) {
+        this.streamability = streamability;
+    }
+
+    /**
+     * Returns the defining stylesheet for cross-package scope.
+     * When a function is imported from a package, it retains a reference
+     * to its original stylesheet so that private components remain
+     * accessible during execution.
+     *
+     * @return the defining stylesheet, or null if defined in the principal stylesheet
+     */
+    public CompiledStylesheet getDefiningStylesheet() {
+        return definingStylesheet;
+    }
+
+    /**
+     * Sets the defining stylesheet for cross-package scope.
+     *
+     * @param stylesheet the stylesheet that originally defined this function
+     */
+    public void setDefiningStylesheet(CompiledStylesheet stylesheet) {
+        this.definingStylesheet = stylesheet;
+    }
+
+    /**
      * Creates a copy of this function with a different visibility.
      *
      * @param newVisibility the new visibility
      * @return a new UserFunction with the specified visibility
      */
     public UserFunction withVisibility(ComponentVisibility newVisibility) {
-        return new UserFunction(namespaceURI, localName, parameters, body,
+        UserFunction copy = new UserFunction(namespaceURI, localName, parameters, body,
                                asType, importPrecedence, cached, newVisibility);
+        copy.definingStylesheet = this.definingStylesheet;
+        return copy;
     }
 
     /**
@@ -214,8 +257,10 @@ public final class UserFunction {
      * @return a new UserFunction with the specified precedence
      */
     public UserFunction withImportPrecedence(int newPrecedence) {
-        return new UserFunction(namespaceURI, localName, parameters, body,
+        UserFunction copy = new UserFunction(namespaceURI, localName, parameters, body,
                                asType, newPrecedence, cached, visibility);
+        copy.definingStylesheet = this.definingStylesheet;
+        return copy;
     }
 
     /**

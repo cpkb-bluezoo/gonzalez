@@ -21,7 +21,13 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.xml.sax.SAXException;
+
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
+import org.bluezoo.gonzalez.transform.ast.XSLTNode;
+import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
+import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
@@ -31,6 +37,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -233,6 +240,56 @@ public final class TemplateParameter {
      */
     public String getAsType() {
         return asType;
+    }
+
+    /**
+     * Evaluates the default content of this parameter.
+     * When the {@code as} type indicates a non-node item type (item(), map(*),
+     * array(*), function(*)), uses a sequence builder to preserve maps and
+     * arrays. Otherwise, wraps content in a result tree fragment.
+     *
+     * @param context the transform context
+     * @return the evaluated default value
+     * @throws SAXException if an error occurs during evaluation
+     */
+    public XPathValue evaluateDefaultContent(TransformContext context)
+            throws SAXException {
+        if (defaultContent == null) {
+            return new XPathString("");
+        }
+        if (isNonNodeItemType()) {
+            SequenceBuilderOutputHandler seqBuilder =
+                new SequenceBuilderOutputHandler(context.getStaticBaseURI());
+            java.util.List<XSLTNode> children = defaultContent.getChildren();
+            if (children != null) {
+                for (int i = 0; i < children.size(); i++) {
+                    children.get(i).execute(context, seqBuilder);
+                    seqBuilder.markItemBoundary();
+                }
+            }
+            XPathValue value = seqBuilder.getSequence();
+            if (value instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) value;
+                if (seq.size() == 1) {
+                    return seq.iterator().next();
+                }
+            }
+            return value;
+        }
+        SAXEventBuffer buffer = new SAXEventBuffer();
+        BufferOutputHandler bufOutput = new BufferOutputHandler(buffer);
+        defaultContent.execute(context, bufOutput);
+        return new XPathResultTreeFragment(buffer);
+    }
+
+    private boolean isNonNodeItemType() {
+        if (asType == null) {
+            return false;
+        }
+        String type = asType.trim();
+        return type.equals("item()") || type.startsWith("item()")
+            || type.startsWith("map(") || type.startsWith("array(")
+            || type.startsWith("function(");
     }
 
     /**

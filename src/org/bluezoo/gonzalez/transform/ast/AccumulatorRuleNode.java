@@ -60,6 +60,8 @@ public class AccumulatorRuleNode implements XSLTNode, ExpressionHolder {
         this.body = body;
     }
     
+    public Pattern getPattern() { return pattern; }
+
     public AccumulatorDefinition.AccumulatorRule toRule() {
         if (body != null) {
             return new AccumulatorDefinition.AccumulatorRule(pattern, phase, null, body);

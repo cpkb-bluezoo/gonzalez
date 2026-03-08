@@ -64,6 +64,11 @@ public class NextMatchNode extends XSLTInstruction {
             throw new SAXException("XTDE0560: xsl:next-match cannot be used when there is no current template rule");
         }
         
+        // XTDE0560: context item must not be absent
+        if (context.isContextItemUndefined()) {
+            throw new SAXException("XTDE0560: xsl:next-match cannot be used when the context item is absent");
+        }
+        
         // XSLT 3.0: check if context item is atomic (non-node)
         if (context instanceof BasicTransformContext) {
             XPathValue contextItem = ((BasicTransformContext) context).getContextItem();
@@ -182,13 +187,8 @@ public class NextMatchNode extends XSLTInstruction {
                     } catch (XPathException e) {
                         throw new SAXException("Error evaluating parameter default: " + e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    BufferOutputHandler bufOutput = new BufferOutputHandler(buffer);
-                    templateParam.getDefaultContent().execute(execContext, bufOutput);
-                    value = new XPathResultTreeFragment(buffer);
                 } else {
-                    value = new XPathString("");
+                    value = templateParam.evaluateDefaultContent(execContext);
                 }
                 try {
                     value = templateParam.coerceDefaultValue(value);
@@ -228,6 +228,11 @@ public class NextMatchNode extends XSLTInstruction {
             atomicValue, context.getCurrentMode(), currentRule, context);
         
         if (nextRule == null) {
+            // Built-in template for atomic values: output string value
+            String sv = atomicValue.asString();
+            if (sv != null && !sv.isEmpty()) {
+                output.characters(sv);
+            }
             return;
         }
         
@@ -255,13 +260,8 @@ public class NextMatchNode extends XSLTInstruction {
                         throw new SAXException(
                             "Error evaluating parameter default: " + e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    BufferOutputHandler bufOutput = new BufferOutputHandler(buffer);
-                    templateParam.getDefaultContent().execute(execContext, bufOutput);
-                    defaultValue = new XPathResultTreeFragment(buffer);
                 } else {
-                    defaultValue = new XPathString("");
+                    defaultValue = templateParam.evaluateDefaultContent(execContext);
                 }
                 try {
                     defaultValue = templateParam.coerceDefaultValue(defaultValue);
@@ -334,13 +334,8 @@ public class NextMatchNode extends XSLTInstruction {
                         throw new SAXException(
                             "Error evaluating parameter default: " + e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    BufferOutputHandler bufOutput = new BufferOutputHandler(buffer);
-                    templateParam.getDefaultContent().execute(execContext, bufOutput);
-                    value = new XPathResultTreeFragment(buffer);
                 } else {
-                    value = new XPathString("");
+                    value = templateParam.evaluateDefaultContent(execContext);
                 }
                 try {
                     value = templateParam.coerceDefaultValue(value);

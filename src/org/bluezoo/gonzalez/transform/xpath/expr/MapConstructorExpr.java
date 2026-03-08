@@ -79,13 +79,15 @@ public final class MapConstructorExpr implements Expr {
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
         Map<String, XPathValue> entries = new LinkedHashMap<String, XPathValue>();
+        Map<String, XPathValue> typedKeys = new LinkedHashMap<String, XPathValue>();
         for (int i = 0; i < keyExprs.size(); i++) {
             XPathValue key = keyExprs.get(i).evaluate(context);
             XPathValue value = valueExprs.get(i).evaluate(context);
             String keyStr = key.asString();
             entries.put(keyStr, value);
+            typedKeys.put(keyStr, key);
         }
-        return new XPathMap(entries);
+        return new XPathMap(entries, typedKeys);
     }
 
     @Override

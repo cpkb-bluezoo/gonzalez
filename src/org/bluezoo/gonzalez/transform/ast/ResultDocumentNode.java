@@ -24,9 +24,12 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
 import org.bluezoo.gonzalez.transform.ValidationMode;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
+import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.runtime.ResultDocumentHandler;
+import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.xml.sax.SAXException;
@@ -129,8 +132,15 @@ public final class ResultDocumentNode implements XSLTNode {
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         // XTDE1480: xsl:result-document must not be evaluated in temporary output state
-        if (output instanceof org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler
-                || output instanceof org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler) {
+        // Exception: fn:transform() uses SequenceBuilderOutputHandler as top-level output
+        boolean inTransformFunction = false;
+        if (context instanceof BasicTransformContext) {
+            inTransformFunction =
+                ((BasicTransformContext) context).getResultDocumentCollector() != null;
+        }
+        if (!inTransformFunction
+                && (output instanceof org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler
+                    || output instanceof org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler)) {
             throw new SAXException("XTDE1480: xsl:result-document cannot be evaluated " +
                 "while writing to a temporary tree (e.g. inside a variable or function)");
         }
@@ -179,16 +189,28 @@ public final class ResultDocumentNode implements XSLTNode {
             if (href != null && !href.isEmpty()) {
                 // XTDE1490: check for duplicate result document URI
                 URI uri = resolveHref(href, context);
-                context.claimResultDocumentUri(uri.toString());
+                String uriStr = uri.toString();
+                context.claimResultDocumentUri(uriStr);
                 
-                // Create file output for secondary document
-                java.io.File outFile = new java.io.File(uri.getPath());
-                java.io.File parentDir = outFile.getParentFile();
-                if (parentDir != null && !parentDir.exists()) {
-                    parentDir.mkdirs();
+                // fn:transform() secondary output capture
+                Map<String, OutputHandler> collector = null;
+                if (context instanceof BasicTransformContext) {
+                    collector = ((BasicTransformContext) context).getResultDocumentCollector();
                 }
-                outputStream = new FileOutputStream(outFile);
-                secondaryOutput = new ResultDocumentHandler(outputStream, props);
+                if (collector != null) {
+                    SAXEventBuffer buffer = new SAXEventBuffer();
+                    secondaryOutput = new BufferOutputHandler(buffer);
+                    collector.put(uriStr, secondaryOutput);
+                } else {
+                    // Create file output for secondary document
+                    java.io.File outFile = new java.io.File(uri.getPath());
+                    java.io.File parentDir = outFile.getParentFile();
+                    if (parentDir != null && !parentDir.exists()) {
+                        parentDir.mkdirs();
+                    }
+                    outputStream = new FileOutputStream(outFile);
+                    secondaryOutput = new ResultDocumentHandler(outputStream, props);
+                }
             } else {
                 // No href - write to principal output
                 OutputHandler principalOutput = context.getPrincipalOutput();
@@ -245,12 +267,19 @@ public final class ResultDocumentNode implements XSLTNode {
     }
 
     /**
-     * Resolves the href relative to the base URI.
+     * Resolves the href as a URI, handling relative URIs.
      */
     private URI resolveHref(String href, TransformContext context) {
-        // For now, treat as absolute URI
-        // TODO: Resolve relative to output base URI
-        return URI.create(href);
+        try {
+            URI hrefUri = new URI(href);
+            if (hrefUri.isAbsolute()) {
+                return hrefUri;
+            }
+        } catch (java.net.URISyntaxException e) {
+            // Not a valid URI syntax; treat as relative file path below
+        }
+        // Relative URI: resolve as a file path
+        return new java.io.File(href).toURI();
     }
 
     /**

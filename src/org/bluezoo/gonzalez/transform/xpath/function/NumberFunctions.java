@@ -71,6 +71,16 @@ public final class NumberFunctions {
                 throws XPathException {
             boolean isXPath2 = context.getXsltVersion() >= 2.0;
             if (args.isEmpty()) {
+                // XPath 2.0+: context item may be an atomic value (e.g. in simple map)
+                XPathValue contextItem = context.getContextItem();
+                if (contextItem != null && !contextItem.isNodeSet()
+                        && !(contextItem instanceof XPathNode)) {
+                    double num = contextItem.asNumber();
+                    if (isXPath2) {
+                        return XPathNumber.ofExplicitDouble(num);
+                    }
+                    return XPathNumber.of(num);
+                }
                 String str = context.getContextNode().getStringValue();
                 try {
                     double num = Double.parseDouble(str.trim());
@@ -200,6 +210,22 @@ public final class NumberFunctions {
                     }
                 }
                 
+                if (allExact && !hasDecimal) {
+                    // All integers: return exact integer sum
+                    BigInteger intSum = BigInteger.ZERO;
+                    for (int i = 0; i < items.size(); i++) {
+                        XPathNumber xn = (XPathNumber) items.get(i);
+                        BigInteger bi = xn.toBigInteger();
+                        if (bi != null) {
+                            intSum = intSum.add(bi);
+                        } else {
+                            intSum = intSum.add(
+                                BigInteger.valueOf((long) xn.asNumber()));
+                        }
+                    }
+                    return XPathNumber.ofInteger(intSum);
+                }
+                
                 if (allExact && hasDecimal) {
                     BigDecimal decSum = BigDecimal.ZERO;
                     for (int i = 0; i < items.size(); i++) {
@@ -220,6 +246,24 @@ public final class NumberFunctions {
                     return new XPathNumber(decSum);
                 }
                 
+                // Determine result type from operands
+                boolean allFloat = true;
+                boolean hasExplicitDouble = false;
+                for (int i = 0; i < items.size(); i++) {
+                    XPathValue item = items.get(i);
+                    if (item instanceof XPathNumber) {
+                        XPathNumber xn = (XPathNumber) item;
+                        if (xn.isExplicitDouble()) {
+                            hasExplicitDouble = true;
+                            allFloat = false;
+                        } else if (!xn.isFloat()) {
+                            allFloat = false;
+                        }
+                    } else {
+                        allFloat = false;
+                    }
+                }
+
                 double sum = first.asNumber();
                 if (Double.isNaN(sum)) {
                     return XPathNumber.NaN;
@@ -230,6 +274,12 @@ public final class NumberFunctions {
                         return XPathNumber.NaN;
                     }
                     sum += num;
+                }
+                if (allFloat) {
+                    return new XPathNumber(sum, true);
+                }
+                if (hasExplicitDouble) {
+                    return XPathNumber.ofExplicitDouble(sum);
                 }
                 return XPathNumber.of(sum);
             }

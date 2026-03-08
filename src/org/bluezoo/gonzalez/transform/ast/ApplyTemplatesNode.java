@@ -129,7 +129,12 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                         }
                     }
                     
-                    // Process atomic values first if there are templates that can match them
+                    // Process atomic values (XSLT 3.0 only)
+                    if (!atomicValues.isEmpty() &&
+                            context.getStylesheet().getProcessorVersion() < 3.0) {
+                        throw new SAXException("XTTE0520: The select expression of xsl:apply-templates" +
+                            " must return nodes, but sequence contains atomic value(s)");
+                    }
                     if (!atomicValues.isEmpty() && context instanceof BasicTransformContext) {
                         BasicTransformContext btc = (BasicTransformContext) context;
                         TemplateMatcher matcher = context.getTemplateMatcher();
@@ -202,9 +207,9 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                     }
                     return;
                 } else {
-                    // Single atomic value - find a matching template
-                    if (context.getStylesheet().getVersion() >= 3.0
-                            && context instanceof BasicTransformContext) {
+                    // Single atomic value - find a matching template (XSLT 3.0)
+                    if (context.getStylesheet().getProcessorVersion() >= 3.0 &&
+                            context instanceof BasicTransformContext) {
                         BasicTransformContext btc = (BasicTransformContext) context;
                         TemplateMatcher matcher = context.getTemplateMatcher();
                         String effectiveMode = mode;
@@ -394,13 +399,8 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                                 } catch (XPathException e) {
                                     throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
                                 }
-                            } else if (templateParam.getDefaultContent() != null) {
-                                // Execute content to get RTF as default value
-                                SAXEventBuffer buffer = new SAXEventBuffer();
-                                templateParam.getDefaultContent().execute(execContext, new BufferOutputHandler(buffer));
-                                defaultValue = new XPathResultTreeFragment(buffer);
                             } else {
-                                defaultValue = new XPathString(""); // Empty default
+                                defaultValue = templateParam.evaluateDefaultContent(execContext);
                             }
                             try {
                                 defaultValue = templateParam.coerceDefaultValue(defaultValue);
@@ -717,6 +717,9 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
             case "fail":
                 throw new SAXException("XTDE0555: No matching template found for node: " + 
                     node.getNodeType() + " (mode has on-no-match='fail')");
+            case "typed-fail":
+                throw new SAXException("XTTE3100: Node " + node.getLocalName() +
+                    " is untyped, but mode has typed='yes'");
             case "empty":
                 // Do nothing
                 break;
@@ -864,12 +867,8 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                     } catch (XPathException e) {
                         throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
                     }
-                } else if (templateParam.getDefaultContent() != null) {
-                    SAXEventBuffer buffer = new SAXEventBuffer();
-                    templateParam.getDefaultContent().execute(execCtx, new BufferOutputHandler(buffer));
-                    defaultValue = new XPathResultTreeFragment(buffer);
                 } else {
-                    defaultValue = new XPathString("");
+                    defaultValue = templateParam.evaluateDefaultContent(execCtx);
                 }
                 try {
                     defaultValue = templateParam.validateValue(defaultValue, "XTTE0600");

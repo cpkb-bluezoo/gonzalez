@@ -204,6 +204,21 @@ public final class ForEachGroupNode implements XSLTNode, ExpressionHolder {
      */
     public List<SortSpec> getSorts() { return sorts; }
 
+    /**
+     * Returns the group-adjacent expression, or null.
+     */
+    public XPathExpression getGroupAdjacentExpr() { return groupAdjacentExpr; }
+
+    /**
+     * Returns the group-starting-with pattern, or null.
+     */
+    public Pattern getGroupStartingPattern() { return groupStartingPattern; }
+
+    /**
+     * Returns the group-ending-with pattern, or null.
+     */
+    public Pattern getGroupEndingPattern() { return groupEndingPattern; }
+
     @Override
     public List<XPathExpression> getExpressions() {
         List<XPathExpression> exprs = new ArrayList<XPathExpression>();

@@ -338,7 +338,10 @@ public class XSLTConformanceTest {
         private List<String> initialFunctionParams;
         private boolean inInitialFunction;
         private boolean inInitialTemplate;
+        private boolean inInitialMode;
         private List<InitialTemplateParam> initialTemplateParamList;
+        private String initialModeSelect;
+        private List<InitialTemplateParam> initialModeParamList;
         private String expectedXml;
         private List<String> anyOfExpectedXmls;
         private String expectedError;
@@ -531,6 +534,23 @@ public class XSLTConformanceTest {
                 if ("XSD_1.1".equals(value) && !"false".equals(satisfied)) {
                     requiresUnsupportedFeature = true;
                 }
+                // Gonzalez does not support streaming; skip tests that require it.
+                if ("streaming".equals(value) && !"false".equals(satisfied)) {
+                    requiresUnsupportedFeature = true;
+                }
+                // Gonzalez supports dynamic evaluation (xsl:evaluate);
+                // skip tests that require it to be absent.
+                if ("dynamic_evaluation".equals(value)
+                        && "false".equals(satisfied)) {
+                    requiresUnsupportedFeature = true;
+                }
+            } else if ("ignore_doc_failure".equals(localName) && inDependencies) {
+                // Gonzalez silently returns empty for unavailable documents
+                // (ignores doc failures). Skip tests that require raising FODC0002.
+                String satisfied = attrs.getValue("satisfied");
+                if ("false".equals(satisfied)) {
+                    requiresUnsupportedFeature = true;
+                }
             } else if ("maximum_number_of_decimal_digits".equals(localName) && inDependencies) {
                 // Gonzalez uses double precision (~15-17 significant digits).
                 // Skip tests requiring more than 18 decimal digits.
@@ -608,6 +628,26 @@ public class XSLTConformanceTest {
                     initialTemplateParamList.add(new InitialTemplateParam(
                         paramNsUri, paramLocalName, paramSelect, isTunnel));
                 }
+            } else if ("param".equals(localName) && inInitialMode) {
+                String paramName = attrs.getValue("name");
+                String paramSelect = attrs.getValue("select");
+                String tunnelAttr = attrs.getValue("tunnel");
+                boolean isTunnel = "yes".equals(tunnelAttr);
+                if (paramName != null && paramSelect != null) {
+                    String paramNsUri = null;
+                    String paramLocalName = paramName;
+                    int colonPos = paramName.indexOf(':');
+                    if (colonPos > 0) {
+                        String prefix = paramName.substring(0, colonPos);
+                        paramLocalName = paramName.substring(colonPos + 1);
+                        paramNsUri = namespacePrefixes.get(prefix);
+                    }
+                    if (initialModeParamList == null) {
+                        initialModeParamList = new ArrayList<>();
+                    }
+                    initialModeParamList.add(new InitialTemplateParam(
+                        paramNsUri, paramLocalName, paramSelect, isTunnel));
+                }
             } else if ("param".equals(localName) && inTest) {
                 String paramName = attrs.getValue("name");
                 String paramSelect = attrs.getValue("select");
@@ -645,13 +685,17 @@ public class XSLTConformanceTest {
                 inInitialFunction = true;
             } else if ("initial-mode".equals(localName) && inTest) {
                 initialMode = expandQNameAttribute(attrs.getValue("name"));
+                initialModeSelect = attrs.getValue("select");
+                initialModeParamList = null;
+                inInitialMode = true;
             } else if ("result".equals(localName) && inTestCase) {
                 inResult = true;
             } else if ("any-of".equals(localName) && inResult) {
                 inAnyOf = true;
             } else if ("not".equals(localName) && inResult) {
                 inNot = true;
-            } else if (("assert".equals(localName) || "assert-string-value".equals(localName)) 
+            } else if (("assert".equals(localName) || "assert-string-value".equals(localName)
+                    || "assert-eq".equals(localName)) 
                     && inResult && inAnyOf && !inNot) {
                 anyOfAcceptsSuccess = true;
             } else if ("assert-result-document".equals(localName) && inResult) {
@@ -772,6 +816,8 @@ public class XSLTConformanceTest {
                 currentResultDocumentUri = null;
             } else if ("initial-template".equals(localName)) {
                 inInitialTemplate = false;
+            } else if ("initial-mode".equals(localName)) {
+                inInitialMode = false;
             } else if ("initial-function".equals(localName)) {
                 inInitialFunction = false;
             } else if ("dependencies".equals(localName)) {
@@ -801,6 +847,8 @@ public class XSLTConformanceTest {
                     currentTest.initialFunctionLocalName = initialFunctionLocalName;
                     currentTest.initialFunctionParams = initialFunctionParams;
                     currentTest.initialMode = initialMode;
+                    currentTest.initialModeSelect = initialModeSelect;
+                    currentTest.initialModeParams = initialModeParamList;
                     currentTest.expectedXml = expectedXml;
                     currentTest.anyOfExpectedXmls = anyOfExpectedXmls;
                     currentTest.expectsError = expectsError;
@@ -981,12 +1029,19 @@ public class XSLTConformanceTest {
 
             // Set initial template if specified (XSLT 2.0+ feature)
             if (testCase.initialTemplate != null && transformer instanceof GonzalezTransformer) {
-                ((GonzalezTransformer) transformer).setInitialTemplate(testCase.initialTemplate);
+                GonzalezTransformer gtIt = (GonzalezTransformer) transformer;
+                gtIt.setInitialTemplate(testCase.initialTemplate);
                 if (testCase.initialTemplateParams != null) {
                     for (InitialTemplateParam itp : testCase.initialTemplateParams) {
-                        ((GonzalezTransformer) transformer).addInitialTemplateParam(
+                        gtIt.addInitialTemplateParam(
                             itp.nsUri, itp.localName, itp.selectExpr, itp.tunnel);
                     }
+                }
+                // XPDY0002: signal absent context item when no source provided
+                boolean hasRealSource = testCase.sourceFile != null
+                        || testCase.sourceContent != null;
+                if (!hasRealSource) {
+                    gtIt.setHasInitialContextItem(false);
                 }
             }
 
@@ -999,12 +1054,22 @@ public class XSLTConformanceTest {
 
             // Set initial mode if specified
             if (testCase.initialMode != null && transformer instanceof GonzalezTransformer) {
-                ((GonzalezTransformer) transformer).setInitialMode(testCase.initialMode);
+                GonzalezTransformer gt = (GonzalezTransformer) transformer;
+                gt.setInitialMode(testCase.initialMode);
+                if (testCase.initialModeSelect != null) {
+                    gt.setInitialModeSelect(testCase.initialModeSelect);
+                }
+                if (testCase.initialModeParams != null) {
+                    for (InitialTemplateParam itp : testCase.initialModeParams) {
+                        gt.addInitialTemplateParam(
+                            itp.nsUri, itp.localName, itp.selectExpr, itp.tunnel);
+                    }
+                }
                 // XTDE0044: if no real source was provided, signal no match selection
                 boolean hasRealSource = testCase.sourceFile != null
                         || testCase.sourceContent != null;
-                if (!hasRealSource) {
-                    ((GonzalezTransformer) transformer).setHasMatchSelection(false);
+                if (!hasRealSource && testCase.initialModeSelect == null) {
+                    gt.setHasMatchSelection(false);
                 }
             }
 
@@ -1449,6 +1514,8 @@ public class XSLTConformanceTest {
         String initialTemplate;
         List<InitialTemplateParam> initialTemplateParams;
         String initialMode;
+        String initialModeSelect;
+        List<InitialTemplateParam> initialModeParams;
         String initialFunctionNsUri;
         String initialFunctionLocalName;
         List<String> initialFunctionParams;

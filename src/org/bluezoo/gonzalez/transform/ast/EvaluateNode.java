@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -37,10 +38,12 @@ import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.XPathParser;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathQName;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -74,19 +77,28 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
         private final String localName;
         private final XPathExpression select;
         private final XSLTNode content;
+        private final String asType;
 
         public WithParamNode(String namespaceURI, String localName, 
                             XPathExpression select, XSLTNode content) {
+            this(namespaceURI, localName, select, content, null);
+        }
+
+        public WithParamNode(String namespaceURI, String localName, 
+                            XPathExpression select, XSLTNode content,
+                            String asType) {
             this.namespaceURI = namespaceURI;
             this.localName = localName;
             this.select = select;
             this.content = content;
+            this.asType = asType;
         }
 
         public String getNamespaceURI() { return namespaceURI; }
         public String getLocalName() { return localName; }
         public XPathExpression getSelect() { return select; }
         public XSLTNode getContent() { return content; }
+        public String getAsType() { return asType; }
     }
 
     /**
@@ -141,26 +153,38 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                 return;
             }
             
-            // Compile the dynamic expression (cached for repeated calls)
-            XPathExpression dynamicExpr;
-            if (xpathString.equals(lastXPathString)) {
-                dynamicExpr = lastCompiledExpr;
-            } else {
-                try {
-                    dynamicExpr = XPathExpression.compile(xpathString, null);
-                    lastXPathString = xpathString;
-                    lastCompiledExpr = dynamicExpr;
-                } catch (Exception e) {
-                    throw new SAXException("XPST0003: Invalid XPath in xsl:evaluate: " + 
-                        e.getMessage(), e);
-                }
-            }
-            
             // Check for disallowed functions (XTDE3160)
             String exprLower = xpathString.toLowerCase();
             if (containsDisallowedFunction(exprLower)) {
                 throw new SAXException("XTDE3160: Expression in xsl:evaluate " +
                     "contains a disallowed function call: " + xpathString);
+            }
+            
+            // Extract namespace-context before compiling (XTTE3170)
+            XPathParser.NamespaceResolver nsResolver = null;
+            if (namespaceContextExpr != null) {
+                XPathNode nsContextNode = resolveNamespaceContextNode(context);
+                if (nsContextNode != null) {
+                    nsResolver = buildNamespaceResolver(nsContextNode);
+                }
+            }
+            
+            // Compile the dynamic expression with namespace context
+            XPathExpression dynamicExpr;
+            String cacheKey = xpathString + (nsResolver != null ? "#ns" : "");
+            if (xpathString.equals(lastXPathString) && nsResolver == null) {
+                dynamicExpr = lastCompiledExpr;
+            } else {
+                try {
+                    dynamicExpr = XPathExpression.compile(xpathString, nsResolver);
+                    if (nsResolver == null) {
+                        lastXPathString = xpathString;
+                        lastCompiledExpr = dynamicExpr;
+                    }
+                } catch (Exception e) {
+                    throw new SAXException("XPST0003: Invalid XPath in xsl:evaluate: " + 
+                        e.getMessage(), e);
+                }
             }
             
             TransformContext evalContext = context;
@@ -187,33 +211,6 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                 }
             }
             
-            // Handle namespace-context (XTTE3170: must be a single node)
-            if (namespaceContextExpr != null) {
-                XPathValue nsCtxValue = namespaceContextExpr.evaluate(context);
-                if (nsCtxValue instanceof XPathSequence) {
-                    XPathSequence seq = (XPathSequence) nsCtxValue;
-                    if (seq.size() != 1) {
-                        throw new SAXException("XTTE3170: namespace-context " +
-                            "of xsl:evaluate must be a single node, " +
-                            "got " + seq.size() + " items");
-                    }
-                    nsCtxValue = seq.get(0);
-                }
-                if (nsCtxValue != null && nsCtxValue.isNodeSet()) {
-                    XPathNodeSet ns = nsCtxValue.asNodeSet();
-                    if (ns.size() != 1) {
-                        throw new SAXException("XTTE3170: namespace-context " +
-                            "of xsl:evaluate must be a single node, " +
-                            "got " + ns.size() + " nodes");
-                    }
-                }
-                if (nsCtxValue != null && !(nsCtxValue instanceof XPathNode)
-                        && !(nsCtxValue.isNodeSet())) {
-                    throw new SAXException("XTTE3170: namespace-context " +
-                        "of xsl:evaluate must be a node");
-                }
-            }
-            
             // Bind variables from xsl:with-param children first
             if (params != null && !params.isEmpty()) {
                 for (WithParamNode param : params) {
@@ -231,6 +228,14 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                         paramValue = XPathString.of("");
                     }
                     
+                    // XTTE0590: validate against declared 'as' type
+                    String paramAsType = param.getAsType();
+                    if (paramAsType != null && !paramAsType.isEmpty()
+                            && paramValue != null) {
+                        validateParamType(paramValue, paramAsType,
+                            param.getLocalName());
+                    }
+                    
                     evalContext = (TransformContext) evalContext.withVariable(
                         param.getNamespaceURI(), param.getLocalName(), paramValue);
                 }
@@ -242,12 +247,25 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                 XPathValue wpValue = withParamsExpr.evaluate(context);
                 if (wpValue instanceof XPathMap) {
                     XPathMap map = (XPathMap) wpValue;
+                    // XTTE3165: keys in the with-params map must be xs:QName
                     for (Map.Entry<String, XPathValue> entry : map.entries()) {
                         String key = entry.getKey();
+                        XPathValue typedKey = map.getTypedKey(key);
+                        if (typedKey != null && !(typedKey instanceof XPathQName)) {
+                            throw new SAXException("XTTE3165: Keys in " +
+                                "with-params map must be xs:QName values, " +
+                                "got " + typedKey.getClass().getSimpleName() +
+                                " for key '" + key + "'");
+                        }
                         XPathValue val = entry.getValue();
                         evalContext = (TransformContext) evalContext.withVariable(null, key, val);
                     }
                 }
+            }
+            
+            // Mark context as dynamic evaluation (restricts private function access)
+            if (evalContext instanceof BasicTransformContext) {
+                ((BasicTransformContext) evalContext).setDynamicEvaluation(true);
             }
             
             // Evaluate the dynamic expression
@@ -325,6 +343,99 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
             throw new SAXException("XPTY0004: Required item type of xsl:evaluate result " +
                 "is xs:string; supplied value is " + result.getClass().getSimpleName());
         }
+    }
+
+    /**
+     * Validates a parameter value against the declared 'as' type.
+     * Raises XTTE0590 if incompatible.
+     */
+    private void validateParamType(XPathValue value, String asType,
+            String paramName) throws SAXException {
+        String type = asType.trim();
+        String baseType = type;
+        if (baseType.endsWith("*") || baseType.endsWith("+")
+                || baseType.endsWith("?")) {
+            baseType = baseType.substring(0, baseType.length() - 1).trim();
+        }
+        if (baseType.startsWith("xs:")) {
+            baseType = baseType.substring(3);
+        }
+        boolean isNumericType = "integer".equals(baseType) || "int".equals(baseType)
+            || "long".equals(baseType) || "short".equals(baseType)
+            || "decimal".equals(baseType) || "double".equals(baseType)
+            || "float".equals(baseType);
+        if (isNumericType && value instanceof XPathString) {
+            String strVal = value.asString();
+            try {
+                Long.parseLong(strVal.trim());
+            } catch (NumberFormatException e) {
+                throw new SAXException("XTTE0590: Value of parameter $"
+                    + paramName + " does not match declared type "
+                    + asType + ": got '" + strVal + "'");
+            }
+        }
+    }
+
+    /**
+     * Resolves the namespace-context expression to a single XPathNode.
+     */
+    private XPathNode resolveNamespaceContextNode(TransformContext context) 
+            throws SAXException, XPathException {
+        XPathValue nsCtxValue = namespaceContextExpr.evaluate(context);
+        if (nsCtxValue instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) nsCtxValue;
+            if (seq.size() != 1) {
+                throw new SAXException("XTTE3170: namespace-context " +
+                    "of xsl:evaluate must be a single node, " +
+                    "got " + seq.size() + " items");
+            }
+            nsCtxValue = seq.get(0);
+        }
+        if (nsCtxValue != null && nsCtxValue.isNodeSet()) {
+            XPathNodeSet ns = nsCtxValue.asNodeSet();
+            if (ns.size() != 1) {
+                throw new SAXException("XTTE3170: namespace-context " +
+                    "of xsl:evaluate must be a single node, " +
+                    "got " + ns.size() + " nodes");
+            }
+            return ns.iterator().next();
+        }
+        if (nsCtxValue instanceof XPathNode) {
+            return (XPathNode) nsCtxValue;
+        }
+        if (nsCtxValue != null) {
+            throw new SAXException("XTTE3170: namespace-context " +
+                "of xsl:evaluate must be a node");
+        }
+        return null;
+    }
+
+    /**
+     * Builds a NamespaceResolver from the in-scope namespaces of a node.
+     */
+    private XPathParser.NamespaceResolver buildNamespaceResolver(
+            final XPathNode nsNode) {
+        final Map<String, String> namespaces = new HashMap<String, String>();
+        Iterator<XPathNode> nsIter = nsNode.getNamespaces();
+        while (nsIter.hasNext()) {
+            XPathNode ns = nsIter.next();
+            String prefix = ns.getLocalName();
+            String uri = ns.getStringValue();
+            if (prefix != null && uri != null) {
+                namespaces.put(prefix, uri);
+            }
+        }
+        return new XPathParser.NamespaceResolver() {
+            @Override
+            public String resolve(String prefix) {
+                return namespaces.get(prefix);
+            }
+            @Override
+            public String getDefaultElementNamespace() {
+                String defaultNs = namespaces.get("");
+                return defaultNs;
+            }
+        };
     }
 
     /**

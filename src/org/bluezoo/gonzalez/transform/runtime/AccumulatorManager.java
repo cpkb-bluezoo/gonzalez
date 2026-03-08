@@ -651,6 +651,14 @@ public final class AccumulatorManager {
             throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
                 "evaluating accumulator '" + name + "'");
         }
+        // XTDE3362: accessing a non-streamable accumulator in a streamed document
+        if (streamingMode) {
+            AccumulatorState state = accumulators.get(name);
+            if (state != null && !state.getDefinition().isStreamable()) {
+                throw new RuntimeException("XTDE3362: accumulator-before called for " +
+                    "non-streamable accumulator '" + name + "' in a streamed document");
+            }
+        }
         if (node != null && !streamingMode) {
             ensureDocumentTraversed(node);
             Map<XPathNode, XPathValue> nodeMap = beforeValues.get(name);
@@ -683,6 +691,14 @@ public final class AccumulatorManager {
         if (evaluatingAccumulators.contains(name)) {
             throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
                 "evaluating accumulator '" + name + "'");
+        }
+        // XTDE3362: accessing a non-streamable accumulator in a streamed document
+        if (streamingMode) {
+            AccumulatorState state = accumulators.get(name);
+            if (state != null && !state.getDefinition().isStreamable()) {
+                throw new RuntimeException("XTDE3362: accumulator-after called for " +
+                    "non-streamable accumulator '" + name + "' in a streamed document");
+            }
         }
         if (node != null && !streamingMode) {
             ensureDocumentTraversed(node);
@@ -763,6 +779,23 @@ public final class AccumulatorManager {
     }
 
     /**
+     * Finds the stored key for an accumulator by its expanded (Clark notation) name.
+     * Used when the caller's prefix differs from the declaring module's prefix.
+     *
+     * @param expandedName the expanded name, e.g. "{http://example.com}foo"
+     * @return the stored key, or null if not found
+     */
+    public String findKeyByExpandedName(String expandedName) {
+        for (Map.Entry<String, AccumulatorState> entry : accumulators.entrySet()) {
+            AccumulatorDefinition def = entry.getValue().getDefinition();
+            if (expandedName.equals(def.getExpandedName())) {
+                return entry.getKey();
+            }
+        }
+        return null;
+    }
+
+    /**
      * Returns true if the document containing the given node has been
      * pre-traversed for accumulator values.
      *
@@ -810,6 +843,15 @@ public final class AccumulatorManager {
      */
     public void setStreamingMode(boolean streaming) {
         this.streamingMode = streaming;
+    }
+
+    /**
+     * Returns whether this manager is in streaming mode.
+     *
+     * @return true if streaming mode is active
+     */
+    public boolean isStreamingMode() {
+        return streamingMode;
     }
 
     /**

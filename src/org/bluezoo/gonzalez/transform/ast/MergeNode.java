@@ -33,6 +33,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
@@ -149,13 +150,17 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
                     for (int ki = 0; ki < firstSpecs.length && ki < otherSpecs.length; ki++) {
                         ResolvedKeySpec a = firstSpecs[ki];
                         ResolvedKeySpec b = otherSpecs[ki];
+                        String aLang = a.lang != null ? a.lang : "";
+                        String bLang = b.lang != null ? b.lang : "";
                         if (!a.order.equals(b.order) || !a.dataType.equals(b.dataType)
-                                || !a.collation.equals(b.collation)) {
+                                || !a.collation.equals(b.collation)
+                                || !aLang.equals(bLang)) {
                             throw new SAXException("XTDE2210: Incompatible merge key " +
                                 "specifications across merge sources (key " + (ki + 1) +
                                 ": order='" + a.order + "'/'" + b.order +
                                 "', data-type='" + a.dataType + "'/'" + b.dataType +
-                                "', collation='" + a.collation + "'/'" + b.collation + "')");
+                                "', collation='" + a.collation + "'/'" + b.collation +
+                                "', lang='" + aLang + "'/'" + bLang + "')");
                         }
                     }
                 }
@@ -182,7 +187,15 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
 
             // Sort all items by their composite merge keys
             int keyCount = primarySpecs.length;
-            Collections.sort(allItems, new MergeItemComparator(primarySpecs, keyCount));
+            try {
+                Collections.sort(allItems, new MergeItemComparator(primarySpecs, keyCount));
+            } catch (RuntimeException e) {
+                String msg = e.getMessage();
+                if (msg != null && msg.startsWith("XTTE2230")) {
+                    throw new SAXException(msg);
+                }
+                throw e;
+            }
 
             // Group items by composite merge key (all key values must match)
             List<MergeGroup> groups = buildGroups(allItems, keyCount);
@@ -241,6 +254,9 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
                         sourceGroupValue);
                 }
 
+                if (groupContext instanceof BasicTransformContext) {
+                    ((BasicTransformContext) groupContext).setInsideMergeAction(true);
+                }
                 action.execute(groupContext, output);
             }
 
@@ -250,30 +266,17 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
     }
 
     /**
-     * Converts a list of items (XPathNode or XPathValue) into the appropriate group type.
-     * Returns XPathNodeSet if all items are nodes, otherwise XPathSequence.
+     * Converts a list of items into a merge group value.
+     * Uses XPathSequence to preserve merge-determined ordering rather than
+     * XPathNodeSet which reorders by document order.
      */
     private XPathValue toGroupValue(List<Object> items) {
-        boolean allNodes = true;
-        for (Object item : items) {
-            if (!(item instanceof XPathNode)) {
-                allNodes = false;
-                break;
-            }
-        }
-        if (allNodes) {
-            List<XPathNode> nodes = new ArrayList<>();
-            for (Object item : items) {
-                nodes.add((XPathNode) item);
-            }
-            return new XPathNodeSet(nodes);
-        }
         List<XPathValue> values = new ArrayList<>();
         for (Object item : items) {
-            if (item instanceof XPathValue) {
-                values.add((XPathValue) item);
-            } else if (item instanceof XPathNode) {
+            if (item instanceof XPathNode) {
                 values.add(new XPathNodeSet(Collections.singletonList((XPathNode) item)));
+            } else if (item instanceof XPathValue) {
+                values.add((XPathValue) item);
             }
         }
         return new XPathSequence(values);
@@ -426,12 +429,9 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
         if (source.sortBeforeMerge && !sourceItems.isEmpty()) {
             int keyCount = specs.length;
             Collections.sort(sourceItems, new MergeItemComparator(specs, keyCount));
-        } else if (source.streamable && sourceItems.size() > 1
-                && isCodepointCollation(specs)) {
-            // XTDE2220: for streamable sources with codepoint collation,
-            // verify input is in the required order.
-            // We can only verify order for codepoint collation since we don't
-            // implement other collation comparison algorithms.
+        } else if (sourceItems.size() > 1) {
+            // XTDE2220: verify input is in the required order when sort-before-merge
+            // is not specified. The input must already be correctly sorted.
             MergeItemComparator orderChecker = new MergeItemComparator(specs, specs.length);
             for (int j = 1; j < sourceItems.size(); j++) {
                 int c = orderChecker.compare(sourceItems.get(j - 1), sourceItems.get(j));
@@ -492,6 +492,8 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
             return new Object[]{new String[]{sv}, new XPathValue[]{new XPathString(sv)}};
         }
 
+        // Per XSLT 3.0: merge key expressions are evaluated with singleton focus
+        // (context item = current item, position = 1, size = 1)
         TransformContext itemCtx;
         if (item instanceof XPathNode) {
             if (context instanceof BasicTransformContext) {
@@ -508,6 +510,7 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
         } else {
             itemCtx = context;
         }
+        itemCtx = itemCtx.withPositionAndSize(1, 1);
 
         String[] keyValues = new String[source.keys.size()];
         XPathValue[] rawValues = new XPathValue[source.keys.size()];
@@ -759,13 +762,17 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
                 boolean ascending = "ascending".equals(spec.order);
                 boolean numeric = "number".equals(spec.dataType);
 
+                // XTTE2230: check type compatibility across sources
+                XPathValue aRaw = getRawValue(a, i);
+                XPathValue bRaw = getRawValue(b, i);
+                if (aRaw != null && bRaw != null) {
+                    checkTypeCompatibility(aRaw, bRaw);
+                }
+
                 int cmp;
                 if (numeric) {
                     cmp = compareNumeric(aKey, bKey);
                 } else {
-                    // Check raw values for type-aware comparison
-                    XPathValue aRaw = getRawValue(a, i);
-                    XPathValue bRaw = getRawValue(b, i);
                     if (aRaw != null && bRaw != null && isNumericType(aRaw) && isNumericType(bRaw)) {
                         cmp = compareNumeric(aKey, bKey);
                     } else {
@@ -805,6 +812,24 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
             double aNum = parseDouble(aKey);
             double bNum = parseDouble(bKey);
             return Double.compare(aNum, bNum);
+        }
+
+        private void checkTypeCompatibility(XPathValue a, XPathValue b) {
+            boolean aIsNum = isNumericType(a);
+            boolean bIsNum = isNumericType(b);
+            boolean aIsDateTime = a instanceof XPathDateTime;
+            boolean bIsDateTime = b instanceof XPathDateTime;
+            // dateTime/date/time types are only comparable with each other
+            if (aIsDateTime && !bIsDateTime) {
+                throw new RuntimeException("XTTE2230: Merge key values are not " +
+                    "comparable: " + a.getClass().getSimpleName() +
+                    " vs " + b.getClass().getSimpleName());
+            }
+            if (bIsDateTime && !aIsDateTime) {
+                throw new RuntimeException("XTTE2230: Merge key values are not " +
+                    "comparable: " + a.getClass().getSimpleName() +
+                    " vs " + b.getClass().getSimpleName());
+            }
         }
 
         private double parseDouble(String s) {

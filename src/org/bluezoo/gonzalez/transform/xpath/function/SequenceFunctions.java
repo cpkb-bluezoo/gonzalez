@@ -185,7 +185,12 @@ public final class SequenceFunctions {
         @Override
         public XPathValue evaluate(List<XPathValue> args, XPathContext context) throws XPathException {
             XPathValue seq = args.get(0);
-            double startLoc = args.get(1).asNumber();
+            XPathValue startArg = args.get(1);
+            if (startArg instanceof XPathSequence && ((XPathSequence) startArg).isEmpty()) {
+                throw new XPathException("XPTY0004: Required item type of second argument " +
+                    "of fn:subsequence() is xs:double; supplied value is an empty sequence");
+            }
+            double startLoc = startArg.asNumber();
             
             // Handle NaN starting location
             if (Double.isNaN(startLoc)) {
@@ -200,7 +205,12 @@ public final class SequenceFunctions {
             // Get length argument (defaults to infinite if not specified)
             double lengthArg = Double.POSITIVE_INFINITY;
             if (args.size() > 2) {
-                lengthArg = args.get(2).asNumber();
+                XPathValue lenVal = args.get(2);
+                if (lenVal instanceof XPathSequence && ((XPathSequence) lenVal).isEmpty()) {
+                    throw new XPathException("XPTY0004: Required item type of third argument " +
+                        "of fn:subsequence() is xs:double; supplied value is an empty sequence");
+                }
+                lengthArg = lenVal.asNumber();
                 if (Double.isNaN(lengthArg)) {
                     return XPathSequence.EMPTY;
                 }
@@ -1694,68 +1704,146 @@ public final class SequenceFunctions {
     static class CopiedNode implements XPathNode {
         private final XPathNode original;
         private final long uniqueId;
-        private static long nextId = Long.MIN_VALUE;
-        
+        private static long nextId = Long.MAX_VALUE / 2;
+
+        private XPathNode parentNode;
+        private List<CopiedNode> childList;
+        private List<CopiedNode> attrList;
+
         CopiedNode(XPathNode original) {
+            this(original, null);
+        }
+
+        private CopiedNode(XPathNode original, CopiedNode parent) {
             this.original = original;
             this.uniqueId = nextId++;
+            this.parentNode = parent;
         }
-        
+
+        void setParent(XPathNode parent) {
+            this.parentNode = parent;
+        }
+
+        /**
+         * Eagerly initializes all descendants so that document order IDs
+         * are assigned in tree order (depth-first). Required for snapshot
+         * trees where innermost()/outermost() depend on correct ordering.
+         */
+        void deepInitialize() {
+            List<CopiedNode> kids = ensureChildren();
+            for (int i = 0; i < kids.size(); i++) {
+                kids.get(i).deepInitialize();
+            }
+            ensureAttributes();
+        }
+
         @Override public NodeType getNodeType() { return original.getNodeType(); }
         @Override public String getNamespaceURI() { return original.getNamespaceURI(); }
         @Override public String getLocalName() { return original.getLocalName(); }
         @Override public String getPrefix() { return original.getPrefix(); }
         @Override public String getStringValue() { return original.getStringValue(); }
-        
-        // Orphaned node - no parent or siblings
-        @Override public XPathNode getParent() { return null; }
-        @Override public XPathNode getFollowingSibling() { return null; }
-        @Override public XPathNode getPrecedingSibling() { return null; }
-        
-        // Children and attributes are also copied (wrapped)
-        @Override 
+
+        @Override
+        public XPathNode getParent() {
+            return parentNode;
+        }
+
+        @Override
+        public XPathNode getFollowingSibling() {
+            if (parentNode == null || !(parentNode instanceof CopiedNode)) {
+                return null;
+            }
+            List<CopiedNode> siblings = ((CopiedNode) parentNode).ensureChildren();
+            for (int i = 0; i < siblings.size(); i++) {
+                if (siblings.get(i) == this && i + 1 < siblings.size()) {
+                    return siblings.get(i + 1);
+                }
+            }
+            return null;
+        }
+
+        @Override
+        public XPathNode getPrecedingSibling() {
+            if (parentNode == null || !(parentNode instanceof CopiedNode)) {
+                return null;
+            }
+            List<CopiedNode> siblings = ((CopiedNode) parentNode).ensureChildren();
+            for (int i = 0; i < siblings.size(); i++) {
+                if (siblings.get(i) == this && i > 0) {
+                    return siblings.get(i - 1);
+                }
+            }
+            return null;
+        }
+
+        private List<CopiedNode> ensureChildren() {
+            if (childList == null) {
+                childList = new ArrayList<>();
+                Iterator<XPathNode> origChildren = original.getChildren();
+                while (origChildren.hasNext()) {
+                    childList.add(new CopiedNode(origChildren.next(), this));
+                }
+            }
+            return childList;
+        }
+
+        private List<CopiedNode> ensureAttributes() {
+            if (attrList == null) {
+                attrList = new ArrayList<>();
+                Iterator<XPathNode> origAttrs = original.getAttributes();
+                while (origAttrs.hasNext()) {
+                    attrList.add(new CopiedNode(origAttrs.next(), this));
+                }
+            }
+            return attrList;
+        }
+
+        @Override
         public Iterator<XPathNode> getChildren() {
-            List<XPathNode> copiedChildren = new ArrayList<>();
-            Iterator<XPathNode> origChildren = original.getChildren();
-            while (origChildren.hasNext()) {
-                copiedChildren.add(new CopiedNode(origChildren.next()));
+            List<CopiedNode> kids = ensureChildren();
+            List<XPathNode> result = new ArrayList<>(kids.size());
+            for (int i = 0; i < kids.size(); i++) {
+                result.add(kids.get(i));
             }
-            return copiedChildren.iterator();
+            return result.iterator();
         }
-        
-        @Override 
+
+        @Override
         public Iterator<XPathNode> getAttributes() {
-            List<XPathNode> copiedAttrs = new ArrayList<>();
-            Iterator<XPathNode> origAttrs = original.getAttributes();
-            while (origAttrs.hasNext()) {
-                copiedAttrs.add(new CopiedNode(origAttrs.next()));
+            List<CopiedNode> attrs = ensureAttributes();
+            List<XPathNode> result = new ArrayList<>(attrs.size());
+            for (int i = 0; i < attrs.size(); i++) {
+                result.add(attrs.get(i));
             }
-            return copiedAttrs.iterator();
+            return result.iterator();
         }
-        
-        @Override 
+
+        @Override
         public Iterator<XPathNode> getNamespaces() {
             List<XPathNode> copiedNs = new ArrayList<>();
             Iterator<XPathNode> origNs = original.getNamespaces();
             while (origNs.hasNext()) {
-                copiedNs.add(new CopiedNode(origNs.next()));
+                copiedNs.add(new CopiedNode(origNs.next(), this));
             }
             return copiedNs.iterator();
         }
-        
-        // Different identity - unique document order
+
         @Override public long getDocumentOrder() { return uniqueId; }
-        
-        // Never the same as any other node (different identity)
-        @Override 
-        public boolean isSameNode(XPathNode other) { 
-            return this == other; // Only same if same Java object
+
+        @Override
+        public boolean isSameNode(XPathNode other) {
+            return this == other;
         }
-        
-        // Copied node is its own root
-        @Override public XPathNode getRoot() { return this; }
-        
-        // Copied nodes are fully navigable since they have all children materialized
+
+        @Override
+        public XPathNode getRoot() {
+            XPathNode node = this;
+            while (node.getParent() != null) {
+                node = node.getParent();
+            }
+            return node;
+        }
+
         @Override public boolean isFullyNavigable() { return true; }
 
         @Override public XPathNode getCopySource() { return original; }

@@ -100,6 +100,7 @@ public final class CompiledStylesheet {
     private final Map<String, Map<String, String>> outputAttributeValues;
     private final Map<String, AccumulatorDefinition> accumulators;
     private final Map<String, ModeDeclaration> modeDeclarations;
+    private final Map<String, Map<String, String>> modeConflicts;  // deferred per-attr XTSE0545
     private final Map<String, String> namespaceBindings;  // prefix -> URI from stylesheet
     private final Set<String> excludedNamespaceURIs;  // namespace URIs to exclude from output
     private final Map<String, UserFunction> userFunctions;  // keyed by namespace#localName#arity
@@ -119,6 +120,7 @@ public final class CompiledStylesheet {
     // XSLT 3.0 package information
     private final String packageName;  // package name URI
     private final String packageVersion;  // package version string
+    private PackageResolver packageResolver;  // for fn:transform() package access
     
     // Streamability analysis (set after build)
     private volatile StreamabilityAnalyzer.StylesheetStreamability streamabilityAnalysis;
@@ -376,6 +378,12 @@ public final class CompiledStylesheet {
         private final Map<String, AccumulatorDefinition> accumulators = new HashMap<>();
         private final java.util.Set<String> ambiguousAccumulators = new java.util.HashSet<>();
         private final Map<String, ModeDeclaration> modeDeclarations = new HashMap<>();
+        // Tracks mode conflicts (XTSE0545) that may be resolved by higher-precedence overrides
+        private final Map<String, Map<String, String>> modeConflicts = new HashMap<>();
+        // Tracks which mode conflicts were generated locally (not inherited from imports)
+        private final Set<String> localModeConflicts = new HashSet<>();
+        // Tracks which modes were merged from imports (different precedence - no conflict)
+        private final Set<String> importedModes = new HashSet<>();
         private final Map<String, String> namespaceBindings = new HashMap<>();
         private final Set<String> attributeSetReferences = new HashSet<>();  // All use-attribute-sets references
         private final Set<String> excludedNamespaceURIs = new HashSet<>();
@@ -861,6 +869,13 @@ public final class CompiledStylesheet {
         }
 
         /**
+         * Returns the registered user functions map.
+         */
+        public Map<String, UserFunction> getUserFunctions() {
+            return userFunctions;
+        }
+
+        /**
          * Adds an imported schema for schema-aware processing.
          *
          * @param schema the XSD schema to import
@@ -1101,6 +1116,17 @@ public final class CompiledStylesheet {
         }
 
         /**
+         * Returns a mode declaration by name, or null if not found.
+         *
+         * @param name the mode name (null for default mode)
+         * @return the mode declaration, or null
+         */
+        public ModeDeclaration getModeDeclaration(String name) {
+            String key = name != null ? name : "#default";
+            return modeDeclarations.get(key);
+        }
+
+        /**
          * Adds a mode declaration.
          *
          * @param mode the mode declaration
@@ -1110,10 +1136,74 @@ public final class CompiledStylesheet {
             String key = mode.getName() != null ? mode.getName() : "#default";
             ModeDeclaration existing = modeDeclarations.get(key);
             if (existing != null) {
+                // Resolve pre-existing inherited conflicts first
+                if (!localModeConflicts.contains(key)) {
+                    resolveConflictsForAttributes(key, mode);
+                }
+                // Detect new conflicts only for same-precedence declarations.
+                // If the existing mode came from an import (different precedence),
+                // the new declaration simply overrides it - no conflict.
+                if (!importedModes.contains(key)) {
+                    Map<String, String> newConflicts =
+                        mode.detectConflictsWith(existing);
+                    if (newConflicts != null) {
+                        Map<String, String> attrConflicts = modeConflicts.get(key);
+                        if (attrConflicts == null) {
+                            attrConflicts = new HashMap<>();
+                            modeConflicts.put(key, attrConflicts);
+                        }
+                        attrConflicts.putAll(newConflicts);
+                    }
+                }
                 mode = mode.mergeWith(existing);
             }
             modeDeclarations.put(key, mode);
             return this;
+        }
+
+        /**
+         * Removes per-attribute conflicts that are resolved by the given
+         * mode declaration's explicitly-set attributes.
+         */
+        private void resolveConflictsForAttributes(String modeKey,
+                                                    ModeDeclaration mode) {
+            Map<String, String> attrConflicts = modeConflicts.get(modeKey);
+            if (attrConflicts == null) {
+                return;
+            }
+            if (mode.isStreamableExplicit()) {
+                attrConflicts.remove("streamable");
+            }
+            if (mode.isOnNoMatchExplicit()) {
+                attrConflicts.remove("on-no-match");
+            }
+            if (mode.isOnMultipleMatchExplicit()) {
+                attrConflicts.remove("on-multiple-match");
+            }
+            if (mode.isVisibilityExplicit()) {
+                attrConflicts.remove("visibility");
+            }
+            if (mode.isUseAccumulatorsExplicit()) {
+                attrConflicts.remove("use-accumulators");
+            }
+            if (attrConflicts.isEmpty()) {
+                modeConflicts.remove(modeKey);
+            }
+        }
+
+        /**
+         * Records a deferred per-attribute mode conflict (XTSE0545).
+         * The conflict may be resolved later by a higher-precedence override.
+         */
+        public void recordModeConflict(String modeKey, String attrName,
+                                        String message) {
+            Map<String, String> attrConflicts = modeConflicts.get(modeKey);
+            if (attrConflicts == null) {
+                attrConflicts = new HashMap<>();
+                modeConflicts.put(modeKey, attrConflicts);
+            }
+            attrConflicts.put(attrName, message);
+            localModeConflicts.add(modeKey);
         }
 
         /**
@@ -1127,6 +1217,21 @@ public final class CompiledStylesheet {
          * @return this builder
          */
         public Builder merge(CompiledStylesheet imported, boolean isImport) {
+            return merge(imported, isImport, false);
+        }
+
+        /**
+         * Merges an imported or included stylesheet into this one.
+         *
+         * @param imported the imported stylesheet
+         * @param isImport true for xsl:import, false for xsl:include
+         * @param deferPrecedence true when the importing module's precedence will be
+         *        finalized later (XSLT 3.0 late imports); existing declarations are
+         *        kept because they will be promoted to higher precedence
+         * @return this builder
+         */
+        public Builder merge(CompiledStylesheet imported, boolean isImport,
+                             boolean deferPrecedence) {
             // Add template rules - for imports these have lower precedence
             for (TemplateRule rule : imported.getTemplateRules()) {
                 templateRules.add(rule);
@@ -1136,20 +1241,18 @@ public final class CompiledStylesheet {
                     TemplateRule existing = namedTemplates.get(rule.getName());
                     if (existing == null) {
                         namedTemplates.put(rule.getName(), rule);
-                    } else if (rule.getImportPrecedence() > existing.getImportPrecedence()) {
-                        // New rule has higher precedence - it wins
+                    } else if (!deferPrecedence
+                            && rule.getImportPrecedence() > existing.getImportPrecedence()) {
                         namedTemplates.put(rule.getName(), rule);
                     } else if (rule.getImportPrecedence() == existing.getImportPrecedence() &&
                                rule.getDeclarationIndex() > existing.getDeclarationIndex()) {
-                        // Same precedence but later declaration - it wins
                         namedTemplates.put(rule.getName(), rule);
                     }
-                    // Otherwise keep existing (it has higher or equal precedence)
                 }
             }
             
             // Continue with rest of merge...
-            mergeNonTemplates(imported, isImport);
+            mergeNonTemplates(imported, isImport, deferPrecedence);
             
             return this;
         }
@@ -1191,6 +1294,7 @@ public final class CompiledStylesheet {
                     );
                     adjusted.setParsedAsType(rule.getParsedAsType());
                     adjusted.setEffectiveVersion(rule.getEffectiveVersion());
+                    adjusted.setDefiningStylesheet(rule.getDefiningStylesheet());
                 }
                 templateRules.add(adjusted);
                 if (adjusted.getName() != null) {
@@ -1375,6 +1479,23 @@ public final class CompiledStylesheet {
                 addAccumulator(acc);
             }
             
+            // Propagate per-attribute mode conflicts from imported stylesheet
+            for (Map.Entry<String, Map<String, String>> conflict
+                    : imported.getModeConflicts().entrySet()) {
+                String modeKey = conflict.getKey();
+                Map<String, String> attrConflicts = modeConflicts.get(modeKey);
+                if (attrConflicts == null) {
+                    attrConflicts = new HashMap<>(conflict.getValue());
+                    modeConflicts.put(modeKey, attrConflicts);
+                } else {
+                    for (Map.Entry<String, String> attr : conflict.getValue().entrySet()) {
+                        if (!attrConflicts.containsKey(attr.getKey())) {
+                            attrConflicts.put(attr.getKey(), attr.getValue());
+                        }
+                    }
+                }
+            }
+            
             // Merge mode declarations - importing attributes take priority,
             // but unset attributes are inherited from imports
             for (Map.Entry<String, ModeDeclaration> entry : imported.modeDeclarations.entrySet()) {
@@ -1382,7 +1503,27 @@ public final class CompiledStylesheet {
                 ModeDeclaration existing = modeDeclarations.get(key);
                 if (existing == null) {
                     modeDeclarations.put(key, entry.getValue());
+                    if (isImport) {
+                        importedModes.add(key);
+                    }
                 } else {
+                    // Detect cross-module attribute conflicts (same precedence)
+                    if (!isImport) {
+                        Map<String, String> newConflicts =
+                            existing.detectConflictsWith(entry.getValue());
+                        if (newConflicts != null) {
+                            Map<String, String> attrConflicts = modeConflicts.get(key);
+                            if (attrConflicts == null) {
+                                attrConflicts = new HashMap<>();
+                                modeConflicts.put(key, attrConflicts);
+                            }
+                            attrConflicts.putAll(newConflicts);
+                        }
+                    }
+                    // For imports, resolve per-attribute conflicts
+                    if (isImport) {
+                        resolveConflictsForAttributes(key, existing);
+                    }
                     modeDeclarations.put(key, existing.mergeWith(entry.getValue()));
                 }
             }
@@ -1458,22 +1599,43 @@ public final class CompiledStylesheet {
          * @return this builder
          */
         public Builder finalizePrecedence(int finalPrecedence) {
-            return finalizePrecedence(-1, finalPrecedence);
+            return finalizePrecedence(-1, finalPrecedence, -1);
         }
 
         /**
          * Finalizes template and variable precedences. Updates declarations at
          * the old precedence, -1, or pending include precedences to the final value.
+         * Also sets minImportPrecedence on the current module's templates for
+         * correct apply-imports scoping.
          *
          * @param ownPrecedence the stylesheet's initial precedence (to be promoted)
          * @param finalPrecedence the final precedence value
+         * @param minImportedPrecedence lowest precedence from imported modules, or -1 if none
          * @return this builder
          */
-        public Builder finalizePrecedence(int ownPrecedence, int finalPrecedence) {
+        public Builder finalizePrecedence(int ownPrecedence, int finalPrecedence,
+                                          int minImportedPrecedence) {
             this.finalizedPrecedence = finalPrecedence;
+            // Start with direct imports' minimum precedence
+            int effectiveMinImport = minImportedPrecedence >= 0
+                ? minImportedPrecedence : finalPrecedence;
+            // Also consider imports brought in through included stylesheets:
+            // included templates share our precedence, so their import subtrees
+            // become part of our import subtree
             for (int i = 0; i < templateRules.size(); i++) {
                 TemplateRule rule = templateRules.get(i);
-                if (rule.getImportPrecedence() == -1
+                if (pendingIncludePrecedences.contains(rule.getImportPrecedence())) {
+                    int ruleMin = rule.getMinImportPrecedence();
+                    if (ruleMin >= 0 && ruleMin < effectiveMinImport) {
+                        effectiveMinImport = ruleMin;
+                    }
+                }
+            }
+            for (int i = 0; i < templateRules.size(); i++) {
+                TemplateRule rule = templateRules.get(i);
+                boolean isUnassigned = rule.getImportPrecedence() == -1
+                    && rule.getDefiningStylesheet() == null;
+                if (isUnassigned
                         || rule.getImportPrecedence() == ownPrecedence
                         || pendingIncludePrecedences.contains(rule.getImportPrecedence())) {
                     TemplateRule adjusted = new TemplateRule(
@@ -1490,25 +1652,29 @@ public final class CompiledStylesheet {
                     );
                     adjusted.setParsedAsType(rule.getParsedAsType());
                     adjusted.setEffectiveVersion(rule.getEffectiveVersion());
+                    adjusted.setMinImportPrecedence(effectiveMinImport);
+                    adjusted.setDefiningStylesheet(rule.getDefiningStylesheet());
                     templateRules.set(i, adjusted);
                     if (adjusted.getName() != null) {
                         namedTemplates.put(adjusted.getName(), adjusted);
                     }
                 }
             }
-            // Also update global variables at -1, ownPrecedence, or pending include precedences
+            // Also update global variables at unassigned, ownPrecedence, or pending include precedences
             for (int i = 0; i < globalVariables.size(); i++) {
                 GlobalVariable var = globalVariables.get(i);
-                if (var.getImportPrecedence() == -1
+                if ((var.getImportPrecedence() == -1)
                         || var.getImportPrecedence() == ownPrecedence
                         || pendingIncludePrecedences.contains(var.getImportPrecedence())) {
                     globalVariables.set(i, var.withImportPrecedence(finalPrecedence));
                 }
             }
-            // Also update user functions
+            // Also update user functions (skip package-imported ones at -1)
             for (Map.Entry<String, UserFunction> entry : userFunctions.entrySet()) {
                 UserFunction fn = entry.getValue();
-                if (fn.getImportPrecedence() == -1
+                boolean fnUnassigned = fn.getImportPrecedence() == -1
+                    && fn.getDefiningStylesheet() == null;
+                if (fnUnassigned
                         || fn.getImportPrecedence() == ownPrecedence
                         || pendingIncludePrecedences.contains(fn.getImportPrecedence())) {
                     entry.setValue(fn.withImportPrecedence(finalPrecedence));
@@ -1539,6 +1705,15 @@ public final class CompiledStylesheet {
          * @throws javax.xml.transform.TransformerConfigurationException if validation fails
          */
         public CompiledStylesheet build(boolean validateReferences) throws javax.xml.transform.TransformerConfigurationException {
+            // XTSE0545: throw for any unresolved mode conflicts.
+            // Only check when validateReferences is true (top-level build).
+            // Sub-stylesheets may have conflicts resolved by a higher-precedence parent.
+            if (validateReferences && !modeConflicts.isEmpty()) {
+                Map<String, String> firstAttrConflicts =
+                    modeConflicts.values().iterator().next();
+                String firstConflict = firstAttrConflicts.values().iterator().next();
+                throw new javax.xml.transform.TransformerConfigurationException(firstConflict);
+            }
             // XTSE1290: throw for any unresolved decimal-format conflicts.
             // Only check when validateReferences is true (top-level build).
             // Sub-stylesheets may have conflicts resolved by a higher-precedence parent.
@@ -1711,6 +1886,12 @@ public final class CompiledStylesheet {
         this.outputAttributeValues = Collections.unmodifiableMap(oavCopy);
         this.accumulators = Collections.unmodifiableMap(new HashMap<>(builder.accumulators));
         this.modeDeclarations = Collections.unmodifiableMap(new HashMap<>(builder.modeDeclarations));
+        Map<String, Map<String, String>> conflictsCopy = new HashMap<>();
+        for (Map.Entry<String, Map<String, String>> e : builder.modeConflicts.entrySet()) {
+            conflictsCopy.put(e.getKey(),
+                Collections.unmodifiableMap(new HashMap<>(e.getValue())));
+        }
+        this.modeConflicts = Collections.unmodifiableMap(conflictsCopy);
         this.namespaceBindings = Collections.unmodifiableMap(new HashMap<>(builder.namespaceBindings));
         this.excludedNamespaceURIs = Collections.unmodifiableSet(new HashSet<>(builder.excludedNamespaceURIs));
         this.userFunctions = Collections.unmodifiableMap(new HashMap<>(builder.userFunctions));
@@ -1919,6 +2100,20 @@ public final class CompiledStylesheet {
      */
     public String getPackageVersion() {
         return packageVersion;
+    }
+
+    /**
+     * Sets the package resolver for fn:transform() access.
+     */
+    public void setPackageResolver(PackageResolver resolver) {
+        this.packageResolver = resolver;
+    }
+
+    /**
+     * Returns the package resolver.
+     */
+    public PackageResolver getPackageResolver() {
+        return packageResolver;
     }
 
     /**
@@ -2241,6 +2436,13 @@ public final class CompiledStylesheet {
      */
     public Map<String, ModeDeclaration> getModeDeclarations() {
         return modeDeclarations;
+    }
+
+    /**
+     * Returns deferred per-attribute mode conflicts (XTSE0545) from this stylesheet.
+     */
+    public Map<String, Map<String, String>> getModeConflicts() {
+        return modeConflicts;
     }
 
     /**

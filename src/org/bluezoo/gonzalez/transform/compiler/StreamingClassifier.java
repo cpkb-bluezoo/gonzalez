@@ -390,6 +390,23 @@ public final class StreamingClassifier {
             if ("key".equals(name) ||
                 "id".equals(name) || "idref".equals(name) ||
                 "element-with-id".equals(name)) {
+                // 3-arg form key(name, value, doc): if the document
+                // argument is motionless (external document), classify
+                // based on the first two arguments only — the lookup
+                // is against the external document, not the stream.
+                List<Expr> keyArgs = fc.getArguments();
+                if (keyArgs != null && keyArgs.size() >= 3) {
+                    ExpressionStreamability docArg =
+                        classify(keyArgs.get(keyArgs.size() - 1));
+                    if (docArg == ExpressionStreamability.MOTIONLESS) {
+                        ExpressionStreamability kr =
+                            ExpressionStreamability.MOTIONLESS;
+                        for (int ki = 0; ki < keyArgs.size() - 1; ki++) {
+                            kr = combine(kr, classify(keyArgs.get(ki)));
+                        }
+                        return kr;
+                    }
+                }
                 return ExpressionStreamability.FREE_RANGING;
             }
 

@@ -34,6 +34,7 @@ import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -84,6 +85,16 @@ public final class MapEntryNode extends XSLTInstruction implements ExpressionHol
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         try {
             XPathValue keyVal = keyExpr.evaluate(context);
+            // XPTY0004: Map key must be a single atomic value, not an empty sequence
+            if (keyVal == null) {
+                throw new SAXException("XPTY0004: Map key must not be an empty sequence");
+            }
+            if (keyVal instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) keyVal;
+                if (seq.isEmpty()) {
+                    throw new SAXException("XPTY0004: Map key must not be an empty sequence");
+                }
+            }
             String key = keyVal.asString();
             XPathValue value;
             if (selectExpr != null) {

@@ -68,12 +68,17 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
     
     public VariableNode(String namespaceURI, String localName, XPathExpression selectExpr, 
                 SequenceNode content, String asType) {
+        this(namespaceURI, localName, selectExpr, content, asType, null);
+    }
+
+    public VariableNode(String namespaceURI, String localName, XPathExpression selectExpr, 
+                SequenceNode content, String asType, SequenceType parsedAsType) {
         this.namespaceURI = namespaceURI;
         this.localName = localName;
         this.selectExpr = selectExpr;
         this.content = content;
         this.asType = asType;
-        this.parsedAsType = SequenceType.parse(asType, null);
+        this.parsedAsType = parsedAsType != null ? parsedAsType : SequenceType.parse(asType, null);
     }
     
     @Override public String getInstructionName() { return "variable"; }
@@ -242,6 +247,11 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
                             ": required type is " + asType +
                             ", supplied value does not match");
                     }
+                }
+                // Promote numeric values to the declared type so that
+                // instance-of checks reflect the declared type correctly
+                if (kind == SequenceType.ItemKind.ATOMIC && value instanceof XPathNumber) {
+                    value = promoteNumericType((XPathNumber) value, parsedAsType.getLocalName());
                 }
             }
             
@@ -467,6 +477,29 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
         }
         // For other atomic types, return as-is and let downstream handle it
         return value;
+    }
+
+    /**
+     * Promotes a numeric value to the declared target type so that the
+     * internal XPathNumber flags match the declared xs:type.
+     */
+    private static XPathValue promoteNumericType(XPathNumber number, String targetLocal) {
+        if (targetLocal == null) {
+            return number;
+        }
+        switch (targetLocal) {
+            case "double":
+                if (!number.isExplicitDouble()) {
+                    return XPathNumber.ofExplicitDouble(number.asNumber());
+                }
+                break;
+            case "float":
+                if (!number.isFloat()) {
+                    return new XPathNumber(number.asNumber(), true);
+                }
+                break;
+        }
+        return number;
     }
 
     private XPathValue executeSequenceConstructor(TransformContext context) throws SAXException {

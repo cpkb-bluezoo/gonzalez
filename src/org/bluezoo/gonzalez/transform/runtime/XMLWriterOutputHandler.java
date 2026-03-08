@@ -687,10 +687,17 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         if (value == null) {
             return;
         }
-        if (strictXmlSerialization && elementDepth == 0 && !inAttributeContent
-                && (value instanceof XPathMap || value instanceof XPathArray)) {
-            throw new SAXException(
-                "SENR0001: Cannot serialize a map using this output method");
+        if (value instanceof XPathMap) {
+            if (strictXmlSerialization) {
+                if (elementDepth > 0) {
+                    throw new SAXException("XTDE0450: " +
+                        "A result tree cannot contain a function item");
+                }
+                if (!inAttributeContent) {
+                    throw new SAXException(
+                        "SENR0001: Cannot serialize a map using this output method");
+                }
+            }
         }
         if (!strictXmlSerialization && (value instanceof XPathMap || value instanceof XPathArray)) {
             String json = serializeToJson(value);

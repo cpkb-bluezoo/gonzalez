@@ -669,6 +669,17 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     }
 
     /**
+     * Removes the last child node, if any.
+     * Used by strip-space processing to discard whitespace-only text nodes.
+     */
+    public void removeLastChild() {
+        if (!children.isEmpty()) {
+            children.remove(children.size() - 1);
+            cachedStringValue = null;
+        }
+    }
+
+    /**
      * Returns the number of namespace nodes on this element.
      *
      * @return the namespace node count
