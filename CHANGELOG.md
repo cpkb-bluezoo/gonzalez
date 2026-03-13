@@ -2,7 +2,7 @@
 
 All notable changes to Gonzalez will be documented in this file.
 
-## [1.1] - XXXX-XX-XX
+## [1.1] - 2026-03-13
 
 ### Added
 
