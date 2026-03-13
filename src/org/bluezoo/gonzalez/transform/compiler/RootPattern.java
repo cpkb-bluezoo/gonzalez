@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 /**
@@ -41,6 +42,11 @@ final class RootPattern extends AbstractPattern {
     boolean matchesBase(XPathNode node, TransformContext context,
                         XPathNode targetNode) {
         return node.getParent() == null && node.isRoot();
+    }
+
+    @Override
+    public NodeType getMatchableNodeType() {
+        return NodeType.ROOT;
     }
 
     @Override

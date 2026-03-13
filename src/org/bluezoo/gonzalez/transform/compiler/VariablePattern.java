@@ -30,6 +30,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -125,6 +126,29 @@ final class VariablePattern extends AbstractPattern {
             List<XPathNode> result = new ArrayList<>();
             for (XPathNode n : ns) {
                 result.add(n);
+            }
+            return result;
+        }
+        if (varValue instanceof XPathSequence) {
+            List<XPathNode> result = new ArrayList<>();
+            for (XPathValue item : (XPathSequence) varValue) {
+                if (item instanceof XPathNode) {
+                    result.add((XPathNode) item);
+                } else if (item instanceof XPathNodeSet) {
+                    for (XPathNode n : (XPathNodeSet) item) {
+                        result.add(n);
+                    }
+                }
+            }
+            if (!result.isEmpty()) {
+                return result;
+            }
+            // Fall through to try asNodeSet() conversion
+            XPathNodeSet ns = varValue.asNodeSet();
+            if (ns != null) {
+                for (XPathNode n : ns) {
+                    result.add(n);
+                }
             }
             return result;
         }

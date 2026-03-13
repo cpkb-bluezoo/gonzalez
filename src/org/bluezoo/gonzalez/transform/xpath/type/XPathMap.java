@@ -111,15 +111,37 @@ public final class XPathMap implements XPathValue {
 
     /**
      * Returns the keys of this map as a list of string values.
+     * Uses the display key (original string form) for entries that
+     * have synthetic internal keys due to type-diverse key identity.
      *
      * @return the keys
      */
     public List<XPathValue> keys() {
         List<XPathValue> result = new ArrayList<XPathValue>(entries.size());
         for (String key : entries.keySet()) {
-            result.add(XPathString.of(key));
+            XPathValue typed = getTypedKey(key);
+            if (typed != null) {
+                result.add(typed);
+            } else {
+                result.add(XPathString.of(displayKey(key)));
+            }
         }
         return result;
+    }
+
+    /**
+     * Returns the display key for a given internal key.
+     * Synthetic keys (containing NUL) are stripped to their display form.
+     *
+     * @param internalKey the internal map key
+     * @return the display key
+     */
+    public String displayKey(String internalKey) {
+        int nulIdx = internalKey.indexOf('\0');
+        if (nulIdx >= 0) {
+            return internalKey.substring(0, nulIdx);
+        }
+        return internalKey;
     }
 
     /**
@@ -132,7 +154,30 @@ public final class XPathMap implements XPathValue {
     public XPathMap put(String key, XPathValue value) {
         Map<String, XPathValue> newEntries = new LinkedHashMap<String, XPathValue>(entries);
         newEntries.put(key, value);
+        if (typedKeys != null) {
+            Map<String, XPathValue> newTypedKeys = new LinkedHashMap<String, XPathValue>(typedKeys);
+            return new XPathMap(newEntries, newTypedKeys);
+        }
         return new XPathMap(newEntries);
+    }
+
+    /**
+     * Returns a new map with the given key-value pair added or replaced,
+     * preserving the original typed key for type checking.
+     *
+     * @param key the string key
+     * @param typedKey the original XPath value of the key (preserves type info)
+     * @param value the value
+     * @return a new map
+     */
+    public XPathMap put(String key, XPathValue typedKey, XPathValue value) {
+        Map<String, XPathValue> newEntries = new LinkedHashMap<String, XPathValue>(entries);
+        newEntries.put(key, value);
+        Map<String, XPathValue> newTypedKeys = typedKeys != null
+            ? new LinkedHashMap<String, XPathValue>(typedKeys)
+            : new LinkedHashMap<String, XPathValue>();
+        newTypedKeys.put(key, typedKey);
+        return new XPathMap(newEntries, newTypedKeys);
     }
 
     /**

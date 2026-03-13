@@ -144,12 +144,10 @@ public final class PathExpr implements Expr {
             return XPathNodeSet.EMPTY;
         }
 
-        // Evaluate the path for each context node
         List<XPathNode> nodeResults = new ArrayList<XPathNode>();
         Set<XPathNode> seenNodes = Collections.newSetFromMap(
                 new IdentityHashMap<XPathNode, Boolean>());
-        List<XPathValue> atomicResults = new ArrayList<XPathValue>();
-        boolean hasAtomicResults = false;
+        List<XPathValue> atomicResults = null;
 
         for (XPathNode node : contextNodes) {
             XPathContext nodeContext = context.withContextNode(node);
@@ -170,17 +168,21 @@ public final class PathExpr implements Expr {
                             nodeResults.add(n);
                         }
                     } else {
+                        if (atomicResults == null) {
+                            atomicResults = new ArrayList<XPathValue>();
+                        }
                         atomicResults.add(item);
-                        hasAtomicResults = true;
                     }
                 }
             } else {
+                if (atomicResults == null) {
+                    atomicResults = new ArrayList<XPathValue>();
+                }
                 atomicResults.add(pathResult);
-                hasAtomicResults = true;
             }
         }
 
-        if (hasAtomicResults) {
+        if (atomicResults != null) {
             if (atomicResults.size() == 1) {
                 return atomicResults.get(0);
             }

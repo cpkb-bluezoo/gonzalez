@@ -32,6 +32,7 @@ import java.util.Set;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
@@ -355,11 +356,12 @@ public class ApplyImportsNode extends XSLTInstruction {
         switch (nodeType) {
             case ELEMENT:
                 String uri = node.getNamespaceURI();
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
-                String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
+                String qName = OutputHandlerUtils.buildQName(prefix, localName);
                 
-                output.startElement(uri != null ? uri : "", localName, qName);
+                output.startElement(effectiveUri, localName, qName);
                 Iterator<XPathNode> namespaces = node.getNamespaces();
                 while (namespaces.hasNext()) {
                     XPathNode ns = namespaces.next();
@@ -371,7 +373,7 @@ public class ApplyImportsNode extends XSLTInstruction {
                 }
                 applyTemplatesToAttributes(node, context, output);
                 applyTemplatesToChildren(node, context, output);
-                output.endElement(uri != null ? uri : "", localName, qName);
+                output.endElement(effectiveUri, localName, qName);
                 break;
                 
             case TEXT:
@@ -380,11 +382,11 @@ public class ApplyImportsNode extends XSLTInstruction {
                 
             case ATTRIBUTE:
                 // Copy the attribute - note: will only work if there's a pending element
-                String attUri = node.getNamespaceURI();
+                String attUri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
                 String attLocal = node.getLocalName();
                 String attPrefix = node.getPrefix();
-                String attQName = attPrefix != null && !attPrefix.isEmpty() ? attPrefix + ":" + attLocal : attLocal;
-                output.attribute(attUri != null ? attUri : "", attLocal, attQName, node.getStringValue());
+                String attQName = OutputHandlerUtils.buildQName(attPrefix, attLocal);
+                output.attribute(attUri, attLocal, attQName, node.getStringValue());
                 break;
                 
             case COMMENT:
@@ -405,58 +407,7 @@ public class ApplyImportsNode extends XSLTInstruction {
     }
     
     private void executeDeepCopy(XPathNode node, OutputHandler output) throws SAXException {
-        NodeType nodeType = node.getNodeType();
-        switch (nodeType) {
-            case ELEMENT:
-                String uri = node.getNamespaceURI();
-                String localName = node.getLocalName();
-                String prefix = node.getPrefix();
-                String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
-                
-                output.startElement(uri != null ? uri : "", localName, qName);
-                
-                // Copy attributes
-                Iterator<XPathNode> attrIter = node.getAttributes();
-                while (attrIter.hasNext()) {
-                    XPathNode attr = attrIter.next();
-                    String aUri = attr.getNamespaceURI();
-                    String aLocal = attr.getLocalName();
-                    String aPrefix = attr.getPrefix();
-                    String aQName = aPrefix != null && !aPrefix.isEmpty() ? aPrefix + ":" + aLocal : aLocal;
-                    output.attribute(aUri != null ? aUri : "", aLocal, aQName, attr.getStringValue());
-                }
-                
-                // Recursively copy children
-                Iterator<XPathNode> children = node.getChildren();
-                while (children.hasNext()) {
-                    executeDeepCopy(children.next(), output);
-                }
-                
-                output.endElement(uri != null ? uri : "", localName, qName);
-                break;
-                
-            case TEXT:
-                output.characters(node.getStringValue());
-                break;
-                
-            case COMMENT:
-                output.comment(node.getStringValue());
-                break;
-                
-            case PROCESSING_INSTRUCTION:
-                output.processingInstruction(node.getLocalName(), node.getStringValue());
-                break;
-                
-            case ROOT:
-                Iterator<XPathNode> rootChildren = node.getChildren();
-                while (rootChildren.hasNext()) {
-                    executeDeepCopy(rootChildren.next(), output);
-                }
-                break;
-                
-            default:
-                break;
-        }
+        ValueOutputHelper.deepCopyNode(node, output);
     }
 
     /**

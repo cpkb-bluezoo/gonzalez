@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.xpath.function;
 
 import org.bluezoo.gonzalez.transform.xpath.Collation;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
@@ -37,8 +38,10 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 
 import static org.bluezoo.gonzalez.transform.xpath.function.TypeAnnotatedFunction.typed;
@@ -124,6 +127,7 @@ public final class SequenceFunctions {
         functions.add(typed(DEFAULT_COLLATION, S));
         functions.add(typed(PATH,            SQ, NQ));
         functions.add(typed(COLLECTION,      NS, SQ));
+        functions.add(typed(URI_COLLECTION,  SS, SQ));
         functions.add(typed(AVAILABLE_ENVIRONMENT_VARIABLES, SS));
         functions.add(typed(ENVIRONMENT_VARIABLE, SQ, S));
         functions.add(typed(SORT,            IS, IS, IS, IS));
@@ -131,6 +135,7 @@ public final class SequenceFunctions {
         functions.add(typed(FUNCTION_NAME,   QNQ, IS));
         functions.add(typed(FUNCTION_ARITY,  I, IS));
         functions.add(typed(ERROR,           E, QNQ, S, IS));
+        functions.add(typed(RANDOM_NUMBER_GENERATOR, IS, IS));
         return functions;
     }
 
@@ -1020,6 +1025,12 @@ public final class SequenceFunctions {
             if (value instanceof SingleNodeValue) {
                 return ((SingleNodeValue) value).node;
             }
+            if (value instanceof XPathResultTreeFragment) {
+                XPathNodeSet ns = ((XPathResultTreeFragment) value).asNodeSet();
+                if (ns != null && ns.size() == 1) {
+                    return ns.first();
+                }
+            }
             return null;
         }
         
@@ -1720,6 +1731,10 @@ public final class SequenceFunctions {
             this.parentNode = parent;
         }
 
+        public XPathNode getOriginal() {
+            return original;
+        }
+
         void setParent(XPathNode parent) {
             this.parentNode = parent;
         }
@@ -2257,6 +2272,154 @@ public final class SequenceFunctions {
     };
 
     /**
+     * XPath 3.1 uri-collection() function.
+     *
+     * <p>Returns a sequence of URI strings for the documents in a collection.
+     *
+     * <p>Signature: uri-collection() as xs:anyURI*
+     * <p>Signature: uri-collection($arg as xs:string?) as xs:anyURI*
+     *
+     * @see <a href="https://www.w3.org/TR/xpath-functions-31/#func-uri-collection">XPath uri-collection()</a>
+     */
+    public static final Function URI_COLLECTION = new Function() {
+        @Override public String getName() { return "uri-collection"; }
+        @Override public int getMinArgs() { return 0; }
+        @Override public int getMaxArgs() { return 1; }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            String uri;
+            if (args.isEmpty()) {
+                uri = "";
+            } else {
+                XPathValue arg = args.get(0);
+                if (arg == null
+                        || (arg instanceof XPathSequence
+                            && ((XPathSequence) arg).isEmpty())) {
+                    uri = "";
+                } else {
+                    uri = arg.asString();
+                }
+            }
+
+            if (context instanceof BasicTransformContext) {
+                BasicTransformContext btc = (BasicTransformContext) context;
+                List<String> uris = btc.getCollectionUris(uri);
+                if (uris != null && !uris.isEmpty()) {
+                    List<XPathValue> items = new ArrayList<>();
+                    for (String docUri : uris) {
+                        items.add(XPathString.of(docUri));
+                    }
+                    return new XPathSequence(items);
+                }
+            }
+
+            if (uri.isEmpty()) {
+                return XPathSequence.EMPTY;
+            }
+
+            int qIdx = uri.indexOf("?select=");
+            if (qIdx >= 0) {
+                return resolveSelectCollection(uri, qIdx, context);
+            }
+
+            throw new XPathException(
+                "FODC0002: No uri-collection found for URI '" + uri + "'");
+        }
+    };
+
+    /**
+     * Resolves a collection URI with {@code ?select=glob-pattern}, listing
+     * matching files in the specified directory.
+     */
+    private static XPathValue resolveSelectCollection(String uri, int qIdx,
+            XPathContext context) throws XPathException {
+        String dirPart = uri.substring(0, qIdx);
+        String pattern = uri.substring(qIdx + 8);
+        if (dirPart.isEmpty()) {
+            dirPart = ".";
+        }
+
+        java.io.File dir;
+        String baseURI = context.getStaticBaseURI();
+        if (baseURI != null && !baseURI.isEmpty()) {
+            try {
+                java.net.URI base = new java.net.URI(baseURI);
+                java.net.URI resolved = base.resolve(dirPart);
+                dir = new java.io.File(resolved);
+            } catch (Exception e) {
+                dir = new java.io.File(dirPart);
+            }
+        } else {
+            dir = new java.io.File(dirPart);
+        }
+
+        if (!dir.isDirectory()) {
+            throw new XPathException(
+                "FODC0002: Directory not found for uri-collection: " + dirPart);
+        }
+
+        java.io.File[] files = dir.listFiles();
+        if (files == null) {
+            return XPathSequence.EMPTY;
+        }
+
+        List<XPathValue> result = new ArrayList<>();
+        for (java.io.File file : files) {
+            if (file.isFile() && matchGlob(file.getName(), pattern)) {
+                String fileUri = file.toURI().toString();
+                result.add(XPathString.of(fileUri));
+            }
+        }
+        java.util.Collections.sort(result, new java.util.Comparator<XPathValue>() {
+            @Override
+            public int compare(XPathValue a, XPathValue b) {
+                return a.asString().compareTo(b.asString());
+            }
+        });
+        return result.isEmpty() ? XPathSequence.EMPTY : new XPathSequence(result);
+    }
+
+    /**
+     * Simple glob matching supporting {@code *} and {@code ?} wildcards.
+     */
+    private static boolean matchGlob(String name, String pattern) {
+        return matchGlobAt(name, 0, pattern, 0);
+    }
+
+    private static boolean matchGlobAt(String s, int si, String p, int pi) {
+        while (pi < p.length()) {
+            char pc = p.charAt(pi);
+            if (pc == '*') {
+                pi++;
+                if (pi == p.length()) {
+                    return true;
+                }
+                for (int i = si; i <= s.length(); i++) {
+                    if (matchGlobAt(s, i, p, pi)) {
+                        return true;
+                    }
+                }
+                return false;
+            } else if (pc == '?') {
+                if (si >= s.length()) {
+                    return false;
+                }
+                si++;
+                pi++;
+            } else {
+                if (si >= s.length() || s.charAt(si) != pc) {
+                    return false;
+                }
+                si++;
+                pi++;
+            }
+        }
+        return si == s.length();
+    }
+
+    /**
      * XPath 3.0 available-environment-variables() function.
      * 
      * <p>Returns a list of environment variable names available to the processor.
@@ -2532,4 +2695,84 @@ public final class SequenceFunctions {
             throw new XPathException(errorCode, "error() called");
         }
     };
+
+    /**
+     * fn:random-number-generator($seed?) as map(xs:string, item()).
+     * XPath 3.1 Section 17.2.
+     */
+    public static final Function RANDOM_NUMBER_GENERATOR = new Function() {
+
+        @Override
+        public String getName() {
+            return "random-number-generator";
+        }
+
+        @Override
+        public int getMinArgs() {
+            return 0;
+        }
+
+        @Override
+        public int getMaxArgs() {
+            return 1;
+        }
+
+        @Override
+        public XPathValue evaluate(List<XPathValue> args, XPathContext context)
+                throws XPathException {
+            Random random;
+            if (args.isEmpty() || isEmpty(args.get(0))) {
+                random = new Random();
+            } else {
+                XPathValue seedVal = args.get(0);
+                int seed = seedVal.asString().hashCode();
+                random = new Random(seed);
+            }
+            return buildRngMap(random);
+        }
+    };
+
+    /**
+     * Builds the map returned by random-number-generator().
+     * Contains entries "number" (xs:double), "next" (zero-arity function),
+     * and "permute" (one-arity function).
+     */
+    private static XPathMap buildRngMap(final Random random) {
+        Map<String, XPathValue> entries = new LinkedHashMap<String, XPathValue>();
+
+        double num = random.nextDouble();
+        entries.put("number", XPathNumber.of(num));
+
+        entries.put("next", new NativeFunctionItem("random-number-generator:next", 0) {
+            @Override
+            public XPathValue invoke(List<XPathValue> args, XPathContext context)
+                    throws XPathException {
+                return buildRngMap(random);
+            }
+        });
+
+        entries.put("permute", new NativeFunctionItem("random-number-generator:permute", 1) {
+            @Override
+            public XPathValue invoke(List<XPathValue> args, XPathContext context)
+                    throws XPathException {
+                XPathValue input = args.get(0);
+                List<XPathValue> items = new ArrayList<XPathValue>();
+                if (input instanceof XPathSequence) {
+                    for (XPathValue item : (XPathSequence) input) {
+                        items.add(item);
+                    }
+                } else if (input instanceof XPathNodeSet) {
+                    for (XPathNode node : (XPathNodeSet) input) {
+                        items.add(XPathNodeSet.of(node));
+                    }
+                } else {
+                    items.add(input);
+                }
+                Collections.shuffle(items, random);
+                return new XPathSequence(items);
+            }
+        });
+
+        return new XPathMap(entries);
+    }
 }

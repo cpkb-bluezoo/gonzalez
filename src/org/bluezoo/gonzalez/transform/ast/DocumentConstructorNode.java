@@ -134,7 +134,13 @@ public final class DocumentConstructorNode implements XSLTNode {
             String stringValue = buffer.getTextContent();
             output.characters(stringValue);
         } else {
+            if (output.wantsDocumentBoundaries()) {
+                output.startDocument();
+            }
             rtf.replayToOutput(output, true);
+            if (output.wantsDocumentBoundaries()) {
+                output.endDocument();
+            }
         }
     }
 

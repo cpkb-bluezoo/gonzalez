@@ -27,6 +27,7 @@ import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -292,6 +293,15 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     public void attribute(String namespaceURI, String localName, String qName, String value) 
             throws SAXException {
         if (!inPendingElement) {
+            if (!strictXmlSerialization) {
+                if (atomicValuePending) {
+                    characters(" ");
+                }
+                String name = (qName != null && !qName.isEmpty()) ? qName : localName;
+                characters(name + "=\"" + (value != null ? value : "") + "\"");
+                atomicValuePending = true;
+                return;
+            }
             throw new SAXException("attribute() called outside of element start");
         }
         
@@ -328,7 +338,7 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         }
         
         String newPrefix = prefix != null ? prefix : "";
-        String newUri = uri != null ? uri : "";
+        String newUri = OutputHandlerUtils.effectiveUri(uri);
         for (int i = 0; i < pendingNamespaces.size(); i++) {
             PendingNamespace existing = pendingNamespaces.get(i);
             String existingPrefix = existing.prefix != null ? existing.prefix : "";
@@ -687,6 +697,18 @@ public final class XMLWriterOutputHandler implements OutputHandler {
         if (value == null) {
             return;
         }
+        if (value instanceof XPathFunctionItem) {
+            if (strictXmlSerialization) {
+                throw new SAXException("XTDE0450: " +
+                    "A result tree cannot contain a function item");
+            }
+            if (atomicValuePending && !inAttributeContent) {
+                characters(" ");
+            }
+            characters(value.asString());
+            atomicValuePending = true;
+            return;
+        }
         if (value instanceof XPathMap) {
             if (strictXmlSerialization) {
                 if (elementDepth > 0) {
@@ -733,9 +755,18 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     private void writeJsonValue(XPathValue value, JSONWriter writer) throws IOException {
         if (value instanceof XPathMap) {
             XPathMap map = (XPathMap) value;
+            boolean allowDups = outputProperties != null
+                && outputProperties.isAllowDuplicateNames();
+            Set<String> seenKeys = allowDups ? null : new HashSet<String>();
             writer.writeStartObject();
             for (Map.Entry<String, XPathValue> entry : map.entries()) {
-                writer.writeKey(entry.getKey());
+                String displayKey = map.displayKey(entry.getKey());
+                if (seenKeys != null && !seenKeys.add(displayKey)) {
+                    throw new IOException("SERE0022: Duplicate key '"
+                        + displayKey + "' in JSON output "
+                        + "(allow-duplicate-names is not enabled)");
+                }
+                writer.writeKey(displayKey);
                 writeJsonValue(entry.getValue(), writer);
             }
             writer.writeEndObject();

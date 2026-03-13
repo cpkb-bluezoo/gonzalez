@@ -330,6 +330,21 @@ public interface OutputHandler {
     }
 
     /**
+     * Returns true if this handler wants to receive startDocument/endDocument
+     * events when document nodes are replayed into the output stream.
+     *
+     * <p>By default, document constructor replay strips startDocument/endDocument
+     * events (since they are redundant when replaying into an existing document).
+     * Handlers that need to track document node boundaries for deep-empty
+     * assessment should override this to return true.
+     *
+     * @return true if document boundary events should be preserved
+     */
+    default boolean wantsDocumentBoundaries() {
+        return false;
+    }
+
+    /**
      * Declares a namespace binding for the element's own prefix.
      *
      * <p>Unlike {@link #namespace(String, String)}, bindings declared via this

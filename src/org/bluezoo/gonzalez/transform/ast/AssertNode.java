@@ -62,10 +62,13 @@ public class AssertNode extends XSLTInstruction implements ExpressionHolder {
 
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
+        if (!context.getStylesheet().isAssertionsEnabled()) {
+            return;
+        }
         try {
             XPathValue result = testExpr.evaluate(context);
             if (!result.asBoolean()) {
-                String code = errorCode != null ? errorCode : "XTMM9000";
+                String code = errorCode != null ? errorCode : "XTMM9001";
                 throw new SAXException(code + ": Assertion failed");
             }
         } catch (XPathException e) {

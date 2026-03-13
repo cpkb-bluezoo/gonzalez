@@ -88,16 +88,8 @@ public class XPathString implements XPathValue {
         if (trimmed.isEmpty()) {
             return Double.NaN;
         }
-        // XPath 2.0+: "INF" and "-INF" are valid string representations for xs:double
-        // (Java's Double.parseDouble uses "Infinity" instead, so handle explicitly)
-        if ("INF".equals(trimmed)) {
-            return Double.POSITIVE_INFINITY;
-        }
-        if ("-INF".equals(trimmed)) {
-            return Double.NEGATIVE_INFINITY;
-        }
         try {
-            return Double.parseDouble(trimmed);
+            return XPathNumber.parseXPathDouble(trimmed);
         } catch (NumberFormatException e) {
             return Double.NaN;
         }

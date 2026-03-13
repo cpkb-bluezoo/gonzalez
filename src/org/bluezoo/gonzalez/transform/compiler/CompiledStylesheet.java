@@ -26,6 +26,7 @@ import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
 import org.bluezoo.gonzalez.schema.xsd.XSDType;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
 import org.bluezoo.gonzalez.transform.ValidationMode;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 
 import java.util.*;
 
@@ -116,6 +117,8 @@ public final class CompiledStylesheet {
     // XSLT 3.0 global context item declaration
     private String globalContextItemType;  // as attribute
     private String globalContextItemUse;   // use attribute ("required", "optional", "absent")
+    
+    private boolean assertionsEnabled = true;  // §19.2: implementation-defined
     
     // XSLT 3.0 package information
     private final String packageName;  // package name URI
@@ -1885,7 +1888,7 @@ public final class CompiledStylesheet {
         }
         this.outputAttributeValues = Collections.unmodifiableMap(oavCopy);
         this.accumulators = Collections.unmodifiableMap(new HashMap<>(builder.accumulators));
-        this.modeDeclarations = Collections.unmodifiableMap(new HashMap<>(builder.modeDeclarations));
+        this.modeDeclarations = new HashMap<>(builder.modeDeclarations);
         Map<String, Map<String, String>> conflictsCopy = new HashMap<>();
         for (Map.Entry<String, Map<String, String>> e : builder.modeConflicts.entrySet()) {
             conflictsCopy.put(e.getKey(),
@@ -2064,6 +2067,20 @@ public final class CompiledStylesheet {
      */
     public double getProcessorVersion() {
         return processorVersion;
+    }
+
+    /**
+     * Returns whether xsl:assert instructions are enabled.
+     */
+    public boolean isAssertionsEnabled() {
+        return assertionsEnabled;
+    }
+
+    /**
+     * Sets whether xsl:assert instructions are enabled (§19.2).
+     */
+    public void setAssertionsEnabled(boolean enabled) {
+        this.assertionsEnabled = enabled;
     }
 
     /**
@@ -2382,7 +2399,7 @@ public final class CompiledStylesheet {
                 
                 // Check namespace match (unless * meaning any namespace)
                 if (!"*".equals(patternUri)) {
-                    String elemUri = namespaceURI != null ? namespaceURI : "";
+                    String elemUri = OutputHandlerUtils.effectiveUri(namespaceURI);
                     if (!patternUri.equals(elemUri)) {
                         return false;
                     }
@@ -2435,7 +2452,20 @@ public final class CompiledStylesheet {
      * @return map of name to mode declaration (immutable)
      */
     public Map<String, ModeDeclaration> getModeDeclarations() {
-        return modeDeclarations;
+        return Collections.unmodifiableMap(modeDeclarations);
+    }
+
+    /**
+     * Downgrades a mode to non-streamable for streaming fallback (§19.10).
+     * Called when a streamable mode contains non-streamable templates.
+     *
+     * @param key the mode key ("#default" for the default mode)
+     */
+    void downgradeMode(String key) {
+        ModeDeclaration mode = modeDeclarations.get(key);
+        if (mode != null) {
+            modeDeclarations.put(key, mode.withStreamableDisabled());
+        }
     }
 
     /**
@@ -2535,7 +2565,8 @@ public final class CompiledStylesheet {
      * @return the schema, or null if not found
      */
     public XSDSchema getImportedSchema(String namespaceURI) {
-        return importedSchemas.get(namespaceURI != null ? namespaceURI : "");
+        String effectiveUri = OutputHandlerUtils.effectiveUri(namespaceURI);
+        return importedSchemas.get(effectiveUri);
     }
 
     /**

@@ -340,9 +340,9 @@ public final class TemplateParameter {
             case "ENTITY":
                 return new XPathString(textContent);
             case "double":
-                return new XPathNumber(Double.parseDouble(normalizeSpecialDouble(textContent)), false, true);
+                return new XPathNumber(XPathNumber.parseXPathDouble(textContent), false, true);
             case "float":
-                return new XPathNumber(Float.parseFloat(normalizeSpecialDouble(textContent)), true);
+                return new XPathNumber(XPathNumber.parseXPathFloat(textContent), true);
             case "decimal":
             case "integer":
             case "int":
@@ -463,20 +463,6 @@ public final class TemplateParameter {
         throw new XPathException(errorCode + ": Parameter $" + localName +
             ": required type is " + asType +
             ", but supplied value (" + value.getClass().getSimpleName() + ") does not match");
-    }
-
-    /**
-     * Normalizes XPath special floating-point strings to Java equivalents.
-     * XPath uses "INF"/"-INF" while Java uses "Infinity"/"-Infinity".
-     */
-    private static String normalizeSpecialDouble(String text) {
-        if ("INF".equals(text)) {
-            return "Infinity";
-        }
-        if ("-INF".equals(text)) {
-            return "-Infinity";
-        }
-        return text;
     }
 
     @Override

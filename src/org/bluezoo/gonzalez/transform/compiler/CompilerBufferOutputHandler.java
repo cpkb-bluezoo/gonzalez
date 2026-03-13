@@ -28,6 +28,7 @@ import org.xml.sax.SAXException;
 import org.xml.sax.helpers.AttributesImpl;
 
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 
 /**
@@ -53,9 +54,9 @@ class CompilerBufferOutputHandler implements OutputHandler {
     public void startElement(String uri, String localName, String qName) throws SAXException {
         flush();
         inStartTag = true;
-        pendingUri = uri != null ? uri : "";
+        pendingUri = OutputHandlerUtils.effectiveUri(uri);
         pendingLocalName = localName;
-        pendingQName = qName != null ? qName : localName;
+        pendingQName = OutputHandlerUtils.effectiveQName(qName, localName);
         pendingAttrs.clear();
         pendingNamespaces.clear();
     }
@@ -63,7 +64,9 @@ class CompilerBufferOutputHandler implements OutputHandler {
     @Override 
     public void endElement(String uri, String localName, String qName) throws SAXException {
         flush();
-        buffer.endElement(uri != null ? uri : "", localName, qName != null ? qName : localName);
+        String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+        String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
+        buffer.endElement(effectiveUri, localName, effectiveQName);
     }
     
     @Override
@@ -71,8 +74,16 @@ class CompilerBufferOutputHandler implements OutputHandler {
         if (!inStartTag) {
             throw new SAXException("Attribute outside of start tag");
         }
-        pendingAttrs.addAttribute(uri != null ? uri : "", localName, 
-            qName != null ? qName : localName, "CDATA", value);
+        String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+        String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
+        int existing = pendingAttrs.getIndex(effectiveUri, localName);
+        if (existing >= 0) {
+            pendingAttrs.setAttribute(existing, effectiveUri, localName,
+                effectiveQName, "CDATA", value);
+        } else {
+            pendingAttrs.addAttribute(effectiveUri, localName,
+                effectiveQName, "CDATA", value);
+        }
     }
     
     @Override
@@ -80,12 +91,13 @@ class CompilerBufferOutputHandler implements OutputHandler {
         
         // Queue namespace if in start tag, otherwise emit immediately
         if (inStartTag) {
-            pendingNamespaces.add(new String[] {
-                prefix != null ? prefix : "",
-                uri != null ? uri : ""
-            });
+            String effectivePrefix = OutputHandlerUtils.effectiveUri(prefix);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+            pendingNamespaces.add(new String[] { effectivePrefix, effectiveUri });
         } else {
-            buffer.startPrefixMapping(prefix != null ? prefix : "", uri != null ? uri : "");
+            String effectivePrefix = OutputHandlerUtils.effectiveUri(prefix);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+            buffer.startPrefixMapping(effectivePrefix, effectiveUri);
         }
     }
     

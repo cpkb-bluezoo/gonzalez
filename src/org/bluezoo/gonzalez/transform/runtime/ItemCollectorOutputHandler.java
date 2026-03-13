@@ -79,7 +79,9 @@ public class ItemCollectorOutputHandler implements OutputHandler {
 
     /**
      * Returns the collected content joined with the given separator.
-     * Zero-length items are excluded.
+     * Separators are inserted between all items (including empty ones)
+     * per XSLT 3.0 §5.7.2: adjacent atomic values are separated by a
+     * single space even when their string value is zero-length.
      *
      * @param separator the separator to place between items (null means no separator)
      * @return the joined string
@@ -90,13 +92,12 @@ public class ItemCollectorOutputHandler implements OutputHandler {
         StringBuilder sb = new StringBuilder();
         boolean first = true;
         for (String item : items) {
-            if (item == null || item.isEmpty()) {
-                continue;
-            }
             if (!first) {
                 sb.append(sep);
             }
-            sb.append(item);
+            if (item != null) {
+                sb.append(item);
+            }
             first = false;
         }
         return sb.toString();
@@ -243,11 +244,12 @@ public class ItemCollectorOutputHandler implements OutputHandler {
             return;
         }
         String s = value.asString();
-        // Flush any accumulated text before adding this atomic item
+        // Flush any accumulated text before adding this atomic item.
+        // Empty-string atomic values are preserved as items so that
+        // space separators are correctly generated between adjacent
+        // atomic values (XSLT 3.0 §5.7.2).
         flushCurrentItem();
-        if (s != null && !s.isEmpty()) {
-            items.add(s);
-        }
+        items.add(s != null ? s : "");
         lastWasText = false;
         atomicValuePending = true;
     }

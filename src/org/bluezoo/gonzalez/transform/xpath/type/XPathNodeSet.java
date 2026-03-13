@@ -24,8 +24,10 @@ package org.bluezoo.gonzalez.transform.xpath.type;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * XPath node-set value.
@@ -59,7 +61,7 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     };
 
     private final List<XPathNode> nodes;
-    private boolean sorted;
+    private volatile boolean sorted;
 
     /**
      * Creates a new node-set containing the given nodes.
@@ -293,18 +295,24 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
             return this;
         }
 
+        Set<XPathNode> seen = Collections.newSetFromMap(
+                new IdentityHashMap<XPathNode, Boolean>(this.nodes.size()));
         List<XPathNode> result = new ArrayList<>(this.nodes.size() + other.nodes.size());
-        result.addAll(this.nodes);
+        for (XPathNode node : this.nodes) {
+            seen.add(node);
+            result.add(node);
+        }
 
-        // Add nodes from other that aren't already in this set
         for (XPathNode node : other.nodes) {
-            if (!this.contains(node)) {
+            if (seen.add(node)) {
                 result.add(node);
             }
         }
 
         sortByDocumentOrder(result);
-        return new XPathNodeSet(result);
+        XPathNodeSet ns = new XPathNodeSet(result);
+        ns.sorted = true;
+        return ns;
     }
     
     /**
@@ -346,9 +354,15 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
             return EMPTY;
         }
 
+        Set<XPathNode> otherSet = Collections.newSetFromMap(
+                new IdentityHashMap<XPathNode, Boolean>(other.nodes.size()));
+        for (XPathNode node : other.nodes) {
+            otherSet.add(node);
+        }
+
         List<XPathNode> result = new ArrayList<>();
         for (XPathNode node : this.nodes) {
-            if (other.contains(node)) {
+            if (otherSet.contains(node)) {
                 result.add(node);
             }
         }
@@ -376,9 +390,15 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
             return this;
         }
 
+        Set<XPathNode> otherSet = Collections.newSetFromMap(
+                new IdentityHashMap<XPathNode, Boolean>(other.nodes.size()));
+        for (XPathNode node : other.nodes) {
+            otherSet.add(node);
+        }
+
         List<XPathNode> result = new ArrayList<>();
         for (XPathNode node : this.nodes) {
-            if (!other.contains(node)) {
+            if (!otherSet.contains(node)) {
                 result.add(node);
             }
         }
@@ -392,10 +412,14 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
     /**
      * Ensures the nodes are sorted in document order.
      */
-    private synchronized void ensureSorted() {
-        if (!sorted && nodes.size() > 1) {
-            nodes.sort(DOCUMENT_ORDER);
-            sorted = true;
+    private void ensureSorted() {
+        if (!sorted) {
+            synchronized (this) {
+                if (!sorted && nodes.size() > 1) {
+                    nodes.sort(DOCUMENT_ORDER);
+                }
+                sorted = true;
+            }
         }
     }
 
@@ -430,9 +454,13 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         if (this.size() != other.size()) {
             return false;
         }
-        // Two node-sets are equal if they contain the same nodes
+        Set<XPathNode> otherSet = Collections.newSetFromMap(
+                new IdentityHashMap<XPathNode, Boolean>(other.nodes.size()));
+        for (XPathNode node : other.nodes) {
+            otherSet.add(node);
+        }
         for (XPathNode node : this.nodes) {
-            if (!other.contains(node)) {
+            if (!otherSet.contains(node)) {
                 return false;
             }
         }

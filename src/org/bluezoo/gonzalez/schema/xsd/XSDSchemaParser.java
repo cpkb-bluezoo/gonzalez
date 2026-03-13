@@ -64,9 +64,11 @@ public class XSDSchemaParser extends DefaultHandler {
     private String baseURI;
     // Track already-imported schemas to avoid circular imports
     private final Set<String> importedSchemas = new HashSet<>();
+
+    private static final Map<String, XSDSchema> schemaCache = new HashMap<>();
     
     /**
-     * Parses an XSD schema from a URI.
+     * Parses an XSD schema from a URI, returning a cached result if available.
      *
      * <p>Static convenience method for one-off parsing. This method handles
      * file: URIs, http: URIs, and local file paths.
@@ -77,6 +79,10 @@ public class XSDSchemaParser extends DefaultHandler {
      * @throws IOException if an I/O error occurs reading the schema
      */
     public static XSDSchema parse(String uri) throws SAXException, IOException {
+        XSDSchema cached = schemaCache.get(uri);
+        if (cached != null) {
+            return cached;
+        }
         XSDSchemaParser parser = new XSDSchemaParser();
         
         // Open the URI as a byte stream (required by Gonzalez parser)
@@ -100,7 +106,9 @@ public class XSDSchemaParser extends DefaultHandler {
         try {
             InputSource source = new InputSource(inputStream);
             source.setSystemId(uri);
-            return parser.parse(source);
+            XSDSchema result = parser.parse(source);
+            schemaCache.put(uri, result);
+            return result;
         } finally {
             inputStream.close();
         }

@@ -35,9 +35,14 @@ import org.bluezoo.gonzalez.transform.compiler.AttributeSet;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
+import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
@@ -188,10 +193,24 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 output.characters(contextItem.asString());
                 return;
             }
+            // XTTE0945: xsl:copy without select when context is absent
+            if (context.isContextItemUndefined()) {
+                throw new SAXException("XTTE0945: xsl:copy requires a " +
+                    "context item, but the context item is absent");
+            }
             node = context.getContextNode();
         }
         
         if (node == null) {
+            // XTTE0945: in XSLT 3.0, xsl:copy with no context item is an error
+            if (selectExpr == null && context.getContextItem() == null) {
+                double procVersion = context.getStylesheet()
+                    .getProcessorVersion();
+                if (procVersion >= 3.0) {
+                    throw new SAXException("XTTE0945: xsl:copy requires " +
+                        "a context item, but the context item is absent");
+                }
+            }
             return;
         }
         
@@ -236,10 +255,10 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
         
         switch (node.getNodeType()) {
             case ELEMENT:
-                String uri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
+                String uri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
-                String qName = prefix != null ? prefix + ":" + localName : localName;
+                String qName = OutputHandlerUtils.buildQName(prefix, localName);
                 
                 // Per XSLT spec, the base URI of a shallow copy is the base URI
                 // of the original node. Store it as metadata for parentless copies.
@@ -320,7 +339,16 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 }
                 try {
                     if (content != null) {
-                        content.execute(context, output);
+                        // XSLT 3.0 §11.9.1: when select is present, the
+                        // content is evaluated with a singleton focus on
+                        // the selected item (position=1, last=1).
+                        if (selectExpr != null) {
+                            TransformContext focusCtx = context.withContextNode(node);
+                            focusCtx = focusCtx.withPositionAndSize(1, 1);
+                            content.execute(focusCtx, output);
+                        } else {
+                            content.execute(context, output);
+                        }
                     }
                 } finally {
                     if (!effectiveInheritNamespaces) {
@@ -352,10 +380,10 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 break;
                 
             case ATTRIBUTE:
-                String attrUri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
+                String attrUri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
                 String attrLocal = node.getLocalName();
                 String attrPrefix = node.getPrefix();
-                String attrQName = attrPrefix != null ? attrPrefix + ":" + attrLocal : attrLocal;
+                String attrQName = OutputHandlerUtils.buildQName(attrPrefix, attrLocal);
                 if (attrPrefix != null && !attrPrefix.isEmpty() && !attrUri.isEmpty()) {
                     output.namespace(attrPrefix, attrUri);
                 }
@@ -371,10 +399,36 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 break;
                 
             case ROOT:
-                // Copy content in document context (attributes not allowed)
+                // XSLT 3.0 §11.9.1: xsl:copy of a document node creates a
+                // new document node whose content is the sequence constructor.
+                // Buffer content, then dispatch: if the output is a sequence
+                // builder, add a document node item; otherwise replay children
+                // directly (without the document wrapper).
+                SAXEventBuffer docBuffer = new SAXEventBuffer();
+                BufferOutputHandler bufOut = new BufferOutputHandler(docBuffer);
+                bufOut.startDocument();
                 if (content != null) {
-                    content.execute(context,
-                        new DocumentContentOutputHandler(output));
+                    TransformContext docCtx = context;
+                    if (selectExpr != null) {
+                        docCtx = context.withContextNode(node);
+                        docCtx = docCtx.withPositionAndSize(1, 1);
+                    }
+                    content.execute(docCtx,
+                        new DocumentContentOutputHandler(bufOut));
+                }
+                bufOut.endDocument();
+                // If body produced no content and on-empty is present,
+                // use on-empty fallback instead.
+                if (onEmptyNode != null && !docBuffer.hasNonEmptyContent()) {
+                    onEmptyNode.execute(context, output);
+                } else {
+                    XPathResultTreeFragment rtf =
+                        new XPathResultTreeFragment(docBuffer);
+                    if (output instanceof SequenceBuilderOutputHandler) {
+                        ((SequenceBuilderOutputHandler) output).addItem(rtf);
+                    } else {
+                        rtf.replayToOutput(output, true);
+                    }
                 }
                 break;
                 

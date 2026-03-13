@@ -60,6 +60,9 @@ public final class ContextItemExpr implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
+        if (context.isContextItemUndefined()) {
+            throw new XPathException("XPDY0002: Context item is undefined");
+        }
         XPathValue contextItem = context.getContextItem();
         if (contextItem != null) {
             return contextItem;
@@ -67,10 +70,6 @@ public final class ContextItemExpr implements Expr {
         XPathNode node = context.getContextNode();
         if (node != null) {
             return new XPathNodeSet(Collections.singletonList(node));
-        }
-        // XPDY0002: in function bodies, context item is explicitly undefined
-        if (context.isContextItemUndefined()) {
-            throw new XPathException("XPDY0002: Context item is undefined");
         }
         return null;
     }

@@ -360,6 +360,9 @@ class Tokenizer implements Locator2 {
         }
         int startIdx = (int)(locationValidCharPos - locationCharPosBase) + locationArrayBase;
         int endIdx = (int)(charPosition - locationCharPosBase) + locationArrayBase;
+        if (endIdx > locationChars.length) {
+            endIdx = locationChars.length;
+        }
         for (int i = startIdx; i < endIdx; i++) {
             if (locationChars[i] == '\n') {
                 lineNumber++;
@@ -969,6 +972,7 @@ class Tokenizer implements Locator2 {
                     // Fast path for CDATA in CONTENT state: bulk scan for delimiters
                     // This avoids per-character classification for long text runs
                     if (hasDirectArray && miniState == MiniState.ACCUMULATING_CDATA && state == TokenizerState.CONTENT) {
+                        int scanStart = pos;
                         while (++pos < limit) {
                             char ch = chars[pos];
                             if (ch == '<' || ch == '&') {
@@ -978,10 +982,12 @@ class Tokenizer implements Locator2 {
                                 break;
                             }
                         }
+                        charPosition += (pos - scanStart);
                         continue;
                     }
                     // Fast path for NAME accumulation: bulk scan for name characters
                     if (hasDirectArray && miniState == MiniState.ACCUMULATING_NAME) {
+                        int scanStart = pos;
                         while (++pos < limit) {
                             char ch = chars[pos];
                             if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
@@ -991,10 +997,12 @@ class Tokenizer implements Locator2 {
                             }
                             break;
                         }
+                        charPosition += (pos - scanStart);
                         continue;
                     }
                     // Continue accumulating (single character)
                     pos++;
+                    charPosition++;
                     continue;
                 } else {
                     // Normal case: emit accumulated token, then let trie handle delimiter

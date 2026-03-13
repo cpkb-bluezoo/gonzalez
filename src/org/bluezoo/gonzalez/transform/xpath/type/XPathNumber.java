@@ -55,6 +55,52 @@ public final class XPathNumber implements XPathValue {
     /** Negative infinity singleton. */
     public static final XPathNumber NEGATIVE_INFINITY = new XPathNumber(Double.NEGATIVE_INFINITY);
 
+    /**
+     * Parses a string as an XPath/XSD double value.
+     * Handles "INF", "+INF", "-INF", and "NaN" which Java's
+     * {@link Double#parseDouble} does not recognize.
+     *
+     * @param value the string to parse (will be trimmed)
+     * @return the parsed double value
+     * @throws NumberFormatException if the string is not a valid number
+     */
+    public static double parseXPathDouble(String value) {
+        String trimmed = value.trim();
+        if ("INF".equals(trimmed) || "+INF".equals(trimmed)) {
+            return Double.POSITIVE_INFINITY;
+        }
+        if ("-INF".equals(trimmed)) {
+            return Double.NEGATIVE_INFINITY;
+        }
+        if ("NaN".equals(trimmed)) {
+            return Double.NaN;
+        }
+        return Double.parseDouble(trimmed);
+    }
+
+    /**
+     * Parses a string as an XPath/XSD float value.
+     * Handles "INF", "+INF", "-INF", and "NaN" which Java's
+     * {@link Float#parseFloat} does not recognize.
+     *
+     * @param value the string to parse (will be trimmed)
+     * @return the parsed float value
+     * @throws NumberFormatException if the string is not a valid number
+     */
+    public static float parseXPathFloat(String value) {
+        String trimmed = value.trim();
+        if ("INF".equals(trimmed) || "+INF".equals(trimmed)) {
+            return Float.POSITIVE_INFINITY;
+        }
+        if ("-INF".equals(trimmed)) {
+            return Float.NEGATIVE_INFINITY;
+        }
+        if ("NaN".equals(trimmed)) {
+            return Float.NaN;
+        }
+        return Float.parseFloat(trimmed);
+    }
+
     private final double value;
     private final boolean isFloat;
     private final boolean isExplicitDouble;

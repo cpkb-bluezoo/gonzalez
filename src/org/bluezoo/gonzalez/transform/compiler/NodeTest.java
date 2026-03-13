@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 /**
@@ -44,6 +45,16 @@ interface NodeTest {
      * @return true if the node matches
      */
     boolean matches(XPathNode node);
+
+    /**
+     * Returns the single node type this test can match, or null if it can
+     * match multiple types (e.g. node()).
+     *
+     * @return the matchable node type, or null for any
+     */
+    default NodeType getMatchableNodeType() {
+        return null;
+    }
 
     /**
      * Parses a name test string into a structured NodeTest.

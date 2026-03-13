@@ -53,6 +53,11 @@ final class PITest implements NodeTest {
     }
 
     @Override
+    public NodeType getMatchableNodeType() {
+        return NodeType.PROCESSING_INSTRUCTION;
+    }
+
+    @Override
     public String toString() {
         if (target == null) {
             return "processing-instruction()";

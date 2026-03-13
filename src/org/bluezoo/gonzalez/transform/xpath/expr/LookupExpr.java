@@ -89,7 +89,7 @@ public final class LookupExpr implements Expr {
         if (baseValue instanceof XPathArray) {
             XPathArray array = (XPathArray) baseValue;
             if (wildcard) {
-                return new XPathSequence(array.members());
+                return XPathSequence.fromList(array.members());
             }
             try {
                 int index = Integer.parseInt(key);

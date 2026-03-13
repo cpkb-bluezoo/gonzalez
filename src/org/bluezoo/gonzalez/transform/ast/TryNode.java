@@ -27,9 +27,11 @@ import java.util.List;
 
 import org.xml.sax.SAXException;
 
+import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -67,6 +69,11 @@ public class TryNode extends XSLTInstruction {
             executeNoRollback(context, output);
             return;
         }
+        if (output instanceof SequenceBuilderOutputHandler
+                && !((SequenceBuilderOutputHandler) output).isInsideElement()) {
+            executeSequenceMode(context, (SequenceBuilderOutputHandler) output);
+            return;
+        }
         RecordingOutputHandler buffer = new RecordingOutputHandler();
         try {
             if (tryContent != null) {
@@ -80,6 +87,35 @@ public class TryNode extends XSLTInstruction {
             handleError(extractErrorCode(e), context, output, e);
         } catch (RuntimeException e) {
             handleError(extractErrorCode(e), context, output, e);
+        }
+    }
+    
+    /**
+     * Executes xsl:try in sequence construction context, using a
+     * SequenceBuilderOutputHandler as the buffer so xsl:sequence
+     * preserves node identity (e.g. document nodes from document()).
+     */
+    private void executeSequenceMode(TransformContext context,
+            SequenceBuilderOutputHandler target) throws SAXException {
+        SequenceBuilderOutputHandler buffer = new SequenceBuilderOutputHandler();
+        try {
+            if (tryContent != null) {
+                TransformContext tryContext = context.pushVariableScope();
+                tryContent.execute(tryContext, buffer);
+            }
+            XPathValue result = buffer.getSequence();
+            if (result instanceof XPathSequence) {
+                XPathSequence seq = (XPathSequence) result;
+                for (int i = 0; i < seq.size(); i++) {
+                    target.addItem(seq.get(i));
+                }
+            } else if (result != null && result != XPathSequence.EMPTY) {
+                target.addItem(result);
+            }
+        } catch (SAXException e) {
+            handleError(extractErrorCode(e), context, target, e);
+        } catch (RuntimeException e) {
+            handleError(extractErrorCode(e), context, target, e);
         }
     }
     
@@ -369,9 +405,35 @@ public class TryNode extends XSLTInstruction {
                 catchContext.getVariableScope().bind(errNs, "code", new XPathString(codeStr));
                 catchContext.getVariableScope().bind(errNs, "description", new XPathString(desc));
                 catchContext.getVariableScope().bind(errNs, "value", new XPathString(""));
-                catchContext.getVariableScope().bind(errNs, "module", new XPathString(""));
-                catchContext.getVariableScope().bind(errNs, "line-number", new XPathString("0"));
-                catchContext.getVariableScope().bind(errNs, "column-number", new XPathString("0"));
+                
+                // Extract location info from exception chain
+                String module = "";
+                int lineNumber = 0;
+                int columnNumber = 0;
+                Throwable cause = e;
+                while (cause != null) {
+                    if (cause instanceof org.xml.sax.SAXParseException) {
+                        org.xml.sax.SAXParseException spe = (org.xml.sax.SAXParseException) cause;
+                        if (spe.getSystemId() != null) {
+                            String sysId = spe.getSystemId();
+                            int lastSlash = sysId.lastIndexOf('/');
+                            module = lastSlash >= 0 ? sysId.substring(lastSlash + 1) : sysId;
+                        }
+                        if (spe.getLineNumber() > 0) {
+                            lineNumber = spe.getLineNumber();
+                        }
+                        if (spe.getColumnNumber() > 0) {
+                            columnNumber = spe.getColumnNumber();
+                        }
+                        break;
+                    }
+                    cause = cause.getCause();
+                }
+                catchContext.getVariableScope().bind(errNs, "module", new XPathString(module));
+                catchContext.getVariableScope().bind(errNs, "line-number",
+                    new XPathString(String.valueOf(lineNumber)));
+                catchContext.getVariableScope().bind(errNs, "column-number",
+                    new XPathString(String.valueOf(columnNumber)));
                 catchBlock.execute(catchContext, output);
                 return;
             }

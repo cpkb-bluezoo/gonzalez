@@ -157,12 +157,13 @@ public class PackageResolver {
             return null;
         }
 
-        // Exact version match
-        if (!"*".equals(versionConstraint) && !versionConstraint.contains("*")) {
-            return versions.get(versionConstraint);
+        // Try exact key first for performance
+        CompiledPackage exact = versions.get(versionConstraint);
+        if (exact != null) {
+            return exact;
         }
 
-        // Wildcard matching
+        // Fall back to version matching (handles wildcards and numeric equivalence)
         for (Map.Entry<String, CompiledPackage> entry : versions.entrySet()) {
             if (matchesVersion(entry.getKey(), versionConstraint)) {
                 return entry.getValue();
@@ -291,7 +292,7 @@ public class PackageResolver {
             return; // Anonymous packages are not cached
         }
         if (version == null) {
-            version = "0.0";
+            version = "1";
         }
 
         cache.computeIfAbsent(name, k -> new ConcurrentHashMap<>())
@@ -375,8 +376,8 @@ public class PackageResolver {
             return version.startsWith(prefix);
         }
 
-        // Exact match
-        return version.equals(constraint);
+        // Numeric version comparison (1 == 1.0 == 1.0.0)
+        return compareVersions(version, constraint) == 0;
     }
 
     /**

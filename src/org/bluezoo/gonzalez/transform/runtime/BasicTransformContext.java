@@ -58,6 +58,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 public class BasicTransformContext implements TransformContext {
 
     private final CompiledStylesheet stylesheet;
+    private CompiledStylesheet principalStylesheet;
     private final XPathNode contextNode;
     private final XPathNode xsltCurrentNode;  // The XSLT current() node
     private final XPathValue contextItem;     // For atomic context items (XPath 2.0+)
@@ -88,8 +89,10 @@ public class BasicTransformContext implements TransformContext {
     private boolean insideMergeAction;    // true inside xsl:merge-action body (for XTDE3480)
     private XPathValue xsltCurrentItem;   // The XSLT current() item for atomic for-each
     private Map<String, List<XPathNode>> collections;  // Registered fn:collection() mappings
+    private Map<String, List<String>> collectionUris;  // Registered fn:uri-collection() mappings
     private Map<String, OutputHandler> resultDocumentCollector;  // fn:transform() secondary capture
     private Map<CompiledStylesheet, Map<String, XPathValue>> packageGlobalVariables;  // Pre-evaluated package globals
+    private java.util.Set<String> availableResourceUris;  // URIs declared available by test environment
 
     /**
      * Creates a new transform context.
@@ -104,6 +107,7 @@ public class BasicTransformContext implements TransformContext {
         this(stylesheet, contextNode, contextNode, null, 1, 1, null, new VariableScope(), 
              XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, null, null, null,
              stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null, outputHandler);
+        this.principalStylesheet = stylesheet;
     }
 
     /**
@@ -121,6 +125,7 @@ public class BasicTransformContext implements TransformContext {
         this(stylesheet, contextNode, contextNode, null, 1, 1, null, new VariableScope(), 
              XSLTFunctionLibrary.INSTANCE, matcher, outputHandler, null, errorListener, null, null,
              stylesheet != null ? new RuntimeSchemaValidator(stylesheet) : null, outputHandler);
+        this.principalStylesheet = stylesheet;
     }
 
     private BasicTransformContext(CompiledStylesheet stylesheet, XPathNode contextNode,
@@ -525,6 +530,8 @@ public class BasicTransformContext implements TransformContext {
         CompiledStylesheet effectiveStylesheet = stylesheet;
         if (rule != null && rule.getDefiningStylesheet() != null) {
             effectiveStylesheet = rule.getDefiningStylesheet();
+        } else if (rule != null && principalStylesheet != null) {
+            effectiveStylesheet = principalStylesheet;
         }
         BasicTransformContext result = (BasicTransformContext) inherit(new BasicTransformContext(effectiveStylesheet, contextNode, xsltCurrentNode, contextItem, position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
@@ -1119,14 +1126,17 @@ public class BasicTransformContext implements TransformContext {
      * Must be called on any newly-created derived context.
      */
     private BasicTransformContext inherit(BasicTransformContext derived) {
+        derived.principalStylesheet = this.principalStylesheet;
         derived.defaultCollationOverride = this.defaultCollationOverride;
         derived.xsltCurrentItem = this.xsltCurrentItem;
         derived.cachedCurrentDateTime = this.cachedCurrentDateTime;
         derived.collections = this.collections;
+        derived.collectionUris = this.collectionUris;
         derived.resultDocumentCollector = this.resultDocumentCollector;
         derived.packageGlobalVariables = this.packageGlobalVariables;
         derived.dynamicEvaluation = this.dynamicEvaluation;
         derived.insideMergeAction = this.insideMergeAction;
+        derived.availableResourceUris = this.availableResourceUris;
         if (this.contextItemUndefined &&
                 derived.contextNode == this.contextNode &&
                 derived.contextItem == this.contextItem) {
@@ -1187,6 +1197,59 @@ public class BasicTransformContext implements TransformContext {
             return collections.get(uri);
         }
         return null;
+    }
+
+    /**
+     * Registers URI strings for a named collection (fn:uri-collection).
+     *
+     * @param uri the collection URI
+     * @param uris the list of document URIs in the collection
+     */
+    public void setCollectionUris(String uri, List<String> uris) {
+        if (collectionUris == null) {
+            collectionUris = new java.util.HashMap<>();
+        }
+        collectionUris.put(uri, uris);
+    }
+
+    /**
+     * Returns the URI strings registered for the given collection.
+     *
+     * @param uri the collection URI
+     * @return the list of document URIs, or null if not registered
+     */
+    public List<String> getCollectionUris(String uri) {
+        if (collectionUris != null) {
+            return collectionUris.get(uri);
+        }
+        return null;
+    }
+
+    /**
+     * Registers a URI as an available resource. Used by the test harness
+     * to declare resources that should be reachable for unparsed-text()
+     * and unparsed-text-available() without requiring actual network access.
+     *
+     * @param uri the resource URI
+     */
+    public void addAvailableResourceUri(String uri) {
+        if (availableResourceUris == null) {
+            availableResourceUris = new java.util.HashSet<String>();
+        }
+        availableResourceUris.add(uri);
+    }
+
+    /**
+     * Returns true if the given URI was declared as an available resource.
+     *
+     * @param uri the resource URI
+     * @return true if the URI was registered as available
+     */
+    public boolean isResourceUriAvailable(String uri) {
+        if (availableResourceUris != null) {
+            return availableResourceUris.contains(uri);
+        }
+        return false;
     }
 
 }

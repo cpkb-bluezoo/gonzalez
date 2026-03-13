@@ -131,13 +131,15 @@ public class BufferOutputHandler implements OutputHandler {
     public void attribute(String namespaceURI, String localName, String qName, String value) 
             throws SAXException {
         if (hasPendingElement) {
-            // Add to pending attributes
-            pendingAttributes.addAttribute(
-                namespaceURI != null ? namespaceURI : "", 
-                localName, 
-                qName, 
-                "CDATA", 
-                value);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(namespaceURI);
+            int existing = pendingAttributes.getIndex(effectiveUri, localName);
+            if (existing >= 0) {
+                pendingAttributes.setAttribute(existing, effectiveUri,
+                    localName, qName, "CDATA", value);
+            } else {
+                pendingAttributes.addAttribute(effectiveUri,
+                    localName, qName, "CDATA", value);
+            }
         } else if (elementDepth == 0) {
             throw new SAXException("XTDE0420: An attribute node (" + localName +
                 ") cannot be created as a child of a document node");

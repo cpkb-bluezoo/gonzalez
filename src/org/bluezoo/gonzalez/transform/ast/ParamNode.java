@@ -44,23 +44,30 @@ public class ParamNode extends XSLTInstruction implements ExpressionHolder {
     private final String asType; // XSLT 2.0 type annotation
     private final boolean tunnel; // XSLT 2.0 tunnel parameter
     private final boolean required; // XSLT 2.0 required parameter
+    private final boolean requiredAttrPresent;
     
     public ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, SequenceNode content) {
-        this(namespaceURI, localName, selectExpr, content, null, false, false);
+        this(namespaceURI, localName, selectExpr, content, null, false, false, false);
     }
     
     public ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, 
               SequenceNode content, String asType) {
-        this(namespaceURI, localName, selectExpr, content, asType, false, false);
+        this(namespaceURI, localName, selectExpr, content, asType, false, false, false);
     }
     
     public ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, 
               SequenceNode content, String asType, boolean tunnel) {
-        this(namespaceURI, localName, selectExpr, content, asType, tunnel, false);
+        this(namespaceURI, localName, selectExpr, content, asType, tunnel, false, false);
     }
     
     public ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, 
               SequenceNode content, String asType, boolean tunnel, boolean required) {
+        this(namespaceURI, localName, selectExpr, content, asType, tunnel, required, false);
+    }
+    
+    public ParamNode(String namespaceURI, String localName, XPathExpression selectExpr, 
+              SequenceNode content, String asType, boolean tunnel, boolean required,
+              boolean requiredAttrPresent) {
         this.namespaceURI = namespaceURI;
         this.localName = localName;
         this.selectExpr = selectExpr;
@@ -68,6 +75,7 @@ public class ParamNode extends XSLTInstruction implements ExpressionHolder {
         this.asType = asType;
         this.tunnel = tunnel;
         this.required = required;
+        this.requiredAttrPresent = requiredAttrPresent;
     }
     
     public String getNamespaceURI() { return namespaceURI; }
@@ -78,6 +86,7 @@ public class ParamNode extends XSLTInstruction implements ExpressionHolder {
     public String getAs() { return asType; }
     public boolean isTunnel() { return tunnel; }
     public boolean isRequired() { return required; }
+    public boolean isRequiredAttrPresent() { return requiredAttrPresent; }
     
     @Override public String getInstructionName() { return "param"; }
 

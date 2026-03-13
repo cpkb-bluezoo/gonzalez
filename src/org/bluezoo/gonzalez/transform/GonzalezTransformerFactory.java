@@ -116,6 +116,9 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
     /** Whether strict (pessimistic) static type checking is enabled (default: true). */
     private boolean strictTypeChecking = true;
 
+    /** Streaming fallback (§19.10): fall back to non-streaming for non-streamable content. */
+    private boolean streamingFallback = false;
+
     /**
      * Creates a new transformer factory.
      */
@@ -190,6 +193,7 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
             compiler.setMaxProcessorVersion(maxXsltVersion);
         }
         compiler.setStrictTypeChecking(strictTypeChecking);
+        compiler.setStreamingFallback(streamingFallback);
 
         // Pass static parameter overrides to the compiler
         for (Map.Entry<String, String> entry : staticParameters.entrySet()) {
@@ -412,6 +416,17 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
      */
     public boolean isStrictTypeChecking() {
         return strictTypeChecking;
+    }
+
+    /**
+     * Enables streaming fallback mode (XSLT 3.0 §19.10).
+     * When enabled, non-streamable content in streamable modes is
+     * downgraded to non-streaming instead of raising XTSE3430.
+     *
+     * @param fallback true to enable streaming fallback
+     */
+    public void setStreamingFallback(boolean fallback) {
+        this.streamingFallback = fallback;
     }
 
     /**

@@ -28,6 +28,8 @@ import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.Pattern;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
@@ -99,6 +101,13 @@ public final class AccumulatorManager {
 
     /** Accumulators currently being evaluated (for cycle detection). */
     private final Set<String> evaluatingAccumulators;
+
+    /**
+     * When non-null, restricts which accumulators are applicable for the
+     * current document (e.g., xsl:merge-source use-accumulators).
+     * Accessing a non-applicable accumulator raises XTDE3362.
+     */
+    private Set<String> applicableAccumulators;
 
     /**
      * Creates a new AccumulatorManager.
@@ -462,6 +471,10 @@ public final class AccumulatorManager {
         if (asType == null || value == null || value instanceof DeferredError) {
             return value;
         }
+        if (asType.startsWith("map(") && value instanceof XPathMap) {
+            checkMapType((XPathMap) value, asType, def);
+            return value;
+        }
         String baseType = asType.replaceAll("[*+?]", "").trim();
         boolean isNumericType = "xs:double".equals(baseType) || "xs:float".equals(baseType)
                 || "xs:decimal".equals(baseType) || "xs:integer".equals(baseType)
@@ -577,13 +590,85 @@ public final class AccumulatorManager {
         }
     }
 
+    /**
+     * Validates a map value against a declared map(K, V) type.
+     * Checks that all keys conform to K and all values conform to V.
+     */
+    private void checkMapType(XPathMap map, String mapType, AccumulatorDefinition def)
+            throws SAXException {
+        String inner = mapType.substring(4, mapType.length() - 1);
+        int commaIdx = findMapTypeComma(inner);
+        if (commaIdx < 0) {
+            return;
+        }
+        String keyType = inner.substring(0, commaIdx).trim();
+        String valueType = inner.substring(commaIdx + 1).trim();
+        for (Map.Entry<String, XPathValue> entry : map.entries()) {
+            XPathValue typedKey = map.getTypedKey(entry.getKey());
+            if (typedKey != null && !isInstanceOfAtomicType(typedKey, keyType)) {
+                String actualType = typedKey instanceof XPathUntypedAtomic
+                    ? "xs:untypedAtomic" : typedKey.getType().name().toLowerCase();
+                throw new SAXException("XPTY0004: Map key type mismatch in accumulator '"
+                    + def.getName() + "': required " + keyType
+                    + ", got " + actualType);
+            }
+            XPathValue val = entry.getValue();
+            if (val != null && !isInstanceOfAtomicType(val, valueType)) {
+                throw new SAXException("XPTY0004: Map value type mismatch in accumulator '"
+                    + def.getName() + "': required " + valueType
+                    + ", got " + val.getType().name().toLowerCase());
+            }
+        }
+    }
+
+    /**
+     * Finds the comma separating key and value types in a map(K, V) declaration,
+     * accounting for nested parentheses.
+     */
+    private static int findMapTypeComma(String inner) {
+        int depth = 0;
+        for (int i = 0; i < inner.length(); i++) {
+            char c = inner.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+            } else if (c == ',' && depth == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Checks if a value is an instance of the given XPath atomic type name.
+     */
+    private static boolean isInstanceOfAtomicType(XPathValue value, String typeName) {
+        if ("xs:anyAtomicType".equals(typeName) || "item()".equals(typeName)
+                || "item()*".equals(typeName)) {
+            return true;
+        }
+        if ("xs:string".equals(typeName)) {
+            return (value instanceof XPathString) && !(value instanceof XPathUntypedAtomic);
+        }
+        if ("xs:untypedAtomic".equals(typeName)) {
+            return value instanceof XPathUntypedAtomic;
+        }
+        if ("xs:boolean".equals(typeName)) {
+            return value instanceof XPathBoolean;
+        }
+        if ("xs:integer".equals(typeName) || "xs:int".equals(typeName)
+                || "xs:long".equals(typeName) || "xs:short".equals(typeName)
+                || "xs:byte".equals(typeName) || "xs:decimal".equals(typeName)
+                || "xs:double".equals(typeName) || "xs:float".equals(typeName)) {
+            return value instanceof XPathNumber;
+        }
+        return true;
+    }
+
     private XPathValue evaluateRule(AccumulatorState state, AccumulatorRule rule,
                                      XPathNode node) throws SAXException {
         String accName = state.getDefinition().getName();
-        if (!evaluatingAccumulators.add(accName)) {
-            throw new SAXException("XTDE3400: Cyclic dependency detected " +
-                "evaluating accumulator '" + accName + "'");
-        }
         try {
             TransformContext ruleContext = transformContext.withContextNode(node);
             if (ruleContext instanceof BasicTransformContext) {
@@ -593,11 +678,25 @@ public final class AccumulatorManager {
 
             XPathExpression newValueExpr = rule.getNewValue();
             if (newValueExpr != null) {
-                return newValueExpr.evaluate(ruleContext);
+                // XTDE3400: guard only the select expression evaluation.
+                // Calling accumulator-before/after for the same accumulator
+                // from within its select expression is a dynamic error.
+                if (!evaluatingAccumulators.add(accName)) {
+                    throw new SAXException("XTDE3400: Cyclic dependency " +
+                        "detected evaluating accumulator '" + accName + "'");
+                }
+                try {
+                    return newValueExpr.evaluate(ruleContext);
+                } finally {
+                    evaluatingAccumulators.remove(accName);
+                }
             }
 
             XSLTNode body = rule.getBody();
             if (body != null) {
+                // Sequence constructor body may call accumulator-before/after
+                // for the same accumulator (e.g. xsl:evaluate with-params).
+                // The before-value is already computed, so this is safe.
                 return executeSequenceConstructor(body, ruleContext);
             }
 
@@ -616,8 +715,6 @@ public final class AccumulatorManager {
             return new DeferredError(e);
         } catch (Exception e) {
             return new DeferredError(e);
-        } finally {
-            evaluatingAccumulators.remove(accName);
         }
     }
 
@@ -647,6 +744,10 @@ public final class AccumulatorManager {
      * @return the before value, or null if accumulator not found
      */
     public XPathValue getAccumulatorBefore(String name, XPathNode node) {
+        if (applicableAccumulators != null && !applicableAccumulators.contains(name)) {
+            throw new RuntimeException("XTDE3362: Accumulator '" + name +
+                "' is not applicable (not listed in use-accumulators)");
+        }
         if (evaluatingAccumulators.contains(name)) {
             throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
                 "evaluating accumulator '" + name + "'");
@@ -688,6 +789,10 @@ public final class AccumulatorManager {
      * @return the after value, or null if accumulator not found
      */
     public XPathValue getAccumulatorAfter(String name, XPathNode node) {
+        if (applicableAccumulators != null && !applicableAccumulators.contains(name)) {
+            throw new RuntimeException("XTDE3362: Accumulator '" + name +
+                "' is not applicable (not listed in use-accumulators)");
+        }
         if (evaluatingAccumulators.contains(name)) {
             throw new RuntimeException("XTDE3400: Cyclic dependency detected " +
                 "evaluating accumulator '" + name + "'");
@@ -852,6 +957,17 @@ public final class AccumulatorManager {
      */
     public boolean isStreamingMode() {
         return streamingMode;
+    }
+
+    /**
+     * Sets the set of applicable accumulator names for the current context.
+     * When set, only accumulators in this set may be accessed; others
+     * raise XTDE3362. Pass null to remove the restriction.
+     *
+     * @param names the applicable accumulator names, or null
+     */
+    public void setApplicableAccumulators(Set<String> names) {
+        this.applicableAccumulators = names;
     }
 
     /**

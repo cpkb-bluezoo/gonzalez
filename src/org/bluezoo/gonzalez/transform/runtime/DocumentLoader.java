@@ -37,9 +37,11 @@ import java.net.URI;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -212,8 +214,8 @@ public final class DocumentLoader {
     }
 
     /**
-     * Finds an element in the document tree whose DTD-declared ID attribute
-     * matches the given value.
+     * Finds an element in the document tree whose ID attribute matches
+     * the given value. Checks DTD-declared ID attributes and xml:id.
      */
     private static XPathNode findElementById(XPathNode node, String id) {
         if (!(node instanceof DocumentNode)) {
@@ -224,6 +226,12 @@ public final class DocumentLoader {
             for (int i = 0; i < docNode.attributes.size(); i++) {
                 DocumentNode attr = docNode.attributes.get(i);
                 if ("ID".equals(attr.dtdType) && id.equals(attr.value)) {
+                    return docNode;
+                }
+                if ("id".equals(attr.localName)
+                        && "http://www.w3.org/XML/1998/namespace"
+                            .equals(attr.namespaceURI)
+                        && id.equals(attr.value)) {
                     return docNode;
                 }
             }
@@ -568,9 +576,11 @@ public final class DocumentLoader {
         String dtdType;
         DocumentNode parent;
         int documentOrder;
+        int childIndex = -1;
         private final List<DocumentNode> children = new ArrayList<>();
         private final List<DocumentNode> attributes = new ArrayList<>();
         private final List<DocumentNode> namespaces = new ArrayList<>();
+        private List<XPathNode> cachedNamespaceNodes;
         
         DocumentNode(NodeType type, String namespaceURI, String localName, String prefix, String baseUri) {
             this.type = type;
@@ -581,6 +591,7 @@ public final class DocumentLoader {
         }
         
         void addChild(DocumentNode child) {
+            child.childIndex = children.size();
             children.add(child);
         }
         
@@ -634,38 +645,39 @@ public final class DocumentLoader {
         
         @Override
         public Iterator<XPathNode> getChildren() {
-            return new ArrayList<XPathNode>(children).iterator();
+            return Collections.<XPathNode>unmodifiableList(children).iterator();
         }
         
         @Override
         public Iterator<XPathNode> getAttributes() {
-            return new ArrayList<XPathNode>(attributes).iterator();
+            return Collections.<XPathNode>unmodifiableList(attributes).iterator();
         }
         
         @Override
         public Iterator<XPathNode> getNamespaces() {
-            // Only element nodes have namespace nodes
             if (type != NodeType.ELEMENT) {
                 return Collections.<XPathNode>emptyList().iterator();
             }
+            if (cachedNamespaceNodes != null) {
+                return cachedNamespaceNodes.iterator();
+            }
             List<XPathNode> result = new ArrayList<>();
-            List<String> seenPrefixes = new ArrayList<>();
+            Set<String> seenPrefixes = new HashSet<>();
             collectNamespaces(result, seenPrefixes);
-            // Always include the xml namespace per the data model
             if (!seenPrefixes.contains("xml")) {
                 DocumentNode xmlNs = new DocumentNode(NodeType.NAMESPACE, null, "xml", null, baseUri);
                 xmlNs.value = "http://www.w3.org/XML/1998/namespace";
                 xmlNs.parent = this;
                 result.add(xmlNs);
             }
-            return result.iterator();
+            cachedNamespaceNodes = Collections.unmodifiableList(result);
+            return cachedNamespaceNodes.iterator();
         }
         
-        private void collectNamespaces(List<XPathNode> result, List<String> seenPrefixes) {
+        private void collectNamespaces(List<XPathNode> result, Set<String> seenPrefixes) {
             for (DocumentNode ns : namespaces) {
                 String nsPrefix = ns.localName != null ? ns.localName : "";
-                if (!seenPrefixes.contains(nsPrefix)) {
-                    seenPrefixes.add(nsPrefix);
+                if (seenPrefixes.add(nsPrefix)) {
                     String uri = ns.value;
                     if (uri != null && !uri.isEmpty()) {
                         result.add(ns);
@@ -679,26 +691,22 @@ public final class DocumentLoader {
         
         @Override
         public XPathNode getFollowingSibling() {
-            if (parent == null) {
+            if (parent == null || childIndex < 0) {
                 return null;
             }
-            int index = parent.children.indexOf(this);
-            if (index >= 0 && index < parent.children.size() - 1) {
-                return parent.children.get(index + 1);
+            int nextIndex = childIndex + 1;
+            if (nextIndex < parent.children.size()) {
+                return parent.children.get(nextIndex);
             }
             return null;
         }
         
         @Override
         public XPathNode getPrecedingSibling() {
-            if (parent == null) {
+            if (parent == null || childIndex <= 0) {
                 return null;
             }
-            int index = parent.children.indexOf(this);
-            if (index > 0) {
-                return parent.children.get(index - 1);
-            }
-            return null;
+            return parent.children.get(childIndex - 1);
         }
         
         @Override

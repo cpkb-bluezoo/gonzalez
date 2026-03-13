@@ -65,8 +65,51 @@ public final class OutputHandlerUtils {
     }
 
     /**
+     * Returns the given URI, or the empty string if it is null.
+     *
+     * @param uri the namespace URI
+     * @return the URI, or "" if null
+     */
+    public static String effectiveUri(String uri) {
+        if (uri != null) {
+            return uri;
+        }
+        return "";
+    }
+
+    /**
+     * Builds a qualified name from prefix and local name.
+     * Returns just the local name if the prefix is null or empty.
+     *
+     * @param prefix the namespace prefix
+     * @param localName the local name
+     * @return the qualified name
+     */
+    public static String buildQName(String prefix, String localName) {
+        if (prefix != null && !prefix.isEmpty()) {
+            return prefix + ":" + localName;
+        }
+        return localName;
+    }
+
+    /**
+     * Returns the given qName if non-null and non-empty, otherwise returns
+     * the local name.
+     *
+     * @param qName the qualified name
+     * @param localName the local name fallback
+     * @return the effective qualified name
+     */
+    public static String effectiveQName(String qName, String localName) {
+        if (qName != null && !qName.isEmpty()) {
+            return qName;
+        }
+        return localName;
+    }
+
+    /**
      * Escapes special characters in XML attribute values.
-     * Replaces &amp;, &lt;, and &quot; with their entity references.
+     * Replaces &amp;, &lt;, &gt;, and &quot; with their entity references.
      *
      * @param s the string to escape
      * @return the escaped string
@@ -81,6 +124,9 @@ public final class OutputHandlerUtils {
                     break;
                 case '<':
                     sb.append("&lt;");
+                    break;
+                case '>':
+                    sb.append("&gt;");
                     break;
                 case '"':
                     sb.append("&quot;");

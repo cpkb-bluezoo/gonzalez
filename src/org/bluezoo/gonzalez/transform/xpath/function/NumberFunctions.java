@@ -159,12 +159,19 @@ public final class NumberFunctions {
                     return XPathNumber.of(0);
                 }
                 
+                // Collect and atomize all items
+                List<XPathValue> rawItems = new ArrayList<XPathValue>();
+                while (iter.hasNext()) {
+                    XPathValue item = iter.next();
+                    rawItems.add(atomizeForSum(item));
+                }
+                
                 // Peek at first item to detect duration sequences
-                XPathValue first = iter.next();
+                XPathValue first = rawItems.get(0);
                 if (first instanceof XPathDateTime && ((XPathDateTime) first).isDuration()) {
                     XPathDateTime durationSum = (XPathDateTime) first;
-                    while (iter.hasNext()) {
-                        XPathValue item = iter.next();
+                    for (int i = 1; i < rawItems.size(); i++) {
+                        XPathValue item = rawItems.get(i);
                         if (item instanceof XPathDateTime && ((XPathDateTime) item).isDuration()) {
                             durationSum = durationSum.add((XPathDateTime) item);
                         } else {
@@ -182,10 +189,14 @@ public final class NumberFunctions {
                 // Collect remaining items to determine result type
                 List<XPathValue> items = new ArrayList<XPathValue>();
                 items.add(first);
-                while (iter.hasNext()) {
-                    XPathValue item = iter.next();
+                for (int i = 1; i < rawItems.size(); i++) {
+                    XPathValue item = rawItems.get(i);
                     if (item instanceof XPathString && !(item instanceof XPathUntypedAtomic)) {
                         throw new XPathException("FORG0006: Cannot use string value in sum()");
+                    }
+                    if (item instanceof XPathDateTime && ((XPathDateTime) item).isDuration()) {
+                        throw new XPathException("FORG0006: Mixed types in sum(): " +
+                            "cannot add duration to numeric value");
                     }
                     items.add(item);
                 }
@@ -286,6 +297,29 @@ public final class NumberFunctions {
             
             // Single value
             return XPathNumber.of(arg.asNumber());
+        }
+
+        private XPathValue atomizeForSum(XPathValue item) throws XPathException {
+            String sv = null;
+            if (item instanceof XPathNode) {
+                sv = ((XPathNode) item).getStringValue();
+            } else if (item.isNodeSet()) {
+                XPathNodeSet ns = item.asNodeSet();
+                if (ns != null && !ns.isEmpty()) {
+                    sv = ns.iterator().next().getStringValue();
+                }
+            }
+            if (sv != null) {
+                String trimmed = sv.trim();
+                try {
+                    double d = Double.parseDouble(trimmed);
+                    return XPathNumber.of(d);
+                } catch (NumberFormatException e) {
+                    throw new XPathException("FORG0001: Cannot cast '" + trimmed +
+                        "' to xs:double");
+                }
+            }
+            return item;
         }
     };
 
@@ -761,9 +795,20 @@ public final class NumberFunctions {
                 return durationSum.divide(items.size());
             }
             
-            // Numeric average
+            // Numeric average — check for mixed types
+            if (first instanceof XPathString && !(first instanceof XPathUntypedAtomic)) {
+                throw new XPathException("FORG0006: Cannot use string value in avg()");
+            }
             double sum = 0;
-            for (XPathValue item : items) {
+            for (int i = 0; i < items.size(); i++) {
+                XPathValue item = items.get(i);
+                if (item instanceof XPathDateTime && ((XPathDateTime) item).isDuration()) {
+                    throw new XPathException("FORG0006: Mixed types in avg(): " +
+                        "cannot mix numeric and duration values");
+                }
+                if (item instanceof XPathString && !(item instanceof XPathUntypedAtomic)) {
+                    throw new XPathException("FORG0006: Cannot use string value in avg()");
+                }
                 double v = item.asNumber();
                 if (Double.isNaN(v)) {
                     return XPathNumber.NaN;

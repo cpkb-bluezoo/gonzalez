@@ -465,7 +465,8 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
                 || exprLower.contains("unparsed-entity-uri(")
                 || exprLower.contains("unparsed-entity-public-id(")
                 || exprLower.contains("available-environment-variables(")
-                || exprLower.contains("environment-variable(")) {
+                || exprLower.contains("environment-variable(")
+                || exprLower.contains("current-output-uri(")) {
             return true;
         }
         return false;
@@ -548,84 +549,8 @@ public final class EvaluateNode implements XSLTNode, ExpressionHolder {
         }
     }
     
-    /**
-     * Outputs a single node to the output handler.
-     */
     private void outputNode(XPathNode node, OutputHandler output) throws SAXException {
-        switch (node.getNodeType()) {
-            case ELEMENT:
-                String uri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
-                String localName = node.getLocalName();
-                String prefix = node.getPrefix();
-                String qName = (prefix != null && !prefix.isEmpty()) 
-                    ? prefix + ":" + localName : localName;
-                
-                output.startElement(uri, localName, qName);
-                
-                Iterator<XPathNode> namespaces = node.getNamespaces();
-                while (namespaces.hasNext()) {
-                    XPathNode ns = namespaces.next();
-                    String nsPrefix = ns.getLocalName();
-                    String nsUri = ns.getStringValue();
-                    if (!"xml".equals(nsPrefix) && nsUri != null) {
-                        output.namespace(nsPrefix, nsUri);
-                    }
-                }
-                
-                Iterator<XPathNode> attrs = node.getAttributes();
-                while (attrs.hasNext()) {
-                    XPathNode attr = attrs.next();
-                    String attrUri = attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "";
-                    String attrLocal = attr.getLocalName();
-                    String attrPrefix = attr.getPrefix();
-                    String attrQName = (attrPrefix != null && !attrPrefix.isEmpty()) 
-                        ? attrPrefix + ":" + attrLocal : attrLocal;
-                    output.attribute(attrUri, attrLocal, attrQName, attr.getStringValue());
-                }
-                
-                Iterator<XPathNode> children = node.getChildren();
-                while (children.hasNext()) {
-                    outputNode(children.next(), output);
-                }
-                
-                output.endElement(uri, localName, qName);
-                break;
-                
-            case TEXT:
-                output.characters(node.getStringValue());
-                break;
-                
-            case COMMENT:
-                output.comment(node.getStringValue());
-                break;
-                
-            case PROCESSING_INSTRUCTION:
-                output.processingInstruction(node.getLocalName(), node.getStringValue());
-                break;
-                
-            case ROOT:
-                Iterator<XPathNode> rootChildren = node.getChildren();
-                while (rootChildren.hasNext()) {
-                    outputNode(rootChildren.next(), output);
-                }
-                break;
-                
-            case ATTRIBUTE:
-                String atUri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
-                String atLocal = node.getLocalName();
-                String atPrefix = node.getPrefix();
-                String atQName = (atPrefix != null && !atPrefix.isEmpty()) 
-                    ? atPrefix + ":" + atLocal : atLocal;
-                output.attribute(atUri, atLocal, atQName, node.getStringValue());
-                break;
-                
-            case NAMESPACE:
-                output.namespace(node.getLocalName(), node.getStringValue());
-                break;
-                
-            default:
-                break;
-        }
+        ValueOutputHelper.outputNode(node, output);
     }
 
     @Override

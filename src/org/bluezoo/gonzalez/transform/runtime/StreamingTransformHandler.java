@@ -194,7 +194,8 @@ public final class StreamingTransformHandler implements ContentHandler {
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
         if (currentNode != null) {
-            currentNode.appendText(new String(ch, start, length));
+            documentOrder++;
+            currentNode.appendText(new String(ch, start, length), documentOrder);
             hasPendingText = true;
         }
     }
@@ -208,7 +209,9 @@ public final class StreamingTransformHandler implements ContentHandler {
     @Override
     public void processingInstruction(String target, String data) throws SAXException {
         documentOrder++;
-        // Could create a PI node here if needed
+        if (currentNode != null) {
+            StreamingNode.createPI(target, data, currentNode, documentOrder);
+        }
     }
 
     @Override

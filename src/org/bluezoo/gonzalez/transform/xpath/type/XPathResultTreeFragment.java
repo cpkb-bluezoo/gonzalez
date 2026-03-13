@@ -704,9 +704,11 @@ public final class XPathResultTreeFragment implements XPathValue {
         final String prefix;
         String value;
         RTFNode parent;
+        int childIndex = -1;
         List<RTFNode> children = new ArrayList<RTFNode>();
         List<RTFNode> attributes = new ArrayList<RTFNode>();
         List<RTFNode> namespaces = new ArrayList<RTFNode>();
+        List<XPathNode> cachedNamespaceNodes;
         String baseUri;  // Base URI from xml:base
         long docOrder;
         
@@ -728,7 +730,7 @@ public final class XPathResultTreeFragment implements XPathValue {
             return baseUri;
         }
         
-        void addChild(RTFNode child) { children.add(child); }
+        void addChild(RTFNode child) { child.childIndex = children.size(); children.add(child); }
         void addAttribute(RTFNode attr) { attributes.add(attr); }
         void addNamespace(RTFNode ns) { namespaces.add(ns); }
         
@@ -781,32 +783,31 @@ public final class XPathResultTreeFragment implements XPathValue {
         
         @Override
         public Iterator<XPathNode> getChildren() {
-            return new ArrayList<XPathNode>(children).iterator();
+            return Collections.<XPathNode>unmodifiableList(children).iterator();
         }
         
         @Override
         public Iterator<XPathNode> getAttributes() {
-            return new ArrayList<XPathNode>(attributes).iterator();
+            return Collections.<XPathNode>unmodifiableList(attributes).iterator();
         }
         
         @Override
         public Iterator<XPathNode> getNamespaces() {
-            // Return namespace nodes declared on this element and inherited from ancestors
-            // Build a map to handle redeclarations (closer declarations override)
+            if (cachedNamespaceNodes != null) {
+                return cachedNamespaceNodes.iterator();
+            }
             Map<String, RTFNode> nsMap = new LinkedHashMap<>();
             Set<String> seenPrefixes = new HashSet<>();
             
-            // Start from this element and go up, but don't override closer declarations
             RTFNode current = this;
             while (current != null) {
                 if (current.type == NodeType.ELEMENT) {
                     for (RTFNode ns : current.namespaces) {
-                        String prefix = ns.localName != null ? ns.localName : "";
-                        if (!seenPrefixes.contains(prefix)) {
-                            seenPrefixes.add(prefix);
+                        String nsPrefix = ns.localName != null ? ns.localName : "";
+                        if (seenPrefixes.add(nsPrefix)) {
                             String uri = ns.value;
                             if (uri != null && !uri.isEmpty()) {
-                                nsMap.put(prefix, ns);
+                                nsMap.put(nsPrefix, ns);
                             }
                         }
                     }
@@ -814,37 +815,35 @@ public final class XPathResultTreeFragment implements XPathValue {
                 current = current.parent;
             }
             
-            // Always include the xml namespace
             if (!nsMap.containsKey("xml")) {
                 RTFNode xmlNs = new RTFNode(NodeType.NAMESPACE, null, "xml", null);
                 xmlNs.value = "http://www.w3.org/XML/1998/namespace";
+                xmlNs.parent = this;
                 nsMap.put("xml", xmlNs);
             }
-            return new ArrayList<XPathNode>(nsMap.values()).iterator();
+            cachedNamespaceNodes = Collections.unmodifiableList(
+                    new ArrayList<XPathNode>(nsMap.values()));
+            return cachedNamespaceNodes.iterator();
         }
         
         @Override
         public XPathNode getFollowingSibling() {
-            if (parent == null) {
+            if (parent == null || childIndex < 0) {
                 return null;
             }
-            int idx = parent.children.indexOf(this);
-            if (idx >= 0 && idx < parent.children.size() - 1) {
-                return parent.children.get(idx + 1);
+            int nextIndex = childIndex + 1;
+            if (nextIndex < parent.children.size()) {
+                return parent.children.get(nextIndex);
             }
             return null;
         }
         
         @Override
         public XPathNode getPrecedingSibling() {
-            if (parent == null) {
+            if (parent == null || childIndex <= 0) {
                 return null;
             }
-            int idx = parent.children.indexOf(this);
-            if (idx > 0) {
-                return parent.children.get(idx - 1);
-            }
-            return null;
+            return parent.children.get(childIndex - 1);
         }
         
         @Override public long getDocumentOrder() { return docOrder; }

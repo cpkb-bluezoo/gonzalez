@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez.transform.xpath.type;
 
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
+
 /**
  * XPath 2.0 xs:anyURI atomic value.
  *
@@ -45,7 +47,7 @@ public final class XPathAnyURI implements XPathValue, Comparable<XPathAnyURI> {
      * @param uri the URI string (null is treated as empty string)
      */
     public XPathAnyURI(String uri) {
-        this.uri = uri != null ? uri : "";
+        this.uri = OutputHandlerUtils.effectiveUri(uri);
     }
 
     /**

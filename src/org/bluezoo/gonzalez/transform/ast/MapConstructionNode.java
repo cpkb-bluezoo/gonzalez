@@ -31,6 +31,8 @@ import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -54,6 +56,15 @@ public final class MapConstructionNode extends XSLTInstruction {
         this.content = content;
     }
 
+    /**
+     * Returns the content sequence node (typically xsl:map-entry children).
+     *
+     * @return the content node, or null if empty
+     */
+    public SequenceNode getContent() {
+        return content;
+    }
+
     @Override
     public String getInstructionName() {
         return "map";
@@ -62,6 +73,7 @@ public final class MapConstructionNode extends XSLTInstruction {
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         Map<String, XPathValue> resultEntries = new LinkedHashMap<String, XPathValue>();
+        Map<String, XPathValue> resultTypedKeys = new LinkedHashMap<String, XPathValue>();
         SequenceBuilderOutputHandler collector = new SequenceBuilderOutputHandler();
         if (content != null && content.getChildren() != null) {
             for (XSLTNode child : content.getChildren()) {
@@ -71,12 +83,12 @@ public final class MapConstructionNode extends XSLTInstruction {
         }
         XPathValue collected = collector.getSequence();
         if (collected instanceof XPathMap) {
-            mergeMapEntries(resultEntries, (XPathMap) collected);
+            mergeMapEntries(resultEntries, resultTypedKeys, (XPathMap) collected);
         } else if (collected instanceof XPathSequence) {
             XPathSequence seq = (XPathSequence) collected;
             for (XPathValue item : seq) {
                 if (item instanceof XPathMap) {
-                    mergeMapEntries(resultEntries, (XPathMap) item);
+                    mergeMapEntries(resultEntries, resultTypedKeys, (XPathMap) item);
                 } else {
                     throw new SAXException("XTTE3375: Non-map item in xsl:map content");
                 }
@@ -84,19 +96,53 @@ public final class MapConstructionNode extends XSLTInstruction {
         } else if (collected != null) {
             throw new SAXException("XTTE3375: Non-map item in xsl:map content");
         }
-        XPathMap resultMap = new XPathMap(resultEntries);
+        XPathMap resultMap = new XPathMap(resultEntries, resultTypedKeys);
         output.atomicValue(resultMap);
     }
 
-    private void mergeMapEntries(Map<String, XPathValue> target, XPathMap source)
+    /**
+     * Merges entries from a source map into the target. Duplicate detection
+     * uses XPath key identity: two keys are the same only if they have the
+     * same type and value.
+     */
+    private void mergeMapEntries(Map<String, XPathValue> target,
+            Map<String, XPathValue> targetTypedKeys, XPathMap source)
             throws SAXException {
         for (Map.Entry<String, XPathValue> entry : source.entries()) {
             String key = entry.getKey();
+            XPathValue typedKey = source.getTypedKey(key);
             if (target.containsKey(key)) {
-                throw new SAXException("XTDE3365: Duplicate key '" + key +
-                    "' in xsl:map");
+                XPathValue existingTypedKey = targetTypedKeys.get(key);
+                if (sameKeyType(existingTypedKey, typedKey)) {
+                    throw new SAXException("XTDE3365: Duplicate key '" + key +
+                        "' in xsl:map");
+                }
+                String syntheticKey = key + "\0" + target.size();
+                target.put(syntheticKey, entry.getValue());
+                if (typedKey != null) {
+                    targetTypedKeys.put(syntheticKey, typedKey);
+                }
+            } else {
+                target.put(key, entry.getValue());
+                if (typedKey != null) {
+                    targetTypedKeys.put(key, typedKey);
+                }
             }
-            target.put(key, entry.getValue());
         }
+    }
+
+    /**
+     * Checks if two typed keys have the same XPath type for duplicate detection.
+     */
+    private boolean sameKeyType(XPathValue a, XPathValue b) {
+        if (a == null || b == null) {
+            return true;
+        }
+        boolean aIsString = (a instanceof XPathString) && !(a instanceof XPathUntypedAtomic);
+        boolean bIsString = (b instanceof XPathString) && !(b instanceof XPathUntypedAtomic);
+        if (aIsString && bIsString) {
+            return true;
+        }
+        return a.getClass().equals(b.getClass());
     }
 }

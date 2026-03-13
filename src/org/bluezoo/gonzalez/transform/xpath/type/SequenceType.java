@@ -26,6 +26,7 @@ import java.util.Iterator;
 import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.schema.xsd.XSDSchema;
 import org.bluezoo.gonzalez.schema.xsd.XSDSimpleType;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 
 /**
  * Represents an XPath 2.0 sequence type.
@@ -583,7 +584,7 @@ public class SequenceType {
                 return matchesMapType(value);
 
             case ARRAY:
-                return value instanceof XPathSequence;
+                return matchesArrayType(value);
 
             case FUNCTION:
                 return matchesFunctionType(value);
@@ -681,7 +682,7 @@ public class SequenceType {
                 return matchesMapType(value);
 
             case ARRAY:
-                return value instanceof XPathSequence;
+                return matchesArrayType(value);
 
             case FUNCTION:
                 return matchesFunctionType(value);
@@ -781,7 +782,7 @@ public class SequenceType {
             if (nodeNs == null) {
                 nodeNs = "";
             }
-            String typeNs = namespaceURI != null ? namespaceURI : "";
+            String typeNs = OutputHandlerUtils.effectiveUri(namespaceURI);
             if (!typeNs.equals(nodeNs)) {
                 return false;
             }
@@ -860,7 +861,7 @@ public class SequenceType {
             if (nodeNs == null) {
                 nodeNs = "";
             }
-            String typeNs = namespaceURI != null ? namespaceURI : "";
+            String typeNs = OutputHandlerUtils.effectiveUri(namespaceURI);
             if (!typeNs.equals(nodeNs)) {
                 return false;
             }
@@ -939,7 +940,7 @@ public class SequenceType {
             if (nodeNs == null) {
                 nodeNs = "";
             }
-            String expectedNs = namespaceURI != null ? namespaceURI : "";
+            String expectedNs = OutputHandlerUtils.effectiveUri(namespaceURI);
             
             // First check exact name match
             if (localName.equals(nodeLocalName) && expectedNs.equals(nodeNs)) {
@@ -1041,7 +1042,7 @@ public class SequenceType {
             if (nodeNs == null) {
                 nodeNs = "";
             }
-            String expectedNs = namespaceURI != null ? namespaceURI : "";
+            String expectedNs = OutputHandlerUtils.effectiveUri(namespaceURI);
             if (!expectedNs.equals(nodeNs)) {
                 return false;
             }
@@ -1480,6 +1481,22 @@ public class SequenceType {
         return false;
     }
 
+    private boolean matchesArrayType(XPathValue value) {
+        if (value instanceof XPathArray) {
+            return true;
+        }
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            for (XPathValue item : seq) {
+                if (!(item instanceof XPathArray)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
     private boolean matchesNodeKind(XPathValue value) {
         if (value instanceof XPathResultTreeFragment) {
             if (itemKind == ItemKind.NODE) {
@@ -1903,6 +1920,9 @@ public class SequenceType {
                 }
             }
             return new SequenceType(ItemKind.DOCUMENT_NODE, docElemNs, docElemLocal, null, occ);
+        }
+        if (type.equals("namespace-node()")) {
+            return new SequenceType(ItemKind.NAMESPACE_NODE, null, null, null, occ);
         }
         
         // Parse element() or element(name) or element(name, type) or element(*, type)

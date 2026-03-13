@@ -60,6 +60,7 @@ public final class OutputProperties {
     private Set<String> cdataSectionElements = new HashSet<>();
     private boolean indent = false;
     private String mediaType;
+    private boolean allowDuplicateNames = false;
     private List<String> useCharacterMaps = new ArrayList<>();
 
     /**
@@ -267,6 +268,24 @@ public final class OutputProperties {
     }
 
     /**
+     * Returns whether duplicate names are allowed in JSON serialization.
+     *
+     * @return true if duplicate names are allowed
+     */
+    public boolean isAllowDuplicateNames() {
+        return allowDuplicateNames;
+    }
+
+    /**
+     * Sets whether duplicate names are allowed in JSON serialization.
+     *
+     * @param allow true to allow duplicate names
+     */
+    public void setAllowDuplicateNames(boolean allow) {
+        this.allowDuplicateNames = allow;
+    }
+
+    /**
      * Returns the list of character map names to use during serialization.
      *
      * @return immutable list of character map names
@@ -330,6 +349,7 @@ public final class OutputProperties {
         if (!other.useCharacterMaps.isEmpty()) {
             this.useCharacterMaps.addAll(other.useCharacterMaps);
         }
+        this.allowDuplicateNames = other.allowDuplicateNames;
     }
 
 }

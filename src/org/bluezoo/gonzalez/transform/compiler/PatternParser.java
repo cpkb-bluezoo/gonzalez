@@ -136,6 +136,14 @@ final class PatternParser {
             lexer.advance();
             Pattern right = parseExcept(lexer, patternStr, prepared, version,
                                         preserveSteps);
+            if (!preserveSteps) {
+                Pattern anchored = tryAnchorRelative(patternStr, left, right,
+                                                     false);
+                if (anchored != null) {
+                    left = anchored;
+                    continue;
+                }
+            }
             left = new IntersectPattern(patternStr, left, right);
         }
         return left;
@@ -151,9 +159,64 @@ final class PatternParser {
             lexer.advance();
             Pattern right = parseSingle(lexer, patternStr, prepared, version,
                                         preserveSteps);
+            if (!preserveSteps) {
+                Pattern anchored = tryAnchorRelative(patternStr, left, right,
+                                                     true);
+                if (anchored != null) {
+                    left = anchored;
+                    continue;
+                }
+            }
             left = new ExceptPattern(patternStr, left, right);
         }
         return left;
+    }
+
+    /**
+     * Checks if both arms are axis-qualified single-step patterns that
+     * require anchor-relative evaluation (e.g. descendant::a except child::a).
+     * Returns a ParenStepPathPattern when applicable, null otherwise.
+     */
+    private static Pattern tryAnchorRelative(String patternStr,
+                                              Pattern left, Pattern right,
+                                              boolean isExcept) {
+        PatternStep leftStep = extractSingleAxisStep(left);
+        PatternStep rightStep = extractSingleAxisStep(right);
+        if (leftStep == null || rightStep == null) {
+            return null;
+        }
+        boolean hasAxisDifference =
+            leftStep.axis != rightStep.axis;
+        boolean hasDescendant =
+            leftStep.axis == Step.Axis.DESCENDANT ||
+            leftStep.axis == Step.Axis.DESCENDANT_OR_SELF ||
+            rightStep.axis == Step.Axis.DESCENDANT ||
+            rightStep.axis == Step.Axis.DESCENDANT_OR_SELF;
+        if (!hasAxisDifference && !hasDescendant) {
+            return null;
+        }
+        PatternStep[] emptySteps = new PatternStep[0];
+        return new ParenStepPathPattern(patternStr, emptySteps, emptySteps,
+            leftStep, rightStep, isExcept, Step.Axis.CHILD, false);
+    }
+
+    /**
+     * Extracts a single PatternStep from a pattern if it represents a
+     * single axis-qualified step. Returns null otherwise.
+     */
+    private static PatternStep extractSingleAxisStep(Pattern p) {
+        if (p instanceof PathPattern) {
+            PatternStep[] steps = ((PathPattern) p).getSteps();
+            if (steps.length == 1) {
+                return steps[0];
+            }
+        }
+        if (p instanceof NameTestPattern) {
+            NameTestPattern ntp = (NameTestPattern) p;
+            return new PatternStep(ntp.getNodeTest(), ntp.getAxis(),
+                                   ntp.getPredicateStr());
+        }
+        return null;
     }
 
     // ---- Single pattern (one path/function/variable/etc.) ----
@@ -257,18 +320,18 @@ final class PatternParser {
             if (nameToken == XPathToken.STAR) {
                 lexer.advance(); // consume *
                 return new NameTestPattern(patternStr, null,
-                                           AnyNodeTest.INSTANCE, -0.5);
+                                           NamespaceNodeTest.INSTANCE, -0.5);
             }
             if (nameToken == XPathToken.NCNAME || isXPathKeyword(nameToken)) {
-                String nsName = lexer.value();
+                final String nsName = lexer.value();
                 lexer.advance(); // consume name
                 return new NameTestPattern(patternStr, null,
-                                           new ElementTest(null, nsName, null),
+                                           NamespaceNodeTest.named(nsName),
                                            -0.5);
             }
             // Fallback: treat as wildcard
             return new NameTestPattern(patternStr, null,
-                                       AnyNodeTest.INSTANCE, -0.5);
+                                       NamespaceNodeTest.INSTANCE, -0.5);
         }
 
         // Function patterns: id(), key(), doc(), document(), element-with-id()
@@ -366,7 +429,8 @@ final class PatternParser {
             PatternStep only = steps.get(0);
             double priority = computePriority(only);
             return new NameTestPattern(patternStr, only.predicateStr,
-                                       only.nodeTest, priority);
+                                       only.nodeTest, priority, false,
+                                       only.axis);
         }
 
         PatternStep[] arr = steps.toArray(new PatternStep[0]);
@@ -830,7 +894,7 @@ final class PatternParser {
             lexer.advance();
             lexer.advance(); // (
             lexer.advance(); // )
-            return AnyNodeTest.INSTANCE;
+            return NamespaceNodeTest.INSTANCE;
         }
 
         // URIQualifiedName: Q{uri}local or {uri}local (after prepareForLexer)

@@ -82,6 +82,7 @@ public class VariableNode extends XSLTInstruction implements ExpressionHolder {
     }
     
     @Override public String getInstructionName() { return "variable"; }
+    public String getName() { return localName; }
     public SequenceNode getContent() { return content; }
 
     @Override

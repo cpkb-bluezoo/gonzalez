@@ -117,6 +117,10 @@ public final class LocationPath implements Expr {
 
     @Override
     public XPathValue evaluate(XPathContext context) throws XPathException {
+        if (context.isContextItemUndefined()) {
+            throw new XPathException("XPDY0002: Context item is undefined");
+        }
+        
         // XPath 2.0+: Check for atomic context item with single self-step (".")
         // When the context is an atomic value, "." should return that value directly
         if (!absolute && steps.size() == 1) {
@@ -124,7 +128,6 @@ public final class LocationPath implements Expr {
             if (step.getAxis() == Step.Axis.SELF && 
                 step.getNodeTestType() == Step.NodeTestType.NODE &&
                 !step.hasPredicates()) {
-                // This is a bare "." - check for atomic context item
                 XPathValue contextItem = context.getContextItem();
                 if (contextItem != null && !(contextItem instanceof XPathNode)) {
                     return contextItem;
@@ -133,8 +136,6 @@ public final class LocationPath implements Expr {
         }
         
         // XPTY0020: axis step on non-node context item (XPath 2.0+)
-        // Any axis step requires the context item to be a node.
-        // The self::node() special case for '.' is already handled above.
         if (context.getXsltVersion() >= 2.0) {
             XPathValue ctxItem = context.getContextItem();
             if (ctxItem != null && !(ctxItem instanceof XPathNode) && !ctxItem.isNodeSet()) {
@@ -150,10 +151,6 @@ public final class LocationPath implements Expr {
             // Absolute path: start from root
             XPathNode contextNode = context.getContextNode();
             if (contextNode == null) {
-                // XPDY0002: in function bodies, context item is explicitly undefined
-                if (context.isContextItemUndefined()) {
-                    throw new XPathException("XPDY0002: Context item is undefined");
-                }
                 return new XPathNodeSet(new ArrayList<XPathNode>());
             }
             XPathNode root = contextNode.getRoot();
@@ -166,10 +163,6 @@ public final class LocationPath implements Expr {
             // Relative path: start from context node
             XPathNode contextNode = context.getContextNode();
             if (contextNode == null) {
-                // XPDY0002: in function bodies, context item is explicitly undefined
-                if (context.isContextItemUndefined()) {
-                    throw new XPathException("XPDY0002: Context item is undefined");
-                }
                 return new XPathNodeSet(new ArrayList<XPathNode>());
             }
             currentNodes.add(contextNode);
@@ -448,6 +441,9 @@ public final class LocationPath implements Expr {
                 
             case DOCUMENT_NODE:
                 return node.getNodeType() == NodeType.ROOT;
+            
+            case NAMESPACE_NODE:
+                return node.getNodeType() == NodeType.NAMESPACE;
             
             // XPath 2.0 schema-aware kind tests
             case SCHEMA_ELEMENT:
@@ -735,7 +731,7 @@ public final class LocationPath implements Expr {
                 if (result.getType() == XPathValue.Type.NUMBER) {
                     include = (result.asNumber() == position);
                 } else {
-                    include = result.asBoolean();
+                    include = FilterExpr.effectiveBooleanValue(result);
                 }
                 
                 if (include) {
@@ -770,7 +766,7 @@ public final class LocationPath implements Expr {
                 if (result.getType() == XPathValue.Type.NUMBER) {
                     include = (result.asNumber() == position);
                 } else {
-                    include = result.asBoolean();
+                    include = FilterExpr.effectiveBooleanValue(result);
                 }
 
                 if (include) {

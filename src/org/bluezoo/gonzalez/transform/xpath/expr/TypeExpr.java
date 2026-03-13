@@ -395,27 +395,15 @@ public class TypeExpr implements Expr {
                     if (sourceValue instanceof XPathBoolean) {
                         return new XPathNumber(sourceValue.asBoolean() ? 1.0f : 0.0f, true);
                     }
-                    if ("INF".equals(value)) {
-                        return new XPathNumber(Float.POSITIVE_INFINITY, true);
-                    } else if ("-INF".equals(value)) {
-                        return new XPathNumber(Float.NEGATIVE_INFINITY, true);
-                    } else if ("NaN".equals(value)) {
-                        return new XPathNumber(Float.NaN, true);
-                    }
-                    return new XPathNumber(Float.parseFloat(value.trim()), true);
+                    float fv = XPathNumber.parseXPathFloat(value);
+                    return new XPathNumber(fv, true);
                     
                 case "double":
                     if (sourceValue instanceof XPathBoolean) {
                         return new XPathNumber(sourceValue.asBoolean() ? 1.0d : 0.0d, false, true);
                     }
-                    if ("INF".equals(value)) {
-                        return new XPathNumber(Double.POSITIVE_INFINITY, false, true);
-                    } else if ("-INF".equals(value)) {
-                        return new XPathNumber(Double.NEGATIVE_INFINITY, false, true);
-                    } else if ("NaN".equals(value)) {
-                        return new XPathNumber(Double.NaN, false, true);
-                    }
-                    return new XPathNumber(Double.parseDouble(value.trim()), false, true);
+                    double dv = XPathNumber.parseXPathDouble(value);
+                    return new XPathNumber(dv, false, true);
                     
                 case "dateTime":
                     if (sourceValue instanceof XPathDateTime) {
@@ -627,17 +615,8 @@ public class TypeExpr implements Expr {
                     
                 case "float":
                 case "double": {
-                    String dval = value.trim();
-                    if ("INF".equals(dval)) {
-                        return new XPathNumber(Double.POSITIVE_INFINITY);
-                    }
-                    if ("-INF".equals(dval)) {
-                        return new XPathNumber(Double.NEGATIVE_INFINITY);
-                    }
-                    if ("NaN".equals(dval)) {
-                        return new XPathNumber(Double.NaN);
-                    }
-                    return new XPathNumber(Double.parseDouble(dval));
+                    double dval = XPathNumber.parseXPathDouble(value);
+                    return new XPathNumber(dval);
                 }
                     
                 case "boolean":

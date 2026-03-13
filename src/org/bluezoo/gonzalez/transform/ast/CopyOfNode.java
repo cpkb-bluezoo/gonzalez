@@ -30,10 +30,13 @@ import java.util.Set;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.ValidationMode;
+import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
+import org.bluezoo.gonzalez.transform.compiler.ModeDeclaration;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
@@ -123,6 +126,26 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                 effectiveCopyNamespaces = "yes".equals(copyNsStr) || "true".equals(copyNsStr) || "1".equals(copyNsStr);
             }
             
+            // XTDE3362: in XSLT 3.0, copy-accumulators="yes" requires that
+            // accumulators are applicable to the source document. Without an
+            // xsl:mode declaration for the initial mode, accumulators are not
+            // applicable. When xsl:mode IS declared, the default for
+            // use-accumulators is #all.
+            if (copyAccumulators) {
+                CompiledStylesheet stylesheet = context.getStylesheet();
+                if (stylesheet != null && stylesheet.getVersion() >= 3.0
+                        && !stylesheet.getAccumulators().isEmpty()) {
+                    ModeDeclaration modeDecl = stylesheet.getModeDeclaration(null);
+                    if (modeDecl == null) {
+                        throw new SAXException(
+                            "XTDE3362: copy-accumulators is set to yes"
+                            + " but no accumulators are applicable to"
+                            + " the source document (no xsl:mode"
+                            + " declaration for the initial mode)");
+                    }
+                }
+            }
+
             if (result instanceof XPathResultTreeFragment) {
                 XPathResultTreeFragment rtf = (XPathResultTreeFragment) result;
                 if (output instanceof SequenceBuilderOutputHandler) {
@@ -180,8 +203,9 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                         effectiveCopyNamespaces, 0);
                 }
             } else {
-                // For non-node-sets, output as text
-                output.characters(result.asString());
+                // For atomic values, use atomicValue() for proper
+                // space separation between adjacent values (XSLT 2.0+)
+                output.atomicValue(result);
             }
         } catch (XPathException e) {
             throw new SAXException("Error in xsl:copy-of", e);
@@ -238,10 +262,7 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
             }
             return ns;
         } else {
-            if (needSpace) {
-                output.characters(" ");
-            }
-            output.characters(item.asString());
+            output.atomicValue(item);
             return true;
         }
     }
@@ -425,4 +446,5 @@ public class CopyOfNode extends XSLTInstruction implements ExpressionHolder {
                 break;
         }
     }
+
 }

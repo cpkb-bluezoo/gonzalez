@@ -36,11 +36,18 @@ import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.expr.DynamicPartialItem;
+import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.expr.PartialFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 
@@ -148,10 +155,15 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
                 Iterator<XPathValue> iter = result.sequenceIterator();
                 boolean first = true;
                 while (iter.hasNext()) {
+                    XPathValue item = iter.next();
+                    if (isFunctionItem(item)) {
+                        throw new SAXException("FOTY0013: An attribute value " +
+                            "cannot contain a function item");
+                    }
                     if (!first) {
                         sb.append(sep);
                     }
-                    sb.append(iter.next().asString());
+                    sb.append(item.asString());
                     first = false;
                 }
                 value = sb.toString();
@@ -244,7 +256,7 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
                 }
                 if (needNewPrefix) {
                     prefix = StylesheetCompiler.findOrGeneratePrefix(namespace, namespaceBindings);
-                    qName = prefix + ":" + localName;
+                    qName = OutputHandlerUtils.buildQName(prefix, localName);
                 }
                 output.elementPrefixNamespace(prefix, namespace);
             }
@@ -313,5 +325,14 @@ public class AttributeNode extends XSLTInstruction implements ExpressionHolder {
         } catch (XPathException e) {
             throw new SAXException("Error in xsl:attribute", e);
         }
+    }
+
+    private static boolean isFunctionItem(XPathValue value) {
+        return value instanceof XPathFunctionItem
+            || value instanceof InlineFunctionItem
+            || value instanceof PartialFunctionItem
+            || value instanceof DynamicPartialItem
+            || value instanceof XPathMap
+            || value instanceof XPathArray;
     }
 }

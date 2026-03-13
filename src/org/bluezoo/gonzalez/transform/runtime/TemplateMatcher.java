@@ -191,8 +191,13 @@ public final class TemplateMatcher {
         // Rules are already sorted by precedence/priority
         TemplateRule firstMatch = null;
         int matchCount = 0;
+        NodeType nodeType = node.getNodeType();
         
         for (TemplateRule rule : candidates) {
+            NodeType ruleType = rule.getMatchPattern().getMatchableNodeType();
+            if (ruleType != null && ruleType != nodeType) {
+                continue;
+            }
             if (rule.getMatchPattern().matches(node, context)) {
                 if (firstMatch == null) {
                     firstMatch = rule;
@@ -500,8 +505,13 @@ public final class TemplateMatcher {
         
         // Find the current rule in the sorted list, then return the next match
         boolean foundCurrent = false;
+        NodeType nodeType = node.getNodeType();
         for (TemplateRule rule : candidates) {
             if (foundCurrent) {
+                NodeType ruleType = rule.getMatchPattern().getMatchableNodeType();
+                if (ruleType != null && ruleType != nodeType) {
+                    continue;
+                }
                 if (rule.getMatchPattern().matches(node, context)) {
                     return rule;
                 }
@@ -568,17 +578,16 @@ public final class TemplateMatcher {
         
         int currentPrecedence = currentRule.getImportPrecedence();
         int minPrecedence = currentRule.getMinImportPrecedence();
+        NodeType nodeType = node.getNodeType();
         
-        // Find the highest-precedence template that:
-        // 1. Has LOWER import precedence than the current template
-        // 2. Falls within the current module's import subtree (>= minImportPrecedence)
-        // 3. Matches the node
-        // Since candidates are sorted by precedence (highest first), we scan
-        // until we find one with lower precedence that matches
         for (TemplateRule rule : candidates) {
             int rulePrec = rule.getImportPrecedence();
             if (rulePrec < currentPrecedence
                     && (minPrecedence < 0 || rulePrec >= minPrecedence)) {
+                NodeType ruleType = rule.getMatchPattern().getMatchableNodeType();
+                if (ruleType != null && ruleType != nodeType) {
+                    continue;
+                }
                 if (rule.getMatchPattern().matches(node, context)) {
                     return rule;
                 }

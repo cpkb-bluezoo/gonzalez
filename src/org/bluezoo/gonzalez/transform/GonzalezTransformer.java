@@ -105,6 +105,12 @@ public class GonzalezTransformer extends Transformer {
     /** Registered fn:collection() mappings (URI → list of nodes). */
     private Map<String, List<XPathNode>> collections;
 
+    /** Registered fn:uri-collection() mappings (URI → list of URI strings). */
+    private Map<String, List<String>> collectionUris;
+
+    /** Resource URIs declared available by the test environment. */
+    private List<String> availableResourceUris;
+
     /** Allowed protocols for external DTD access. */
     private String accessExternalDTD = "";
 
@@ -180,10 +186,12 @@ public class GonzalezTransformer extends Transformer {
         GonzalezTransformHandler transformHandler = 
             new GonzalezTransformHandler(stylesheet, parameters, outputHandler, errorListener);
         
+        // Always propagate context item availability
+        transformHandler.setHasInitialContextItem(hasInitialContextItem);
+
         // Set initial template if specified (XSLT 2.0+ feature)
         if (initialTemplate != null) {
             transformHandler.setInitialTemplate(initialTemplate);
-            transformHandler.setHasInitialContextItem(hasInitialContextItem);
             if (initialTemplateParams != null) {
                 transformHandler.setInitialTemplateParams(initialTemplateParams);
             }
@@ -212,11 +220,19 @@ public class GonzalezTransformer extends Transformer {
             transformHandler.setInitialContextSelect(initialContextSelect);
         }
         
-        // Register collections for fn:collection()
+        // Register collections for fn:collection() and fn:uri-collection()
         if (collections != null) {
             for (Map.Entry<String, List<XPathNode>> entry : collections.entrySet()) {
                 transformHandler.setCollection(entry.getKey(), entry.getValue());
             }
+        }
+        if (collectionUris != null) {
+            for (Map.Entry<String, List<String>> entry : collectionUris.entrySet()) {
+                transformHandler.setCollectionUris(entry.getKey(), entry.getValue());
+            }
+        }
+        if (availableResourceUris != null) {
+            transformHandler.setAvailableResourceUris(availableResourceUris);
         }
         
         // Parse input through the transform
@@ -659,6 +675,13 @@ public class GonzalezTransformer extends Transformer {
     }
 
     /**
+     * Enables or disables xsl:assert evaluation (§19.2).
+     */
+    public void setAssertionsEnabled(boolean enabled) {
+        this.stylesheet.setAssertionsEnabled(enabled);
+    }
+
+    /**
      * Adds a parameter to be passed to the initial template.
      *
      * @param nsUri the parameter namespace URI (may be null)
@@ -776,6 +799,30 @@ public class GonzalezTransformer extends Transformer {
             collections = new HashMap<>();
         }
         collections.put(uri, nodes);
+    }
+
+    /**
+     * Registers URI strings for a named collection (fn:uri-collection).
+     *
+     * @param uri the collection URI
+     * @param uris the list of document URIs in the collection
+     */
+    public void setCollectionUris(String uri, List<String> uris) {
+        if (collectionUris == null) {
+            collectionUris = new HashMap<>();
+        }
+        collectionUris.put(uri, uris);
+    }
+
+    /**
+     * Registers resource URIs declared available by the test environment.
+     * These URIs will be reported as available by unparsed-text-available()
+     * without requiring actual network access.
+     *
+     * @param uris the list of available resource URIs
+     */
+    public void setAvailableResourceUris(List<String> uris) {
+        this.availableResourceUris = uris;
     }
 
     /**

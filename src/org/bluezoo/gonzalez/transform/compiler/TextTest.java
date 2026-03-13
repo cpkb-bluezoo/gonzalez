@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.compiler;
 
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 /**
@@ -38,6 +39,11 @@ final class TextTest implements NodeTest {
     @Override
     public boolean matches(XPathNode node) {
         return node.isText();
+    }
+
+    @Override
+    public NodeType getMatchableNodeType() {
+        return NodeType.TEXT;
     }
 
     @Override

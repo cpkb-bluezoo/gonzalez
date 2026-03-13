@@ -397,6 +397,22 @@ public final class ModeDeclaration {
     }
 
     /**
+     * Returns a copy of this mode declaration with streaming disabled.
+     * Used for streaming fallback (XSLT 3.0 §19.10) when a streamable
+     * mode contains non-streamable templates.
+     *
+     * @return a new ModeDeclaration identical to this one but non-streamable
+     */
+    ModeDeclaration withStreamableDisabled() {
+        return new ModeDeclaration(name, false, streamableExplicit,
+            onNoMatch, onNoMatchExplicit,
+            onMultipleMatch, onMultipleMatchExplicit,
+            visibility, visibilityExplicit,
+            useAccumulators, useAccumulatorsExplicit,
+            expandedUseAccumulators, typed, warning);
+    }
+
+    /**
      * Returns the on-no-match behavior.
      *
      * @return the behavior when no template matches

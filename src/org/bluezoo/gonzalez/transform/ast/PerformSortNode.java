@@ -31,6 +31,7 @@ import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
@@ -179,10 +180,10 @@ public class PerformSortNode extends XSLTInstruction implements ExpressionHolder
     private void deepCopyNode(XPathNode node, OutputHandler output) throws SAXException {
         NodeType nodeType = node.getNodeType();
         if (nodeType == NodeType.ELEMENT) {
-            String uri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
+            String uri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
             String localName = node.getLocalName();
             String prefix = node.getPrefix();
-            String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
+            String qName = OutputHandlerUtils.buildQName(prefix, localName);
             
             output.startElement(uri, localName, qName);
             

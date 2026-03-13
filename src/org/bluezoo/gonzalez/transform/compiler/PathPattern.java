@@ -27,6 +27,7 @@ import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -54,6 +55,14 @@ final class PathPattern extends AbstractPattern {
         super(patternStr, predicateStr);
         this.steps = steps;
         this.isAbsolute = isAbsolute;
+    }
+
+    @Override
+    public NodeType getMatchableNodeType() {
+        if (steps.length > 0) {
+            return steps[steps.length - 1].nodeTest.getMatchableNodeType();
+        }
+        return null;
     }
 
     PatternStep[] getSteps() {

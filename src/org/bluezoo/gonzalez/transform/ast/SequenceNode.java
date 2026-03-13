@@ -138,6 +138,13 @@ public final class SequenceNode implements XSLTNode {
         for (XSLTNode child : children) {
             boolean isOnEmptyNode = isOnEmpty(child);
             boolean isOnNonEmptyNode = isOnNonEmpty(child);
+            boolean isFallbackNode = isFallback(child);
+            
+            // xsl:fallback inside a known instruction/LRE is silently ignored
+            // for content tracking (it should only be active in extension contexts)
+            if (isFallbackNode) {
+                continue;
+            }
             
             // Execute into a hybrid handler that:
             // 1. Forwards attributes/namespaces to the real output
@@ -159,7 +166,13 @@ public final class SequenceNode implements XSLTNode {
                 }
             }
             
-            segments.add(new SegmentBuffer(buffer, isOnEmptyNode, isOnNonEmptyNode));
+            boolean isAtomicSelect = false;
+            if (isOnEmptyNode && child instanceof OnEmptyNode) {
+                isAtomicSelect = ((OnEmptyNode) child).hasSelect();
+            } else if (isOnNonEmptyNode && child instanceof OnNonEmptyNode) {
+                isAtomicSelect = ((OnNonEmptyNode) child).hasSelect();
+            }
+            segments.add(new SegmentBuffer(buffer, isOnEmptyNode, isOnNonEmptyNode, isAtomicSelect));
         }
         
         // Phase 2: Replay appropriate buffered segments in order
@@ -179,8 +192,16 @@ public final class SequenceNode implements XSLTNode {
             }
             
             if (shouldOutput && !segment.buffer.isEmpty()) {
+                if (segment.isAtomicSelect && output.isAtomicValuePending()) {
+                    output.characters(" ");
+                }
                 XPathResultTreeFragment rtf = new XPathResultTreeFragment(segment.buffer);
                 rtf.replayToOutput(output);
+                if (segment.isAtomicSelect) {
+                    output.setAtomicValuePending(true);
+                } else if (!segment.isOnEmpty && !segment.isOnNonEmpty) {
+                    output.setAtomicValuePending(false);
+                }
             }
             output.itemBoundary();
         }
@@ -193,11 +214,14 @@ public final class SequenceNode implements XSLTNode {
         final SAXEventBuffer buffer;
         final boolean isOnEmpty;
         final boolean isOnNonEmpty;
+        final boolean isAtomicSelect;
         
-        SegmentBuffer(SAXEventBuffer buffer, boolean isOnEmpty, boolean isOnNonEmpty) {
+        SegmentBuffer(SAXEventBuffer buffer, boolean isOnEmpty, boolean isOnNonEmpty,
+                      boolean isAtomicSelect) {
             this.buffer = buffer;
             this.isOnEmpty = isOnEmpty;
             this.isOnNonEmpty = isOnNonEmpty;
+            this.isAtomicSelect = isAtomicSelect;
         }
     }
     
@@ -369,6 +393,16 @@ public final class SequenceNode implements XSLTNode {
     private static boolean isOnNonEmpty(XSLTNode node) {
         if (node instanceof XSLTInstruction) {
             return "on-non-empty".equals(((XSLTInstruction) node).getInstructionName());
+        }
+        return false;
+    }
+    
+    /**
+     * Checks if a node is an xsl:fallback instruction.
+     */
+    private static boolean isFallback(XSLTNode node) {
+        if (node instanceof FallbackNode) {
+            return true;
         }
         return false;
     }

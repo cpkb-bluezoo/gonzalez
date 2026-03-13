@@ -550,6 +550,9 @@ final class JsonXmlConverter {
         public void endObject() throws JSONException {
             if (isSkipping()) {
                 skipDepth--;
+                if (skipDepth == 1) {
+                    skipDepth = 0;
+                }
                 return;
             }
             try {
@@ -581,6 +584,9 @@ final class JsonXmlConverter {
         public void endArray() throws JSONException {
             if (isSkipping()) {
                 skipDepth--;
+                if (skipDepth == 1) {
+                    skipDepth = 0;
+                }
                 return;
             }
             try {
@@ -614,7 +620,9 @@ final class JsonXmlConverter {
         @Override
         public void stringValue(String value) throws JSONException {
             if (isSkipping()) {
-                skipDepth--;
+                if (skipDepth == 1) {
+                    skipDepth = 0;
+                }
                 return;
             }
             emitSimpleElement("string", value);
@@ -623,7 +631,9 @@ final class JsonXmlConverter {
         @Override
         public void numberValue(Number number) throws JSONException {
             if (isSkipping()) {
-                skipDepth--;
+                if (skipDepth == 1) {
+                    skipDepth = 0;
+                }
                 return;
             }
             String text = formatNumber(number);
@@ -633,7 +643,9 @@ final class JsonXmlConverter {
         @Override
         public void booleanValue(boolean value) throws JSONException {
             if (isSkipping()) {
-                skipDepth--;
+                if (skipDepth == 1) {
+                    skipDepth = 0;
+                }
                 return;
             }
             String text = value ? "true" : "false";
@@ -643,7 +655,9 @@ final class JsonXmlConverter {
         @Override
         public void nullValue() throws JSONException {
             if (isSkipping()) {
-                skipDepth--;
+                if (skipDepth == 1) {
+                    skipDepth = 0;
+                }
                 return;
             }
             try {

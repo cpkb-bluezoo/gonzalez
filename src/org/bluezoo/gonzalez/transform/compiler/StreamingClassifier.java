@@ -41,6 +41,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.Literal;
 import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
 import org.bluezoo.gonzalez.transform.xpath.expr.LookupExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.MapConstructorExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Operator;
 import org.bluezoo.gonzalez.transform.xpath.expr.PathExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.QuantifiedExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.SequenceExpr;
@@ -48,6 +49,7 @@ import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.expr.TypeExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.UnaryExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.VariableReference;
+import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 
 /**
  * Classifies XPath expressions and XSLT match patterns for streaming
@@ -142,7 +144,21 @@ public final class StreamingClassifier {
             return classifySequenceExpr((SequenceExpr) expr);
         }
         if (expr instanceof TypeExpr) {
-            return classify(((TypeExpr) expr).getOperand());
+            TypeExpr te = (TypeExpr) expr;
+            ExpressionStreamability operandClass =
+                classify(te.getOperand());
+            // treat-as with consuming operand and document-node
+            // element constraint requires structural inspection
+            if (te.getKind() == TypeExpr.Kind.TREAT_AS &&
+                operandClass == ExpressionStreamability.CONSUMING) {
+                SequenceType target = te.getTargetType();
+                if (target != null &&
+                    target.getItemKind() == SequenceType.ItemKind.DOCUMENT_NODE &&
+                    target.getLocalName() != null) {
+                    return ExpressionStreamability.FREE_RANGING;
+                }
+            }
+            return operandClass;
         }
         if (expr instanceof LookupExpr) {
             return classify(((LookupExpr) expr).getBase());
@@ -245,6 +261,34 @@ public final class StreamingClassifier {
                 Expr pred = predicates.get(i);
                 ExpressionStreamability predClass = classify(pred);
                 if (forwardAxis && containsLast(pred)) {
+                    return ExpressionStreamability.FREE_RANGING;
+                }
+                // Predicate that accesses context item value on an
+                // element-selecting step: the parser transforms . to
+                // self::node() which classifies as MOTIONLESS, but
+                // comparing the context item's value (e.g.
+                // PAGES[. < 1000]) requires reading each element's
+                // text content while iterating siblings.
+                // Only applies to element-selecting steps (NAME,
+                // QNAME, WILDCARD), not to data()/text() etc. where
+                // the context items are already atomic values.
+                Step.NodeTestType ntt = step.getNodeTestType();
+                boolean elementStep =
+                    ntt == Step.NodeTestType.NAME
+                    || ntt == Step.NodeTestType.QNAME
+                    || ntt == Step.NodeTestType.WILDCARD
+                    || ntt == Step.NodeTestType.NAMESPACE_WILDCARD
+                    || ntt == Step.NodeTestType.ANY_NAMESPACE
+                    || ntt == Step.NodeTestType.ELEMENT;
+                if (forwardAxis && elementStep
+                        && predicateAccessesContextItemValue(pred)) {
+                    return ExpressionStreamability.FREE_RANGING;
+                }
+                if (forwardAxis
+                        && (predClass == ExpressionStreamability.CONSUMING
+                        || predClass
+                            == ExpressionStreamability.FREE_RANGING)
+                        && !consumingFromUserFunction(pred)) {
                     return ExpressionStreamability.FREE_RANGING;
                 }
                 axisClass = combine(axisClass, predClass);
@@ -447,10 +491,39 @@ public final class StreamingClassifier {
                 return ExpressionStreamability.GROUNDED;
             }
 
-            // current-group(), current-grouping-key() are consuming
-            if ("current-group".equals(name) ||
-                "current-grouping-key".equals(name)) {
-                return ExpressionStreamability.CONSUMING;
+            // current-grouping-key() returns an atomic value
+            if ("current-grouping-key".equals(name)) {
+                return ExpressionStreamability.MOTIONLESS;
+            }
+            // current-group() returns accumulated group members which
+            // are buffered/grounded by the for-each-group instruction
+            if ("current-group".equals(name)) {
+                return ExpressionStreamability.GROUNDED;
+            }
+
+            // snapshot() and copy-of() produce grounded copies of
+            // streamed nodes — their result is always motionless
+            // regardless of the argument's posture.
+            if ("snapshot".equals(name) || "copy-of".equals(name)) {
+                return ExpressionStreamability.MOTIONLESS;
+            }
+
+            // reverse(), sort(), innermost(), filter() require grounded
+            // input. If the argument is consuming (streaming) and not
+            // grounded by snapshot()/copy-of(), the call is free-ranging.
+            if ("reverse".equals(name) || "sort".equals(name) ||
+                "innermost".equals(name) || "filter".equals(name)) {
+                List<Expr> seqArgs = fc.getArguments();
+                if (seqArgs != null && seqArgs.size() >= 1) {
+                    Expr arg = seqArgs.get(0);
+                    if (!containsGroundingFunction(arg)) {
+                        ExpressionStreamability argClass = classify(arg);
+                        if (argClass == ExpressionStreamability.CONSUMING ||
+                            argClass == ExpressionStreamability.FREE_RANGING) {
+                            return ExpressionStreamability.FREE_RANGING;
+                        }
+                    }
+                }
             }
         }
 
@@ -530,9 +603,104 @@ public final class StreamingClassifier {
 
     private static ExpressionStreamability classifyMapConstructor(
             MapConstructorExpr mc) {
-        ExpressionStreamability result = classifyList(mc.getKeyExprs());
-        result = combine(result, classifyList(mc.getValueExprs()));
+        List<Expr> keys = mc.getKeyExprs();
+        List<Expr> values = mc.getValueExprs();
+        ExpressionStreamability result = ExpressionStreamability.MOTIONLESS;
+        for (int i = 0; i < keys.size(); i++) {
+            ExpressionStreamability keyClass = classify(keys.get(i));
+            ExpressionStreamability valClass = classify(values.get(i));
+            // Within a single entry, if both key and value are consuming,
+            // they can't share the stream — free-ranging.
+            boolean keyConsuming =
+                keyClass == ExpressionStreamability.CONSUMING
+                || keyClass == ExpressionStreamability.FREE_RANGING;
+            boolean valConsuming =
+                valClass == ExpressionStreamability.CONSUMING
+                || valClass == ExpressionStreamability.FREE_RANGING;
+            if (keyConsuming && valConsuming) {
+                return ExpressionStreamability.FREE_RANGING;
+            }
+            // A consuming value that is a bare node-producing path
+            // means streaming nodes would be stored in the map.
+            if (valConsuming && isBareNodePath(values.get(i))) {
+                return ExpressionStreamability.FREE_RANGING;
+            }
+            result = combine(result, combine(keyClass, valClass));
+        }
         return result;
+    }
+
+    /**
+     * Checks if the expression is a LocationPath that produces nodes
+     * (i.e. not wrapped in an atomizing function and not ending with
+     * a function step like {@code /string()} or {@code /number()}).
+     */
+    static boolean isBareNodePath(Expr expr) {
+        if (!(expr instanceof LocationPath)) {
+            return false;
+        }
+        LocationPath lp = (LocationPath) expr;
+        List<Step> steps = lp.getSteps();
+        if (steps == null || steps.isEmpty()) {
+            return false;
+        }
+        Step lastStep = steps.get(steps.size() - 1);
+        // EXPR steps are function calls like /string(), /number()
+        if (lastStep.getNodeTestType() == Step.NodeTestType.EXPR) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Checks whether an expression tree contains a call to a grounding
+     * function (snapshot, copy-of) at any level. When present, the
+     * expression's data is grounded and further path navigation
+     * does not consume the stream.
+     */
+    private static boolean containsGroundingFunction(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String n = fc.getLocalName();
+            if ("snapshot".equals(n) || "copy-of".equals(n)) {
+                return true;
+            }
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (containsGroundingFunction(args.get(i))) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            if (containsGroundingFunction(pe.getFilter())) {
+                return true;
+            }
+            if (containsGroundingFunction(pe.getPath())) {
+                return true;
+            }
+        }
+        if (expr instanceof FilterExpr) {
+            return containsGroundingFunction(
+                ((FilterExpr) expr).getPrimary());
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            if (steps != null) {
+                for (int i = 0; i < steps.size(); i++) {
+                    Expr stepExpr = steps.get(i).getStepExpr();
+                    if (containsGroundingFunction(stepExpr)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private static ExpressionStreamability classifyList(List<Expr> exprs) {
@@ -578,6 +746,165 @@ public final class StreamingClassifier {
             NameTestPattern ntp) {
         // Simple name test is always consuming (forward axis)
         return ExpressionStreamability.CONSUMING;
+    }
+
+    /**
+     * Checks whether a predicate accesses the context item's value.
+     * The parser transforms "." to self::node() which classifies as
+     * MOTIONLESS, but in a comparison or function argument it causes
+     * implicit atomization that reads the node's content.
+     */
+    private static boolean predicateAccessesContextItemValue(Expr pred) {
+        if (pred == null) {
+            return false;
+        }
+        if (pred instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) pred;
+            Operator op = be.getOperator();
+            // Logical operators: recurse into both sides
+            if (op == Operator.AND || op == Operator.OR) {
+                return predicateAccessesContextItemValue(be.getLeft())
+                    || predicateAccessesContextItemValue(be.getRight());
+            }
+            // Comparison operators: check if either side is self/context
+            return exprIsSelfOrContextItem(be.getLeft())
+                || exprIsSelfOrContextItem(be.getRight());
+        }
+        if (pred instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) pred;
+            String prefix = fc.getPrefix();
+            // Only built-in functions (no prefix) — user-defined
+            // functions have their own streaming semantics
+            if (prefix == null || prefix.length() == 0) {
+                List<Expr> args = fc.getArguments();
+                for (int i = 0; i < args.size(); i++) {
+                    if (exprIsSelfOrContextItem(args.get(i))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether an expression is the context item ("." or
+     * self::node()), which the parser may represent either way.
+     */
+    private static boolean exprIsSelfOrContextItem(Expr expr) {
+        if (expr instanceof ContextItemExpr) {
+            return true;
+        }
+        if (expr instanceof LocationPath) {
+            LocationPath lp = (LocationPath) expr;
+            List<Step> steps = lp.getSteps();
+            if (steps != null && steps.size() == 1) {
+                Step step = steps.get(0);
+                if (step.getAxis() == Step.Axis.SELF) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether the consuming nature of an expression originates
+     * from a user-defined (namespaced) function call. This prevents
+     * escalating predicates to FREE_RANGING when the consuming content
+     * flows through a function with declared streaming behavior.
+     */
+    private static boolean consumingFromUserFunction(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String prefix = fc.getPrefix();
+            if (prefix != null && prefix.length() > 0) {
+                return true;
+            }
+            // Built-in function: check whether any consuming argument
+            // ultimately derives from a user-defined function
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                ExpressionStreamability argClass =
+                    classify(args.get(i));
+                boolean argConsuming =
+                    argClass == ExpressionStreamability.CONSUMING
+                    || argClass
+                        == ExpressionStreamability.FREE_RANGING;
+                if (argConsuming) {
+                    if (consumingFromUserFunction(args.get(i))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        if (expr instanceof FilterExpr) {
+            return consumingFromUserFunction(
+                ((FilterExpr) expr).getPrimary());
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            ExpressionStreamability left = classify(be.getLeft());
+            ExpressionStreamability right = classify(be.getRight());
+            boolean leftConsuming =
+                left == ExpressionStreamability.CONSUMING
+                || left == ExpressionStreamability.FREE_RANGING;
+            boolean rightConsuming =
+                right == ExpressionStreamability.CONSUMING
+                || right == ExpressionStreamability.FREE_RANGING;
+            if (leftConsuming && !rightConsuming) {
+                return consumingFromUserFunction(be.getLeft());
+            }
+            if (rightConsuming && !leftConsuming) {
+                return consumingFromUserFunction(be.getRight());
+            }
+            if (leftConsuming && rightConsuming) {
+                return consumingFromUserFunction(be.getLeft())
+                    && consumingFromUserFunction(be.getRight());
+            }
+            return false;
+        }
+        if (expr instanceof PathExpr) {
+            PathExpr pe = (PathExpr) expr;
+            Expr filter = pe.getFilter();
+            // If the filter is (or wraps) a user-defined function,
+            // the path navigates from the function result, not the
+            // streaming context
+            if (exprIsOrContainsUserFunction(filter)) {
+                return true;
+            }
+            ExpressionStreamability filterClass = classify(filter);
+            if (filterClass == ExpressionStreamability.CONSUMING
+                    || filterClass
+                        == ExpressionStreamability.FREE_RANGING) {
+                return consumingFromUserFunction(filter);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Checks whether an expression is or directly contains a user-defined
+     * (namespaced) function call, unwrapping FilterExpr layers.
+     */
+    private static boolean exprIsOrContainsUserFunction(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String prefix = fc.getPrefix();
+            return prefix != null && prefix.length() > 0;
+        }
+        if (expr instanceof FilterExpr) {
+            return exprIsOrContainsUserFunction(
+                ((FilterExpr) expr).getPrimary());
+        }
+        return false;
     }
 
     // ---- Combine utility ----
@@ -795,6 +1122,73 @@ public final class StreamingClassifier {
             return 1;
         }
         return 0;
+    }
+
+    /**
+     * Checks whether an expression contains a non-forkable binary operator
+     * (arithmetic, comparison, string-concat) with multiple consuming
+     * operands. Set operators (union, intersect, except) are excluded
+     * because they support streaming via forking.
+     *
+     * @param xpathExpr the compiled expression (may be null)
+     * @return true if the expression is non-streamable due to multi-consuming
+     */
+    public static boolean hasNonForkableMultiConsuming(XPathExpression xpathExpr) {
+        if (xpathExpr == null) {
+            return false;
+        }
+        return hasNonForkableMultiConsuming(xpathExpr.getCompiledExpr());
+    }
+
+    private static boolean hasNonForkableMultiConsuming(Expr expr) {
+        if (expr == null) {
+            return false;
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            Operator op = be.getOperator();
+            boolean forkable = op.isSetOperator()
+                || op == Operator.SIMPLE_MAP || op == Operator.ARROW;
+            if (!forkable) {
+                ExpressionStreamability left = classify(be.getLeft());
+                ExpressionStreamability right = classify(be.getRight());
+                if (left.ordinal() >= ExpressionStreamability.CONSUMING.ordinal()
+                        && right.ordinal() >= ExpressionStreamability.CONSUMING.ordinal()) {
+                    return true;
+                }
+            }
+            if (hasNonForkableMultiConsuming(be.getLeft())) {
+                return true;
+            }
+            if (hasNonForkableMultiConsuming(be.getRight())) {
+                return true;
+            }
+        }
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (hasNonForkableMultiConsuming(args.get(i))) {
+                    return true;
+                }
+            }
+        }
+        if (expr instanceof PathExpr) {
+            if (hasNonForkableMultiConsuming(((PathExpr) expr).getFilter())) {
+                return true;
+            }
+        }
+        if (expr instanceof FilterExpr) {
+            if (hasNonForkableMultiConsuming(((FilterExpr) expr).getPrimary())) {
+                return true;
+            }
+        }
+        if (expr instanceof UnaryExpr) {
+            if (hasNonForkableMultiConsuming(((UnaryExpr) expr).getOperand())) {
+                return true;
+            }
+        }
+        return false;
     }
 
 }

@@ -119,6 +119,28 @@ public class Collation {
     }
 
     /**
+     * Creates a locale-based collation for the given language tag.
+     * Used when {@code lang} is specified on {@code xsl:sort} or
+     * {@code xsl:merge-key} without an explicit collation URI.
+     *
+     * @param lang a BCP 47 language tag (e.g. "sv", "de")
+     * @return a collation using the locale's default collation rules
+     */
+    public static Collation forLang(String lang) {
+        String key = "lang:" + lang;
+        Collation cached = cache.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        Locale locale = Locale.forLanguageTag(lang);
+        Collator collator = Collator.getInstance(locale);
+        collator.setStrength(Collator.TERTIARY);
+        Collation collation = new Collation(CODEPOINT_URI, new CollatorComparator(collator));
+        cache.put(key, collation);
+        return collation;
+    }
+
+    /**
      * Creates a collation from a URI.
      */
     private static Collation createCollation(String uri) throws XPathException {

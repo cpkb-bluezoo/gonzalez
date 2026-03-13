@@ -22,6 +22,8 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 /**
@@ -35,18 +37,28 @@ final class NameTestPattern extends AbstractPattern {
     private final NodeTest nodeTest;
     private final double priority;
     private final boolean requiresDocumentRoot;
+    private final Step.Axis axis;
 
     NameTestPattern(String patternStr, String predicateStr, NodeTest nodeTest,
                     double priority) {
-        this(patternStr, predicateStr, nodeTest, priority, false);
+        this(patternStr, predicateStr, nodeTest, priority, false,
+             Step.Axis.CHILD);
     }
 
     NameTestPattern(String patternStr, String predicateStr, NodeTest nodeTest,
                     double priority, boolean requiresDocumentRoot) {
+        this(patternStr, predicateStr, nodeTest, priority,
+             requiresDocumentRoot, Step.Axis.CHILD);
+    }
+
+    NameTestPattern(String patternStr, String predicateStr, NodeTest nodeTest,
+                    double priority, boolean requiresDocumentRoot,
+                    Step.Axis axis) {
         super(patternStr, predicateStr);
         this.nodeTest = nodeTest;
         this.priority = priority;
         this.requiresDocumentRoot = requiresDocumentRoot;
+        this.axis = axis;
     }
 
     @Override
@@ -70,7 +82,16 @@ final class NameTestPattern extends AbstractPattern {
         return priority;
     }
 
+    @Override
+    public NodeType getMatchableNodeType() {
+        return nodeTest.getMatchableNodeType();
+    }
+
     NodeTest getNodeTest() {
         return nodeTest;
+    }
+
+    Step.Axis getAxis() {
+        return axis;
     }
 }

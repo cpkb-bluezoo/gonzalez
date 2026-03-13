@@ -54,6 +54,7 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathTypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.expr.InlineFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.expr.PartialFunctionItem;
@@ -887,6 +888,12 @@ public final class StringFunctions {
             List<Integer> codepoints = toIntList(args.get(0));
             StringBuilder sb = new StringBuilder();
             for (int cp : codepoints) {
+                if (cp < 0 || cp > 0x10FFFF ||
+                    (cp >= 0xD800 && cp <= 0xDFFF)) {
+                    throw new XPathException("FOCH0001: Invalid XML " +
+                        "character: codepoint " + cp +
+                        " (0x" + Integer.toHexString(cp) + ")");
+                }
                 sb.appendCodePoint(cp);
             }
             return XPathString.of(sb.toString());
@@ -1256,11 +1263,12 @@ public final class StringFunctions {
             
             if (nodeType == NodeType.ELEMENT) {
                 String uri = node.getNamespaceURI();
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
                 String local = node.getLocalName();
                 String prefix = node.getPrefix();
                 String qName = (prefix != null && !prefix.isEmpty()) ? prefix + ":" + local : local;
                 
-                output.startElement(uri != null ? uri : "", local, qName);
+                output.startElement(effectiveUri, local, qName);
                 
                 // Serialize namespace declarations first
                 Iterator<XPathNode> nsIter = node.getNamespaces();
@@ -1282,9 +1290,8 @@ public final class StringFunctions {
                         String attrLocal = attr.getLocalName();
                         String attrQName = (attrPrefix != null && !attrPrefix.isEmpty()) ? 
                             attrPrefix + ":" + attrLocal : attrLocal;
-                        output.attribute(
-                            attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "",
-                            attrLocal, attrQName, attr.getStringValue());
+                        String attrUri = OutputHandlerUtils.effectiveUri(attr.getNamespaceURI());
+                        output.attribute(attrUri, attrLocal, attrQName, attr.getStringValue());
                     }
                 }
                 
@@ -1296,7 +1303,7 @@ public final class StringFunctions {
                     }
                 }
                 
-                output.endElement(uri != null ? uri : "", local, qName);
+                output.endElement(effectiveUri, local, qName);
             } else if (nodeType == NodeType.TEXT) {
                 String text = node.getStringValue();
                 if (text != null) {

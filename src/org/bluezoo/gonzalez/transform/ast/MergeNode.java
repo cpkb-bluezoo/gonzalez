@@ -24,10 +24,12 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
+import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.DocumentLoader;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.Collation;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
@@ -43,10 +45,12 @@ import org.xml.sax.SAXException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * XSLT 3.0 xsl:merge instruction.
@@ -84,16 +88,20 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
 
     private final List<MergeSource> sources;
     private final XSLTNode action;
+    private final String baseUri;
 
     /**
      * Creates a new merge instruction.
      *
      * @param sources the merge sources
      * @param action the merge action to execute for each group
+     * @param baseUri the effective base URI for URI resolution (from xml:base)
      */
-    public MergeNode(List<MergeSource> sources, XSLTNode action) {
+    public MergeNode(List<MergeSource> sources, XSLTNode action,
+                     String baseUri) {
         this.sources = sources;
         this.action = action;
+        this.baseUri = baseUri;
     }
 
     @Override
@@ -255,7 +263,10 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
                 }
 
                 if (groupContext instanceof BasicTransformContext) {
-                    ((BasicTransformContext) groupContext).setInsideMergeAction(true);
+                    BasicTransformContext btc =
+                        (BasicTransformContext) groupContext;
+                    btc.setInsideMergeAction(true);
+                    btc.setContextItemUndefined(false);
                 }
                 action.execute(groupContext, output);
             }
@@ -379,26 +390,70 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
             preserveSpace = stylesheet.getPreserveSpaceElements();
         }
 
-        String baseUri = context.getStaticBaseURI();
+        String resolvedBase = this.baseUri != null ? this.baseUri : context.getStaticBaseURI();
+
+        Set<String> applicableAccums = parseUseAccumulators(source.useAccumulators);
+        AccumulatorManager accMgr = null;
+        if (applicableAccums != null && context instanceof BasicTransformContext) {
+            accMgr = ((BasicTransformContext) context).getAccumulatorManager();
+        }
 
         for (Object uriVal : uriValues) {
             String uri = itemToString(uriVal);
-            XPathNode docNode = DocumentLoader.loadDocument(uri, baseUri, stripSpace, preserveSpace);
+            XPathNode docNode = DocumentLoader.loadDocument(uri, resolvedBase, stripSpace, preserveSpace);
             if (docNode == null) {
                 throw new SAXException("FODC0002: Cannot load document at " + uri);
             }
 
-            TransformContext docCtx;
-            if (context instanceof BasicTransformContext) {
-                docCtx = ((BasicTransformContext) context).withContextNode(docNode);
-            } else {
-                docCtx = context.withContextNode(docNode);
+            if (accMgr != null) {
+                accMgr.setApplicableAccumulators(applicableAccums);
             }
+            try {
+                if (accMgr != null) {
+                    accMgr.preTraverseDocument(docNode);
+                }
+                TransformContext docCtx;
+                if (context instanceof BasicTransformContext) {
+                    docCtx = ((BasicTransformContext) context).withContextNode(docNode);
+                } else {
+                    docCtx = context.withContextNode(docNode);
+                }
 
-            if (source.select != null) {
-                collectFromSelect(source, docCtx, items, specs);
+                if (source.select != null) {
+                    collectFromSelect(source, docCtx, items, specs);
+                }
+            } finally {
+                if (accMgr != null) {
+                    accMgr.setApplicableAccumulators(null);
+                }
             }
         }
+    }
+
+    /**
+     * Parses the use-accumulators attribute into a set of accumulator names.
+     */
+    private Set<String> parseUseAccumulators(String useAccumulators) {
+        if (useAccumulators == null || useAccumulators.isEmpty()) {
+            return null;
+        }
+        String trimmed = useAccumulators.trim();
+        if (trimmed.isEmpty() || "#all".equals(trimmed)) {
+            return null;
+        }
+        Set<String> names = new HashSet<String>();
+        int start = 0;
+        int len = trimmed.length();
+        for (int i = 0; i <= len; i++) {
+            if (i == len || trimmed.charAt(i) == ' ' || trimmed.charAt(i) == '\t'
+                    || trimmed.charAt(i) == '\n' || trimmed.charAt(i) == '\r') {
+                if (i > start) {
+                    names.add(trimmed.substring(start, i));
+                }
+                start = i + 1;
+            }
+        }
+        return names.isEmpty() ? null : names;
     }
 
     /**
@@ -615,10 +670,12 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
         public final boolean sortBeforeMerge;
         public final boolean streamable;
         public final List<MergeKey> keys;
+        public final String useAccumulators;
 
         public MergeSource(String name, XPathExpression select,
                 XPathExpression forEachItem, XPathExpression forEachSource,
-                boolean sortBeforeMerge, boolean streamable, List<MergeKey> keys) {
+                boolean sortBeforeMerge, boolean streamable, List<MergeKey> keys,
+                String useAccumulators) {
             this.name = name;
             this.select = select;
             this.forEachItem = forEachItem;
@@ -626,6 +683,7 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
             this.sortBeforeMerge = sortBeforeMerge;
             this.streamable = streamable;
             this.keys = keys != null ? keys : Collections.emptyList();
+            this.useAccumulators = useAccumulators;
         }
     }
 
@@ -704,13 +762,21 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
         final String dataType;
         final String collation;
         final String lang;
+        final Collation resolvedCollation;
 
-        ResolvedKeySpec(String order, String dataType, String collation, String lang) {
+        ResolvedKeySpec(String order, String dataType, String collation,
+                        String lang) throws XPathException {
             this.order = order != null ? order : "ascending";
             this.dataType = dataType != null ? dataType : "text";
             this.collation = collation != null ? collation
-                : "http://www.w3.org/2005/xpath-functions/collation/codepoint";
+                : Collation.CODEPOINT_URI;
             this.lang = lang != null ? lang : "";
+            if (!this.lang.isEmpty()
+                    && Collation.CODEPOINT_URI.equals(this.collation)) {
+                this.resolvedCollation = Collation.forLang(this.lang);
+            } else {
+                this.resolvedCollation = Collation.forUri(this.collation);
+            }
         }
     }
 
@@ -776,7 +842,7 @@ public final class MergeNode implements XSLTNode, ExpressionHolder {
                     if (aRaw != null && bRaw != null && isNumericType(aRaw) && isNumericType(bRaw)) {
                         cmp = compareNumeric(aKey, bKey);
                     } else {
-                        cmp = aKey.compareTo(bKey);
+                        cmp = spec.resolvedCollation.compare(aKey, bKey);
                     }
                 }
 

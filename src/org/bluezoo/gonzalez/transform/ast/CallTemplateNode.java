@@ -327,15 +327,9 @@ public class CallTemplateNode extends XSLTInstruction {
             case "double":
             case "float":
             case "decimal":
-                if ("INF".equals(text)) {
-                    return new XPathNumber(Double.POSITIVE_INFINITY);
-                } else if ("-INF".equals(text)) {
-                    return new XPathNumber(Double.NEGATIVE_INFINITY);
-                } else if ("NaN".equals(text)) {
-                    return new XPathNumber(Double.NaN);
-                }
                 try {
-                    return new XPathNumber(Double.parseDouble(text));
+                    double parsed = XPathNumber.parseXPathDouble(text);
+                    return new XPathNumber(parsed);
                 } catch (NumberFormatException e) {
                     return null;
                 }

@@ -42,6 +42,11 @@ final class CommentTest implements NodeTest {
     }
 
     @Override
+    public NodeType getMatchableNodeType() {
+        return NodeType.COMMENT;
+    }
+
+    @Override
     public String toString() {
         return "comment()";
     }

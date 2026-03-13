@@ -1947,12 +1947,18 @@ public final class XPathParser {
         // Check for XPath 2.0 kind tests as steps: element(), attribute(), document-node()
         // When these appear without an explicit axis, use appropriate default axis:
         // - attribute() uses ATTRIBUTE axis
+        // - namespace-node() uses NAMESPACE axis
         // - element(), document-node() use CHILD axis
         if ((lexer.current() == XPathToken.ELEMENT || lexer.current() == XPathToken.ATTRIBUTE ||
              lexer.current() == XPathToken.DOCUMENT_NODE || lexer.current() == XPathToken.NAMESPACE_NODE) && lexer.peek() == XPathToken.LPAREN) {
-            // attribute() kind test uses attribute axis by default
-            Step.Axis defaultAxis = (lexer.current() == XPathToken.ATTRIBUTE) 
-                ? Step.Axis.ATTRIBUTE : Step.Axis.CHILD;
+            Step.Axis defaultAxis;
+            if (lexer.current() == XPathToken.ATTRIBUTE) {
+                defaultAxis = Step.Axis.ATTRIBUTE;
+            } else if (lexer.current() == XPathToken.NAMESPACE_NODE) {
+                defaultAxis = Step.Axis.NAMESPACE;
+            } else {
+                defaultAxis = Step.Axis.CHILD;
+            }
             Step step = parseNodeTest(defaultAxis);
             return parseStepPredicates(step);
         }

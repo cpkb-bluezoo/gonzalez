@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.xpath.function;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.type.*;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 
 import java.util.ArrayList;
 import java.util.Iterator;

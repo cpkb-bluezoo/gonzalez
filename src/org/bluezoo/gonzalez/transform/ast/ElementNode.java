@@ -31,6 +31,7 @@ import org.bluezoo.gonzalez.transform.ValidationMode;
 import org.bluezoo.gonzalez.transform.compiler.AttributeSet;
 import org.bluezoo.gonzalez.transform.compiler.AttributeValueTemplate;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.RuntimeSchemaValidator;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -169,7 +170,7 @@ public class ElementNode extends XSLTInstruction {
                 prefix = null;
             }
             
-            String qName = prefix != null ? prefix + ":" + localName : localName;
+            String qName = OutputHandlerUtils.buildQName(prefix, localName);
             output.startElement(namespace, localName, qName);
             
             // Determine effective validation mode

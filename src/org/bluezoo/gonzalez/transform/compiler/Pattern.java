@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -74,6 +75,17 @@ public interface Pattern {
      */
     default boolean canMatchAtomicValues() {
         return false;  // Default: patterns only match nodes
+    }
+
+    /**
+     * Returns the single node type this pattern can match, or null if it can
+     * match multiple node types. Used by template matching to skip patterns
+     * that cannot possibly match a given node.
+     *
+     * @return the matchable node type, or null for any/unknown
+     */
+    default NodeType getMatchableNodeType() {
+        return null;
     }
 
     /**

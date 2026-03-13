@@ -34,6 +34,7 @@ import org.bluezoo.gonzalez.transform.compiler.UserFunction;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.*;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -42,6 +43,8 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.SchemaContext;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathUntypedAtomic;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
@@ -110,6 +113,12 @@ public class GonzalezTransformHandler extends DefaultHandler
     
     /** Registered fn:collection() mappings (URI → list of nodes). */
     private Map<String, List<XPathNode>> collections;
+
+    /** Registered fn:uri-collection() mappings (URI → list of URI strings). */
+    private Map<String, List<String>> collectionUris;
+
+    /** Resource URIs declared available by the test environment. */
+    private List<String> availableResourceUris;
     
     /** PSVIProvider for accessing schema type information (DTD/XSD types). */
     private PSVIProvider psviProvider;
@@ -242,6 +251,30 @@ public class GonzalezTransformHandler extends DefaultHandler
             collections = new HashMap<>();
         }
         collections.put(uri, nodes);
+    }
+
+    /**
+     * Registers URI strings for a named collection (fn:uri-collection).
+     *
+     * @param uri the collection URI
+     * @param uris the list of document URIs in the collection
+     */
+    public void setCollectionUris(String uri, List<String> uris) {
+        if (collectionUris == null) {
+            collectionUris = new HashMap<>();
+        }
+        collectionUris.put(uri, uris);
+    }
+
+    /**
+     * Registers resource URIs declared available by the test environment.
+     * These URIs will be reported as available by unparsed-text-available()
+     * without requiring actual network access.
+     *
+     * @param uris the list of available resource URIs
+     */
+    public void setAvailableResourceUris(List<String> uris) {
+        this.availableResourceUris = uris;
     }
 
     /**
@@ -583,10 +616,21 @@ public class GonzalezTransformHandler extends DefaultHandler
         BasicTransformContext context = new BasicTransformContext(
             stylesheet, contextNode, matcher, output, errorListener);
         
-        // Register collections for fn:collection()
+        // Register collections for fn:collection() and fn:uri-collection()
         if (collections != null) {
             for (Map.Entry<String, List<XPathNode>> entry : collections.entrySet()) {
                 context.setCollection(entry.getKey(), entry.getValue());
+            }
+        }
+        if (collectionUris != null) {
+            for (Map.Entry<String, List<String>> entry : collectionUris.entrySet()) {
+                context.setCollectionUris(entry.getKey(), entry.getValue());
+            }
+        }
+
+        if (availableResourceUris != null) {
+            for (String resUri : availableResourceUris) {
+                context.addAvailableResourceUri(resUri);
             }
         }
         
@@ -596,6 +640,33 @@ public class GonzalezTransformHandler extends DefaultHandler
         if (!stylesheet.getAccumulators().isEmpty()) {
             accMgr = new AccumulatorManager(stylesheet, context);
             context.setAccumulatorManager(accMgr);
+        }
+        
+        // XSLT 3.0 xsl:global-context-item enforcement
+        String globalContextUse = stylesheet.getGlobalContextItemUse();
+        if ("required".equals(globalContextUse) && !hasInitialContextItem) {
+            throw new SAXException("XTDE3086: A global context item is required "
+                + "(xsl:global-context-item use=\"required\") but none was supplied");
+        }
+        if ("absent".equals(globalContextUse)) {
+            context.setContextItemUndefined(true);
+        }
+
+        // XSLT 3.0 §9.5: when using initial-template invocation with no
+        // source document, the context item is absent for global variables.
+        if (initialTemplate != null && !hasInitialContextItem) {
+            context.setContextItemUndefined(true);
+        }
+        if (initialTemplate == null && !hasInitialContextItem) {
+            TemplateRule xslInit =
+                stylesheet.getNamedTemplate("xsl:initial-template");
+            if (xslInit == null) {
+                xslInit = stylesheet.getNamedTemplate(
+                    "{http://www.w3.org/1999/XSL/Transform}initial-template");
+            }
+            if (xslInit != null) {
+                context.setContextItemUndefined(true);
+            }
         }
         
         // Initialize global variables and parameters
@@ -623,11 +694,21 @@ public class GonzalezTransformHandler extends DefaultHandler
                 "' was specified but no initial match selection was supplied");
         }
 
-        // XSLT 3.0: if no initial mode specified, use the stylesheet's default-mode
-        if (initialMode == null) {
-            String stylesheetDefaultMode = stylesheet.getDefaultMode();
-            if (stylesheetDefaultMode != null) {
-                initialMode = stylesheetDefaultMode;
+        // XSLT 3.0: if no initial mode specified and not invoking by named template,
+        // use the stylesheet's default-mode for modal processing.
+        // Skip when the stylesheet has xsl:initial-template, since named template
+        // invocation does not use the initial mode.
+        if (initialMode == null && initialTemplate == null
+                && initialFunctionLocalName == null) {
+            boolean hasXslInitialTemplate =
+                stylesheet.getNamedTemplate("xsl:initial-template") != null
+                || stylesheet.getNamedTemplate(
+                    "{http://www.w3.org/1999/XSL/Transform}initial-template") != null;
+            if (!hasXslInitialTemplate) {
+                String stylesheetDefaultMode = stylesheet.getDefaultMode();
+                if (stylesheetDefaultMode != null) {
+                    initialMode = stylesheetDefaultMode;
+                }
             }
         }
         
@@ -774,9 +855,12 @@ public class GonzalezTransformHandler extends DefaultHandler
                 }
                 
                 if (xslInitialTemplate != null) {
-                    // xsl:initial-template exists - invoke it with document root as context
                     TransformContext templateContext = context.pushVariableScope();
-                    // If the template also has a match pattern, invoke as if matched
+                    if (!hasInitialContextItem) {
+                        templateContext = templateContext.withContextNode(null);
+                        ((BasicTransformContext) templateContext)
+                            .setContextItemUndefined(true);
+                    }
                     if (xslInitialTemplate.getMatchPattern() != null) {
                         templateContext = templateContext.withCurrentTemplateRule(xslInitialTemplate);
                     }
@@ -1074,10 +1158,15 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Set transformation parameters
         for (Map.Entry<String, Object> entry : parameters.entrySet()) {
             XPathValue value;
-            if (entry.getValue() instanceof XPathValue) {
-                value = (XPathValue) entry.getValue();
+            Object raw = entry.getValue();
+            if (raw instanceof XPathValue) {
+                value = (XPathValue) raw;
+            } else if (raw instanceof Number) {
+                value = new XPathNumber(((Number) raw).doubleValue());
+            } else if (raw instanceof Boolean) {
+                value = XPathBoolean.of(((Boolean) raw).booleanValue());
             } else {
-                value = XPathString.of(String.valueOf(entry.getValue()));
+                value = XPathString.of(String.valueOf(raw));
             }
             context.setVariable(entry.getKey(), value);
         }
@@ -1529,7 +1618,6 @@ public class GonzalezTransformHandler extends DefaultHandler
      */
     private void applyTemplates(XPathNode node, String mode, 
             BasicTransformContext context, OutputHandler output) throws SAXException {
-        
         // Fire pre-descent accumulator rules
         AccumulatorManager mgr = context.getAccumulatorManager();
         if (mgr != null) {
@@ -1682,6 +1770,19 @@ public class GonzalezTransformHandler extends DefaultHandler
     }
 
     private void outputSingleItem(XPathValue item, OutputHandler output) throws SAXException {
+        if (output instanceof SequenceBuilderOutputHandler) {
+            SequenceBuilderOutputHandler seqBuilder = (SequenceBuilderOutputHandler) output;
+            if (!seqBuilder.isInsideElement()) {
+                if (item instanceof XPathNodeSet) {
+                    for (XPathNode node : ((XPathNodeSet) item).getNodes()) {
+                        seqBuilder.addItem(new XPathNodeSet(Collections.singletonList(node)));
+                    }
+                } else {
+                    seqBuilder.addItem(item);
+                }
+                return;
+            }
+        }
         if (item instanceof XPathResultTreeFragment) {
             ((XPathResultTreeFragment) item).replayToOutput(output);
         } else if (item instanceof XPathNodeSet) {
@@ -1701,8 +1802,7 @@ public class GonzalezTransformHandler extends DefaultHandler
                 String uri = node.getNamespaceURI();
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
-                String qName = (prefix != null && !prefix.isEmpty())
-                    ? prefix + ":" + localName : localName;
+                String qName = OutputHandlerUtils.buildQName(prefix, localName);
                 if (uri == null) {
                     uri = "";
                 }
@@ -1791,12 +1891,12 @@ public class GonzalezTransformHandler extends DefaultHandler
                     String nsUri = node.getNamespaceURI();
                     String localName = node.getLocalName();
                     String prefix = node.getPrefix();
-                    String qName = (prefix != null && !prefix.isEmpty()) 
-                        ? prefix + ":" + localName : localName;
-                    output.startElement(nsUri != null ? nsUri : "", localName, qName);
+                    String qName = OutputHandlerUtils.buildQName(prefix, localName);
+                    String effectiveNsUri = OutputHandlerUtils.effectiveUri(nsUri);
+                    output.startElement(effectiveNsUri, localName, qName);
                     applyTemplatesToAttributes(node, context.getCurrentMode(), context, output);
                     applyTemplatesToChildren(node, context.getCurrentMode(), context, output);
-                    output.endElement(nsUri != null ? nsUri : "", localName, qName);
+                    output.endElement(effectiveNsUri, localName, qName);
                 } else if (node.isText()) {
                     String txt = node.getStringValue();
                     if (txt != null) {
@@ -1808,9 +1908,9 @@ public class GonzalezTransformHandler extends DefaultHandler
                     String aUri = node.getNamespaceURI();
                     String aLocal = node.getLocalName();
                     String aPrefix = node.getPrefix();
-                    String aQName = (aPrefix != null && !aPrefix.isEmpty())
-                        ? aPrefix + ":" + aLocal : aLocal;
-                    output.attribute(aUri != null ? aUri : "", aLocal, aQName, node.getStringValue());
+                    String aQName = OutputHandlerUtils.buildQName(aPrefix, aLocal);
+                    String aEffectiveUri = OutputHandlerUtils.effectiveUri(aUri);
+                    output.attribute(aEffectiveUri, aLocal, aQName, node.getStringValue());
                 }
                 break;
             }
@@ -1840,14 +1940,14 @@ public class GonzalezTransformHandler extends DefaultHandler
             String nsUri = node.getNamespaceURI();
             String localName = node.getLocalName();
             String prefix = node.getPrefix();
-            String qName = (prefix != null && !prefix.isEmpty()) 
-                ? prefix + ":" + localName : localName;
-            output.startElement(nsUri != null ? nsUri : "", localName, qName);
+            String qName = OutputHandlerUtils.buildQName(prefix, localName);
+            String effectiveNsUri = OutputHandlerUtils.effectiveUri(nsUri);
+            output.startElement(effectiveNsUri, localName, qName);
             Iterator<XPathNode> children = node.getChildren();
             while (children.hasNext()) {
                 copyNodeDeep(children.next(), output);
             }
-            output.endElement(nsUri != null ? nsUri : "", localName, qName);
+            output.endElement(effectiveNsUri, localName, qName);
         } else if (node.isText()) {
             String text = node.getStringValue();
             if (text != null) {
@@ -1977,9 +2077,9 @@ public class GonzalezTransformHandler extends DefaultHandler
             flush();
             // Defer the start tag
             inStartTag = true;
-            pendingUri = uri != null ? uri : "";
+            pendingUri = OutputHandlerUtils.effectiveUri(uri);
             pendingLocalName = localName;
-            pendingQName = qName != null ? qName : localName;
+            pendingQName = OutputHandlerUtils.effectiveQName(qName, localName);
             pendingAttrs.clear();
             pendingNamespaces.clear();
         }
@@ -1987,7 +2087,9 @@ public class GonzalezTransformHandler extends DefaultHandler
         @Override
         public void endElement(String uri, String localName, String qName) throws SAXException {
             flush();
-            handler.endElement(uri != null ? uri : "", localName, qName != null ? qName : localName);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+            String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
+            handler.endElement(effectiveUri, localName, effectiveQName);
         }
         
         @Override
@@ -1996,12 +2098,16 @@ public class GonzalezTransformHandler extends DefaultHandler
             if (!inStartTag) {
                 throw new SAXException("Cannot add attribute outside of start tag");
             }
-            pendingAttrs.addAttribute(
-                uri != null ? uri : "", 
-                localName, 
-                qName != null ? qName : localName, 
-                "CDATA", 
-                value);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+            String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
+            int existing = pendingAttrs.getIndex(effectiveUri, localName);
+            if (existing >= 0) {
+                pendingAttrs.setAttribute(existing, effectiveUri, localName,
+                    effectiveQName, "CDATA", value);
+            } else {
+                pendingAttrs.addAttribute(effectiveUri, localName,
+                    effectiveQName, "CDATA", value);
+            }
         }
         
         @Override
@@ -2009,12 +2115,13 @@ public class GonzalezTransformHandler extends DefaultHandler
             // If we're inside a deferred start tag, queue the namespace declaration
             // Otherwise emit it immediately
             if (inStartTag) {
-                pendingNamespaces.add(new String[] { 
-                    prefix != null ? prefix : "", 
-                    uri != null ? uri : "" 
-                });
+                String effectivePrefix = OutputHandlerUtils.effectiveUri(prefix);
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+                pendingNamespaces.add(new String[] { effectivePrefix, effectiveUri });
             } else {
-                handler.startPrefixMapping(prefix != null ? prefix : "", uri != null ? uri : "");
+                String effectivePrefix = OutputHandlerUtils.effectiveUri(prefix);
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+                handler.startPrefixMapping(effectivePrefix, effectiveUri);
             }
         }
         

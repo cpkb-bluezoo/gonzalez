@@ -27,6 +27,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 
@@ -146,9 +147,37 @@ public class WherePopulatedNode extends XSLTInstruction {
         }
 
         public void startDocument() throws SAXException {
+            flushStartTag();
+            if (depth == 0) {
+                finishCurrentItem();
+                currentBuffer = new SAXEventBuffer();
+                populatedAtDepth[0] = false;
+            }
+            depth++;
+            if (depth < populatedAtDepth.length) {
+                populatedAtDepth[depth] = false;
+            }
         }
 
         public void endDocument() throws SAXException {
+            flushStartTag();
+            boolean childrenPopulated = false;
+            if (depth > 0 && depth < populatedAtDepth.length) {
+                childrenPopulated = populatedAtDepth[depth];
+            }
+            depth--;
+            if (depth >= 0 && depth < populatedAtDepth.length) {
+                if (childrenPopulated) {
+                    populatedAtDepth[depth] = true;
+                }
+            }
+            if (depth == 0) {
+                ItemRecord rec = new ItemRecord();
+                rec.buffer = currentBuffer;
+                rec.deepEmpty = !populatedAtDepth[0];
+                items.add(rec);
+                currentBuffer = null;
+            }
         }
 
         public void startElement(String uri, String localName, String qName) throws SAXException {
@@ -159,9 +188,9 @@ public class WherePopulatedNode extends XSLTInstruction {
                 populatedAtDepth[0] = false;
             }
             inStartTag = true;
-            pendingUri = uri != null ? uri : "";
+            pendingUri = OutputHandlerUtils.effectiveUri(uri);
             pendingLocal = localName;
-            pendingQName = qName != null ? qName : localName;
+            pendingQName = OutputHandlerUtils.effectiveQName(qName, localName);
             pendingAttrs.clear();
             depth++;
             if (depth < populatedAtDepth.length) {
@@ -174,9 +203,9 @@ public class WherePopulatedNode extends XSLTInstruction {
             if (currentBuffer == null) {
                 currentBuffer = new SAXEventBuffer();
             }
-            currentBuffer.endElement(
-                uri != null ? uri : "", localName,
-                qName != null ? qName : localName);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+            String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
+            currentBuffer.endElement(effectiveUri, localName, effectiveQName);
             boolean childrenPopulated = false;
             if (depth < populatedAtDepth.length) {
                 childrenPopulated = populatedAtDepth[depth];
@@ -208,9 +237,11 @@ public class WherePopulatedNode extends XSLTInstruction {
                 rec.deepEmpty = (value == null || value.isEmpty());
                 items.add(rec);
             } else if (inStartTag) {
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+                String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
                 pendingAttrs.addAttribute(
-                    uri != null ? uri : "", localName,
-                    qName != null ? qName : localName, "CDATA", value);
+                    effectiveUri, localName,
+                    effectiveQName, "CDATA", value);
             }
         }
 
@@ -303,6 +334,11 @@ public class WherePopulatedNode extends XSLTInstruction {
 
         public void flush() throws SAXException {
             flushStartTag();
+        }
+
+        @Override
+        public boolean wantsDocumentBoundaries() {
+            return true;
         }
     }
 

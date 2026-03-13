@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.xml.sax.Attributes;
@@ -324,35 +325,38 @@ public final class ForkNode implements XSLTNode {
             flush();
             hadElement = true;
             inStartTag = true;
-            pendingUri = uri != null ? uri : "";
+            pendingUri = OutputHandlerUtils.effectiveUri(uri);
             pendingLocalName = localName;
-            pendingQName = qName != null ? qName : localName;
+            pendingQName = OutputHandlerUtils.effectiveQName(qName, localName);
             pendingAttrs.clear();
             pendingNs.clear();
         }
 
         public void endElement(String uri, String localName, String qName) throws SAXException {
             flush();
-            buffer.endElement(
-                uri != null ? uri : "", 
-                localName, 
-                qName != null ? qName : localName);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+            String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
+            buffer.endElement(effectiveUri, localName, effectiveQName);
         }
 
         public void attribute(String uri, String localName, String qName, String value) 
                 throws SAXException {
             if (inStartTag) {
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+                String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
                 pendingAttrs.addAttribute(
-                    uri != null ? uri : "", 
+                    effectiveUri, 
                     localName,
-                    qName != null ? qName : localName, 
+                    effectiveQName, 
                     "CDATA", 
                     value);
             } else if (!hadElement) {
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
+                String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
                 parentAttrs.add(new String[]{
-                    uri != null ? uri : "",
+                    effectiveUri,
                     localName,
-                    qName != null ? qName : localName,
+                    effectiveQName,
                     value
                 });
             } else {
@@ -361,20 +365,14 @@ public final class ForkNode implements XSLTNode {
         }
 
         public void namespace(String prefix, String uri) throws SAXException {
+            String effectivePrefix = OutputHandlerUtils.effectiveUri(prefix);
+            String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
             if (inStartTag) {
-                pendingNs.add(new String[]{
-                    prefix != null ? prefix : "",
-                    uri != null ? uri : ""
-                });
+                pendingNs.add(new String[]{ effectivePrefix, effectiveUri });
             } else if (!hadElement) {
-                parentNamespaces.add(new String[]{
-                    prefix != null ? prefix : "",
-                    uri != null ? uri : ""
-                });
+                parentNamespaces.add(new String[]{ effectivePrefix, effectiveUri });
             } else {
-                buffer.startPrefixMapping(
-                    prefix != null ? prefix : "",
-                    uri != null ? uri : "");
+                buffer.startPrefixMapping(effectivePrefix, effectiveUri);
             }
         }
 

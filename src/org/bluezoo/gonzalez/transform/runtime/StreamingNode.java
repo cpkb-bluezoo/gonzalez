@@ -707,16 +707,24 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
      * @param text the text to append (ignored if null or empty)
      */
     public void appendText(String text) {
+        appendText(text, documentOrder);
+    }
+
+    /**
+     * Appends text with a specific document order for new text nodes.
+     * Merged text reuses the existing node's order.
+     *
+     * @param text the text to append (ignored if null or empty)
+     * @param newDocOrder document order for newly created text nodes
+     */
+    public void appendText(String text, long newDocOrder) {
         if (text == null || text.isEmpty()) {
             return;
         }
         cachedStringValue = null;
-        // Check if last child is a text node that we can append to
         if (!children.isEmpty()) {
             StreamingNode lastChild = children.get(children.size() - 1);
             if (lastChild.nodeType == NodeType.TEXT) {
-                // Remove old text node before createText adds the replacement,
-                // since the constructor auto-appends to parent.children
                 String combinedText = lastChild.stringValue + text;
                 long docOrder = lastChild.documentOrder;
                 children.remove(children.size() - 1);
@@ -724,8 +732,7 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
                 return;
             }
         }
-        // Add new text node
-        createText(text, this, documentOrder);
+        createText(text, this, newDocOrder);
     }
 
     /**

@@ -75,7 +75,7 @@ public class NamespaceInstructionNode extends XSLTInstruction implements Express
             } else if (content != null) {
                 ItemCollectorOutputHandler collector = new ItemCollectorOutputHandler();
                 content.execute(context, collector);
-                uri = collector.getContentAsString(" ").trim();
+                uri = collector.getContentAsString(" ");
             } else {
                 uri = "";
             }
@@ -120,23 +120,105 @@ public class NamespaceInstructionNode extends XSLTInstruction implements Express
     }
 
     private static boolean isValidUri(String s) {
-        // xs:anyURI allows IRI references, so be lenient.
-        // Only reject strings with characters clearly invalid in IRIs
-        // (e.g., fragment-only strings with multiple # delimiters).
+        if (s == null) {
+            return false;
+        }
         try {
             new URI(s);
             return true;
         } catch (Exception e) {
-            // java.net.URI is stricter than xs:anyURI/IRI.
-            // Accept strings that look like real namespace URIs
-            // (contain a scheme or look like a relative reference).
-            int colonPos = s.indexOf(':');
-            if (colonPos > 0) {
-                return true;
+            // java.net.URI is stricter than xs:anyURI. Per XSD 1.0,
+            // xs:anyURI allows IRI characters that are implicitly
+            // percent-encoded when converting to a URI (XLink §5.4).
+            // Encode non-URI characters and re-validate structure.
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < s.length(); i++) {
+                char c = s.charAt(i);
+                if (isUriChar(c)) {
+                    sb.append(c);
+                } else {
+                    appendPercentEncoded(sb, c);
+                }
             }
-            return false;
+            try {
+                String encoded = sb.toString();
+                new URI(encoded);
+                return true;
+            } catch (Exception e2) {
+                return false;
+            }
         }
     }
+
+    /**
+     * Tests whether a character belongs to the URI character set
+     * (unreserved, reserved, or percent-sign) per RFC 3986.
+     */
+    private static boolean isUriChar(char c) {
+        if (c >= 'A' && c <= 'Z') {
+            return true;
+        }
+        if (c >= 'a' && c <= 'z') {
+            return true;
+        }
+        if (c >= '0' && c <= '9') {
+            return true;
+        }
+        switch (c) {
+            // unreserved
+            case '-': case '.': case '_': case '~':
+            // gen-delims
+            case ':': case '/': case '?': case '#':
+            case '[': case ']': case '@':
+            // sub-delims
+            case '!': case '$': case '&': case '\'':
+            case '(': case ')': case '*': case '+':
+            case ',': case ';': case '=':
+            // percent-encoding
+            case '%':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Appends the percent-encoded UTF-8 bytes of a character.
+     */
+    private static void appendPercentEncoded(StringBuilder sb, char c) {
+        if (c <= 0x7F) {
+            sb.append('%');
+            sb.append(HEX_DIGITS[(c >> 4) & 0x0F]);
+            sb.append(HEX_DIGITS[c & 0x0F]);
+        } else if (c <= 0x7FF) {
+            int b1 = 0xC0 | (c >> 6);
+            int b2 = 0x80 | (c & 0x3F);
+            sb.append('%');
+            sb.append(HEX_DIGITS[(b1 >> 4) & 0x0F]);
+            sb.append(HEX_DIGITS[b1 & 0x0F]);
+            sb.append('%');
+            sb.append(HEX_DIGITS[(b2 >> 4) & 0x0F]);
+            sb.append(HEX_DIGITS[b2 & 0x0F]);
+        } else {
+            int b1 = 0xE0 | (c >> 12);
+            int b2 = 0x80 | ((c >> 6) & 0x3F);
+            int b3 = 0x80 | (c & 0x3F);
+            sb.append('%');
+            sb.append(HEX_DIGITS[(b1 >> 4) & 0x0F]);
+            sb.append(HEX_DIGITS[b1 & 0x0F]);
+            sb.append('%');
+            sb.append(HEX_DIGITS[(b2 >> 4) & 0x0F]);
+            sb.append(HEX_DIGITS[b2 & 0x0F]);
+            sb.append('%');
+            sb.append(HEX_DIGITS[(b3 >> 4) & 0x0F]);
+            sb.append(HEX_DIGITS[b3 & 0x0F]);
+        }
+    }
+
+    private static final char[] HEX_DIGITS = {
+        '0', '1', '2', '3', '4', '5', '6', '7',
+        '8', '9', 'A', 'B', 'C', 'D', 'E', 'F'
+    };
 
     private static boolean isNCName(String s) {
         if (s == null || s.isEmpty()) {

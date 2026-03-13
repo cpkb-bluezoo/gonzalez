@@ -151,7 +151,8 @@ public final class ResultDocumentHandler implements OutputHandler {
             depth--;
             writeIndent();
             writer.write("</");
-            writer.write(qName != null && !qName.isEmpty() ? qName : localName);
+            String effectiveQName = OutputHandlerUtils.effectiveQName(qName, localName);
+            writer.write(effectiveQName);
             writer.write('>');
         } catch (IOException e) {
             throw new SAXException("Error writing end element", e);
@@ -165,7 +166,7 @@ public final class ResultDocumentHandler implements OutputHandler {
             throw new SAXException("attribute() called outside of element");
         }
         
-        String attrName = qName != null && !qName.isEmpty() ? qName : localName;
+        String attrName = OutputHandlerUtils.effectiveQName(qName, localName);
         pendingAttributes.append(' ');
         pendingAttributes.append(attrName);
         pendingAttributes.append("=\"");
@@ -332,69 +333,25 @@ public final class ResultDocumentHandler implements OutputHandler {
         }
     }
 
-    /**
-     * Writes text with XML escaping.
-     */
     private void writeEscaped(String text, boolean isAttribute) throws IOException {
         if (text == null) {
             return;
         }
-        
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            switch (c) {
-                case '<':
-                    writer.write("&lt;");
-                    break;
-                case '>':
-                    writer.write("&gt;");
-                    break;
-                case '&':
-                    writer.write("&amp;");
-                    break;
-                case '"':
-                    if (isAttribute) {
-                        writer.write("&quot;");
-                    } else {
-                        writer.write(c);
-                    }
-                    break;
-                default:
-                    writer.write(c);
-            }
+        if (isAttribute) {
+            writer.write(OutputHandlerUtils.escapeXmlAttribute(text));
+        } else {
+            writer.write(OutputHandlerUtils.escapeXmlText(text));
         }
     }
 
-    /**
-     * Appends text with XML escaping to a StringBuilder.
-     */
     private void appendEscaped(StringBuilder sb, String text, boolean isAttribute) {
         if (text == null) {
             return;
         }
-        
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            switch (c) {
-                case '<':
-                    sb.append("&lt;");
-                    break;
-                case '>':
-                    sb.append("&gt;");
-                    break;
-                case '&':
-                    sb.append("&amp;");
-                    break;
-                case '"':
-                    if (isAttribute) {
-                        sb.append("&quot;");
-                    } else {
-                        sb.append(c);
-                    }
-                    break;
-                default:
-                    sb.append(c);
-            }
+        if (isAttribute) {
+            sb.append(OutputHandlerUtils.escapeXmlAttribute(text));
+        } else {
+            sb.append(OutputHandlerUtils.escapeXmlText(text));
         }
     }
 

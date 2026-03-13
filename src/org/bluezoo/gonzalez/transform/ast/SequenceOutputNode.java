@@ -23,7 +23,7 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Iterator;
+
 import java.util.List;
 
 import org.xml.sax.SAXException;
@@ -127,8 +127,7 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
             } else if (result instanceof XPathArray) {
                 flattenArray((XPathArray) result, output);
             } else if (result instanceof XPathFunctionItem) {
-                throw new SAXException("XTDE0450: " +
-                    "A result tree cannot contain a function item");
+                output.atomicValue(result);
             } else {
                 // For atomic values (and maps), use atomicValue() which handles spacing
                 output.atomicValue(result);
@@ -151,8 +150,7 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
         } else if (item instanceof XPathArray) {
             flattenArray((XPathArray) item, output);
         } else if (item instanceof XPathFunctionItem) {
-            throw new SAXException("XTDE0450: " +
-                "A result tree cannot contain a function item");
+            output.atomicValue(item);
         } else {
             // Atomic value (and maps) - use atomicValue() which handles spacing
             output.atomicValue(item);
@@ -196,78 +194,6 @@ public class SequenceOutputNode extends XSLTInstruction implements ExpressionHol
     }
     
     private void outputNode(XPathNode node, OutputHandler output) throws SAXException {
-        // For xsl:sequence, we output nodes directly
-        // This is a simplified implementation - full XSLT 2.0 would handle
-        // document nodes, attribute nodes, etc. differently
-        switch (node.getNodeType()) {
-            case ELEMENT:
-                String uri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
-                String localName = node.getLocalName();
-                String prefix = node.getPrefix();
-                String qName = prefix != null ? prefix + ":" + localName : localName;
-                
-                output.startElement(uri, localName, qName);
-                
-                // Copy namespace declarations
-                Iterator<XPathNode> namespaces = node.getNamespaces();
-                while (namespaces.hasNext()) {
-                    XPathNode ns = namespaces.next();
-                    String nsPrefix = ns.getLocalName();
-                    String nsUri = ns.getStringValue();
-                    if (!"xml".equals(nsPrefix) && nsUri != null) {
-                        output.namespace(nsPrefix, nsUri);
-                    }
-                }
-                
-                // Copy attributes
-                Iterator<XPathNode> attrs = node.getAttributes();
-                while (attrs.hasNext()) {
-                    XPathNode attr = attrs.next();
-                    String attrUri = attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "";
-                    String attrLocal = attr.getLocalName();
-                    String attrPrefix = attr.getPrefix();
-                    String attrQName = attrPrefix != null ? attrPrefix + ":" + attrLocal : attrLocal;
-                    output.attribute(attrUri, attrLocal, attrQName, attr.getStringValue());
-                }
-                
-                // Copy children
-                Iterator<XPathNode> children = node.getChildren();
-                while (children.hasNext()) {
-                    outputNode(children.next(), output);
-                }
-                
-                output.endElement(uri, localName, qName);
-                break;
-                
-            case TEXT:
-                output.characters(node.getStringValue());
-                break;
-                
-            case COMMENT:
-                output.comment(node.getStringValue());
-                break;
-                
-            case PROCESSING_INSTRUCTION:
-                output.processingInstruction(node.getLocalName(), node.getStringValue());
-                break;
-                
-            case ROOT:
-                Iterator<XPathNode> rootChildren = node.getChildren();
-                while (rootChildren.hasNext()) {
-                    outputNode(rootChildren.next(), output);
-                }
-                break;
-                
-            case ATTRIBUTE:
-                String atUri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
-                String atLocal = node.getLocalName();
-                String atPrefix = node.getPrefix();
-                String atQName = atPrefix != null ? atPrefix + ":" + atLocal : atLocal;
-                output.attribute(atUri, atLocal, atQName, node.getStringValue());
-                break;
-                
-            default:
-                // Ignore namespace nodes
-        }
+        ValueOutputHelper.outputNode(node, output);
     }
 }

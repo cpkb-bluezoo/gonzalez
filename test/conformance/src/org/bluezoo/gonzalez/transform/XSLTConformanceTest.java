@@ -354,6 +354,9 @@ public class XSLTConformanceTest {
         private boolean requiresSchemaAware;
         private boolean testSetRequiresSchemaAware;
         private boolean requiresUnsupportedFeature;
+        private boolean requiresStreamingFallback;
+        private boolean testSetRequiresStreamingFallback;
+        private boolean assertionsDisabled;
         private String testSetSpecValue;
         private Map<String, String> expectedResultDocuments;
         private String currentResultDocumentUri;
@@ -422,6 +425,9 @@ public class XSLTConformanceTest {
                         if (env.collections != null) {
                             currentTest.collections = env.collections;
                         }
+                        if (env.resourceUris != null) {
+                            currentTest.resourceUris = env.resourceUris;
+                        }
                     }
                 } else if (inTestCase) {
                     // Inline environment within test-case (no name or ref)
@@ -453,6 +459,16 @@ public class XSLTConformanceTest {
                         }
                     }
                 }
+            } else if ("resource".equals(localName)) {
+                if (currentEnv != null) {
+                    String resUri = attrs.getValue("uri");
+                    if (resUri != null) {
+                        if (currentEnv.resourceUris == null) {
+                            currentEnv.resourceUris = new ArrayList<>();
+                        }
+                        currentEnv.resourceUris.add(resUri);
+                    }
+                }
             } else if ("content".equals(localName)) {
                 // Will capture in characters()
             } else if ("test-case".equals(localName)) {
@@ -480,6 +496,8 @@ public class XSLTConformanceTest {
                 requiresErrorOnMultipleMatch = false;
                 requiresSchemaAware = false;
                 requiresUnsupportedFeature = false;
+                requiresStreamingFallback = false;
+                assertionsDisabled = false;
                 expectedResultDocuments = null;
                 currentResultDocumentUri = null;
             } else if ("dependencies".equals(localName)) {
@@ -501,10 +519,10 @@ public class XSLTConformanceTest {
                 }
             } else if ("feature".equals(localName) && inDependencies) {
                 // Skip tests that require a schema-aware processor (SA).
-                // Gonzalez is a Basic XSLT processor, which the spec allows to
-                // not support schema-aware features.
-                // satisfied="false" means the test expects SA to be absent (run it).
-                // satisfied="true" or no satisfied attr means SA is required (skip it).
+                // Gonzalez is a Basic XSLT processor with best-effort schema
+                // loading; it processes xsl:import-schema but is not fully SA.
+                // satisfied="true" or no satisfied attr means SA is required (skip).
+                // satisfied="false" means the test expects SA to be absent (run).
                 String value = attrs.getValue("value");
                 String satisfied = attrs.getValue("satisfied");
                 if ("schema_aware".equals(value) && !"false".equals(satisfied)) {
@@ -512,6 +530,13 @@ public class XSLTConformanceTest {
                         requiresSchemaAware = true;
                     } else {
                         testSetRequiresSchemaAware = true;
+                    }
+                }
+                if ("streaming-fallback".equals(value) && !"false".equals(satisfied)) {
+                    if (inTestCase) {
+                        requiresStreamingFallback = true;
+                    } else {
+                        testSetRequiresStreamingFallback = true;
                     }
                 }
                 // Gonzalez supports d-o-e, so skip tests that require it absent
@@ -534,15 +559,17 @@ public class XSLTConformanceTest {
                 if ("XSD_1.1".equals(value) && !"false".equals(satisfied)) {
                     requiresUnsupportedFeature = true;
                 }
-                // Gonzalez does not support streaming; skip tests that require it.
-                if ("streaming".equals(value) && !"false".equals(satisfied)) {
-                    requiresUnsupportedFeature = true;
-                }
+                
                 // Gonzalez supports dynamic evaluation (xsl:evaluate);
                 // skip tests that require it to be absent.
                 if ("dynamic_evaluation".equals(value)
                         && "false".equals(satisfied)) {
                     requiresUnsupportedFeature = true;
+                }
+            } else if ("enable_assertions".equals(localName) && inDependencies) {
+                String satisfied = attrs.getValue("satisfied");
+                if ("false".equals(satisfied)) {
+                    assertionsDisabled = true;
                 }
             } else if ("ignore_doc_failure".equals(localName) && inDependencies) {
                 // Gonzalez silently returns empty for unavailable documents
@@ -593,6 +620,15 @@ public class XSLTConformanceTest {
                 String role = attrs.getValue("role");
                 if (file != null && !"secondary".equals(role)) {
                     currentEnv.stylesheetFile = new File(testDir, file);
+                }
+            } else if ("package".equals(localName) && inTest && currentTest != null) {
+                String file = attrs.getValue("file");
+                String pkgUri = attrs.getValue("uri");
+                if (file != null && pkgUri != null) {
+                    if (currentTest.packages == null) {
+                        currentTest.packages = new LinkedHashMap<>();
+                    }
+                    currentTest.packages.put(pkgUri, new File(testDir, file));
                 }
             } else if ("package".equals(localName) && currentEnv != null) {
                 String file = attrs.getValue("file");
@@ -652,12 +688,22 @@ public class XSLTConformanceTest {
                 String paramName = attrs.getValue("name");
                 String paramSelect = attrs.getValue("select");
                 String paramStatic = attrs.getValue("static");
+                String paramAs = attrs.getValue("as");
                 if (paramName != null && paramSelect != null && currentTest != null) {
                     if ("yes".equals(paramStatic)) {
+                        String effectiveSelect = paramSelect;
+                        if (paramAs != null && !paramAs.isEmpty()) {
+                            String baseType = paramAs.trim();
+                            if (baseType.endsWith("?") || baseType.endsWith("*")
+                                    || baseType.endsWith("+")) {
+                                baseType = baseType.substring(0, baseType.length() - 1).trim();
+                            }
+                            effectiveSelect = baseType + "(" + paramSelect + ")";
+                        }
                         if (currentTest.staticParams == null) {
                             currentTest.staticParams = new LinkedHashMap<>();
                         }
-                        currentTest.staticParams.put(paramName, paramSelect);
+                        currentTest.staticParams.put(paramName, effectiveSelect);
                     } else {
                         if (currentTest.stylesheetParams == null) {
                             currentTest.stylesheetParams = new LinkedHashMap<>();
@@ -781,6 +827,9 @@ public class XSLTConformanceTest {
                     if (currentEnv.collections != null) {
                         currentTest.collections = currentEnv.collections;
                     }
+                    if (currentEnv.resourceUris != null) {
+                        currentTest.resourceUris = currentEnv.resourceUris;
+                    }
                 }
                 currentEnvName = null;
                 currentEnv = null;
@@ -856,6 +905,9 @@ public class XSLTConformanceTest {
                     currentTest.expectedError = expectedError;
                     currentTest.expectedResultDocuments = expectedResultDocuments;
                     currentTest.specValue = effectiveSpec;
+                    currentTest.streamingFallback =
+                        requiresStreamingFallback || testSetRequiresStreamingFallback;
+                    currentTest.assertionsDisabled = assertionsDisabled;
 
                     if (currentTest.stylesheetFile != null) {
                         tests.add(currentTest);
@@ -994,6 +1046,9 @@ public class XSLTConformanceTest {
                 factory.setMaxXsltVersion(-1);
             }
 
+            // Enable streaming fallback for tests that require it (§19.10)
+            factory.setStreamingFallback(testCase.streamingFallback);
+
             // Compile stylesheet - use FileChannel for NIO-native input
             stylesheetChannel = FileChannel.open(testCase.stylesheetFile.toPath(), StandardOpenOption.READ);
             StreamSource stylesheetSource = new StreamSource(Channels.newInputStream(stylesheetChannel));
@@ -1078,7 +1133,7 @@ public class XSLTConformanceTest {
                 ((GonzalezTransformer) transformer).setInitialContextSelect(testCase.sourceSelect);
             }
 
-            // Register collections
+            // Register collections for fn:collection() and fn:uri-collection()
             if (testCase.collections != null && transformer instanceof GonzalezTransformer) {
                 GonzalezTransformer gt = (GonzalezTransformer) transformer;
                 for (Map.Entry<String, List<CollectionEntry>> entry : testCase.collections.entrySet()) {
@@ -1086,26 +1141,47 @@ public class XSLTConformanceTest {
                     if (nodes != null) {
                         gt.setCollection(entry.getKey(), nodes);
                     }
+                    List<String> uris = new ArrayList<>();
+                    for (CollectionEntry ce : entry.getValue()) {
+                        String entryUri = ce.uri;
+                        if (entryUri == null) {
+                            entryUri = ce.file.toURI().toString();
+                        } else if (!entryUri.contains(":")) {
+                            entryUri = ce.file.toURI().toString();
+                        }
+                        uris.add(entryUri);
+                    }
+                    gt.setCollectionUris(entry.getKey(), uris);
                 }
+            }
+
+            // Disable assertions if the test requires it (§19.2)
+            if (testCase.assertionsDisabled && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setAssertionsEnabled(false);
+            }
+
+            // Register available resource URIs from the test environment
+            if (testCase.resourceUris != null && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setAvailableResourceUris(testCase.resourceUris);
             }
 
             // Set stylesheet parameters from test definition
             if (testCase.stylesheetParams != null) {
                 for (Map.Entry<String, String> entry : testCase.stylesheetParams.entrySet()) {
                     String paramValue = entry.getValue();
-                    // Extract string literal value from XPath select expression
-                    if (paramValue.length() >= 2
-                            && ((paramValue.charAt(0) == '\'' && paramValue.charAt(paramValue.length() - 1) == '\'')
-                             || (paramValue.charAt(0) == '"' && paramValue.charAt(paramValue.length() - 1) == '"'))) {
-                        paramValue = paramValue.substring(1, paramValue.length() - 1);
-                    }
-                    transformer.setParameter(entry.getKey(), paramValue);
+                    Object resolved = evaluateParamSelect(paramValue);
+                    transformer.setParameter(entry.getKey(), resolved);
                 }
             }
 
             // Track whether a real source document was provided
             boolean hasExplicitSource = testCase.sourceFile != null
                     || testCase.sourceContent != null;
+
+            // Signal absent context item when no real source provided
+            if (!hasExplicitSource && transformer instanceof GonzalezTransformer) {
+                ((GonzalezTransformer) transformer).setHasInitialContextItem(false);
+            }
 
             // Prepare source - use FileChannel for NIO-native input
             StreamSource source;
@@ -1409,6 +1485,46 @@ public class XSLTConformanceTest {
     }
 
     /**
+     * Evaluates a parameter select expression to a typed Java value.
+     * Handles string literals, numeric literals, and boolean values.
+     */
+    private static Object evaluateParamSelect(String select) {
+        if (select == null || select.isEmpty()) {
+            return select;
+        }
+        // String literal: 'value' or "value"
+        if (select.length() >= 2) {
+            char first = select.charAt(0);
+            char last = select.charAt(select.length() - 1);
+            if ((first == '\'' && last == '\'') ||
+                    (first == '"' && last == '"')) {
+                return select.substring(1, select.length() - 1);
+            }
+        }
+        // Boolean literals
+        if ("true()".equals(select)) {
+            return Boolean.TRUE;
+        }
+        if ("false()".equals(select)) {
+            return Boolean.FALSE;
+        }
+        // Numeric literal (integer or decimal)
+        try {
+            if (select.indexOf('.') >= 0) {
+                return Double.valueOf(select);
+            }
+            long val = Long.parseLong(select);
+            if (val >= Integer.MIN_VALUE && val <= Integer.MAX_VALUE) {
+                return Integer.valueOf((int) val);
+            }
+            return Long.valueOf(val);
+        } catch (NumberFormatException e) {
+            // Not a number, return as string
+        }
+        return select;
+    }
+
+    /**
      * Loads collection nodes from the given collection entries.
      * Handles fragment identifiers (e.g., doc15.xml#frag2) by finding the
      * element with the matching xml:id.
@@ -1485,6 +1601,7 @@ public class XSLTConformanceTest {
         File stylesheetFile;
         Map<String, File> packages;
         Map<String, List<CollectionEntry>> collections;
+        List<String> resourceUris;
     }
 
     /**
@@ -1530,6 +1647,9 @@ public class XSLTConformanceTest {
         Map<String, File> packages;
         Map<String, List<CollectionEntry>> collections;
         String specValue;
+        List<String> resourceUris;
+        boolean streamingFallback;
+        boolean assertionsDisabled;
 
         @Override
         public String toString() {

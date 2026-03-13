@@ -36,6 +36,7 @@ import org.bluezoo.gonzalez.transform.compiler.ExpressionHolder;
 import org.bluezoo.gonzalez.transform.compiler.SortSpec;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
@@ -601,6 +602,19 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     }
     
     private void outputSingleItem(XPathValue item, OutputHandler output) throws SAXException {
+        if (output instanceof SequenceBuilderOutputHandler) {
+            SequenceBuilderOutputHandler seqBuilder = (SequenceBuilderOutputHandler) output;
+            if (!seqBuilder.isInsideElement()) {
+                if (item instanceof XPathNodeSet) {
+                    for (XPathNode node : ((XPathNodeSet) item).getNodes()) {
+                        seqBuilder.addItem(new XPathNodeSet(Collections.singletonList(node)));
+                    }
+                } else {
+                    seqBuilder.addItem(item);
+                }
+                return;
+            }
+        }
         if (item instanceof XPathResultTreeFragment) {
             ((XPathResultTreeFragment) item).replayToOutput(output);
         } else if (item instanceof XPathNodeSet) {
@@ -617,14 +631,10 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     private void serializeNode(XPathNode node, OutputHandler output) throws SAXException {
         switch (node.getNodeType()) {
             case ELEMENT: {
-                String uri = node.getNamespaceURI();
+                String uri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
-                String qName = (prefix != null && !prefix.isEmpty())
-                    ? prefix + ":" + localName : localName;
-                if (uri == null) {
-                    uri = "";
-                }
+                String qName = OutputHandlerUtils.buildQName(prefix, localName);
                 output.startElement(uri, localName, qName);
                 if (prefix != null && !prefix.isEmpty()) {
                     output.namespace(prefix, uri);
@@ -887,11 +897,12 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
         switch (nodeType) {
             case ELEMENT:
                 String uri = node.getNamespaceURI();
+                String effectiveUri = OutputHandlerUtils.effectiveUri(uri);
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
-                String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
+                String qName = OutputHandlerUtils.buildQName(prefix, localName);
                 
-                output.startElement(uri != null ? uri : "", localName, qName);
+                output.startElement(effectiveUri, localName, qName);
                 Iterator<XPathNode> namespaces = node.getNamespaces();
                 while (namespaces.hasNext()) {
                     XPathNode ns = namespaces.next();
@@ -903,7 +914,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 }
                 applyToAttributes(node, context, output);
                 applyToChildren(node, context, output);
-                output.endElement(uri != null ? uri : "", localName, qName);
+                output.endElement(effectiveUri, localName, qName);
                 break;
             case TEXT:
                 output.characters(node.getStringValue());
@@ -931,52 +942,6 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     }
     
     private void executeDeepCopy(XPathNode node, OutputHandler output) throws SAXException {
-        NodeType nodeType = node.getNodeType();
-        switch (nodeType) {
-            case ELEMENT:
-                String uri = node.getNamespaceURI();
-                String localName = node.getLocalName();
-                String prefix = node.getPrefix();
-                String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
-                
-                output.startElement(uri != null ? uri : "", localName, qName);
-                
-                // Copy attributes
-                Iterator<XPathNode> attrIter = node.getAttributes();
-                while (attrIter.hasNext()) {
-                    XPathNode attr = attrIter.next();
-                    String aUri = attr.getNamespaceURI();
-                    String aLocal = attr.getLocalName();
-                    String aPrefix = attr.getPrefix();
-                    String aQName = aPrefix != null && !aPrefix.isEmpty() ? aPrefix + ":" + aLocal : aLocal;
-                    output.attribute(aUri != null ? aUri : "", aLocal, aQName, attr.getStringValue());
-                }
-                
-                // Recursively copy children
-                Iterator<XPathNode> children = node.getChildren();
-                while (children.hasNext()) {
-                    executeDeepCopy(children.next(), output);
-                }
-                
-                output.endElement(uri != null ? uri : "", localName, qName);
-                break;
-            case TEXT:
-                output.characters(node.getStringValue());
-                break;
-            case COMMENT:
-                output.comment(node.getStringValue());
-                break;
-            case PROCESSING_INSTRUCTION:
-                output.processingInstruction(node.getLocalName(), node.getStringValue());
-                break;
-            case ROOT:
-                Iterator<XPathNode> rootChildren = node.getChildren();
-                while (rootChildren.hasNext()) {
-                    executeDeepCopy(rootChildren.next(), output);
-                }
-                break;
-            default:
-                break;
-        }
+        ValueOutputHelper.deepCopyNode(node, output);
     }
 }

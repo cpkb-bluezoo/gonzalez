@@ -43,6 +43,11 @@ final class DocumentNodePattern extends AbstractPattern {
     }
 
     @Override
+    public NodeType getMatchableNodeType() {
+        return NodeType.ROOT;
+    }
+
+    @Override
     public double getDefaultPriority() {
         return -0.5;
     }

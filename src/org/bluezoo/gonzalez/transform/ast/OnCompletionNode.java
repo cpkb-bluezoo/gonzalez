@@ -75,10 +75,7 @@ public class OnCompletionNode extends XSLTInstruction implements ExpressionHolde
             try {
                 XPathValue result = selectExpr.evaluate(context);
                 if (result != null) {
-                    String str = result.asString();
-                    if (!str.isEmpty()) {
-                        output.characters(str);
-                    }
+                    output.atomicValue(result);
                 }
             } catch (XPathException e) {
                 throw new SAXException("Error evaluating xsl:on-completion select", e);

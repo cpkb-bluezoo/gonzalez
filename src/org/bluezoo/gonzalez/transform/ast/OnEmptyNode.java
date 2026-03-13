@@ -59,6 +59,10 @@ public class OnEmptyNode extends XSLTInstruction implements ExpressionHolder {
     
     @Override public String getInstructionName() { return "on-empty"; }
 
+    public boolean hasSelect() {
+        return selectExpr != null;
+    }
+
     @Override
     public List<XPathExpression> getExpressions() {
         List<XPathExpression> exprs = new ArrayList<XPathExpression>();

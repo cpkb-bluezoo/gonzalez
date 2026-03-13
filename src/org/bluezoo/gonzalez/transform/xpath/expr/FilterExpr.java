@@ -24,6 +24,9 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
 import org.bluezoo.gonzalez.transform.xpath.type.SequenceType;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
@@ -130,7 +133,7 @@ public final class FilterExpr implements Expr {
                 if (result.getType() == XPathValue.Type.NUMBER) {
                     include = (result.asNumber() == position);
                 } else {
-                    include = result.asBoolean();
+                    include = effectiveBooleanValue(result);
                 }
                 
                 if (include) {
@@ -181,12 +184,10 @@ public final class FilterExpr implements Expr {
                 
                 boolean include;
                 if (result.getType() == XPathValue.Type.NUMBER) {
-                    // Numeric predicate: select item at that position
                     double pos = result.asNumber();
                     include = (pos == position);
                 } else {
-                    // Boolean predicate: filter by truthiness
-                    include = result.asBoolean();
+                    include = effectiveBooleanValue(result);
                 }
                 
                 if (include) {
@@ -224,6 +225,35 @@ public final class FilterExpr implements Expr {
      */
     public List<Expr> getPredicates() {
         return predicates;
+    }
+
+    /**
+     * Computes the effective boolean value per XPath 2.0 §2.4.3.
+     * Raises FORG0006 for function items (maps, arrays, named functions).
+     */
+    static boolean effectiveBooleanValue(XPathValue value) throws XPathException {
+        if (value instanceof XPathMap || value instanceof XPathArray
+                || value instanceof XPathFunctionItem) {
+            throw new XPathException("FORG0006: Effective boolean value " +
+                "is not defined for a " + value.getType());
+        }
+        if (value instanceof XPathSequence) {
+            XPathSequence seq = (XPathSequence) value;
+            if (seq.size() == 0) {
+                return false;
+            }
+            XPathValue first = seq.get(0);
+            if (first instanceof XPathNodeSet || first instanceof XPathNode) {
+                return true;
+            }
+            if (seq.size() > 1) {
+                throw new XPathException("FORG0006: Effective boolean value " +
+                    "is not defined for a sequence of more than one item " +
+                    "starting with an atomic value");
+            }
+            return effectiveBooleanValue(first);
+        }
+        return value.asBoolean();
     }
 
     @Override

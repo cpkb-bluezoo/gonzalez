@@ -163,6 +163,16 @@ public final class XPathFunctionItem implements XPathValue {
             throw new XPathException("XTDE1360",
                 "Dynamic call to current() is not allowed");
         }
+        // XTDE1061: dynamic call to current-group() is a dynamic error (§5.3)
+        if ("current-group".equals(name) && arity == 0) {
+            throw new XPathException("XTDE1061",
+                "Dynamic call to current-group() is not allowed");
+        }
+        // XTDE1071: dynamic call to current-grouping-key() is a dynamic error (§5.3)
+        if ("current-grouping-key".equals(name) && arity == 0) {
+            throw new XPathException("XTDE1071",
+                "Dynamic call to current-grouping-key() is not allowed");
+        }
         // Self-contained user function (from fn:transform() etc.)
         if (boundUserFunction != null) {
             if (context instanceof TransformContext) {

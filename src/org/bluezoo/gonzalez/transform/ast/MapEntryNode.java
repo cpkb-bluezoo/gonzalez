@@ -64,6 +64,24 @@ public final class MapEntryNode extends XSLTInstruction implements ExpressionHol
         this.content = content;
     }
 
+    /**
+     * Returns the key expression.
+     *
+     * @return the key expression
+     */
+    public XPathExpression getKeyExpr() {
+        return keyExpr;
+    }
+
+    /**
+     * Returns the select expression for the entry value.
+     *
+     * @return the select expression, or null if content is used
+     */
+    public XPathExpression getSelectExpr() {
+        return selectExpr;
+    }
+
     @Override
     public String getInstructionName() {
         return "map-entry";
@@ -85,7 +103,6 @@ public final class MapEntryNode extends XSLTInstruction implements ExpressionHol
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
         try {
             XPathValue keyVal = keyExpr.evaluate(context);
-            // XPTY0004: Map key must be a single atomic value, not an empty sequence
             if (keyVal == null) {
                 throw new SAXException("XPTY0004: Map key must not be an empty sequence");
             }
@@ -106,7 +123,9 @@ public final class MapEntryNode extends XSLTInstruction implements ExpressionHol
             }
             Map<String, XPathValue> entries = new LinkedHashMap<String, XPathValue>();
             entries.put(key, value);
-            XPathMap entryMap = new XPathMap(entries);
+            Map<String, XPathValue> typedKeys = new LinkedHashMap<String, XPathValue>();
+            typedKeys.put(key, keyVal);
+            XPathMap entryMap = new XPathMap(entries, typedKeys);
             output.atomicValue(entryMap);
         } catch (XPathException e) {
             throw new SAXException("Error in xsl:map-entry", e);

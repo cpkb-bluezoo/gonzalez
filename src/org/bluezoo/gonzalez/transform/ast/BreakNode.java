@@ -23,6 +23,9 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.SAXException;
 
 /**
@@ -46,6 +49,7 @@ import org.xml.sax.SAXException;
 public final class BreakNode implements XSLTNode {
 
     private final XSLTNode content;
+    private final XPathExpression selectExpr;
 
     /**
      * Creates a new break instruction.
@@ -54,6 +58,17 @@ public final class BreakNode implements XSLTNode {
      */
     public BreakNode(XSLTNode content) {
         this.content = content;
+        this.selectExpr = null;
+    }
+
+    /**
+     * Creates a new break instruction with a select expression.
+     *
+     * @param selectExpr the select expression whose result is output before breaking
+     */
+    public BreakNode(XPathExpression selectExpr) {
+        this.content = null;
+        this.selectExpr = selectExpr;
     }
 
     /**
@@ -67,12 +82,19 @@ public final class BreakNode implements XSLTNode {
 
     @Override
     public void execute(TransformContext context, OutputHandler output) throws SAXException {
-        // Execute content first if present
-        if (content != null) {
+        if (selectExpr != null) {
+            try {
+                XPathValue result = selectExpr.evaluate(context);
+                if (result != null) {
+                    output.atomicValue(result);
+                }
+            } catch (XPathException e) {
+                throw new SAXException("Error evaluating xsl:break select", e);
+            }
+        } else if (content != null) {
             content.execute(context, output);
         }
         
-        // Signal break to enclosing xsl:iterate
         throw new BreakSignal();
     }
 

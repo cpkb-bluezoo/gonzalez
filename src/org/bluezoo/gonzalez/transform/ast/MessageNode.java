@@ -141,15 +141,22 @@ public class MessageNode extends XSLTInstruction implements ExpressionHolder {
                 XPathValue result = selectExpr.evaluate(context);
                 return result.asString();
             } catch (XPathException e) {
-                throw new SAXException("Error evaluating xsl:message select: " + e.getMessage(), e);
+                // Per XSLT 3.0, dynamic errors in message content are recoverable
+                return "[Error evaluating xsl:message: " + e.getMessage() + "]";
             }
         }
         
-        // Otherwise, use content
+        // Otherwise, use content.
+        // Per XSLT 3.0, dynamic errors during message content evaluation
+        // are recoverable - the transformation must not fail.
         if (content != null && !content.isEmpty()) {
-            SAXEventBuffer buffer = new SAXEventBuffer();
-            content.execute(context, new BufferOutputHandler(buffer));
-            return buffer.getTextContent();
+            try {
+                SAXEventBuffer buffer = new SAXEventBuffer();
+                content.execute(context, new BufferOutputHandler(buffer));
+                return buffer.getTextContent();
+            } catch (Exception e) {
+                return "[Error evaluating xsl:message content: " + e.getMessage() + "]";
+            }
         }
         
         return "";

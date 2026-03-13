@@ -84,6 +84,10 @@ public final class MapConstructorExpr implements Expr {
             XPathValue key = keyExprs.get(i).evaluate(context);
             XPathValue value = valueExprs.get(i).evaluate(context);
             String keyStr = key.asString();
+            if (entries.containsKey(keyStr)) {
+                throw new XPathException("XTDE3365: Duplicate key " +
+                    "'" + keyStr + "' in map constructor");
+            }
             entries.put(keyStr, value);
             typedKeys.put(keyStr, key);
         }

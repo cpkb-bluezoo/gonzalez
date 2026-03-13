@@ -27,6 +27,7 @@ import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.StylesheetCompiler;
 import org.bluezoo.gonzalez.transform.runtime.BufferOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
@@ -291,7 +292,7 @@ public final class LiteralResultElement implements XSLTNode {
         
         // Apply namespace alias to element if needed
         // Alias is looked up by the element's namespace URI
-        String outputUri = namespaceURI != null ? namespaceURI : "";
+        String outputUri = OutputHandlerUtils.effectiveUri(namespaceURI);
         String outputPrefix = prefix;
         
         CompiledStylesheet.NamespaceAlias elementAlias = stylesheet.getNamespaceAlias(outputUri);
@@ -561,7 +562,7 @@ public final class LiteralResultElement implements XSLTNode {
 
     @Override
     public String toString() {
-        String qName = prefix != null && !prefix.isEmpty() ? prefix + ":" + localName : localName;
+        String qName = OutputHandlerUtils.buildQName(prefix, localName);
         return "LiteralResultElement[" + qName + "]";
     }
 

@@ -316,6 +316,13 @@ public final class BinaryExpr implements Expr {
     }
 
     /**
+     * Checks if a single value is a typed xs:string (not xs:untypedAtomic).
+     */
+    private static boolean isTypedString(XPathValue val) {
+        return val instanceof XPathString && !(val instanceof XPathUntypedAtomic);
+    }
+
+    /**
      * Atomizes a value to a list of strings.
      * For list types (xs:NMTOKENS, xs:IDREFS), returns multiple values.
      */
@@ -563,6 +570,19 @@ public final class BinaryExpr implements Expr {
             throw new XPathException("XPTY0004: QName values do not support ordering comparisons");
         }
         
+        // XPath 2.0+: XPTY0004 when comparing numeric with typed xs:string
+        boolean isXPath2 = context != null && context.getXsltVersion() >= 2.0;
+        if (isXPath2) {
+            boolean leftIsNum = leftVal.getType() == XPathValue.Type.NUMBER;
+            boolean rightIsNum = rightVal.getType() == XPathValue.Type.NUMBER;
+            boolean leftIsTypedStr = isTypedString(leftVal);
+            boolean rightIsTypedStr = isTypedString(rightVal);
+            if ((leftIsNum && rightIsTypedStr) || (rightIsNum && leftIsTypedStr)) {
+                throw new XPathException(
+                    "XPTY0004: Cannot compare xs:string with numeric value");
+            }
+        }
+
         // XPath 1.0 Section 3.4 comparison rules:
         // 1. If at least one is boolean, compare as booleans
         // 2. If at least one is number, compare as numbers

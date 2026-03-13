@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.xpath.expr;
 import java.util.List;
 
 import org.bluezoo.gonzalez.transform.xpath.XPathContext;
+import org.bluezoo.gonzalez.transform.xpath.type.NativeFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathArray;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathFunctionItem;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathMap;
@@ -120,6 +121,14 @@ public final class DynamicFunctionCallExpr implements Expr {
                 evaluatedArgs.add(arg.evaluate(context));
             }
             return dynPartial.invoke(evaluatedArgs, context);
+        }
+        if (baseValue instanceof NativeFunctionItem) {
+            NativeFunctionItem nativeFunc = (NativeFunctionItem) baseValue;
+            List<XPathValue> evaluatedArgs = new java.util.ArrayList<XPathValue>();
+            for (Expr arg : args) {
+                evaluatedArgs.add(arg.evaluate(context));
+            }
+            return nativeFunc.invoke(evaluatedArgs, context);
         }
         if (baseValue instanceof XPathFunctionItem) {
             XPathFunctionItem funcItem = (XPathFunctionItem) baseValue;

@@ -39,7 +39,9 @@ import org.xml.sax.SAXException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * XSLT 3.0 xsl:source-document instruction.
@@ -168,6 +170,10 @@ public final class SourceDocumentNode implements XSLTNode {
                     context.getStylesheet(), context);
                 mgr.initialize();
                 mgr.setStreamingMode(true);
+                if (useAccumulators != null) {
+                    Set<String> applicable = parseAccumulatorNames(useAccumulators);
+                    mgr.setApplicableAccumulators(applicable);
+                }
                 streamCtx.setAccumulatorManager(mgr);
             }
 
@@ -221,9 +227,57 @@ public final class SourceDocumentNode implements XSLTNode {
                 docContext = context.withContextNode(documentNode)
                     .withPositionAndSize(1, 1);
             }
-            
-            body.execute(docContext, output);
+
+            // XTDE3362: enforce use-accumulators restriction
+            AccumulatorManager savedMgr = null;
+            if (useAccumulators != null && stylesheet != null
+                    && !stylesheet.getAccumulators().isEmpty()) {
+                Set<String> applicable = parseAccumulatorNames(useAccumulators);
+                AccumulatorManager mgr = new AccumulatorManager(stylesheet, context);
+                mgr.initialize();
+                mgr.setApplicableAccumulators(applicable);
+                if (docContext instanceof BasicTransformContext) {
+                    savedMgr = ((BasicTransformContext) docContext).getAccumulatorManager();
+                    ((BasicTransformContext) docContext).setAccumulatorManager(mgr);
+                }
+            }
+
+            try {
+                body.execute(docContext, output);
+            } finally {
+                if (savedMgr != null && docContext instanceof BasicTransformContext) {
+                    ((BasicTransformContext) docContext).setAccumulatorManager(savedMgr);
+                }
+            }
         }
+    }
+
+    /**
+     * Parses a whitespace-separated use-accumulators value into a set of names.
+     */
+    private static Set<String> parseAccumulatorNames(String value) {
+        Set<String> names = new HashSet<String>();
+        int start = 0;
+        int len = value.length();
+        while (start < len) {
+            while (start < len && Character.isWhitespace(value.charAt(start))) {
+                start++;
+            }
+            if (start >= len) {
+                break;
+            }
+            int end = start;
+            while (end < len && !Character.isWhitespace(value.charAt(end))) {
+                end++;
+            }
+            String token = value.substring(start, end);
+            if ("#all".equals(token)) {
+                return null;
+            }
+            names.add(token);
+            start = end;
+        }
+        return names;
     }
 
     /**

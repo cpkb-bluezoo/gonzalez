@@ -33,6 +33,7 @@ import org.bluezoo.gonzalez.transform.runtime.SAXEventBuffer;
 import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
 import java.io.OutputStream;
 import java.io.FileOutputStream;
@@ -81,6 +82,18 @@ public final class ResultDocumentNode implements XSLTNode {
     private final String typeNamespaceURI;
     private final String typeLocalName;
     private final ValidationMode validation;
+    private String sourceSystemId;
+    private int sourceLineNumber = -1;
+    private int sourceColumnNumber = -1;
+
+    /**
+     * Sets the source location for error reporting.
+     */
+    public void setSourceLocation(String systemId, int lineNumber, int columnNumber) {
+        this.sourceSystemId = systemId;
+        this.sourceLineNumber = lineNumber;
+        this.sourceColumnNumber = columnNumber;
+    }
 
     /**
      * Creates a new result-document instruction.
@@ -187,10 +200,14 @@ public final class ResultDocumentNode implements XSLTNode {
         
         try {
             if (href != null && !href.isEmpty()) {
-                // XTDE1490: check for duplicate result document URI
                 URI uri = resolveHref(href, context);
                 String uriStr = uri.toString();
-                context.claimResultDocumentUri(uriStr);
+                try {
+                    context.claimResultDocumentUri(uriStr);
+                } catch (SAXException e) {
+                    throw new SAXParseException(e.getMessage(), null,
+                        sourceSystemId, sourceLineNumber, sourceColumnNumber);
+                }
                 
                 // fn:transform() secondary output capture
                 Map<String, OutputHandler> collector = null;
@@ -215,11 +232,11 @@ public final class ResultDocumentNode implements XSLTNode {
                 // No href - write to principal output
                 OutputHandler principalOutput = context.getPrincipalOutput();
                 OutputHandler target = principalOutput != null ? principalOutput : output;
-                // XTDE1490: error if the principal output already has content (implicit or
-                // from another xsl:result-document) creating duplicate result trees
                 if (target.hasReceivedContent()) {
-                    throw new SAXException("XTDE1490: Cannot write to the principal output URI " +
-                        "because it has already been used");
+                    throw new SAXParseException(
+                        "XTDE1490: Cannot write to the principal output URI " +
+                        "because it has already been used", null,
+                        sourceSystemId, sourceLineNumber, sourceColumnNumber);
                 }
                 context.claimResultDocumentUri("");
                 // Configure handler for json/adaptive output method

@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.QName;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 
 /**
@@ -99,5 +100,10 @@ final class ElementTest implements NodeTest {
             sb.append('*');
         }
         return sb.toString();
+    }
+
+    @Override
+    public NodeType getMatchableNodeType() {
+        return NodeType.ELEMENT;
     }
 }

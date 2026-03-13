@@ -26,10 +26,12 @@ import java.util.Iterator;
 import org.xml.sax.SAXException;
 
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.OutputHandlerUtils;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeSet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathResultTreeFragment;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathSequence;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -75,13 +77,70 @@ final class ValueOutputHelper {
         }
     }
 
+    /**
+     * Deep-copies a node and all its descendants to the output handler.
+     * Copies element structure with attributes but not namespace declarations.
+     * Used by built-in template deep-copy behavior.
+     */
+    static void deepCopyNode(XPathNode node, OutputHandler output) throws SAXException {
+        switch (node.getNodeType()) {
+            case ELEMENT:
+                String uri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
+                String localName = node.getLocalName();
+                String prefix = node.getPrefix();
+                String qName = OutputHandlerUtils.buildQName(prefix, localName);
+
+                output.startElement(uri, localName, qName);
+
+                Iterator<XPathNode> attrIter = node.getAttributes();
+                while (attrIter.hasNext()) {
+                    XPathNode attr = attrIter.next();
+                    String aUri = OutputHandlerUtils.effectiveUri(attr.getNamespaceURI());
+                    String aLocal = attr.getLocalName();
+                    String aPrefix = attr.getPrefix();
+                    String aQName = OutputHandlerUtils.buildQName(aPrefix, aLocal);
+                    output.attribute(aUri, aLocal, aQName, attr.getStringValue());
+                }
+
+                Iterator<XPathNode> children = node.getChildren();
+                while (children.hasNext()) {
+                    deepCopyNode(children.next(), output);
+                }
+
+                output.endElement(uri, localName, qName);
+                break;
+
+            case TEXT:
+                output.characters(node.getStringValue());
+                break;
+
+            case COMMENT:
+                output.comment(node.getStringValue());
+                break;
+
+            case PROCESSING_INSTRUCTION:
+                output.processingInstruction(node.getLocalName(), node.getStringValue());
+                break;
+
+            case ROOT:
+                Iterator<XPathNode> rootChildren = node.getChildren();
+                while (rootChildren.hasNext()) {
+                    deepCopyNode(rootChildren.next(), output);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+
     static void outputNode(XPathNode node, OutputHandler output) throws SAXException {
         switch (node.getNodeType()) {
             case ELEMENT:
-                String uri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
+                String uri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
                 String localName = node.getLocalName();
                 String prefix = node.getPrefix();
-                String qName = prefix != null ? prefix + ":" + localName : localName;
+                String qName = OutputHandlerUtils.buildQName(prefix, localName);
                 
                 output.startElement(uri, localName, qName);
                 
@@ -98,10 +157,10 @@ final class ValueOutputHelper {
                 Iterator<XPathNode> attrs = node.getAttributes();
                 while (attrs.hasNext()) {
                     XPathNode attr = attrs.next();
-                    String attrUri = attr.getNamespaceURI() != null ? attr.getNamespaceURI() : "";
+                    String attrUri = OutputHandlerUtils.effectiveUri(attr.getNamespaceURI());
                     String attrLocal = attr.getLocalName();
                     String attrPrefix = attr.getPrefix();
-                    String attrQName = attrPrefix != null ? attrPrefix + ":" + attrLocal : attrLocal;
+                    String attrQName = OutputHandlerUtils.buildQName(attrPrefix, attrLocal);
                     output.attribute(attrUri, attrLocal, attrQName, attr.getStringValue());
                 }
                 
@@ -133,11 +192,15 @@ final class ValueOutputHelper {
                 break;
                 
             case ATTRIBUTE:
-                String atUri = node.getNamespaceURI() != null ? node.getNamespaceURI() : "";
+                String atUri = OutputHandlerUtils.effectiveUri(node.getNamespaceURI());
                 String atLocal = node.getLocalName();
                 String atPrefix = node.getPrefix();
-                String atQName = atPrefix != null ? atPrefix + ":" + atLocal : atLocal;
+                String atQName = OutputHandlerUtils.buildQName(atPrefix, atLocal);
                 output.attribute(atUri, atLocal, atQName, node.getStringValue());
+                break;
+                
+            case NAMESPACE:
+                output.namespace(node.getLocalName(), node.getStringValue());
                 break;
                 
             default:
