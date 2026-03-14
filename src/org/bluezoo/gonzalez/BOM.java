@@ -27,7 +27,7 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * Represents the Byte Order Mark (BOM) detected at the start of an XML document.
- * 
+ *
  * <p>XML/text declarations only contain 7-bit ASCII characters, so we can
  * read them directly from the ByteBuffer without creating a CharsetDecoder.
  * The BOM determines how bytes map to characters during declaration parsing:
@@ -36,43 +36,59 @@ import java.nio.charset.StandardCharsets;
  * <li>UTF8: UTF-8 BOM (EF BB BF), 1 byte per ASCII character</li>
  * <li>UTF16LE: UTF-16 LE BOM (FF FE), 2 bytes per character (little-endian)</li>
  * <li>UTF16BE: UTF-16 BE BOM (FE FF), 2 bytes per character (big-endian)</li>
+ * <li>UTF32LE: UTF-32 LE BOM (FF FE 00 00), 4 bytes per character (little-endian)</li>
+ * <li>UTF32BE: UTF-32 BE BOM (00 00 FE FF), 4 bytes per character (big-endian)</li>
  * </ul>
- * 
+ *
  * <p>After parsing the declaration, the actual Charset and CharsetDecoder
  * can be created based on the encoding attribute (if present). The BOM value
  * is used to validate that any declared encoding is compatible with the BOM.
- * 
+ *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
 enum BOM {
-    
+
     /**
      * No BOM present.
      * Assumes UTF-8 compatible encoding (1 byte per ASCII character).
      * Any declared encoding is acceptable.
      */
     NONE(1, StandardCharsets.UTF_8),
-    
+
     /**
      * UTF-8 BOM: 0xEF 0xBB 0xBF
      * 1 byte per ASCII character.
      * Declared encoding must be UTF-8 compatible.
      */
     UTF8(1, StandardCharsets.UTF_8),
-    
+
     /**
      * UTF-16 Little Endian BOM: 0xFF 0xFE
      * 2 bytes per character, low byte first.
      * Declared encoding must be UTF-16 compatible.
      */
     UTF16LE(2, StandardCharsets.UTF_16LE),
-    
+
     /**
      * UTF-16 Big Endian BOM: 0xFE 0xFF
      * 2 bytes per character, high byte first.
      * Declared encoding must be UTF-16 compatible.
      */
-    UTF16BE(2, StandardCharsets.UTF_16BE);
+    UTF16BE(2, StandardCharsets.UTF_16BE),
+
+    /**
+     * UTF-32 Little Endian BOM: 0xFF 0xFE 0x00 0x00
+     * 4 bytes per character, low byte first.
+     * Declared encoding must be UTF-32 compatible.
+     */
+    UTF32LE(4, Charset.forName("UTF-32LE")),
+
+    /**
+     * UTF-32 Big Endian BOM: 0x00 0x00 0xFE 0xFF
+     * 4 bytes per character, high byte first.
+     * Declared encoding must be UTF-32 compatible.
+     */
+    UTF32BE(4, Charset.forName("UTF-32BE"));
     
     /** Number of bytes per character for 7-bit ASCII */
     final int bytesPerChar;
@@ -127,11 +143,41 @@ enum BOM {
                 lo = data.get() & 0xFF;
                 if (hi != 0 || lo > 0x7F) {
                     throw new IllegalArgumentException(
-                        "Non-ASCII character in XML/text declaration: 0x" + 
+                        "Non-ASCII character in XML/text declaration: 0x" +
                         Integer.toHexString((hi << 8) | lo));
                 }
                 return lo;
-                
+
+            case UTF32LE:
+                if (data.remaining() < 4) {
+                    return -1;
+                }
+                int b0 = data.get() & 0xFF;
+                int b1 = data.get() & 0xFF;
+                int b2 = data.get() & 0xFF;
+                int b3 = data.get() & 0xFF;
+                if (b1 != 0 || b2 != 0 || b3 != 0 || b0 > 0x7F) {
+                    throw new IllegalArgumentException(
+                        "Non-ASCII character in XML/text declaration: 0x" +
+                        Integer.toHexString(b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)));
+                }
+                return b0;
+
+            case UTF32BE:
+                if (data.remaining() < 4) {
+                    return -1;
+                }
+                b0 = data.get() & 0xFF;
+                b1 = data.get() & 0xFF;
+                b2 = data.get() & 0xFF;
+                b3 = data.get() & 0xFF;
+                if (b0 != 0 || b1 != 0 || b2 != 0 || b3 > 0x7F) {
+                    throw new IllegalArgumentException(
+                        "Non-ASCII character in XML/text declaration: 0x" +
+                        Integer.toHexString((b0 << 24) | (b1 << 16) | (b2 << 8) | b3));
+                }
+                return b3;
+
             default:
                 throw new IllegalStateException("Unknown BOM: " + this);
         }

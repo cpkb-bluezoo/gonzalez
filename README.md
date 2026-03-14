@@ -342,10 +342,26 @@ Set to `0` to disable the limit (not recommended for untrusted input).
 Use ant to build the project:
 
 ```bash
-ant
+ant dist
 ```
 
-This produces a jar file in the `dist` directory.
+This produces three jar files in the `dist` directory:
+
+| JAR | Contents | Dependencies |
+|-----|----------|--------------|
+| `gonzalez-core-1.2.jar` | Parser, XMLWriter, DTD (~230 KB) | None |
+| `gonzalez-xslt-1.2.jar` | XSLT transformer, schema (~1.7 MB) | gonzalez-core, jsonparser |
+| `gonzalez-1.2.jar` | Combined (fat jar) (~1.9 MB) | jsonparser |
+
+**When to use which:**
+- **Core only** — Use `gonzalez-core` if you only need XML parsing/serialization (e.g. Gumdrop, Netty pipelines). Zero external dependencies.
+- **XSLT** — Use `gonzalez-xslt` (plus `gonzalez-core` and jsonparser) for XSLT transformation.
+- **Fat jar** — Use `gonzalez-1.2.jar` for backward compatibility or when you want everything in one artifact.
+
+**Download from GitHub Releases:**
+- [gonzalez-core-1.2.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2/gonzalez-core-1.2.jar)
+- [gonzalez-xslt-1.2.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2/gonzalez-xslt-1.2.jar)
+- [gonzalez-1.2.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2/gonzalez-1.2.jar)
 
 The build downloads the jsonparser library automatically (see Dependencies below).
 
@@ -403,16 +419,25 @@ official release.
 ## Dependencies
 
 - Java 8 or later (including SAX API)
-- **jsonparser** (org.bluezoo.json) — used by the XSLT transformer for XML-to-JSON and
-  JSON-to-XML translation (`xml-to-json`, `json-to-xml`, `parse-json`). The build
-  downloads `jsonparser-1.2.jar` from [GitHub Releases](https://github.com/cpkb-bluezoo/jsonparser/releases)
+- **gonzalez-core** — Zero external dependencies.
+- **gonzalez-xslt** — Requires `gonzalez-core` and **jsonparser** (org.bluezoo.json). The jsonparser
+  library is used for XML-to-JSON and JSON-to-XML translation (`xml-to-json`, `json-to-xml`,
+  `parse-json`). The build downloads `jsonparser-1.2.jar` from [GitHub Releases](https://github.com/cpkb-bluezoo/jsonparser/releases)
   via the `resolve-deps` target.
 
-For Java 9+, Gonzalez is a proper JPMS module:
+For Java 9+, Gonzalez provides JPMS modules:
 
 ```java
+// Parser/writer only (zero dependencies)
 module myapp {
     requires org.bluezoo.gonzalez;
+}
+
+// XSLT support (requires core + jsonparser)
+module myapp {
+    requires org.bluezoo.gonzalez;
+    requires org.bluezoo.gonzalez.xslt;
+    requires org.bluezoo.json;
 }
 ```
 

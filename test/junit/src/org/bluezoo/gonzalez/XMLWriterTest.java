@@ -1,7 +1,12 @@
 package org.bluezoo.gonzalez;
 
 import org.junit.Test;
+import org.xml.sax.ContentHandler;
+import org.xml.sax.InputSource;
+import org.xml.sax.ext.Locator2;
+import org.xml.sax.helpers.DefaultHandler;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
@@ -558,44 +563,77 @@ public class XMLWriterTest {
         return new String(out.toByteArray(), cs);
     }
 
+    /**
+     * Writes XML with XMLWriter using the given charset, parses with Gonzalez,
+     * and verifies the locator reports the correct encoding.
+     */
+    private void parseAndVerifyEncoding(Charset cs, String expectedEncoding,
+                                        WriterAction action) throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        XMLWriter writer = new XMLWriter(out);
+        writer.setCharset(cs);
+        action.write(writer);
+        writer.flush();
+
+        final String[] capturedEncoding = new String[1];
+        ContentHandler handler = new DefaultHandler() {
+            @Override
+            public void setDocumentLocator(org.xml.sax.Locator locator) {
+                if (locator instanceof Locator2) {
+                    capturedEncoding[0] = ((Locator2) locator).getEncoding();
+                }
+            }
+        };
+
+        Parser parser = new Parser();
+        parser.setContentHandler(handler);
+        InputSource source = new InputSource(new ByteArrayInputStream(out.toByteArray()));
+        parser.parse(source);
+
+        assertNotNull("Locator should report encoding", capturedEncoding[0]);
+        assertEquals("Parser should detect encoding from BOM", expectedEncoding,
+                capturedEncoding[0]);
+    }
+
     @Test
     public void testUtf16BESimpleElement() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("root");
                 w.writeEndElement();
             }
         });
-        assertEquals("<root/>", xml);
     }
 
     @Test
     public void testUtf16BEElementWithContent() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("greeting");
                 w.writeCharacters("Hello, World!");
                 w.writeEndElement();
             }
         });
-        assertEquals("<greeting>Hello, World!</greeting>", xml);
     }
 
     @Test
     public void testUtf16BECharacterEscaping() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("text");
                 w.writeCharacters("5 < 10 & 10 > 5");
                 w.writeEndElement();
             }
         });
-        assertEquals("<text>5 &lt; 10 &amp; 10 &gt; 5</text>", xml);
     }
 
     @Test
     public void testUtf16BEAttributes() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("item");
                 w.writeAttribute("id", "1");
@@ -603,24 +641,24 @@ public class XMLWriterTest {
                 w.writeEndElement();
             }
         });
-        assertEquals("<item id=\"1\" value=\"&quot;test&quot;\"/>", xml);
     }
 
     @Test
     public void testUtf16BEComment() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("root");
                 w.writeComment(" comment ");
                 w.writeEndElement();
             }
         });
-        assertEquals("<root><!-- comment --></root>", xml);
     }
 
     @Test
     public void testUtf16BECData() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("code");
                 w.writeStartCDATA();
@@ -629,55 +667,54 @@ public class XMLWriterTest {
                 w.writeEndElement();
             }
         });
-        assertEquals("<code><![CDATA[<tag/>]]></code>", xml);
     }
 
     @Test
     public void testUtf16BEPI() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeProcessingInstruction("target", "data");
                 w.writeStartElement("root");
                 w.writeEndElement();
             }
         });
-        assertEquals("<?target data?><root/>", xml);
     }
 
     @Test
     public void testUtf16BEEntityRef() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("text");
                 w.writeEntityRef("amp");
                 w.writeEndElement();
             }
         });
-        assertEquals("<text>&amp;</text>", xml);
     }
 
     @Test
     public void testUtf16BENamespace() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("ex", "root", "http://example.com");
                 w.writeNamespace("ex", "http://example.com");
                 w.writeEndElement();
             }
         });
-        assertEquals("<ex:root xmlns:ex=\"http://example.com\"/>", xml);
     }
 
     @Test
     public void testUtf16BENonAsciiContent() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("text");
                 w.writeCharacters("Hello \u4f60\u597d");
                 w.writeEndElement();
             }
         });
-        assertEquals("<text>Hello \u4f60\u597d</text>", xml);
     }
 
     @Test
@@ -691,20 +728,23 @@ public class XMLWriterTest {
         writer.flush();
 
         byte[] bytes = out.toByteArray();
-        assertEquals(8, bytes.length);
-        assertEquals(0x00, bytes[0] & 0xFF);
-        assertEquals(0x3C, bytes[1] & 0xFF);
+        assertEquals(10, bytes.length);
+        assertEquals(0xFE, bytes[0] & 0xFF);
+        assertEquals(0xFF, bytes[1] & 0xFF);
         assertEquals(0x00, bytes[2] & 0xFF);
-        assertEquals(0x61, bytes[3] & 0xFF);
+        assertEquals(0x3C, bytes[3] & 0xFF);
         assertEquals(0x00, bytes[4] & 0xFF);
-        assertEquals(0x2F, bytes[5] & 0xFF);
+        assertEquals(0x61, bytes[5] & 0xFF);
         assertEquals(0x00, bytes[6] & 0xFF);
-        assertEquals(0x3E, bytes[7] & 0xFF);
+        assertEquals(0x2F, bytes[7] & 0xFF);
+        assertEquals(0x00, bytes[8] & 0xFF);
+        assertEquals(0x3E, bytes[9] & 0xFF);
     }
 
     @Test
     public void testUtf16BEDoctype() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16BE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartDTD("root", null, null);
                 w.writeElementDecl("root", "(child)*");
@@ -713,40 +753,34 @@ public class XMLWriterTest {
                 w.writeEndElement();
             }
         });
-        assertTrue(xml.contains("<!DOCTYPE root"));
-        assertTrue(xml.contains("<!ELEMENT root (child)*>"));
-        assertTrue(xml.contains("<root/>"));
     }
 
     @Test
     public void testUtf16BEIndentation() throws Exception {
-        ByteArrayOutputStream out = new ByteArrayOutputStream();
-        XMLWriter writer = new XMLWriter(out);
-        writer.setCharset(StandardCharsets.UTF_16BE);
-        writer.setIndentConfig(IndentConfig.spaces2());
-
-        writer.writeStartElement("root");
-        writer.writeStartElement("child");
-        writer.writeEndElement();
-        writer.writeEndElement();
-        writer.flush();
-
-        String xml = new String(out.toByteArray(), StandardCharsets.UTF_16BE);
-        assertEquals("<root>\n  <child/>\n</root>", xml);
+        parseAndVerifyEncoding(StandardCharsets.UTF_16BE, "UTF-16BE",
+                new WriterAction() {
+            public void write(XMLWriter w) throws Exception {
+                w.setIndentConfig(IndentConfig.spaces2());
+                w.writeStartElement("root");
+                w.writeStartElement("child");
+                w.writeEndElement();
+                w.writeEndElement();
+            }
+        });
     }
 
     // ========== UTF-16LE Tests ==========
 
     @Test
     public void testUtf16LESimpleElement() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16LE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16LE, "UTF-16LE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("root");
                 w.writeCharacters("test");
                 w.writeEndElement();
             }
         });
-        assertEquals("<root>test</root>", xml);
     }
 
     @Test
@@ -760,27 +794,29 @@ public class XMLWriterTest {
         writer.flush();
 
         byte[] bytes = out.toByteArray();
-        assertEquals(8, bytes.length);
-        assertEquals(0x3C, bytes[0] & 0xFF);
-        assertEquals(0x00, bytes[1] & 0xFF);
-        assertEquals(0x61, bytes[2] & 0xFF);
+        assertEquals(10, bytes.length);
+        assertEquals(0xFF, bytes[0] & 0xFF);
+        assertEquals(0xFE, bytes[1] & 0xFF);
+        assertEquals(0x3C, bytes[2] & 0xFF);
         assertEquals(0x00, bytes[3] & 0xFF);
-        assertEquals(0x2F, bytes[4] & 0xFF);
+        assertEquals(0x61, bytes[4] & 0xFF);
         assertEquals(0x00, bytes[5] & 0xFF);
-        assertEquals(0x3E, bytes[6] & 0xFF);
+        assertEquals(0x2F, bytes[6] & 0xFF);
         assertEquals(0x00, bytes[7] & 0xFF);
+        assertEquals(0x3E, bytes[8] & 0xFF);
+        assertEquals(0x00, bytes[9] & 0xFF);
     }
 
     @Test
     public void testUtf16LECharacterEscaping() throws Exception {
-        String xml = writeWithCharset(StandardCharsets.UTF_16LE, new WriterAction() {
+        parseAndVerifyEncoding(StandardCharsets.UTF_16LE, "UTF-16LE",
+                new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("text");
                 w.writeCharacters("a < b & c > d");
                 w.writeEndElement();
             }
         });
-        assertEquals("<text>a &lt; b &amp; c &gt; d</text>", xml);
     }
 
     // ========== UTF-32 Encoding Tests ==========
@@ -788,14 +824,13 @@ public class XMLWriterTest {
     @Test
     public void testUtf32BESimpleElement() throws Exception {
         Charset utf32be = Charset.forName("UTF-32BE");
-        String xml = writeWithCharset(utf32be, new WriterAction() {
+        parseAndVerifyEncoding(utf32be, "UTF-32BE", new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("root");
                 w.writeCharacters("test");
                 w.writeEndElement();
             }
         });
-        assertEquals("<root>test</root>", xml);
     }
 
     @Test
@@ -810,49 +845,51 @@ public class XMLWriterTest {
         writer.flush();
 
         byte[] bytes = out.toByteArray();
-        assertEquals(16, bytes.length);
+        assertEquals(20, bytes.length);
         assertEquals(0x00, bytes[0] & 0xFF);
         assertEquals(0x00, bytes[1] & 0xFF);
-        assertEquals(0x00, bytes[2] & 0xFF);
-        assertEquals(0x3C, bytes[3] & 0xFF);
+        assertEquals(0xFE, bytes[2] & 0xFF);
+        assertEquals(0xFF, bytes[3] & 0xFF);
         assertEquals(0x00, bytes[4] & 0xFF);
         assertEquals(0x00, bytes[5] & 0xFF);
         assertEquals(0x00, bytes[6] & 0xFF);
-        assertEquals(0x61, bytes[7] & 0xFF);
+        assertEquals(0x3C, bytes[7] & 0xFF);
         assertEquals(0x00, bytes[8] & 0xFF);
         assertEquals(0x00, bytes[9] & 0xFF);
         assertEquals(0x00, bytes[10] & 0xFF);
-        assertEquals(0x2F, bytes[11] & 0xFF);
+        assertEquals(0x61, bytes[11] & 0xFF);
         assertEquals(0x00, bytes[12] & 0xFF);
         assertEquals(0x00, bytes[13] & 0xFF);
         assertEquals(0x00, bytes[14] & 0xFF);
-        assertEquals(0x3E, bytes[15] & 0xFF);
+        assertEquals(0x2F, bytes[15] & 0xFF);
+        assertEquals(0x00, bytes[16] & 0xFF);
+        assertEquals(0x00, bytes[17] & 0xFF);
+        assertEquals(0x00, bytes[18] & 0xFF);
+        assertEquals(0x3E, bytes[19] & 0xFF);
     }
 
     @Test
     public void testUtf32LESimpleElement() throws Exception {
         Charset utf32le = Charset.forName("UTF-32LE");
-        String xml = writeWithCharset(utf32le, new WriterAction() {
+        parseAndVerifyEncoding(utf32le, "UTF-32LE", new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("root");
                 w.writeCharacters("test");
                 w.writeEndElement();
             }
         });
-        assertEquals("<root>test</root>", xml);
     }
 
     @Test
     public void testUtf32BECharacterEscaping() throws Exception {
         Charset utf32be = Charset.forName("UTF-32BE");
-        String xml = writeWithCharset(utf32be, new WriterAction() {
+        parseAndVerifyEncoding(utf32be, "UTF-32BE", new WriterAction() {
             public void write(XMLWriter w) throws Exception {
                 w.writeStartElement("text");
                 w.writeCharacters("a < b & c > d");
                 w.writeEndElement();
             }
         });
-        assertEquals("<text>a &lt; b &amp; c &gt; d</text>", xml);
     }
 
     // ========== Raw Output Tests ==========

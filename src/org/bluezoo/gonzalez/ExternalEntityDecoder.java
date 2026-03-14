@@ -266,12 +266,16 @@ class ExternalEntityDecoder {
         if (state != State.INIT) {
             throw new IllegalStateException("Cannot set initial charset after decoding has started");
         }
-        // Map charset to byte encoding for declaration parsing
         if (initialCharset != null) {
-            if (initialCharset.equals(StandardCharsets.UTF_16LE)) {
+            String name = initialCharset.name();
+            if (name.equals("UTF-16LE") || initialCharset.equals(StandardCharsets.UTF_16LE)) {
                 bom = BOM.UTF16LE;
-            } else if (initialCharset.equals(StandardCharsets.UTF_16BE)) {
+            } else if (name.equals("UTF-16BE") || initialCharset.equals(StandardCharsets.UTF_16BE)) {
                 bom = BOM.UTF16BE;
+            } else if (name.equals("UTF-32LE")) {
+                bom = BOM.UTF32LE;
+            } else if (name.equals("UTF-32BE")) {
+                bom = BOM.UTF32BE;
             } else {
                 bom = BOM.NONE;
             }
@@ -282,61 +286,82 @@ class ExternalEntityDecoder {
     
     /**
      * Detects and consumes a BOM if present, setting the byte encoding accordingly.
-     * 
+     *
      * @return true if BOM detection is complete, false if more data is needed
      */
     private boolean parseBOM(ByteBuffer data) throws SAXException {
         int startPos = data.position();
-        
+
         if (data.remaining() < 2) {
-            return false; // Need at least 2 bytes for BOM detection
+            return false;
         }
-        
+
         int b0 = data.get() & 0xFF;
         int b1 = data.get() & 0xFF;
-        
+
         if (b0 == 0xFE && b1 == 0xFF) {
-            // UTF-16 Big Endian BOM
             bom = BOM.UTF16BE;
-            startDecl = data.position();
-            tokenizer.charPosition = 1; // BOM is 1 character
-            tokenizer.columnNumber = 1;
-            tokenizer.locationValidCharPos = 1;
-        } else if (b0 == 0xFF && b1 == 0xFE) {
-            // UTF-16 Little Endian BOM
-            bom = BOM.UTF16LE;
             startDecl = data.position();
             tokenizer.charPosition = 1;
             tokenizer.columnNumber = 1;
             tokenizer.locationValidCharPos = 1;
+        } else if (b0 == 0xFF && b1 == 0xFE) {
+            if (data.remaining() < 2) {
+                data.position(startPos);
+                return false;
+            }
+            int b2 = data.get() & 0xFF;
+            int b3 = data.get() & 0xFF;
+            if (b2 == 0x00 && b3 == 0x00) {
+                bom = BOM.UTF32LE;
+            } else {
+                bom = BOM.UTF16LE;
+                data.position(startPos + 2);
+            }
+            startDecl = data.position();
+            tokenizer.charPosition = 1;
+            tokenizer.columnNumber = 1;
+            tokenizer.locationValidCharPos = 1;
+        } else if (b0 == 0x00 && b1 == 0x00) {
+            if (data.remaining() < 2) {
+                data.position(startPos);
+                return false;
+            }
+            int b2 = data.get() & 0xFF;
+            int b3 = data.get() & 0xFF;
+            if (b2 == 0xFE && b3 == 0xFF) {
+                bom = BOM.UTF32BE;
+                startDecl = data.position();
+                tokenizer.charPosition = 1;
+                tokenizer.columnNumber = 1;
+                tokenizer.locationValidCharPos = 1;
+            } else {
+                data.position(startPos);
+                startDecl = startPos;
+            }
         } else if (b0 == 0xEF && b1 == 0xBB) {
-            // Potential UTF-8 BOM, need third byte
             if (!data.hasRemaining()) {
                 data.position(startPos);
                 return false;
             }
             int b2 = data.get() & 0xFF;
             if (b2 == 0xBF) {
-                // UTF-8 BOM
                 bom = BOM.UTF8;
                 startDecl = data.position();
                 tokenizer.charPosition = 1;
                 tokenizer.columnNumber = 1;
                 tokenizer.locationValidCharPos = 1;
             } else {
-                // Not a BOM, restore position
                 data.position(startPos);
                 startDecl = startPos;
             }
         } else {
-            // No BOM, restore position
             data.position(startPos);
             startDecl = startPos;
         }
-        
-        // Set encoding on declaration parser
+
         declParser.setBOM(bom);
-        
+
         state = State.SEEN_BOM;
         return true;
     }
@@ -466,7 +491,7 @@ class ExternalEntityDecoder {
      */
     private void validateBOMEncodingCompatibility(String declEncoding) throws SAXException {
         String normalized = declEncoding.toUpperCase().replace("-", "").replace("_", "");
-        
+
         switch (bom) {
             case UTF16BE:
                 if (!normalized.contains("UTF16")) {
@@ -474,23 +499,36 @@ class ExternalEntityDecoder {
                         "Encoding '" + declEncoding + "' is incompatible with UTF-16 BE BOM");
                 }
                 break;
-                
+
             case UTF16LE:
                 if (!normalized.contains("UTF16")) {
                     throw tokenizer.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-16 LE BOM");
                 }
                 break;
-                
+
+            case UTF32BE:
+                if (!normalized.contains("UTF32")) {
+                    throw tokenizer.fatalError(
+                        "Encoding '" + declEncoding + "' is incompatible with UTF-32 BE BOM");
+                }
+                break;
+
+            case UTF32LE:
+                if (!normalized.contains("UTF32")) {
+                    throw tokenizer.fatalError(
+                        "Encoding '" + declEncoding + "' is incompatible with UTF-32 LE BOM");
+                }
+                break;
+
             case UTF8:
-                if (normalized.startsWith("UTF16")) {
+                if (normalized.startsWith("UTF16") || normalized.startsWith("UTF32")) {
                     throw tokenizer.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-8 BOM");
                 }
                 break;
-                
+
             case NONE:
-                // No BOM, any encoding is acceptable
                 break;
         }
     }

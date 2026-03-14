@@ -2,6 +2,14 @@
 
 Streaming XSLT transformation facility with XSLT 3.0 streaming support
 
+## Requirements
+
+The XSLT transformer is distributed in `gonzalez-xslt-1.2.jar` and requires:
+- **gonzalez-core** — Parser and XMLWriter (in `gonzalez-core-1.2.jar`)
+- **jsonparser** — For `xml-to-json`, `json-to-xml`, and `parse-json` functions
+
+Alternatively, use the fat jar `gonzalez-1.2.jar` which includes both core and XSLT (still requires jsonparser).
+
 ## Overview
 
 The Gonzalez XSLT transformer provides streaming transformation capabilities that

@@ -33,8 +33,13 @@
   <property name='jsonparser.jar' value='jsonparser-1.2.jar'/>
   
   <!-- Gonzalez version -->
-  <property name='version' value='1.1'/>
+  <property name='version' value='1.2'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
+  <property name='gonzalez.core.jar' location='${dist}/gonzalez-core-${version}.jar'/>
+  <property name='gonzalez.xslt.jar' location='${dist}/gonzalez-xslt-${version}.jar'/>
+  <property name='build.core' location='${build}/core'/>
+  <property name='build.xslt' location='${build}/xslt'/>
+  <property name='xslt.srcdir' location='${build}/xslt-src'/>
 
   <!-- Minimum Java version for runtime (APIs used require Java 8) -->
   <property name='java.release.version' value='8'/>
@@ -67,50 +72,140 @@
          dest='${lib}/${jsonparser.jar}' skipexisting='true'/>
   </target>
 
-  <!-- Compile -->
-  <target name='build' depends='resolve-deps'>
-    <mkdir dir='${build}'/>
-    <!-- Compile main sources with Java 8 compatibility -->
-    <javac srcdir='${src}' destdir='${build}' debug='true' includeantruntime='false'
+  <!-- Compile core (parser, writer, DTD) - zero external dependencies -->
+  <target name='build-core'>
+    <mkdir dir='${build.core}'/>
+    <javac srcdir='${src}' destdir='${build.core}' debug='true' includeantruntime='false'
            release='${java.release.version}'
            source='${java.source.version}' target='${java.target.version}'>
-      <classpath>
-        <pathelement location='${lib}/${jsonparser.jar}'/>
-      </classpath>
+      <exclude name='**/transform/**'/>
+      <exclude name='**/schema/**'/>
       <exclude name='module-info.java'/>
     </javac>
-    <!-- Compile module-info.java separately with Java 9 (for JPMS support) -->
-    <javac srcdir='${src}' destdir='${build}' debug='true' includeantruntime='false'
+    <javac srcdir='${src}' destdir='${build.core}' debug='true' includeantruntime='false'
            release='9'>
-      <modulepath>
-        <pathelement location='${lib}/${jsonparser.jar}'/>
-      </modulepath>
+      <modulepath/>
       <include name='module-info.java'/>
     </javac>
-    <!-- Copy resource files (properties, etc.) -->
-    <copy todir='${build}'>
+  </target>
+
+  <!-- Prepare XSLT source tree (module-info + transform + schema packages) -->
+  <target name='prepare-xslt-src'>
+    <mkdir dir='${xslt.srcdir}'/>
+    <copy file='module/module-info-xslt.java' tofile='${xslt.srcdir}/module-info.java'/>
+    <copy todir='${xslt.srcdir}'>
       <fileset dir='${src}'>
-        <include name='**/*.properties'/>
+        <include name='org/bluezoo/gonzalez/transform/**'/>
+        <include name='org/bluezoo/gonzalez/schema/**'/>
       </fileset>
     </copy>
   </target>
 
-  <!-- Create JAR file -->
-  <target name='jar' depends='build'>
+  <!-- Compile XSLT and schema (depends on core, requires jsonparser) -->
+  <target name='build-xslt' depends='build-core,resolve-deps,prepare-xslt-src'>
+    <mkdir dir='${build.xslt}'/>
+    <javac srcdir='${xslt.srcdir}' destdir='${build.xslt}' debug='true' includeantruntime='false'
+           release='${java.release.version}'
+           source='${java.source.version}' target='${java.target.version}'>
+      <classpath>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
+      </classpath>
+      <exclude name='module-info.java'/>
+    </javac>
+    <javac srcdir='${xslt.srcdir}' destdir='${build.xslt}' debug='true' includeantruntime='false'
+           release='9'>
+      <modulepath>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
+      </modulepath>
+      <include name='module-info.java'/>
+    </javac>
+    <copy todir='${build.xslt}'>
+      <fileset dir='${src}'>
+        <include name='META-INF/xslt20.xsd'/>
+        <include name='META-INF/xslt30.xsd'/>
+        <include name='META-INF/xslt-attributes.properties'/>
+        <include name='META-INF/xsd-type-hierarchy.properties'/>
+      </fileset>
+    </copy>
+    <copy todir='${build.xslt}'>
+      <fileset dir='${src}'>
+        <include name='org/bluezoo/gonzalez/transform/**/*.properties'/>
+        <include name='org/bluezoo/gonzalez/schema/**/*.properties'/>
+      </fileset>
+    </copy>
+  </target>
+
+  <!-- Compile (core + xslt for tests and fat jar) -->
+  <target name='build' depends='build-core,build-xslt'/>
+
+  <!-- Create core JAR (parser, writer, DTD only - zero dependencies) -->
+  <target name='jar-core' depends='build-core'>
     <mkdir dir='${dist}'/>
-    <jar destfile='${gonzalez.jar}' basedir='${build}'>
+    <jar destfile='${gonzalez.core.jar}' basedir='${build.core}'>
+      <manifest>
+        <attribute name='Implementation-Title' value='Gonzalez XML Parser (Core)'/>
+        <attribute name='Implementation-Version' value='${version}'/>
+        <attribute name='Implementation-Vendor' value='Chris Burdess'/>
+      </manifest>
+      <fileset dir='${src}'>
+        <include name='META-INF/services/javax.xml.parsers.SAXParserFactory'/>
+      </fileset>
+    </jar>
+  </target>
+
+  <!-- Create XSLT JAR (transformer + schema, requires core + jsonparser) -->
+  <target name='jar-xslt' depends='build-xslt'>
+    <mkdir dir='${dist}'/>
+    <jar destfile='${gonzalez.xslt.jar}' basedir='${build.xslt}'>
+      <manifest>
+        <attribute name='Implementation-Title' value='Gonzalez XSLT Transformer'/>
+        <attribute name='Implementation-Version' value='${version}'/>
+        <attribute name='Implementation-Vendor' value='Chris Burdess'/>
+      </manifest>
+      <fileset dir='${src}'>
+        <include name='META-INF/services/javax.xml.transform.TransformerFactory'/>
+      </fileset>
+    </jar>
+  </target>
+
+  <!-- Create fat JAR (core + xslt combined for backward compatibility) -->
+  <target name='jar-all' depends='build'>
+    <property name='build.fat' location='${build}/fat'/>
+    <mkdir dir='${build.fat}'/>
+    <copy todir='${build.fat}'>
+      <fileset dir='${build.core}'/>
+    </copy>
+    <copy todir='${build.fat}'>
+      <fileset dir='${build.xslt}' excludes='module-info.class'/>
+    </copy>
+    <delete file='${build.fat}/module-info.class' failonerror='false'/>
+    <copy file='module/module-info-full.java' tofile='${build.fat}/module-info.java'/>
+    <javac srcdir='${build.fat}' destdir='${build.fat}' debug='true' includeantruntime='false'
+           release='9'>
+      <include name='module-info.java'/>
+      <modulepath>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
+      </modulepath>
+    </javac>
+    <mkdir dir='${dist}'/>
+    <jar destfile='${gonzalez.jar}' basedir='${build.fat}'>
       <manifest>
         <attribute name='Implementation-Title' value='Gonzalez XML Parser'/>
         <attribute name='Implementation-Version' value='${version}'/>
         <attribute name='Implementation-Vendor' value='Chris Burdess'/>
       </manifest>
-      <!-- Include service provider configuration for JAXP discovery -->
       <fileset dir='${src}'>
         <include name='META-INF/services/*'/>
         <include name='META-INF/*.xsd'/>
+        <include name='META-INF/*.properties'/>
       </fileset>
     </jar>
   </target>
+
+  <!-- Legacy alias -->
+  <target name='jar' depends='jar-all'/>
 
   <!-- API documentation -->
   <target name='javadoc'>
@@ -118,8 +213,8 @@
     <javadoc sourcepath='${src}' destdir='${doc}'/>
   </target>
 
-  <!-- Distribution target -->
-  <target name='dist' depends='jar'/>
+  <!-- Distribution target: core, xslt, and fat jars -->
+  <target name='dist' depends='jar-core,jar-xslt,jar-all'/>
   
   <!-- Download JUnit test framework dependencies from Maven Central -->
   <target name='resolve-test-deps' description='Download JUnit test dependencies'>
@@ -137,7 +232,9 @@
            release='${java.release.version}'
            source='${java.source.version}' target='${java.target.version}'>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
       </classpath>
@@ -151,7 +248,9 @@
            release='${java.release.version}'
            source='${java.source.version}' target='${java.target.version}'>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
         <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
       </classpath>
@@ -164,7 +263,8 @@
     <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
            failureproperty='unit.tests.failed'>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
         <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/junit/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
@@ -192,7 +292,8 @@
     <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
            failureproperty='conformance.tests.failed'>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
         <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
@@ -239,7 +340,8 @@
       <sysproperty key="project.basedir" value="${basedir}"/>
       <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
         <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
@@ -278,7 +380,8 @@
       <sysproperty key="project.basedir" value="${basedir}"/>
       <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
         <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
@@ -305,7 +408,8 @@
       <sysproperty key="project.basedir" value="${basedir}"/>
       <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
         <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
@@ -332,7 +436,8 @@
       <sysproperty key="project.basedir" value="${basedir}"/>
       <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
         <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
@@ -362,7 +467,8 @@
       <sysproperty key="xslt.skip" value="${xslt.skip}"/>
       <sysproperty key="project.basedir" value="${basedir}"/>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
         <pathelement location='${lib}/${jsonparser.jar}'/>
         <pathelement location='${test}/conformance/classes'/>
         <pathelement location='${test}/junit/lib/${junit.jar}'/>
@@ -414,7 +520,7 @@
            debug='true' 
            includeantruntime='false'>
       <classpath>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
         <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
         <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
         <pathelement location='lib/jopt-simple-5.0.4.jar'/>
@@ -431,7 +537,7 @@
     <java classname='org.openjdk.jmh.Main' fork='true'>
       <classpath>
         <pathelement location='${benchmark.build}'/>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
         <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
         <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
         <pathelement location='lib/jopt-simple-5.0.4.jar'/>
@@ -448,7 +554,7 @@
     <java classname='org.openjdk.jmh.Main' fork='true'>
       <classpath>
         <pathelement location='${benchmark.build}'/>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
         <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
         <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
         <pathelement location='lib/jopt-simple-5.0.4.jar'/>
@@ -464,7 +570,7 @@
     <java classname='org.openjdk.jmh.Main' fork='true'>
       <classpath>
         <pathelement location='${benchmark.build}'/>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
         <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
         <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
         <pathelement location='lib/jopt-simple-5.0.4.jar'/>
@@ -490,7 +596,7 @@
     <java classname='org.openjdk.jmh.Main' fork='true'>
       <classpath>
         <pathelement location='${benchmark.build}'/>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
         <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
         <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
         <pathelement location='lib/jopt-simple-5.0.4.jar'/>
@@ -513,7 +619,7 @@
     <java classname='org.openjdk.jmh.Main' fork='true'>
       <classpath>
         <pathelement location='${benchmark.build}'/>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
         <pathelement location='lib/jmh-core-${jmh.version}.jar'/>
         <pathelement location='lib/jmh-generator-annprocess-${jmh.version}.jar'/>
         <pathelement location='lib/jopt-simple-5.0.4.jar'/>
@@ -537,7 +643,7 @@
     <java classname='org.bluezoo.gonzalez.benchmark.AllocationProfiler' fork='true'>
       <classpath>
         <pathelement location='${benchmark.build}'/>
-        <pathelement location='${build}'/>
+        <pathelement location='${build.core}'/>
       </classpath>
     </java>
   </target>
