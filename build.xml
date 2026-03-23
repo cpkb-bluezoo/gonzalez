@@ -33,7 +33,7 @@
   <property name='jsonparser.jar' value='jsonparser-1.2.jar'/>
   
   <!-- Gonzalez version -->
-  <property name='version' value='1.1.1'/>
+  <property name='version' value='1.2'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
   <property name='gonzalez.core.jar' location='${dist}/gonzalez-core-${version}.jar'/>
   <property name='gonzalez.xslt.jar' location='${dist}/gonzalez-xslt-${version}.jar'/>
