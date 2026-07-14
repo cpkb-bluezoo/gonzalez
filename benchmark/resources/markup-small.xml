@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="style.xsl"?>
+<document>
+  <!-- Begin block 0: this is a moderately long comment used to pad -->
+  <!-- out the comment-processing cost of the tokenizer for block 0 -->
+  <?process-block index="0" mode="fast"?>
+  <block id="0">
+    <![CDATA[
+      raw <data> & "content" for block 0 that must not be escaped,
+      including angle brackets <<< and ampersands &&& freely.
+    ]]>
+  </block>
+  <!-- End block 0 -->
+  <!-- Begin block 1: this is a moderately long comment used to pad -->
+  <!-- out the comment-processing cost of the tokenizer for block 1 -->
+  <?process-block index="1" mode="fast"?>
+  <block id="1">
+    <![CDATA[
+      raw <data> & "content" for block 1 that must not be escaped,
+      including angle brackets <<< and ampersands &&& freely.
+    ]]>
+  </block>
+  <!-- End block 1 -->
+  <!-- Begin block 2: this is a moderately long comment used to pad -->
+  <!-- out the comment-processing cost of the tokenizer for block 2 -->
+  <?process-block index="2" mode="fast"?>
+  <block id="2">
+    <![CDATA[
+      raw <data> & "content" for block 2 that must not be escaped,
+      including angle brackets <<< and ampersands &&& freely.
+    ]]>
+  </block>
+  <!-- End block 2 -->
+  <!-- Begin block 3: this is a moderately long comment used to pad -->
+  <!-- out the comment-processing cost of the tokenizer for block 3 -->
+  <?process-block index="3" mode="fast"?>
+  <block id="3">
+    <![CDATA[
+      raw <data> & "content" for block 3 that must not be escaped,
+      including angle brackets <<< and ampersands &&& freely.
+    ]]>
+  </block>
+  <!-- End block 3 -->
+  <!-- Begin block 4: this is a moderately long comment used to pad -->
+  <!-- out the comment-processing cost of the tokenizer for block 4 -->
+  <?process-block index="4" mode="fast"?>
+  <block id="4">
+    <![CDATA[
+      raw <data> & "content" for block 4 that must not be escaped,
+      including angle brackets <<< and ampersands &&& freely.
+    ]]>
+  </block>
+  <!-- End block 4 -->
+  <!-- Begin block 5: this is a moderately long comment used to pad -->
+  <!-- out the comment-processing cost of the tokenizer for block 5 -->
+  <?process-block index="5" mode="fast"?>
+  <block id="5">
+    <![CDATA[
+      raw <data> & "content" for block 5 that must not be escaped,
+      including angle brackets <<< and ampersands &&& freely.
+    ]]>
+  </block>
+  <!-- End block 5 -->
+</document>

@@ -39,8 +39,15 @@ import java.util.concurrent.TimeUnit;
 /**
  * JMH benchmark comparing Gonzalez (ByteBuffer API) with JDK Xerces.
  *
- * <p>Tests two document types (plain XML and namespace-heavy XML) with
- * namespace-aware processing on or off, for both small and large files.
+ * <p>Tests several document shapes with namespace-aware processing on or off,
+ * for both small and large files:
+ * <ul>
+ * <li>{@code plain} / {@code namespaced} - general-purpose documents (original corpus)</li>
+ * <li>{@code attrs} - attribute-heavy elements, minimal text content</li>
+ * <li>{@code whitespace} - deeply indented, pretty-printed documents</li>
+ * <li>{@code markup} - comment/PI/CDATA-section heavy documents</li>
+ * <li>{@code multibyte} - UTF-8 multibyte content (CJK, Greek, emoji surrogate pairs)</li>
+ * </ul>
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -52,7 +59,7 @@ import java.util.concurrent.TimeUnit;
 @Fork(value = 2, jvmArgs = {"-Xms2G", "-Xmx2G"})
 public class XMLParserBenchmark {
 
-    @Param({"plain", "namespaced"})
+    @Param({"plain", "namespaced", "attrs", "whitespace", "markup", "multibyte"})
     private String docType;
 
     @Param({"true", "false"})
@@ -79,12 +86,31 @@ public class XMLParserBenchmark {
 
         Path smallFile;
         Path largeFile;
-        if ("namespaced".equals(docType)) {
-            smallFile = Paths.get("benchmark/resources/small-ns.xml");
-            largeFile = Paths.get("benchmark/resources/large-ns.xml");
-        } else {
-            smallFile = Paths.get("benchmark/resources/small.xml");
-            largeFile = Paths.get("benchmark/resources/large.xml");
+        switch (docType) {
+            case "namespaced":
+                smallFile = Paths.get("benchmark/resources/small-ns.xml");
+                largeFile = Paths.get("benchmark/resources/large-ns.xml");
+                break;
+            case "attrs":
+                smallFile = Paths.get("benchmark/resources/attrs-small.xml");
+                largeFile = Paths.get("benchmark/resources/attrs-large.xml");
+                break;
+            case "whitespace":
+                smallFile = Paths.get("benchmark/resources/whitespace-small.xml");
+                largeFile = Paths.get("benchmark/resources/whitespace-large.xml");
+                break;
+            case "markup":
+                smallFile = Paths.get("benchmark/resources/markup-small.xml");
+                largeFile = Paths.get("benchmark/resources/markup-large.xml");
+                break;
+            case "multibyte":
+                smallFile = Paths.get("benchmark/resources/multibyte-small.xml");
+                largeFile = Paths.get("benchmark/resources/multibyte-large.xml");
+                break;
+            default:
+                smallFile = Paths.get("benchmark/resources/small.xml");
+                largeFile = Paths.get("benchmark/resources/large.xml");
+                break;
         }
 
         if (!Files.exists(smallFile)) {

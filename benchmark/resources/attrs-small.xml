@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<records>
+  <record id="0" code="REC-000000" status="active" priority="0" category="cat-0" owner="user0" created="2026-01-01" updated="2026-02-01" region="r0" flag-a="true" flag-b="false" weight="0.00" checksum="0x0"/>
+  <record id="1" code="REC-000001" status="active" priority="1" category="cat-1" owner="user1" created="2026-01-02" updated="2026-02-02" region="r1" flag-a="true" flag-b="false" weight="1.50" checksum="0x9e3779b1"/>
+  <record id="2" code="REC-000002" status="active" priority="2" category="cat-2" owner="user2" created="2026-01-03" updated="2026-02-03" region="r2" flag-a="true" flag-b="false" weight="3.00" checksum="0x3c6ef362"/>
+  <record id="3" code="REC-000003" status="active" priority="3" category="cat-3" owner="user3" created="2026-01-04" updated="2026-02-04" region="r3" flag-a="true" flag-b="false" weight="4.50" checksum="0xdaa66d13"/>
+  <record id="4" code="REC-000004" status="active" priority="4" category="cat-4" owner="user4" created="2026-01-05" updated="2026-02-05" region="r4" flag-a="true" flag-b="false" weight="6.00" checksum="0x78dde6c4"/>
+  <record id="5" code="REC-000005" status="active" priority="0" category="cat-5" owner="user5" created="2026-01-06" updated="2026-02-06" region="r5" flag-a="true" flag-b="false" weight="7.50" checksum="0x17156075"/>
+  <record id="6" code="REC-000006" status="active" priority="1" category="cat-6" owner="user6" created="2026-01-07" updated="2026-02-07" region="r6" flag-a="true" flag-b="false" weight="9.00" checksum="0xb54cda26"/>
+  <record id="7" code="REC-000007" status="active" priority="2" category="cat-7" owner="user7" created="2026-01-08" updated="2026-02-08" region="r7" flag-a="true" flag-b="false" weight="10.50" checksum="0x538453d7"/>
+  <record id="8" code="REC-000008" status="active" priority="3" category="cat-8" owner="user8" created="2026-01-09" updated="2026-02-09" region="r0" flag-a="true" flag-b="false" weight="12.00" checksum="0xf1bbcd88"/>
+  <record id="9" code="REC-000009" status="active" priority="4" category="cat-9" owner="user9" created="2026-01-10" updated="2026-02-10" region="r1" flag-a="true" flag-b="false" weight="13.50" checksum="0x8ff34739"/>
+  <record id="10" code="REC-000010" status="active" priority="0" category="cat-10" owner="user10" created="2026-01-11" updated="2026-02-11" region="r2" flag-a="true" flag-b="false" weight="15.00" checksum="0x2e2ac0ea"/>
+  <record id="11" code="REC-000011" status="active" priority="1" category="cat-11" owner="user11" created="2026-01-12" updated="2026-02-12" region="r3" flag-a="true" flag-b="false" weight="16.50" checksum="0xcc623a9b"/>
+  <record id="12" code="REC-000012" status="active" priority="2" category="cat-12" owner="user12" created="2026-01-13" updated="2026-02-13" region="r4" flag-a="true" flag-b="false" weight="18.00" checksum="0x6a99b44c"/>
+  <record id="13" code="REC-000013" status="active" priority="3" category="cat-13" owner="user13" created="2026-01-14" updated="2026-02-14" region="r5" flag-a="true" flag-b="false" weight="19.50" checksum="0x8d12dfd"/>
+  <record id="14" code="REC-000014" status="active" priority="4" category="cat-14" owner="user14" created="2026-01-15" updated="2026-02-15" region="r6" flag-a="true" flag-b="false" weight="21.00" checksum="0xa708a7ae"/>
+</records>

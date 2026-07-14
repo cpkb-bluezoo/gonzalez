@@ -111,7 +111,18 @@ class Tokenizer implements Locator2 {
      * Buffer position at the start of the current token being accumulated.
      */
     private int tokenStartPos;
-    
+
+    /**
+     * The charPosition corresponding to tokenStartPos.
+     * Kept in lockstep with tokenStartPos so that when a token is abandoned mid-recognition
+     * (buffer rewound to tokenStartPos for reprocessing on the next receive() call),
+     * charPosition can be rolled back to match: otherwise the characters between
+     * tokenStartPos and the rewind point would be counted twice (once now, once on
+     * reprocessing), which eventually desyncs locationValidCharPos from locationCharPosBase
+     * on the next tokenize() call and can corrupt catchUpLocation()'s array indices.
+     */
+    private long tokenStartCharPosition;
+
     // ===== Token Consumer =====
     
     /**
@@ -924,7 +935,8 @@ class Tokenizer implements Locator2 {
      */
     private void tokenize(CharBuffer charBuffer) throws SAXException {
         tokenStartPos = charBuffer.position();
-        
+        tokenStartCharPosition = charPosition;
+
         int pos = charBuffer.position();
         int limit = charBuffer.limit();
         boolean hasDirectArray = charBuffer.hasArray() && !charBuffer.isReadOnly();
@@ -1047,6 +1059,7 @@ class Tokenizer implements Locator2 {
                     // Update tokenStartPos to start of delimiter, and reset miniState to READY
                     // The trie will then process the delimiter from READY state
                     tokenStartPos = pos;
+                    tokenStartCharPosition = charPosition;
                     miniState = MiniState.READY;
                     // Don't advance pos - reprocess delimiter through the trie from READY
                     continue;
@@ -1088,9 +1101,21 @@ class Tokenizer implements Locator2 {
                 // For example, when we see 'O' in SEEN_LT_BANG_D, we want to consume "OCTYPE" starting from 'O'
                 charBuffer.position(pos);
                 if (!consumeSequence(charBuffer, transition.sequenceToConsume, pos)) {
-                    // Not enough data - reset and underflow
+                    // Not enough data - reset and underflow.
+                    // Roll charPosition back in lockstep with the buffer rewind so the
+                    // reprocessed characters aren't counted twice, then run the same
+                    // location catch-up/cleanup the normal method exit performs below -
+                    // skipping this previously left locationValidCharPos stuck behind
+                    // whenever a multi-character keyword (e.g. "CDATA[", "OCTYPE")
+                    // straddled a buffer refill, eventually corrupting catchUpLocation's
+                    // array index on a later call.
                     charBuffer.position(tokenStartPos);
                     miniState = MiniState.READY;
+                    charPosition = tokenStartCharPosition;
+                    if (hasDirectArray) {
+                        catchUpLocation();
+                        locationChars = null;
+                    }
                     return;
                 }
                 posAfterChar = charBuffer.position();  // Update after consuming sequence
@@ -1171,8 +1196,12 @@ class Tokenizer implements Locator2 {
                 // If transitioning to accumulating state, start at the trigger char (which will be accumulated)
                 if (excludeTrigger/* && transition.tokensToEmit.isEmpty()*/) {
                     tokenStartPos = pos;  // Trigger char will be first char of accumulated token
+                    tokenStartCharPosition = charPosition;
                 } else {
                     tokenStartPos = posAfterChar;
+                    // charPosition isn't incremented for (posAfterChar - pos) until the
+                    // "Update location tracking" step below; account for that shift now.
+                    tokenStartCharPosition = charPosition + (posAfterChar - pos);
                 }
             }
             
@@ -1281,6 +1310,9 @@ class Tokenizer implements Locator2 {
             // Reset miniState to READY so the incomplete token will be reprocessed from scratch
             // when more data arrives (from underflow)
             miniState = MiniState.READY;
+            // Roll charPosition back to match the rewound buffer position so the characters
+            // between tokenStartPos and the old pos aren't double-counted when reprocessed.
+            charPosition = tokenStartCharPosition;
         }
 
         // Ensure location is fully up-to-date before chars reference goes out of scope

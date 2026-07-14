@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<catalog>
+    <item>
+        <name>Item 0</name>
+        <description>
+            Line one of description for item 0.
+            Line two with    extra     internal     spacing.
+        </description>
+    </item>
+        <item>
+            <name>Item 1</name>
+            <description>
+                Line one of description for item 1.
+                Line two with    extra     internal     spacing.
+            </description>
+        </item>
+            <item>
+                <name>Item 2</name>
+                <description>
+                    Line one of description for item 2.
+                    Line two with    extra     internal     spacing.
+                </description>
+            </item>
+                <item>
+                    <name>Item 3</name>
+                    <description>
+                        Line one of description for item 3.
+                        Line two with    extra     internal     spacing.
+                    </description>
+                </item>
+                    <item>
+                        <name>Item 4</name>
+                        <description>
+                            Line one of description for item 4.
+                            Line two with    extra     internal     spacing.
+                        </description>
+                    </item>
+                        <item>
+                            <name>Item 5</name>
+                            <description>
+                                Line one of description for item 5.
+                                Line two with    extra     internal     spacing.
+                            </description>
+                        </item>
+    <item>
+        <name>Item 6</name>
+        <description>
+            Line one of description for item 6.
+            Line two with    extra     internal     spacing.
+        </description>
+    </item>
+        <item>
+            <name>Item 7</name>
+            <description>
+                Line one of description for item 7.
+                Line two with    extra     internal     spacing.
+            </description>
+        </item>
+</catalog>
