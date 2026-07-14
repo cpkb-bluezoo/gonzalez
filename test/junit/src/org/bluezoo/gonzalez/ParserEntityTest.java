@@ -413,6 +413,55 @@ public class ParserEntityTest {
         assertEquals("value", entity.replacementText.get(0));
     }
 
+    // ========== WFC: Parsed Entity (element balance across entity boundaries) ==========
+
+    @Test
+    public void testUnbalancedElementInEntityRejected() throws Exception {
+        String xml = "<?xml version=\"1.0\"?>\n"
+                + "<!DOCTYPE doc [\n"
+                + "<!ENTITY bad \"<a>\">\n"
+                + "]>\n"
+                + "<doc>&bad;</doc>";
+
+        try {
+            parse(xml, new ContentCapture());
+            fail("Expected WFC: Parsed Entity violation for element opened but not closed within entity");
+        } catch (SAXParseException e) {
+            assertTrue("Error should mention Parsed Entity, was: " + e.getMessage(),
+                    e.getMessage().contains("Parsed Entity"));
+        }
+    }
+
+    @Test
+    public void testBalancedElementInEntityAccepted() throws Exception {
+        String xml = "<?xml version=\"1.0\"?>\n"
+                + "<!DOCTYPE doc [\n"
+                + "<!ENTITY ok \"<a>x</a>\">\n"
+                + "]>\n"
+                + "<doc>&ok;</doc>";
+
+        parse(xml, new ContentCapture());
+    }
+
+    @Test
+    public void testUnbalancedElementInEntityRejectedAtDeeperNesting() throws Exception {
+        // Multiple elements already open on the stack before the entity reference,
+        // so the well-formedness check must walk the whole stack, not just the top.
+        String xml = "<?xml version=\"1.0\"?>\n"
+                + "<!DOCTYPE doc [\n"
+                + "<!ENTITY bad2 \"<c>\">\n"
+                + "]>\n"
+                + "<doc><a><b>&bad2;</b></a></doc>";
+
+        try {
+            parse(xml, new ContentCapture());
+            fail("Expected WFC: Parsed Entity violation at deeper element nesting");
+        } catch (SAXParseException e) {
+            assertTrue("Error should mention Parsed Entity, was: " + e.getMessage(),
+                    e.getMessage().contains("Parsed Entity"));
+        }
+    }
+
     // ========== Helper classes ==========
 
     /**

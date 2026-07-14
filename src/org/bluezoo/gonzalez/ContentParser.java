@@ -27,9 +27,7 @@ import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -297,8 +295,56 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * Stack of element validation contexts.
      * Used for both well-formedness checking (end tag matching) and validation (content model).
      * Each context contains the element name and its validator (if validation is enabled).
+     * Backed by the contexts' own intrusive {@code next} link (see
+     * {@link ElementValidationContext#next}) rather than a separate array or
+     * ArrayDeque - the stack is just a reference to the top context, and each
+     * context already points to the one below it, the same way W3C DOM nodes
+     * link directly to their parent/siblings instead of living inside a
+     * wrapper collection. This needs no backing array at all (no allocation,
+     * no growth, no circular-buffer indexing).
      */
-    private Deque<ElementValidationContext> elementStack;
+    private ElementStack elementStack;
+
+    /**
+     * Minimal intrusive-linked stack of ElementValidationContext, supporting only the
+     * push/pop/peek/isEmpty/clear operations elementStack actually needs.
+     */
+    private static final class ElementStack {
+        private ElementValidationContext top;
+
+        void push(ElementValidationContext ctx) {
+            ctx.next = top;
+            top = ctx;
+        }
+
+        ElementValidationContext pop() {
+            ElementValidationContext ctx = top;
+            top = ctx.next;
+            ctx.next = null; // avoid retaining a reference after pop
+            return ctx;
+        }
+
+        ElementValidationContext peek() {
+            return top;
+        }
+
+        boolean isEmpty() {
+            return top == null;
+        }
+
+        /**
+         * Returns the top context for full-stack traversal (see
+         * ElementValidationContext.next); used only by the WFC: Parsed Entity
+         * check, which must walk every open element.
+         */
+        ElementValidationContext top() {
+            return top;
+        }
+
+        void clear() {
+            top = null;
+        }
+    }
     
     /**
      * Pool for reusing ElementValidationContext objects to reduce allocation.
@@ -1182,7 +1228,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 
                 // Initialize element stack and pool for well-formedness and validation
                 if (elementStack == null) {
-                    elementStack = new ArrayDeque<>();
+                    elementStack = new ElementStack();
                     elementContextPool = new ElementValidationContext.Pool();
                 }
                 
@@ -1217,7 +1263,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             // Push element onto stack for well-formedness and validation
             // (validator will be null if validation is disabled)
             if (elementStack != null && elementContextPool != null) {
-                elementStack.addLast(elementContextPool.checkout(currentElementName, null, entityExpansionDepth));
+                elementStack.push(elementContextPool.checkout(currentElementName, null, entityExpansionDepth));
             }
             
             state = State.ELEMENT_NAME;
@@ -1344,7 +1390,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 fireStartElement(currentElementName, true);
                 // Pop element name from stack (empty element closes immediately)
                 if (elementStack != null && !elementStack.isEmpty()) {
-                    ElementValidationContext ctx = elementStack.removeLast();
+                    ElementValidationContext ctx = elementStack.pop();
                     if (elementContextPool != null) {
                         elementContextPool.returnToPool(ctx);
                     }
@@ -1420,7 +1466,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 fireStartElement(currentElementName, true);
                 // Pop element name from stack (empty element closes immediately)
                 if (elementStack != null && !elementStack.isEmpty()) {
-                    ElementValidationContext ctx = elementStack.removeLast();
+                    ElementValidationContext ctx = elementStack.pop();
                     if (elementContextPool != null) {
                         elementContextPool.returnToPool(ctx);
                     }
@@ -1810,7 +1856,7 @@ throw fatalError("Expected element name after '</', got: " + token);
                 // End of end tag
                 // Validate end tag name matches start tag (well-formedness constraint)
                 if (elementStack != null && !elementStack.isEmpty()) {
-                    String expectedName = elementStack.peekLast().elementName;
+                    String expectedName = elementStack.peek().elementName;
                     if (!currentElementName.equals(expectedName)) {
 throw fatalError("End tag </" + currentElementName + "> does not match start tag <" + expectedName + ">");
                     }
@@ -1822,7 +1868,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
 
                 // Pop the element from stack and return to pool
                 if (elementStack != null && !elementStack.isEmpty()) {
-                    ElementValidationContext ctx = elementStack.removeLast();
+                    ElementValidationContext ctx = elementStack.pop();
                     if (elementContextPool != null) {
                         elementContextPool.returnToPool(ctx);
                     }
@@ -2092,7 +2138,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         if (dtdParser == null || elementStack == null || elementStack.isEmpty()) {
             return false;
         }
-        ElementValidationContext context = elementStack.peekLast();
+        ElementValidationContext context = elementStack.peek();
         if (context.elementName == null) {
             return false;
         }
@@ -2484,7 +2530,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             // Verify no elements opened at this depth remain on the stack
             // This enforces WFC: Parsed Entity - elements opened within entity must be closed within entity
             if (elementStack != null) {
-                for (ElementValidationContext ctx : elementStack) {
+                for (ElementValidationContext ctx = elementStack.top(); ctx != null; ctx = ctx.next) {
                     if (ctx.entityExpansionDepth >= entityExpansionDepth) {
                         throw fatalError(
                             "Entity '&" + entityName + ";' creates unbalanced markup: " +
@@ -3132,12 +3178,12 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         
         // Create validator and replace the context on the stack
         ContentModelValidator validator = new ContentModelValidator(elementDecl);
-        ElementValidationContext oldCtx = elementStack.removeLast(); // Remove the context with null validator
+        ElementValidationContext oldCtx = elementStack.pop(); // Remove the context with null validator
         if (elementContextPool != null) {
             elementContextPool.returnToPool(oldCtx);
-            elementStack.addLast(elementContextPool.checkout(elementName, validator, entityExpansionDepth));
+            elementStack.push(elementContextPool.checkout(elementName, validator, entityExpansionDepth));
         } else {
-            elementStack.addLast(new ElementValidationContext(elementName, validator, entityExpansionDepth));
+            elementStack.push(new ElementValidationContext(elementName, validator, entityExpansionDepth));
         }
     }
     
@@ -3152,7 +3198,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
         
         // Get current context (peek, don't pop yet)
-        ElementValidationContext context = elementStack.peekLast();
+        ElementValidationContext context = elementStack.peek();
         
         // Validate that content is complete (if validator exists)
         if (context.validator != null) {
@@ -3163,7 +3209,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
         
         // Pop from stack (this is done in the end tag handling already, so skip here)
-        // The elementStack.removeLast() is called in handleEndElementName
+        // The elementStack.pop() is called in handleEndElementName
     }
     
     /**
@@ -3178,7 +3224,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
         
         // Get parent context (current element)
-        ElementValidationContext context = elementStack.peekLast();
+        ElementValidationContext context = elementStack.peek();
         if (context.validator == null) {
             return; // No validator (validation disabled or no DTD)
         }
@@ -3202,7 +3248,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
         
         // Get current context
-        ElementValidationContext context = elementStack.peekLast();
+        ElementValidationContext context = elementStack.peek();
         if (context.validator == null) {
             return; // No validator (validation disabled or no DTD)
         }
@@ -3230,7 +3276,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
         
         // Get current element's declaration
-        ElementValidationContext context = elementStack.peekLast();
+        ElementValidationContext context = elementStack.peek();
         if (context.elementName != null && dtdParser != null) {
             ElementDeclaration decl = dtdParser.getElementDeclaration(context.elementName);
             if (decl != null && decl.contentType == ElementDeclaration.ContentType.EMPTY) {
@@ -3256,7 +3302,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
             return;
         }
         
-        ElementValidationContext context = elementStack.peekLast();
+        ElementValidationContext context = elementStack.peek();
         if (context.elementName == null) {
             return;
         }
@@ -3287,7 +3333,7 @@ throw fatalError("End tag </" + currentElementName + "> does not match start tag
         }
         
         // Get current element's declaration
-        ElementValidationContext context = elementStack.peekLast();
+        ElementValidationContext context = elementStack.peek();
         if (context.elementName != null && dtdParser != null) {
             ElementDeclaration decl = dtdParser.getElementDeclaration(context.elementName);
             if (decl != null && decl.contentType == ElementDeclaration.ContentType.ELEMENT) {
