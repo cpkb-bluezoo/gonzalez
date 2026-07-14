@@ -981,16 +981,123 @@ class Tokenizer implements Locator2 {
                 }
                 
                 if (shouldContinue) {
-                    // Fast path for CDATA in CONTENT state: bulk scan for delimiters
-                    // This avoids per-character classification for long text runs
-                    if (hasDirectArray && miniState == MiniState.ACCUMULATING_CDATA && state == TokenizerState.CONTENT) {
+                    // Fast path for CDATA accumulation: bulk scan for the state's delimiter(s),
+                    // avoiding per-character classification for long runs (text content,
+                    // attribute values, comments, CDATA sections, PI data). Mirrors
+                    // shouldStopAccumulating()'s per-state stop rules but with direct char
+                    // comparisons instead of CharClass.classify() + a method call per char.
+                    // Any control character other than tab/LF/CR still breaks out to defer
+                    // to the slow per-char path, which applies full legality/XML-1.1 rules.
+                    if (hasDirectArray && miniState == MiniState.ACCUMULATING_CDATA) {
+                        int scanStart = pos;
+                        boolean handled = true;
+                        switch (state) {
+                            case CONTENT:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == '<' || ch == '&') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            case ATTR_VALUE_QUOT:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == '<' || ch == '&' || ch == '"') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            case ATTR_VALUE_APOS:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == '<' || ch == '&' || ch == '\'') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            case DOCTYPE_QUOTED_APOS:
+                            case DOCTYPE_INTERNAL_QUOTED_APOS:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == '<' || ch == '&' || ch == '\'') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            case DOCTYPE_QUOTED_QUOT:
+                            case DOCTYPE_INTERNAL_QUOTED_QUOT:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == '<' || ch == '&' || ch == '"') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            case COMMENT:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == '-') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            case CDATA_SECTION:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == ']') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            case PI_DATA:
+                                while (++pos < limit) {
+                                    char ch = chars[pos];
+                                    if (ch == '?') {
+                                        break;
+                                    }
+                                    if (needsSlowPathClassification(ch)) {
+                                        break;
+                                    }
+                                }
+                                break;
+                            default:
+                                handled = false;
+                                break;
+                        }
+                        if (handled) {
+                            charPosition += (pos - scanStart);
+                            continue;
+                        }
+                    }
+                    // Fast path for whitespace accumulation: bulk scan for non-whitespace.
+                    // State-independent since whitespace stop rules don't vary by context.
+                    if (hasDirectArray && miniState == MiniState.ACCUMULATING_WHITESPACE) {
                         int scanStart = pos;
                         while (++pos < limit) {
                             char ch = chars[pos];
-                            if (ch == '<' || ch == '&') {
-                                break;
-                            }
-                            if (ch < 0x20 && ch != '\t' && ch != '\n' && ch != '\r') {
+                            if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
                                 break;
                             }
                         }
@@ -1126,8 +1233,8 @@ class Tokenizer implements Locator2 {
             
             if (transition.hasTokensToEmit) {
                 
-                for (int i = 0; i < transition.tokensToEmit.size(); i++) {
-                    Token token = transition.tokensToEmit.get(i);
+                for (int i = 0; i < transition.tokensToEmit.length; i++) {
+                    Token token = transition.tokensToEmit[i];
                     int tokenStart, tokenEnd;
                     
                     // Special handling for character references
@@ -1270,9 +1377,9 @@ class Tokenizer implements Locator2 {
             
             // Check if we just emitted OPEN_BRACKET after INCLUDE/IGNORE keyword
             // If so, change to the appropriate conditional section state
-            if (state == TokenizerState.CONDITIONAL_SECTION_KEYWORD && 
+            if (state == TokenizerState.CONDITIONAL_SECTION_KEYWORD &&
                 pendingConditionalType != null &&
-                transition.tokensToEmit != null) {
+                transition.hasTokensToEmit) {
                 // Check if OPEN_BRACKET was emitted
                 for (Token emittedToken : transition.tokensToEmit) {
                     if (emittedToken == Token.OPEN_BRACKET) {
@@ -1323,7 +1430,47 @@ class Tokenizer implements Locator2 {
     }
     
     // ===== Helper Methods =====
-    
+
+    /**
+     * Returns true if emitTokenWindow() needs to run its DOCTYPE/conditional-section/
+     * PI-target keyword checks for the given state. False for the vast majority of
+     * tokens (CONTENT, ELEMENT_*, ATTRIBUTE_*, COMMENT, CDATA_SECTION, PI_DATA, etc.),
+     * letting emitTokenWindow skip straight to dispatching the token.
+     */
+    private static boolean emitTokenWindowNeedsSpecialHandling(TokenizerState state) {
+        switch (state) {
+            case DOCTYPE:
+            case DOCTYPE_INTERNAL:
+            case DOCTYPE_INTERNAL_QUOTED_QUOT:
+            case DOCTYPE_INTERNAL_QUOTED_APOS:
+            case CONDITIONAL_SECTION_INCLUDE:
+            case CONDITIONAL_SECTION_KEYWORD:
+            case CONDITIONAL_SECTION_IGNORE:
+            case PI_TARGET:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /**
+     * Returns true if a character encountered during a bulk-scan fast path might need
+     * full CharClass.classify() handling rather than being blindly accepted as content.
+     * Covers control characters other than tab/LF/CR, the C1 control range 0x7F-0x9F
+     * (illegal in XML 1.1, legal in XML 1.0 - context/version dependent), and the
+     * Unicode non-characters 0xFFFE/0xFFFF (always illegal). Bulk-scan loops break out
+     * on any of these so the slow per-character path can apply the correct rules.
+     */
+    private static boolean needsSlowPathClassification(char ch) {
+        if (ch < 0x20) {
+            return ch != '\t' && ch != '\n' && ch != '\r';
+        }
+        if (ch >= 0x7F && ch <= 0x9F) {
+            return true;
+        }
+        return ch == 0xFFFE || ch == 0xFFFF;
+    }
+
     /**
      * Determines if accumulation should stop for the given character class.
      */
@@ -1405,89 +1552,95 @@ class Tokenizer implements Locator2 {
      * For NAME tokens in DOCTYPE_INTERNAL with ACCUMULATING_MARKUP_NAME, converts to markup declaration tokens.
      */
     private void emitTokenWindow(CharBuffer charBuffer, Token token, int start, int length) throws SAXException {
-        // Check if this is a NAME token in DOCTYPE context that should be a keyword
-        if (token == Token.NAME && (state == TokenizerState.DOCTYPE || state == TokenizerState.DOCTYPE_INTERNAL)) {
-            Token keywordToken = checkDOCTYPEKeyword(charBuffer, start, length);
-            if (keywordToken != null) {
+        // All the checks below only ever fire for DOCTYPE/conditional-section/PI-target
+        // states; skip the whole block with a single dispatch for the common case
+        // (CONTENT, ELEMENT_*, ATTRIBUTE_*, COMMENT, CDATA_SECTION, PI_DATA, etc.)
+        // instead of evaluating up to six sequential token/state comparisons per token.
+        if (emitTokenWindowNeedsSpecialHandling(state)) {
+            // Check if this is a NAME token in DOCTYPE context that should be a keyword
+            if (token == Token.NAME && (state == TokenizerState.DOCTYPE || state == TokenizerState.DOCTYPE_INTERNAL)) {
+                Token keywordToken = checkDOCTYPEKeyword(charBuffer, start, length);
+                if (keywordToken != null) {
+                    token = keywordToken;
+                }
+            }
+
+            // Check if this is a NAME token in DOCTYPE_INTERNAL or CONDITIONAL_SECTION_INCLUDE that should be a DTD keyword
+            if (token == Token.NAME &&
+                (state == TokenizerState.DOCTYPE_INTERNAL ||
+                 state == TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT ||
+                 state == TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS ||
+                 state == TokenizerState.CONDITIONAL_SECTION_INCLUDE) &&
+                miniState != MiniState.ACCUMULATING_MARKUP_NAME) {
+                Token keywordToken = checkDTDKeyword(charBuffer, start, length);
                 token = keywordToken;
             }
-        }
-        
-        // Check if this is a NAME token in DOCTYPE_INTERNAL or CONDITIONAL_SECTION_INCLUDE that should be a DTD keyword
-        if (token == Token.NAME && 
-            (state == TokenizerState.DOCTYPE_INTERNAL ||
-             state == TokenizerState.DOCTYPE_INTERNAL_QUOTED_QUOT ||
-             state == TokenizerState.DOCTYPE_INTERNAL_QUOTED_APOS ||
-             state == TokenizerState.CONDITIONAL_SECTION_INCLUDE) &&
-            miniState != MiniState.ACCUMULATING_MARKUP_NAME) {
-            Token keywordToken = checkDTDKeyword(charBuffer, start, length);
-            token = keywordToken;
-        }
-        
-        // Check if this is a conditional section keyword (INCLUDE or IGNORE)
-        if (token == Token.NAME && state == TokenizerState.CONDITIONAL_SECTION_KEYWORD) {
-            if (length == 7 && 
-                charBuffer.get(start) == 'I' &&
-                charBuffer.get(start + 1) == 'N' &&
-                charBuffer.get(start + 2) == 'C' &&
-                charBuffer.get(start + 3) == 'L' &&
-                charBuffer.get(start + 4) == 'U' &&
-                charBuffer.get(start + 5) == 'D' &&
-                charBuffer.get(start + 6) == 'E') {
-                token = Token.INCLUDE;
-                pendingConditionalType = Token.INCLUDE;
-            } else if (length == 6 &&
-                charBuffer.get(start) == 'I' &&
-                charBuffer.get(start + 1) == 'G' &&
-                charBuffer.get(start + 2) == 'N' &&
-                charBuffer.get(start + 3) == 'O' &&
-                charBuffer.get(start + 4) == 'R' &&
-                charBuffer.get(start + 5) == 'E') {
-                token = Token.IGNORE;
-                pendingConditionalType = Token.IGNORE;
-            }
-        }
-        
-        // Check if this is a markup declaration name in DOCTYPE_INTERNAL or CONDITIONAL_SECTION_INCLUDE
-        if (token == Token.NAME && 
-            (state == TokenizerState.DOCTYPE_INTERNAL || state == TokenizerState.CONDITIONAL_SECTION_INCLUDE) &&
-            miniState == MiniState.ACCUMULATING_MARKUP_NAME) {
-            Token markupToken = checkMarkupDeclaration(charBuffer, start, length);
-            if (markupToken != null) {
-                token = markupToken;
-            }
-        }
-        
-        // Check if this is a PI target name and validate it's not "xml" (case-insensitive)
-        if (token == Token.NAME && state == TokenizerState.PI_TARGET) {
-            if (length == 3) {
-                char c0 = charBuffer.get(start);
-                char c1 = charBuffer.get(start + 1);
-                char c2 = charBuffer.get(start + 2);
-                if ((c0 == 'x' || c0 == 'X') && (c1 == 'm' || c1 == 'M') && (c2 == 'l' || c2 == 'L')) {
-                    throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
+
+            // Check if this is a conditional section keyword (INCLUDE or IGNORE)
+            if (token == Token.NAME && state == TokenizerState.CONDITIONAL_SECTION_KEYWORD) {
+                if (length == 7 &&
+                    charBuffer.get(start) == 'I' &&
+                    charBuffer.get(start + 1) == 'N' &&
+                    charBuffer.get(start + 2) == 'C' &&
+                    charBuffer.get(start + 3) == 'L' &&
+                    charBuffer.get(start + 4) == 'U' &&
+                    charBuffer.get(start + 5) == 'D' &&
+                    charBuffer.get(start + 6) == 'E') {
+                    token = Token.INCLUDE;
+                    pendingConditionalType = Token.INCLUDE;
+                } else if (length == 6 &&
+                    charBuffer.get(start) == 'I' &&
+                    charBuffer.get(start + 1) == 'G' &&
+                    charBuffer.get(start + 2) == 'N' &&
+                    charBuffer.get(start + 3) == 'O' &&
+                    charBuffer.get(start + 4) == 'R' &&
+                    charBuffer.get(start + 5) == 'E') {
+                    token = Token.IGNORE;
+                    pendingConditionalType = Token.IGNORE;
                 }
             }
-        }
-        
-        // Track nested conditional sections in IGNORE mode
-        if (token == Token.START_CONDITIONAL && state == TokenizerState.CONDITIONAL_SECTION_IGNORE) {
-            ignoreConditionalDepth++;
-        }
-        
-        // Special handling for END_CDATA in conditional sections
-        if (token == Token.END_CDATA && 
-            (state == TokenizerState.CONDITIONAL_SECTION_INCLUDE || 
-             state == TokenizerState.CONDITIONAL_SECTION_IGNORE)) {
-            
-            if (state == TokenizerState.CONDITIONAL_SECTION_IGNORE && ignoreConditionalDepth > 0) {
-                ignoreConditionalDepth--;
-            } else {
-                if (conditionalStateStack != null && !conditionalStateStack.isEmpty()) {
-                    TokenizerState previousState = conditionalStateStack.pop();
-                    changeState(previousState);
+
+            // Check if this is a markup declaration name in DOCTYPE_INTERNAL or CONDITIONAL_SECTION_INCLUDE
+            if (token == Token.NAME &&
+                (state == TokenizerState.DOCTYPE_INTERNAL || state == TokenizerState.CONDITIONAL_SECTION_INCLUDE) &&
+                miniState == MiniState.ACCUMULATING_MARKUP_NAME) {
+                Token markupToken = checkMarkupDeclaration(charBuffer, start, length);
+                if (markupToken != null) {
+                    token = markupToken;
                 }
-                ignoreConditionalDepth = 0;
+            }
+
+            // Check if this is a PI target name and validate it's not "xml" (case-insensitive)
+            if (token == Token.NAME && state == TokenizerState.PI_TARGET) {
+                if (length == 3) {
+                    char c0 = charBuffer.get(start);
+                    char c1 = charBuffer.get(start + 1);
+                    char c2 = charBuffer.get(start + 2);
+                    if ((c0 == 'x' || c0 == 'X') && (c1 == 'm' || c1 == 'M') && (c2 == 'l' || c2 == 'L')) {
+                        throw fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
+                    }
+                }
+            }
+
+            // Track nested conditional sections in IGNORE mode
+            if (token == Token.START_CONDITIONAL && state == TokenizerState.CONDITIONAL_SECTION_IGNORE) {
+                ignoreConditionalDepth++;
+            }
+
+            // Special handling for END_CDATA in conditional sections
+            if (token == Token.END_CDATA &&
+                (state == TokenizerState.CONDITIONAL_SECTION_INCLUDE ||
+                 state == TokenizerState.CONDITIONAL_SECTION_IGNORE)) {
+
+                if (state == TokenizerState.CONDITIONAL_SECTION_IGNORE && ignoreConditionalDepth > 0) {
+                    ignoreConditionalDepth--;
+                } else {
+                    if (conditionalStateStack != null && !conditionalStateStack.isEmpty()) {
+                        TokenizerState previousState = conditionalStateStack.pop();
+                        changeState(previousState);
+                    }
+                    ignoreConditionalDepth = 0;
+                }
             }
         }
 

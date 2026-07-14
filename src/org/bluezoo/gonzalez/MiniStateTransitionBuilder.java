@@ -22,7 +22,6 @@
 package org.bluezoo.gonzalez;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -1947,7 +1946,7 @@ class MiniStateTransitionBuilder {
          * @return the MiniStateBuilder to continue defining transitions
          */
         MiniStateBuilder done() {
-            List<Token> tokens = tokensToEmit.isEmpty() ? null : new ArrayList<>(tokensToEmit);
+            Token[] tokens = tokensToEmit.isEmpty() ? null : tokensToEmit.toArray(new Token[0]);
             
             boolean excludeTrigger = (currentMiniState == MiniState.ACCUMULATING_MARKUP_NAME ||
                                      nextMiniState == MiniState.ACCUMULATING_NAME ||
@@ -1986,23 +1985,25 @@ class MiniStateTransitionBuilder {
      * Represents a single state transition in the tokenizer.
      */
     static class Transition {
+        private static final Token[] EMPTY_TOKENS = new Token[0];
+
         final MiniState nextMiniState;
-        final List<Token> tokensToEmit;
+        final Token[] tokensToEmit;
         final TokenizerState stateToChangeTo;
         final String sequenceToConsume;
         final boolean excludeTrigger;
         final boolean hasTokensToEmit;
         final boolean skipAdvance;
-        
-        Transition(MiniState nextMiniState, List<Token> tokensToEmit, 
+
+        Transition(MiniState nextMiniState, Token[] tokensToEmit,
                    TokenizerState stateToChangeTo, String sequenceToConsume,
                    boolean excludeTrigger, boolean skipAdvance) {
             this.nextMiniState = nextMiniState;
-            this.tokensToEmit = tokensToEmit != null ? tokensToEmit : Collections.emptyList();
+            this.tokensToEmit = tokensToEmit != null ? tokensToEmit : EMPTY_TOKENS;
             this.stateToChangeTo = stateToChangeTo;
             this.sequenceToConsume = sequenceToConsume;
             this.excludeTrigger = excludeTrigger;
-            this.hasTokensToEmit = tokensToEmit != null && !tokensToEmit.isEmpty();
+            this.hasTokensToEmit = tokensToEmit != null && tokensToEmit.length > 0;
             this.skipAdvance = skipAdvance;
         }
 
@@ -2012,11 +2013,11 @@ class MiniStateTransitionBuilder {
             if (nextMiniState != null) {
                 buf.append("nextMiniState=").append(nextMiniState);
             }
-            if (tokensToEmit != null) {
+            if (tokensToEmit.length > 0) {
                 if (buf.length() > 0) {
                     buf.append(',');
                 }
-                buf.append("tokensToEmit=").append(tokensToEmit);
+                buf.append("tokensToEmit=").append(java.util.Arrays.toString(tokensToEmit));
             }
             if (stateToChangeTo != null) {
                 if (buf.length() > 0) {
