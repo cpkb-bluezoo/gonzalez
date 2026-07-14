@@ -262,8 +262,25 @@ class SAXAttributes implements Attributes2 {
      */
     public void addAttribute(String uri, String localName, String qName,
             String type, Object value, boolean specified) throws NamespaceException {
-        // Check for duplicate attribute by qName (well-formedness constraint)
-        if (findByQName(qName) != null) {
+        // Check for duplicate attribute by qName (well-formedness constraint) and by
+        // expanded name (namespace-aware duplicate detection) in a single pass over
+        // the already-added attributes, instead of two separate full scans - halves
+        // the list traversal work for elements with many attributes. The qName check
+        // still takes priority for the thrown exception, matching the two-scan order
+        // this replaces.
+        boolean qNameDuplicate = false;
+        boolean expandedNameDuplicate = false;
+        for (int i = 0; i < attributeCount; i++) {
+            QName existing = attributes.get(i).qname;
+            if (!qNameDuplicate && existing.getQName().equals(qName)) {
+                qNameDuplicate = true;
+            }
+            if (!expandedNameDuplicate && existing.getLocalName().equals(localName) && existing.getURI().equals(uri)) {
+                expandedNameDuplicate = true;
+            }
+        }
+
+        if (qNameDuplicate) {
             throw new NamespaceException("Duplicate attribute: " + qName);
         }
 
@@ -271,10 +288,9 @@ class SAXAttributes implements Attributes2 {
         QName qnameKey = qnamePool.checkout();
         qnameKey.update(uri, localName, qName);
 
-        // Check for duplicate by expanded name (namespace-aware duplicate detection)
-        if (findByExpandedName(uri, localName) != null) {
+        if (expandedNameDuplicate) {
             qnamePool.returnToPool(qnameKey);
-            throw new NamespaceException("Duplicate attribute by expanded name: {" + 
+            throw new NamespaceException("Duplicate attribute by expanded name: {" +
                     uri + "}" + localName + " (qName: " + qName + ")");
         }
 

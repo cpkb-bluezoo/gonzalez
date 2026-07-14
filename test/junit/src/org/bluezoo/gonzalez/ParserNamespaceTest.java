@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez;
 import org.junit.Test;
 import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
+import org.xml.sax.SAXException;
 import org.xml.sax.helpers.DefaultHandler;
 
 import java.io.ByteArrayInputStream;
@@ -166,6 +167,78 @@ public class ParserNamespaceTest {
             handler.prefixMappings.isEmpty());
         assertTrue("Element name not raw qName",
             handler.elements.get(0).contains("ns:root"));
+    }
+
+    // ========== Duplicate Attribute Detection ==========
+
+    private void expectDuplicateAttributeError(String xml, boolean namespaces, String expectedMessageFragment)
+            throws Exception {
+        Parser parser = new Parser();
+        parser.setContentHandler(new DefaultHandler());
+        parser.setFeature("http://xml.org/sax/features/namespaces", namespaces);
+        ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
+        try {
+            parser.parse(new InputSource(bais));
+            fail("Expected a duplicate attribute error for: " + xml);
+        } catch (SAXException e) {
+            assertTrue("Error message should mention '" + expectedMessageFragment + "', was: " + e.getMessage(),
+                    e.getMessage().contains(expectedMessageFragment));
+        }
+    }
+
+    @Test
+    public void testDuplicateAttributeByQNameNonNamespaceAware() throws Exception {
+        expectDuplicateAttributeError("<a x=\"1\" x=\"2\"/>", false, "Duplicate attribute");
+    }
+
+    @Test
+    public void testDuplicateAttributeByQNameNamespaceAware() throws Exception {
+        expectDuplicateAttributeError("<a x=\"1\" x=\"2\"/>", true, "Duplicate attribute");
+    }
+
+    @Test
+    public void testDuplicateAttributeByExpandedName() throws Exception {
+        // Two different prefixes bound to the same URI, same local name: a
+        // well-formedness violation even though the qNames themselves differ.
+        expectDuplicateAttributeError(
+                "<a xmlns:p1=\"urn:x\" xmlns:p2=\"urn:x\" p1:foo=\"1\" p2:foo=\"2\"/>",
+                true, "Duplicate attribute by expanded name");
+    }
+
+    @Test
+    public void testDuplicateAttributeByExpandedNameLateBoundPrefix() throws Exception {
+        // xmlns:p1/xmlns:p2 declared after the prefixed attributes that use them -
+        // resolution happens in a second pass (NamespaceScopeTracker.resolveAttributeNamespaces),
+        // a different code path from the immediate check in SAXAttributes.addAttribute().
+        expectDuplicateAttributeError(
+                "<a p1:foo=\"1\" xmlns:p1=\"urn:x\" p2:foo=\"2\" xmlns:p2=\"urn:x\"/>",
+                true, "Duplicate attribute by expanded name");
+    }
+
+    @Test
+    public void testManyDistinctAttributesNoFalsePositive() throws Exception {
+        StringBuilder xml = new StringBuilder("<a");
+        for (int i = 0; i < 20; i++) {
+            xml.append(" attr").append(i).append("=\"v").append(i).append("\"");
+        }
+        xml.append("/>");
+
+        Parser parser = new Parser();
+        parser.setContentHandler(new DefaultHandler());
+        parser.setFeature("http://xml.org/sax/features/namespaces", true);
+        ByteArrayInputStream bais = new ByteArrayInputStream(xml.toString().getBytes("UTF-8"));
+        parser.parse(new InputSource(bais));
+    }
+
+    @Test
+    public void testSameLocalNameDifferentURINoFalsePositive() throws Exception {
+        String xml = "<a xmlns:p1=\"urn:x\" xmlns:p2=\"urn:y\" p1:foo=\"1\" p2:foo=\"2\"/>";
+
+        Parser parser = new Parser();
+        parser.setContentHandler(new DefaultHandler());
+        parser.setFeature("http://xml.org/sax/features/namespaces", true);
+        ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
+        parser.parse(new InputSource(bais));
     }
 
     // ========== NamespaceScopeTrackerTest (internal class) ==========

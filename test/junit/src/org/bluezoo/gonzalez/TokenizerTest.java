@@ -247,6 +247,51 @@ public class TokenizerTest {
         assertEquals("Replacement text should match", expected, actual.toString());
     }
 
+    // --- Illegal character rejection in bulk-scanned contexts ---
+    //
+    // The bulk-scan fast path (which avoids per-character CharClass.classify()
+    // calls for long runs) must still defer to the slow path for characters
+    // that might be illegal: the C1 control range 0x7F-0x9F (illegal in XML 1.1,
+    // legal in XML 1.0) and the Unicode non-characters 0xFFFE/0xFFFF (always
+    // illegal). The W3C conformance suite only exercises this for comments;
+    // these tests cover the other states the bulk scan was extended to
+    // (attribute values, CDATA sections, PI data).
+
+    private void expectTokenizeError(String xml) throws SAXException {
+        MockTokenConsumer consumer = new MockTokenConsumer();
+        try {
+            tokenize(xml, consumer);
+            fail("Expected a fatal error for illegal character in: " + xml);
+        } catch (SAXParseException e) {
+            // expected
+        }
+    }
+
+    @Test
+    public void testIllegalCharInAttributeValueDoubleQuoted() throws SAXException {
+        expectTokenizeError("<root attr=\"before\uFFFEafter\"/>");
+    }
+
+    @Test
+    public void testIllegalCharInAttributeValueSingleQuoted() throws SAXException {
+        expectTokenizeError("<root attr='before\uFFFEafter'/>");
+    }
+
+    @Test
+    public void testIllegalCharInCDATASection() throws SAXException {
+        expectTokenizeError("<root><![CDATA[before\uFFFFafter]]></root>");
+    }
+
+    @Test
+    public void testIllegalCharInProcessingInstructionData() throws SAXException {
+        expectTokenizeError("<root><?target before\uFFFEafter?></root>");
+    }
+
+    @Test
+    public void testC1ControlCharIllegalInXml11AttributeValue() throws SAXException {
+        expectTokenizeError("<?xml version=\"1.1\"?><root attr=\"before\u0081after\"/>");
+    }
+
     // --- Helpers ---
 
     private void tokenize(String xml, TokenConsumer consumer)
