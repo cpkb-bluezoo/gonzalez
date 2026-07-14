@@ -21,6 +21,8 @@
 
 package org.bluezoo.gonzalez;
 
+import java.util.HashMap;
+import java.util.Map;
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.parsers.SAXParser;
 import javax.xml.parsers.SAXParserFactory;
@@ -73,6 +75,16 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
     private boolean secureProcessing = true;
 
     /**
+     * Stores feature values for any feature not handled by a dedicated
+     * SAXParserFactory method (namespaces, validation, secure-processing), so
+     * that parsers created later by {@link #newSAXParser()} actually reflect
+     * them. Without this, setFeature() for e.g. disallow-doctype-decl or
+     * external-general-entities would only validate against a throwaway
+     * Parser and silently have no effect on parsers this factory creates.
+     */
+    private final Map<String, Boolean> pendingFeatures = new HashMap<>();
+
+    /**
      * Creates a new GonzalezSAXParserFactory.
      *
      * <p>The factory is initially configured to be non-namespace-aware and
@@ -96,6 +108,15 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
         }
         GonzalezSAXParser parser = new GonzalezSAXParser(isNamespaceAware(), isValidating());
         parser.getXMLReader().setFeature(FEATURE_SECURE_PROCESSING, secureProcessing);
+        for (Map.Entry<String, Boolean> entry : pendingFeatures.entrySet()) {
+            try {
+                parser.getXMLReader().setFeature(entry.getKey(), entry.getValue());
+            } catch (SAXNotRecognizedException e) {
+                throw new ParserConfigurationException(e.getMessage());
+            } catch (SAXNotSupportedException e) {
+                throw new ParserConfigurationException(e.getMessage());
+            }
+        }
         return parser;
     }
 
@@ -109,6 +130,7 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
      *   <li>{@code http://xml.org/sax/features/validation}</li>
      *   <li>{@code http://xml.org/sax/features/external-general-entities}</li>
      *   <li>{@code http://xml.org/sax/features/external-parameter-entities}</li>
+     *   <li>{@code http://apache.org/xml/features/disallow-doctype-decl}</li>
      * </ul>
      *
      * @param name the feature name
@@ -118,7 +140,7 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
      * @throws SAXNotSupportedException if the feature value is not supported
      */
     @Override
-    public void setFeature(String name, boolean value) 
+    public void setFeature(String name, boolean value)
             throws ParserConfigurationException, SAXNotRecognizedException, SAXNotSupportedException {
         // Handle standard JAXP features via the parent class methods
         if ("http://xml.org/sax/features/namespaces".equals(name)) {
@@ -128,9 +150,13 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
         } else if (FEATURE_SECURE_PROCESSING.equals(name)) {
             this.secureProcessing = value;
         } else {
-            // Validate feature by trying it on a temporary parser
+            // Validate the feature is recognized/supported against a temporary
+            // parser, then remember it so newSAXParser() actually applies it -
+            // otherwise this would silently be a no-op for every parser the
+            // factory creates afterward.
             Parser testParser = new Parser();
             testParser.setFeature(name, value);
+            pendingFeatures.put(name, value);
         }
     }
 
@@ -144,7 +170,7 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
      * @throws SAXNotSupportedException if the feature cannot be read
      */
     @Override
-    public boolean getFeature(String name) 
+    public boolean getFeature(String name)
             throws ParserConfigurationException, SAXNotRecognizedException, SAXNotSupportedException {
         if ("http://xml.org/sax/features/namespaces".equals(name)) {
             return isNamespaceAware();
@@ -152,8 +178,11 @@ public class GonzalezSAXParserFactory extends SAXParserFactory {
             return isValidating();
         } else if (FEATURE_SECURE_PROCESSING.equals(name)) {
             return secureProcessing;
+        } else if (pendingFeatures.containsKey(name)) {
+            return pendingFeatures.get(name);
         } else {
-            // Query a temporary parser for other features
+            // Not explicitly set on this factory - query a temporary parser
+            // to validate the name and report its default value.
             Parser testParser = new Parser();
             return testParser.getFeature(name);
         }

@@ -136,6 +136,13 @@ public class ParserLifecycleTest {
         boolean externalParameter = parser.getFeature("http://xml.org/sax/features/external-parameter-entities");
         assertFalse("external-parameter-entities should default to false (secure)", externalParameter);
 
+        boolean disallowDoctype = parser.getFeature("http://apache.org/xml/features/disallow-doctype-decl");
+        assertFalse("disallow-doctype-decl should default to false (opt-in)", disallowDoctype);
+
+        parser.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        disallowDoctype = parser.getFeature("http://apache.org/xml/features/disallow-doctype-decl");
+        assertTrue("disallow-doctype-decl should be true after setting", disallowDoctype);
+
         boolean resolveDTDURIs = parser.getFeature("http://xml.org/sax/features/resolve-dtd-uris");
         assertTrue("resolve-dtd-uris should default to true", resolveDTDURIs);
 
@@ -314,6 +321,78 @@ public class ParserLifecycleTest {
         parser.parse(systemId);
 
         assertEquals("Expected 2 elements", 2, handler.elementCount);
+    }
+
+    // ========== disallow-doctype-decl security feature ==========
+
+    private static final String DISALLOW_DOCTYPE_DECL_FEATURE =
+        "http://apache.org/xml/features/disallow-doctype-decl";
+
+    @Test
+    public void testDisallowDoctypeDeclBlocksXXE() throws Exception {
+        String xml = "<?xml version=\"1.0\"?>\n"
+                + "<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]>\n"
+                + "<foo>&xxe;</foo>";
+
+        Parser parser = new Parser();
+        parser.setFeature(DISALLOW_DOCTYPE_DECL_FEATURE, true);
+        parser.setContentHandler(new TestHandler());
+        ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
+        try {
+            parser.parse(new InputSource(bais));
+            fail("Expected a fatal error for DOCTYPE with disallow-doctype-decl enabled");
+        } catch (SAXException e) {
+            assertTrue("Error should mention disallow-doctype-decl, was: " + e.getMessage(),
+                    e.getMessage().contains(DISALLOW_DOCTYPE_DECL_FEATURE));
+        }
+    }
+
+    @Test
+    public void testDisallowDoctypeDeclBlocksEntityExpansion() throws Exception {
+        // "Billion laughs" style nested internal entities - blocked by rejecting
+        // the DOCTYPE outright, before any entity is even declared.
+        String xml = "<?xml version=\"1.0\"?>\n"
+                + "<!DOCTYPE lolz [<!ENTITY lol \"lol\"><!ENTITY lol2 \"&lol;&lol;&lol;\">]>\n"
+                + "<lolz>&lol2;</lolz>";
+
+        Parser parser = new Parser();
+        parser.setFeature(DISALLOW_DOCTYPE_DECL_FEATURE, true);
+        parser.setContentHandler(new TestHandler());
+        ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
+        try {
+            parser.parse(new InputSource(bais));
+            fail("Expected a fatal error for DOCTYPE with disallow-doctype-decl enabled");
+        } catch (SAXException e) {
+            // expected
+        }
+    }
+
+    @Test
+    public void testDisallowDoctypeDeclAllowsDocumentsWithoutDoctype() throws Exception {
+        String xml = "<?xml version=\"1.0\"?><foo>hello</foo>";
+
+        Parser parser = new Parser();
+        parser.setFeature(DISALLOW_DOCTYPE_DECL_FEATURE, true);
+        TestHandler handler = new TestHandler();
+        parser.setContentHandler(handler);
+        ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
+        parser.parse(new InputSource(bais));
+
+        assertEquals("Expected 1 element", 1, handler.elementCount);
+    }
+
+    @Test
+    public void testDoctypeAllowedWhenFeatureNotSet() throws Exception {
+        // Default (feature off): DOCTYPE is processed normally, as before.
+        String xml = "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ELEMENT foo (#PCDATA)>]><foo>x</foo>";
+
+        Parser parser = new Parser();
+        TestHandler handler = new TestHandler();
+        parser.setContentHandler(handler);
+        ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
+        parser.parse(new InputSource(bais));
+
+        assertEquals("Expected 1 element", 1, handler.elementCount);
     }
 
     // ========== Helper classes ==========

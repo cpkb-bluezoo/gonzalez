@@ -463,6 +463,9 @@ public class Parser implements XMLReader, PSVIProvider {
      *     <td>true</td><td>Include external general entities</td></tr>
      * <tr><td>{@code http://xml.org/sax/features/external-parameter-entities}</td>
      *     <td>true</td><td>Include external parameter entities</td></tr>
+     * <tr><td>{@code http://apache.org/xml/features/disallow-doctype-decl}</td>
+     *     <td>false</td><td>Reject any document containing a DOCTYPE declaration
+     *     (defense against XXE and entity-expansion attacks)</td></tr>
      * <tr><td>{@code http://xml.org/sax/features/string-interning}</td>
      *     <td>true</td><td>Intern element/attribute names</td></tr>
      * <tr><td>{@code http://xml.org/sax/features/is-standalone}</td>
@@ -504,7 +507,10 @@ public class Parser implements XMLReader, PSVIProvider {
                 
             case "http://xml.org/sax/features/external-parameter-entities":
                 return xmlParser.getExternalParameterEntitiesEnabled();
-                
+
+            case "http://apache.org/xml/features/disallow-doctype-decl":
+                return xmlParser.getDisallowDoctypeDecl();
+
             case "http://xml.org/sax/features/resolve-dtd-uris":
                 return xmlParser.getResolveDTDURIsEnabled();
                 
@@ -590,7 +596,11 @@ public class Parser implements XMLReader, PSVIProvider {
             case "http://xml.org/sax/features/external-parameter-entities":
                 xmlParser.setExternalParameterEntitiesEnabled(value);
                 break;
-                
+
+            case "http://apache.org/xml/features/disallow-doctype-decl":
+                xmlParser.setDisallowDoctypeDecl(value);
+                break;
+
             case "http://xml.org/sax/features/resolve-dtd-uris":
                 xmlParser.setResolveDTDURIsEnabled(value);
                 break;

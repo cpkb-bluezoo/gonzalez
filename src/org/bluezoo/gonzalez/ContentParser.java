@@ -102,6 +102,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     private boolean validationEnabled = false;             // Off by default
     private boolean externalGeneralEntitiesEnabled = false; // Off by default (secure)
     private boolean externalParameterEntitiesEnabled = false; // Off by default (secure)
+    private boolean disallowDoctypeDecl = false;           // Off by default (opt-in security feature)
     private boolean resolveDTDURIsEnabled = true;          // On by default
     private boolean stringInterning = true;                // On by default - intern strings passed to handlers
     private boolean xml11 = false;                         // Document XML version (1.0 or 1.1)
@@ -591,6 +592,14 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         this.externalParameterEntitiesEnabled = enabled;
     }
 
+    public boolean getDisallowDoctypeDecl() {
+        return disallowDoctypeDecl;
+    }
+
+    public void setDisallowDoctypeDecl(boolean disallow) {
+        this.disallowDoctypeDecl = disallow;
+    }
+
     public boolean getResolveDTDURIsEnabled() {
         return resolveDTDURIsEnabled;
     }
@@ -1039,6 +1048,17 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
 
     @Override
     public void receive(Token token, CharBuffer data) throws SAXException {
+        // Reject any DOCTYPE outright when the disallow-doctype-decl feature is
+        // set, before any DTD processing (parameter entities, external subset
+        // fetch, etc.) begins. This is the strongest defense against XXE and
+        // entity-expansion (billion laughs) attacks: internal entities declared
+        // in the DOCTYPE are blocked too, not just external references.
+        if (token == Token.START_DOCTYPE && disallowDoctypeDecl) {
+            throw fatalError(
+                "DOCTYPE is disallowed when the feature "
+                + "\"http://apache.org/xml/features/disallow-doctype-decl\" is set to true");
+        }
+
         // DOCTYPE declarations are only allowed in the main document,
         // not in external entities. Check before delegating to DTDParser.
         if (token == Token.START_DOCTYPE && externalEntityDepth > 0) {
@@ -1048,7 +1068,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                 "DOCTYPE declaration not allowed in external entity " +
                 "(must appear only in main document)");
         }
-        
+
         // Check if we should delegate to DTDParser
         if (dtdParser != null && dtdParser.canReceive(token)) {
             dtdParser.receive(token, data);
