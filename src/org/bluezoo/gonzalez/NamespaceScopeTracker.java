@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -132,17 +133,23 @@ public class NamespaceScopeTracker {
      */
     public void pushContext() {
         scopeDepth++;
-        
+
         // Reuse existing scope object if available, otherwise create new
         if (scopeDepth < scopes.size()) {
             Scope scope = scopes.get(scopeDepth);
-            scope.bindings.clear();
-            scope.declarationCount = 0;
+            // Most elements declare no namespaces, so declarationCount is almost always
+            // already 0 here (the invariant declarationCount==0 iff bindings is empty is
+            // maintained below and in declarePrefix()) - skip the clear() call entirely
+            // rather than relying on HashMap's own internal empty-check.
+            if (scope.declarationCount > 0) {
+                scope.bindings.clear();
+                scope.declarationCount = 0;
+            }
         } else {
             scopes.add(new Scope());
         }
     }
-    
+
     /**
      * Pops the current namespace context (called when leaving an element).
      * All bindings declared at this level are removed.
@@ -151,19 +158,23 @@ public class NamespaceScopeTracker {
         if (scopeDepth < 0) {
             throw new IllegalStateException("Cannot pop root namespace context");
         }
-        
-        // Remove bindings declared at this level from activeBindings
+
+        // Remove bindings declared at this level from activeBindings.
+        // Skip entirely when nothing was declared at this depth (the common case) -
+        // avoids allocating a KeySet iterator on every single element close.
         Scope scope = scopes.get(scopeDepth);
-        for (String prefix : scope.bindings.keySet()) {
-            // Restore previous binding from outer scope (if any)
-            String outerBinding = findBindingInOuterScopes(prefix, scopeDepth - 1);
-            if (outerBinding != null) {
-                activeBindings.put(prefix, outerBinding);
-            } else {
-                activeBindings.remove(prefix);
+        if (scope.declarationCount > 0) {
+            for (String prefix : scope.bindings.keySet()) {
+                // Restore previous binding from outer scope (if any)
+                String outerBinding = findBindingInOuterScopes(prefix, scopeDepth - 1);
+                if (outerBinding != null) {
+                    activeBindings.put(prefix, outerBinding);
+                } else {
+                    activeBindings.remove(prefix);
+                }
             }
         }
-        
+
         scopeDepth--;
     }
     
@@ -280,9 +291,16 @@ public class NamespaceScopeTracker {
      */
     public Iterator<Map.Entry<String, String>> getCurrentScopeDeclarations() {
         if (scopeDepth < 0) {
-            return new ArrayList<Map.Entry<String, String>>().iterator();
+            return Collections.emptyIterator();
         }
-        return scopes.get(scopeDepth).bindings.entrySet().iterator();
+        // Called on every element start/end to fire (start|end)PrefixMapping. Most
+        // elements declare no namespaces, so avoid allocating a HashMap entrySet
+        // iterator for the (very common) empty case.
+        Scope scope = scopes.get(scopeDepth);
+        if (scope.declarationCount == 0) {
+            return Collections.emptyIterator();
+        }
+        return scope.bindings.entrySet().iterator();
     }
     
     /**

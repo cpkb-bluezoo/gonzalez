@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -2017,7 +2018,8 @@ class MiniStateTransitionBuilder {
                 if (buf.length() > 0) {
                     buf.append(',');
                 }
-                buf.append("tokensToEmit=").append(java.util.Arrays.toString(tokensToEmit));
+                String tokensStr = Arrays.toString(tokensToEmit);
+                buf.append("tokensToEmit=").append(tokensStr);
             }
             if (stateToChangeTo != null) {
                 if (buf.length() > 0) {
