@@ -215,12 +215,16 @@ public class Parser implements XMLReader, PSVIProvider {
                 byteBuffer.compact();  // Compact unprocessed bytes for next cycle
             }
             
-            // Exit loop on EOF when no remaining data
-            if (bytesRead == -1 && byteBuffer.position() == 0) {
+            // Exit loop on EOF. Note: this breaks even if bytes remain in the
+            // buffer (e.g. an incomplete trailing multi-byte character) -
+            // once the stream reports -1, no more bytes will ever arrive, so
+            // waiting for the buffer to fully drain would loop forever.
+            // close() below reports a proper error if undecoded bytes remain.
+            if (bytesRead == -1) {
                 break;
             }
         }
-        
+
         // Signal end of document
         close();
     }
@@ -322,14 +326,25 @@ public class Parser implements XMLReader, PSVIProvider {
             parseBuffer.clear();
         }
         ByteBuffer buffer = parseBuffer;
-        
-        // Standard NIO read loop: read, flip, process, compact
-        while (channel.read(buffer) != -1 || buffer.position() > 0) {
-            buffer.flip();
-            receive(buffer);
-            buffer.compact();
+
+        // Standard NIO read loop: read, flip, process, compact. Breaks on true
+        // EOF (channel.read() returning -1) even if bytes remain in the buffer
+        // (e.g. an incomplete trailing multi-byte character) - once the channel
+        // reports -1, no more bytes will ever arrive, so waiting for the buffer
+        // to fully drain would loop forever. close() below reports a proper
+        // error if undecoded bytes remain.
+        while (true) {
+            int bytesRead = channel.read(buffer);
+            if (buffer.position() > 0) {
+                buffer.flip();
+                receive(buffer);
+                buffer.compact();
+            }
+            if (bytesRead == -1) {
+                break;
+            }
         }
-        
+
         // Signal end of document
         close();
     }

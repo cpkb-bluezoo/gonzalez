@@ -79,6 +79,15 @@ class ExternalEntityDecoder {
      * Previous charset from last parse, kept for decoder reuse.
      */
     private Charset previousCharset;
+
+    /**
+     * True when the resolved charset treats bytes below 0x80 as plain ASCII
+     * (UTF-8, US-ASCII, ISO-8859-1), enabling decodeAndTokenize()'s ASCII fast
+     * path to widen those bytes directly instead of going through the
+     * CharsetDecoder state machine. Set once per document/entity in
+     * {@link #setupCharsetDecoder}.
+     */
+    private boolean asciiFastPathEligible;
     
     /**
      * The BOM detected at start of document.
@@ -121,7 +130,19 @@ class ExternalEntityDecoder {
      * Tokenizer that consumes decoded characters.
      */
     private final Tokenizer tokenizer;
-    
+
+    /**
+     * True when the most recent decodeAndTokenize() call left undecoded bytes
+     * behind because they form an incomplete trailing multi-byte sequence
+     * (CharsetDecoder returned UNDERFLOW with input still remaining). Checked
+     * in {@link #close()}: if still true when the caller signals there is no
+     * more data coming, the stream ended mid-character, which is reported as
+     * a fatal error rather than left to hang - decodeAndTokenize()'s loop
+     * cannot make progress on the same incomplete bytes no matter how many
+     * more times it's called, so it deliberately does not keep retrying.
+     */
+    private boolean hasPendingIncompleteBytes = false;
+
     // ===== State =====
     
     /**
@@ -228,10 +249,21 @@ class ExternalEntityDecoder {
     
     /**
      * Closes the decoder and flushes any remaining data to the tokenizer.
+     *
+     * @throws SAXException if the input ended with an incomplete trailing
+     *         multi-byte character sequence
      */
     public void close() throws SAXException {
         if (state == State.CLOSED) {
             return;
+        }
+        if (hasPendingIncompleteBytes) {
+            // The caller has signaled there is no more data, but the last
+            // decode attempt still had undecoded bytes forming part of a
+            // multi-byte character - the stream ended mid-character.
+            throw tokenizer.fatalError(
+                "Unexpected end of input: incomplete byte sequence in encoding "
+                + (charset != null ? charset.name() : "unknown") + " at end of stream");
         }
         tokenizer.close();
         state = State.CLOSED;
@@ -484,6 +516,13 @@ class ExternalEntityDecoder {
         } else {
             decoder.reset();
         }
+
+        // Bytes below 0x80 mean the same thing (identical code point) in each of
+        // these charsets, so the ASCII fast path below can widen them directly
+        // without going through the CharsetDecoder state machine at all.
+        asciiFastPathEligible = charset.equals(StandardCharsets.UTF_8)
+            || charset.equals(StandardCharsets.US_ASCII)
+            || charset.equals(StandardCharsets.ISO_8859_1);
     }
     
     /**
@@ -557,6 +596,16 @@ class ExternalEntityDecoder {
         
         // Process in chunks - decode, tokenize, compact, repeat
         while (data.hasRemaining()) {
+            // Opportunistically widen a leading run of plain-ASCII bytes directly,
+            // bypassing the CharsetDecoder state machine - XML documents are
+            // typically dominated by ASCII content (markup, whitespace, common
+            // Latin text). Only touches bytes it's certain are valid ASCII;
+            // whatever's left (a non-ASCII byte, or charBuffer full) falls
+            // through to the decoder below exactly as before.
+            if (asciiFastPathEligible) {
+                widenAsciiRun(data);
+            }
+
             // Decode into charBuffer (from current position to limit)
             CoderResult result = decoder.decode(data, charBuffer, false);
             
@@ -582,12 +631,68 @@ class ExternalEntityDecoder {
             
             // Compact to preserve any unconsumed data (underflow)
             charBuffer.compact();
-            
-            // If OVERFLOW, the charBuffer was full - continue loop to process more
-            // If UNDERFLOW, we've consumed all we can from data - loop will exit
+
+            // OVERFLOW: charBuffer was full - loop again to decode more into the
+            // freed space. UNDERFLOW: decoder cannot make progress on the
+            // remaining input without more bytes - stop now rather than looping
+            // forever on the same undecodable trailing sequence (data.hasRemaining()
+            // can legitimately still be true here: an incomplete multi-byte
+            // sequence at the end of this chunk, which the caller may complete
+            // with a later receive() call, or which close() will report as a
+            // truncation error if no more data ever arrives).
+            if (result.isUnderflow()) {
+                break;
+            }
+        }
+
+        hasPendingIncompleteBytes = data.hasRemaining();
+    }
+
+    /**
+     * Widens a leading run of plain-ASCII bytes (below 0x80) from {@code data}
+     * directly into {@code charBuffer}, advancing both buffers' positions by the
+     * same amount. Only applies when both buffers expose a directly-accessible
+     * backing array (true for charBuffer always, since it's heap-allocated; true
+     * for data only when the caller supplied a heap ByteBuffer rather than a
+     * direct one) - falls through to a no-op otherwise, leaving the normal
+     * CharsetDecoder path to handle everything.
+     *
+     * <p>Stops at the first byte with its high bit set (0x80-0xFF): those start
+     * multi-byte UTF-8 sequences or need charset-specific handling, so they -
+     * along with the CharsetDecoder's malformed/unmappable-input detection -
+     * still go through the real decoder unchanged.
+     */
+    private void widenAsciiRun(ByteBuffer data) {
+        if (!data.hasArray() || data.isReadOnly() || !charBuffer.hasArray()) {
+            return;
+        }
+
+        byte[] src = data.array();
+        int srcPos = data.arrayOffset() + data.position();
+        int srcLimit = data.arrayOffset() + data.limit();
+
+        char[] dst = charBuffer.array();
+        int dstPos = charBuffer.arrayOffset() + charBuffer.position();
+        int dstLimit = charBuffer.arrayOffset() + charBuffer.limit();
+
+        int startSrcPos = srcPos;
+        while (srcPos < srcLimit && dstPos < dstLimit) {
+            byte b = src[srcPos];
+            if (b < 0) {
+                // High bit set (byte value >= 0x80) - defer to the real decoder
+                break;
+            }
+            dst[dstPos++] = (char) b;
+            srcPos++;
+        }
+
+        int widened = srcPos - startSrcPos;
+        if (widened > 0) {
+            data.position(data.position() + widened);
+            charBuffer.position(charBuffer.position() + widened);
         }
     }
-    
+
     /**
      * Normalizes line endings in the character buffer according to XML spec.
      * 
