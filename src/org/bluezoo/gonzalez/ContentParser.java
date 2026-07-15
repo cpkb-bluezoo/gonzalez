@@ -167,8 +167,15 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * CharSequence-based intern pool for zero-allocation string interning.
      * Can look up interned strings from CharBuffer without creating temporary String objects.
      * Used for element and attribute names (high frequency, low variety).
+     * Created eagerly here (not lazily in reset()) so that a freshly-constructed
+     * ContentParser used for a single parse - without ever calling reset(), which
+     * is meant for reuse between documents, not first-time setup - still gets
+     * the deduplication this documented default-on feature promises. Before this
+     * fix, intern() silently fell back to allocating a new String on every single
+     * element/attribute name occurrence for any Parser that was never reset(),
+     * which is the most common usage pattern (construct, parse once, discard).
      */
-    private InternedStringPool internPool;
+    private InternedStringPool internPool = new InternedStringPool();
     
     /**
      * QName pool for reusing QName objects (reduces allocation and hash overhead).
@@ -355,6 +362,15 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * Attribute validator for validation mode (only used when validationEnabled).
      */
     private AttributeValidator attributeValidator;
+
+    /**
+     * Creates a new ContentParser ready for immediate use, without requiring
+     * reset() to be called first (reset() is for reuse between documents, not
+     * first-time setup).
+     */
+    ContentParser() {
+        internPool.setStringInterning(stringInterning);
+    }
 
     @Override
     public void setLocator(Locator locator) {
@@ -598,10 +614,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         // Initialize namespace tracker if enabling namespaces
         if (enabled && namespaceTracker == null) {
             namespaceTracker = new NamespaceScopeTracker();
-            // Set intern pool if available
-            if (internPool != null) {
-                namespaceTracker.setInternPool(internPool);
-            }
+            namespaceTracker.setInternPool(internPool);
         }
         // QName pool is always available (initialized at declaration)
     }
@@ -1033,13 +1046,10 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
             charArrayBuffer = new char[CHAR_BUFFER_INITIAL_SIZE];
         }
         
-        // Always initialize intern pool for name deduplication (avoids
-        // creating duplicate String objects for repeated element/attribute names)
-        if (internPool == null) {
-            internPool = new InternedStringPool();
-        }
+        // internPool is always non-null (created at field declaration); just
+        // sync the current stringInterning setting onto it.
         internPool.setStringInterning(stringInterning);
-        
+
         // Initialize QName pool
         // Clear QName pool
         qnamePool.clear();
@@ -1072,10 +1082,7 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
         // Reset namespace tracker if namespaces enabled
         if (namespacesEnabled && namespaceTracker != null) {
             namespaceTracker.reset();
-            // Update intern pool reference
-            if (internPool != null) {
-                namespaceTracker.setInternPool(internPool);
-            }
+            namespaceTracker.setInternPool(internPool);
         }
     }
     
@@ -1275,17 +1282,14 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
     }
     
     /**
-     * Interns a string from CharBuffer if string interning is enabled.
+     * Interns a string from CharBuffer.
      * Uses the zero-allocation intern pool to avoid creating temporary String objects.
-     * 
+     *
      * @param data the CharBuffer containing the string
-     * @return the interned string (if enabled), or a new string
+     * @return the interned string
      */
     private String intern(CharBuffer data) {
-        if (internPool != null) {
-            return internPool.intern(data);
-        }
-        return data.toString();
+        return internPool.intern(data);
     }
     
     /**

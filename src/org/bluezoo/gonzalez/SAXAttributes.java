@@ -147,6 +147,13 @@ class SAXAttributes implements Attributes2 {
     // Current element name (for lazy normalization)
     private String currentElementName;
 
+    // True if any attribute added since the last clear() has a colon in its
+    // qName. Lets resolveAttributeNamespaces() skip its whole scan for the
+    // common case of an element with no prefixed attributes at all, rather
+    // than running the loop (and re-deriving colon position per attribute)
+    // unconditionally on every element.
+    private boolean hasPrefixedAttributes;
+
     /**
      * Creates a new empty attribute list.
      */
@@ -201,6 +208,9 @@ class SAXAttributes implements Attributes2 {
      * @throws NamespaceException if an attribute has an unbound prefix
      */
     public void resolveAttributeNamespaces(NamespaceScopeTracker tracker) throws NamespaceException {
+        if (!hasPrefixedAttributes) {
+            return;
+        }
         for (int i = 0; i < attributeCount; i++) {
             Attribute attr = attributes.get(i);
             QName qname = attr.qname;
@@ -306,6 +316,10 @@ class SAXAttributes implements Attributes2 {
         }
 
         attributeCount++;
+
+        if (qName.indexOf(':') >= 0) {
+            hasPrefixedAttributes = true;
+        }
     }
 
     /**
@@ -338,7 +352,8 @@ class SAXAttributes implements Attributes2 {
         }
         
         attributeCount = 0;
-        
+        hasPrefixedAttributes = false;
+
         elementName = null;
         dtdParser = null;
     }

@@ -383,14 +383,14 @@ including:
 ## Performance
 
 Benchmark results comparing Gonzalez with the JDK's bundled Xerces SAX parser
-(Java 21, measured with JMH):
+(Java 21, measured with JMH, namespace-aware mode):
 
 | Document Size | Gonzalez | Xerces | Comparison |
 |---------------|----------|--------|------------|
-| Small plain (1.3KB) | 9.1 µs | 11.2 µs | Gonzalez **1.23x faster** |
-| Small NS-heavy (2.9KB) | 18.3 µs | 18.6 µs | **Essentially tied** |
-| Large plain (1MB) | 4026 µs | 1755 µs | Xerces 2.3x faster |
-| Large NS-heavy (1.4MB) | 9876 µs | 4408 µs | Xerces 2.2x faster |
+| Small plain (1.3KB) | 10.3 µs | 11.3 µs | Gonzalez **1.10x faster** |
+| Small NS-heavy (2.9KB) | 20.2 µs | 18.8 µs | Xerces 1.08x faster |
+| Large plain (1MB) | 4035 µs | 1803 µs | Xerces 2.24x faster |
+| Large NS-heavy (1.4MB) | 9433 µs | 4578 µs | Xerces 2.06x faster |
 
 For small documents, Gonzalez can slightly outperform Xerces due to its
 lightweight architecture and efficient NIO buffer handling.
@@ -420,9 +420,9 @@ official release.
 
 - Java 8 or later (including SAX API)
 - **gonzalez-core** — Zero external dependencies.
-- **gonzalez-xslt** — Requires `gonzalez-core` and **jsonparser** (org.bluezoo.json). The jsonparser
+- **gonzalez-xslt** — Requires `gonzalez-core` and [**jsonparser**](https://github.com/cpkb-bluezoo/jsonparser) (org.bluezoo.json). The jsonparser
   library is used for XML-to-JSON and JSON-to-XML translation (`xml-to-json`, `json-to-xml`,
-  `parse-json`). The build downloads `jsonparser-1.2.jar` from [GitHub Releases](https://github.com/cpkb-bluezoo/jsonparser/releases)
+  `parse-json`). The build downloads the jsonparser jar from [GitHub Releases](https://github.com/cpkb-bluezoo/jsonparser/releases)
   via the `resolve-deps` target.
 
 For Java 9+, Gonzalez provides JPMS modules:

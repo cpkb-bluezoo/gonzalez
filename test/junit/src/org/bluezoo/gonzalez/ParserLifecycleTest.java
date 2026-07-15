@@ -32,10 +32,13 @@ import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXNotRecognizedException;
 import org.xml.sax.SAXNotSupportedException;
+import org.xml.sax.helpers.DefaultHandler;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileWriter;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.Assert.*;
 
@@ -321,6 +324,52 @@ public class ParserLifecycleTest {
         parser.parse(systemId);
 
         assertEquals("Expected 2 elements", 2, handler.elementCount);
+    }
+
+    // ========== String interning works without an explicit reset() ==========
+
+    private static class QNameCollector extends DefaultHandler {
+        final List<String> qNames = new ArrayList<String>();
+
+        @Override
+        public void startElement(String uri, String localName, String qName, Attributes atts) {
+            qNames.add(qName);
+        }
+    }
+
+    @Test
+    public void testStringInterningWorksOnFreshlyConstructedParser() throws Exception {
+        // reset() is documented as being for reuse between documents, not
+        // first-time setup - string interning (default-on, documented feature)
+        // must already work on a Parser that is constructed and used exactly
+        // once, which is the most common usage pattern.
+        String xml = "<?xml version=\"1.0\"?><doc><item/><item/><item/></doc>";
+
+        QNameCollector handler = new QNameCollector();
+        Parser parser = new Parser(); // never reset()
+        parser.setContentHandler(handler);
+        parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
+
+        assertEquals("Expected 4 elements (doc + 3 item)", 4, handler.qNames.size());
+        String firstItem = handler.qNames.get(1);
+        for (int i = 2; i < handler.qNames.size(); i++) {
+            assertSame("Repeated element name 'item' should be the identical interned String instance",
+                    firstItem, handler.qNames.get(i));
+        }
+    }
+
+    @Test
+    public void testStringInterningCanBeDisabledOnFreshlyConstructedParser() throws Exception {
+        String xml = "<?xml version=\"1.0\"?><doc><item/><item/></doc>";
+
+        QNameCollector handler = new QNameCollector();
+        Parser parser = new Parser();
+        parser.setFeature("http://xml.org/sax/features/string-interning", false);
+        parser.setContentHandler(handler);
+        parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
+
+        assertEquals("item", handler.qNames.get(1));
+        assertEquals("item", handler.qNames.get(2));
     }
 
     // ========== disallow-doctype-decl security feature ==========
