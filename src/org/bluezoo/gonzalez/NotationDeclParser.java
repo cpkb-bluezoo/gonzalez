@@ -28,50 +28,58 @@ import org.xml.sax.SAXParseException;
 
 /**
  * Parser for &lt;!NOTATION declarations within a DTD.
- * 
+ *
  * <p>Grammar: &lt;!NOTATION Name S (ExternalID | PublicID) S? &gt;
  * <p>ExternalID: SYSTEM S SystemLiteral | PUBLIC S PubidLiteral S SystemLiteral
  * <p>PublicID: PUBLIC S PubidLiteral
- * 
+ *
  * <p>This parser is instantiated for each &lt;!NOTATION declaration and
  * handles tokens until the closing &gt; is encountered. It builds an
  * ExternalID which is then saved to the DTD's notations structure and
  * reported to the DTDHandler.
- * 
+ *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
 class NotationDeclParser {
-    
+
     /**
      * Sub-states for parsing &lt;!NOTATION declarations.
      * Tracks position within the notation declaration to enforce well-formedness.
      */
     private enum State {
-        EXPECT_NAME,           // After &lt;!NOTATION, expecting notation name
-        AFTER_NAME,            // After notation name, expecting whitespace
-        EXPECT_EXTERNAL_ID,    // After whitespace, expecting SYSTEM or PUBLIC
-        EXPECT_SYSTEM_ID,      // After SYSTEM, expecting quoted system ID
-        EXPECT_PUBLIC_ID,      // After PUBLIC, expecting quoted public ID
-        AFTER_PUBLIC_ID,       // After public ID, expecting optional system ID or &gt;
-        EXPECT_GT              // Expecting &gt; to close declaration
+        EXPECT_NAME,                    // After <!NOTATION, expecting notation name
+        AFTER_NAME,                     // After notation name, expecting whitespace
+        EXPECT_EXTERNAL_ID,             // After whitespace, expecting SYSTEM or PUBLIC
+
+        AFTER_SYSTEM_KEYWORD,           // After SYSTEM, before whitespace
+        EXPECT_SYSTEM_QUOTE,            // After whitespace, expecting opening quote
+        IN_SYSTEM_ID,                   // Inside system ID quotes, accumulating content
+
+        AFTER_PUBLIC_KEYWORD,           // After PUBLIC, before whitespace
+        EXPECT_PUBLIC_QUOTE,            // After whitespace, expecting opening quote for public ID
+        IN_PUBLIC_ID,                   // Inside public ID quotes, accumulating content
+        AFTER_PUBLIC_ID,                // After public ID, expecting optional system ID or '>'
+        EXPECT_SYSTEM_QUOTE_AFTER_PUBLIC, // After whitespace following public ID, expecting system ID quote
+        IN_SYSTEM_ID_AFTER_PUBLIC,      // Inside system ID quotes (after public ID), accumulating content
+
+        EXPECT_GT                       // Expecting '>' to close declaration
     }
-    
+
     private State state = State.EXPECT_NAME;
-    
+
     /**
      * Current notation declaration being parsed.
      */
     private String currentNotationName;
     private ExternalID currentNotationExternalID;
-    private boolean sawPublicInNotation;
     private boolean sawWhitespaceAfterKeyword; // Track whitespace after SYSTEM/PUBLIC
-    
+
     private final DTDParser dtdParser;
     private final Locator locator;
-    
+
     /**
      * Creates a new parser for a single &lt;!NOTATION declaration.
-     * 
+     *
      * @param dtdParser the parent DTD parser (for validation and saving results)
      * @param locator the locator for error reporting
      */
@@ -80,11 +88,11 @@ class NotationDeclParser {
         this.locator = locator;
         this.currentNotationExternalID = new ExternalID();
     }
-    
+
     /**
      * Processes a single token within the &lt;!NOTATION declaration.
      * Returns true if the declaration is complete (GT was encountered).
-     * 
+     *
      * @param token the token to process
      * @param data the character buffer for the token (may be null)
      * @return true if the NOTATION declaration is complete
@@ -98,7 +106,7 @@ class NotationDeclParser {
                     case S:
                         // Skip whitespace before name
                         break;
-                        
+
                     case NAME:
                         // Notation name
                         currentNotationName = data.toString();
@@ -107,14 +115,14 @@ class NotationDeclParser {
                         dtdParser.validateNameInNamespaceMode(currentNotationName);
                         state = State.AFTER_NAME;
                         break;
-                        
+
                     default:
                         // WFC: Notation Declaration (Production 82)
                         // "Notation declarations must start with notation name"
                         throw fatalError("Expected notation name after <!NOTATION, got: " + token, locator);
                 }
                 break;
-                
+
             case AFTER_NAME:
                 // After notation name, expecting whitespace
                 switch (token) {
@@ -122,188 +130,265 @@ class NotationDeclParser {
                         // Whitespace between name and external ID
                         state = State.EXPECT_EXTERNAL_ID;
                         break;
-                        
+
                     default:
                         // WFC: Notation Declaration (Production 82)
                         // "Whitespace is required after notation name"
                         throw fatalError("Expected whitespace after notation name, got: " + token, locator);
                 }
                 break;
-                
+
             case EXPECT_EXTERNAL_ID:
                 // After whitespace, expecting SYSTEM or PUBLIC
                 switch (token) {
                     case S:
                         // Skip additional whitespace
                         break;
-                        
+
                     case SYSTEM:
                         // SYSTEM external ID
-                        sawPublicInNotation = false;
                         sawWhitespaceAfterKeyword = false; // Reset
-                        state = State.EXPECT_SYSTEM_ID;
+                        state = State.AFTER_SYSTEM_KEYWORD;
                         break;
-                        
+
                     case PUBLIC:
                         // PUBLIC external ID (or PublicID)
-                        sawPublicInNotation = true;
                         sawWhitespaceAfterKeyword = false; // Reset
-                        state = State.EXPECT_PUBLIC_ID;
+                        state = State.AFTER_PUBLIC_KEYWORD;
                         break;
-                        
+
                     default:
                         // WFC: Notation Declaration (Production 82)
                         // "Notation declarations must have SYSTEM or PUBLIC"
                         throw fatalError("Expected SYSTEM or PUBLIC after notation name, got: " + token, locator);
                 }
                 break;
-                
-            case EXPECT_SYSTEM_ID:
-                // After SYSTEM, expecting quoted system ID
+
+            case AFTER_SYSTEM_KEYWORD:
+                // After SYSTEM, expecting whitespace then opening quote
                 switch (token) {
                     case S:
-                        // Whitespace between SYSTEM and quoted string
                         sawWhitespaceAfterKeyword = true;
+                        state = State.EXPECT_SYSTEM_QUOTE;
                         break;
-                        
+
+                    default:
+                        // WFC: Notation Declaration (Production 82)
+                        // "Whitespace is required after SYSTEM keyword"
+                        throw fatalError("Expected whitespace after SYSTEM keyword in <!NOTATION", locator);
+                }
+                break;
+
+            case EXPECT_SYSTEM_QUOTE:
+                // After whitespace following SYSTEM, expecting opening quote
+                switch (token) {
+                    case S:
+                        // Additional whitespace, ignore
+                        break;
+
                     case QUOT:
                     case APOS:
-                        // Opening quote
-                        // Enforce whitespace after SYSTEM keyword
+                        // Opening quote for system ID
                         if (!sawWhitespaceAfterKeyword) {
                             // WFC: Notation Declaration (Production 82)
                             // "Whitespace is required after SYSTEM keyword"
                             throw fatalError("Expected whitespace after SYSTEM keyword in <!NOTATION", locator);
                         }
-                        // ignore quote
+                        state = State.IN_SYSTEM_ID;
                         break;
-                        
-                    case CDATA:
-                    case NAME:
-                        // System ID (tokenizer may emit NAME or CDATA in DOCTYPE context)
-                        currentNotationExternalID.systemId = data.toString();
-                        state = State.EXPECT_GT;
-                        break;
-                        
+
                     default:
                         // WFC: Notation Declaration (Production 82)
                         // "System ID must be a quoted string"
                         throw fatalError("Expected quoted system ID after SYSTEM, got: " + token, locator);
                 }
                 break;
-                
-            case EXPECT_PUBLIC_ID:
-                // After PUBLIC, expecting quoted public ID
+
+            case IN_SYSTEM_ID:
+                // Inside system ID quotes, accumulating content across possibly
+                // several CDATA/NAME deliveries until the matching closing quote
                 switch (token) {
-                    case S:
-                        // Whitespace between PUBLIC and quoted string
-                        sawWhitespaceAfterKeyword = true;
+                    case CDATA:
+                    case NAME:
+                        // System ID content (may arrive split across several tokens)
+                        if (currentNotationExternalID.systemId == null) {
+                            currentNotationExternalID.systemId = data.toString();
+                        } else {
+                            currentNotationExternalID.systemId += data.toString();
+                        }
                         break;
-                        
+
                     case QUOT:
                     case APOS:
-                        // Opening quote
-                        // Enforce whitespace after PUBLIC keyword
+                        // Closing quote of system ID
+                        if (currentNotationExternalID.systemId == null) {
+                            currentNotationExternalID.systemId = "";
+                        }
+                        state = State.EXPECT_GT;
+                        break;
+
+                    default:
+                        throw fatalError("Unexpected token in system ID: " + token, locator);
+                }
+                break;
+
+            case AFTER_PUBLIC_KEYWORD:
+                // After PUBLIC, expecting whitespace then opening quote
+                switch (token) {
+                    case S:
+                        sawWhitespaceAfterKeyword = true;
+                        state = State.EXPECT_PUBLIC_QUOTE;
+                        break;
+
+                    default:
+                        // WFC: Notation Declaration (Production 82)
+                        // "Whitespace is required after PUBLIC keyword"
+                        throw fatalError("Expected whitespace after PUBLIC keyword in <!NOTATION", locator);
+                }
+                break;
+
+            case EXPECT_PUBLIC_QUOTE:
+                // After whitespace following PUBLIC, expecting opening quote for public ID
+                switch (token) {
+                    case S:
+                        // Additional whitespace, ignore
+                        break;
+
+                    case QUOT:
+                    case APOS:
+                        // Opening quote for public ID
                         if (!sawWhitespaceAfterKeyword) {
                             // WFC: Notation Declaration (Production 82)
                             // "Whitespace is required after PUBLIC keyword"
                             throw fatalError("Expected whitespace after PUBLIC keyword in <!NOTATION", locator);
                         }
-                        // ignore quote
+                        state = State.IN_PUBLIC_ID;
                         break;
-                        
-                    case CDATA:
-                    case NAME:
-                        // Public ID (tokenizer may emit NAME or CDATA in DOCTYPE context)
-                        String publicId = data.toString();
-                        dtdParser.validatePublicId(publicId);
-                        currentNotationExternalID.publicId = publicId;
-                        state = State.AFTER_PUBLIC_ID;
-                        break;
-                        
+
                     default:
                         // WFC: Notation Declaration (Production 82)
                         // "Public ID must be a quoted string"
                         throw fatalError("Expected quoted public ID after PUBLIC, got: " + token, locator);
                 }
                 break;
-                
+
+            case IN_PUBLIC_ID:
+                // Inside public ID quotes, accumulating content across possibly
+                // several CDATA/NAME deliveries until the matching closing quote
+                switch (token) {
+                    case CDATA:
+                    case NAME:
+                        // Public ID content (may arrive split across several tokens)
+                        if (currentNotationExternalID.publicId == null) {
+                            currentNotationExternalID.publicId = data.toString();
+                        } else {
+                            currentNotationExternalID.publicId += data.toString();
+                        }
+                        break;
+
+                    case QUOT:
+                    case APOS:
+                        // Closing quote of public ID
+                        if (currentNotationExternalID.publicId == null) {
+                            currentNotationExternalID.publicId = "";
+                        }
+                        dtdParser.validatePublicId(currentNotationExternalID.publicId);
+                        state = State.AFTER_PUBLIC_ID;
+                        break;
+
+                    default:
+                        throw fatalError("Unexpected token in public ID: " + token, locator);
+                }
+                break;
+
             case AFTER_PUBLIC_ID:
                 // After public ID, expecting optional system ID or &gt;
                 switch (token) {
                     case S:
-                        // Whitespace, ignore
+                        sawWhitespaceAfterKeyword = true;
                         break;
-                        
+
                     case QUOT:
                     case APOS:
-                        // Quote (closing previous or opening next)
+                        // Opening quote of optional system ID
+                        if (!sawWhitespaceAfterKeyword) {
+                            // WFC: Notation Declaration (Production 82)
+                            // "Whitespace is required between public ID and system ID"
+                            throw fatalError("Expected whitespace between public ID and system ID in <!NOTATION", locator);
+                        }
+                        state = State.IN_SYSTEM_ID_AFTER_PUBLIC;
                         break;
-                        
-                    case CDATA:
-                    case NAME:
-                        // Optional system ID after PUBLIC (tokenizer may emit NAME or CDATA)
-                        currentNotationExternalID.systemId = data.toString();
-                        state = State.EXPECT_GT;
-                        break;
-                        
+
                     case GT:
                         // End of declaration (PUBLIC without system ID)
                         finish();
                         return true;
-                        
+
                     default:
                         // WFC: Notation Declaration (Production 82)
                         // "After public ID, must be system ID or '>'"
                         throw fatalError("Expected system ID or '>' after public ID, got: " + token, locator);
                 }
                 break;
-                
+
+            case IN_SYSTEM_ID_AFTER_PUBLIC:
+                // Inside the optional system ID quotes following a public ID
+                switch (token) {
+                    case CDATA:
+                    case NAME:
+                        // System ID content (may arrive split across several tokens)
+                        if (currentNotationExternalID.systemId == null) {
+                            currentNotationExternalID.systemId = data.toString();
+                        } else {
+                            currentNotationExternalID.systemId += data.toString();
+                        }
+                        break;
+
+                    case QUOT:
+                    case APOS:
+                        // Closing quote of system ID
+                        if (currentNotationExternalID.systemId == null) {
+                            currentNotationExternalID.systemId = "";
+                        }
+                        state = State.EXPECT_GT;
+                        break;
+
+                    default:
+                        throw fatalError("Unexpected token in system ID: " + token, locator);
+                }
+                break;
+
             case EXPECT_GT:
                 // Expecting &gt; to close declaration
                 switch (token) {
                     case S:
                         // Whitespace before &gt;, ignore
                         break;
-                        
-                    case QUOT:
-                    case APOS:
-                        // Closing quote, ignore
-                        break;
-                        
-                    case CDATA:
-                    case NAME:
-                        // Additional text (e.g., continuation of system ID if split by tokenizer)
-                        // Append to existing system ID if present
-                        if (currentNotationExternalID.systemId != null) {
-                            currentNotationExternalID.systemId += data.toString();
-                        }
-                        break;
-                        
+
                     case GT:
                         // End of declaration
                         finish();
                         return true;
-                        
+
                     default:
                         // WFC: Notation Declaration (Production 82)
                         // "Notation declarations must end with '>'"
                         throw fatalError("Expected '>' to close <!NOTATION declaration, got: " + token, locator);
                 }
                 break;
-                
+
             default:
                 // Internal error - should never happen
                 throw fatalError("Invalid NOTATION parser state: " + state, locator);
         }
-        
+
         return false; // Not done yet
     }
-    
+
     /**
      * Validates and saves the completed notation declaration.
      * Performs final validation checks before adding to DTD.
-     * 
+     *
      * @throws SAXException if validation fails
      */
     private void finish() throws SAXException {
@@ -313,18 +398,18 @@ class NotationDeclParser {
                 // WFC: System Literal (Production 11)
                 // "System identifiers must not contain URI fragment identifiers (#)"
                 throw fatalError(
-                    "System identifier must not contain URI fragment (found '#' in: " + 
+                    "System identifier must not contain URI fragment (found '#' in: " +
                     currentNotationExternalID.systemId + ")", locator);
             }
         }
-        
+
         // Save notation declaration
         dtdParser.addNotationDeclaration(currentNotationName, currentNotationExternalID);
     }
-    
+
     /**
      * Reports a fatal error through the error handler and returns the exception.
-     * 
+     *
      * @param message the error message
      * @param locator the locator for error position
      * @return the SAXException to throw
@@ -333,6 +418,6 @@ class NotationDeclParser {
     private SAXException fatalError(String message, Locator locator) throws SAXException {
         return dtdParser.fatalError(message, locator);
     }
-    
+
 }
 

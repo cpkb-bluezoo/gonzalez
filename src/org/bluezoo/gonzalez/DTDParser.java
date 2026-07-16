@@ -897,64 +897,55 @@ class DTDParser implements TokenConsumer {
                     // "Whitespace is required after SYSTEM or PUBLIC keyword"
                     throw fatalError("Expected whitespace after " + keyword + " keyword in DOCTYPE", locator);
                 }
-                
-                // Track quote depth to detect empty strings
+
                 if (quoteDepth == 0) {
                     // Opening quote
                     quoteDepth = 1;
                 } else {
-                    // Closing quote - check if this completes an empty string
+                    // Closing quote of the literal this state is currently accumulating:
+                    // the public ID (PUBLIC, until its closing quote is seen) or the system
+                    // ID (SYSTEM, or PUBLIC's own literal once the public ID has closed).
                     quoteDepth = 0;
-                    
-                    // If PUBLIC and we haven't set publicId yet, this was an empty public ID
-                    if (sawPublicKeyword) {
-                        if (doctypeExternalID == null) {
-                            doctypeExternalID = new ExternalID();
-                        }
+                    if (doctypeExternalID == null) {
+                        doctypeExternalID = new ExternalID();
+                    }
+                    if (sawPublicKeyword && !sawClosingQuoteOfPublicId) {
                         if (doctypeExternalID.publicId == null) {
                             doctypeExternalID.publicId = ""; // Empty public ID
-                            changeState(State.AFTER_PUBLIC_ID);
                         }
-                    }
-                    // If we're in AFTER_PUBLIC_ID and haven't set systemId yet, this was an empty system ID
-                    else if (state == State.AFTER_PUBLIC_ID) {
-                        if (doctypeExternalID != null && doctypeExternalID.systemId == null) {
+                        validatePublicId(doctypeExternalID.publicId);
+                        sawClosingQuoteOfPublicId = true;
+                        changeState(State.AFTER_PUBLIC_ID);
+                    } else {
+                        if (doctypeExternalID.systemId == null) {
                             doctypeExternalID.systemId = ""; // Empty system ID
-                            changeState(State.AFTER_EXTERNAL_ID);
                         }
+                        validateSystemId(doctypeExternalID.systemId);
+                        changeState(State.AFTER_EXTERNAL_ID);
                     }
                 }
                 break;
 
             case CDATA:
-                // This is the ID string
-                // Reset quote depth since we're inside a non-empty quoted string
-                quoteDepth = 1;
-                
-                if (sawPublicKeyword) {
-                    // PUBLIC keyword - first string is publicId, second is systemId
-                    if (doctypeExternalID == null) {
-                        doctypeExternalID = new ExternalID();
-                    }
+                // Literal content, which may arrive split across several CDATA
+                // deliveries depending on how the input happens to be chunked -
+                // accumulate rather than assume this is the whole literal, and defer
+                // completion (validation, state change) to the closing quote above.
+                if (doctypeExternalID == null) {
+                    doctypeExternalID = new ExternalID();
+                }
+                if (sawPublicKeyword && !sawClosingQuoteOfPublicId) {
                     if (doctypeExternalID.publicId == null) {
-                        String publicId = data.toString();
-                        validatePublicId(publicId);
-                        doctypeExternalID.publicId = publicId;
-                        changeState(State.AFTER_PUBLIC_ID);
+                        doctypeExternalID.publicId = data.toString();
                     } else {
-                        // Second string after PUBLIC
-                        doctypeExternalID.systemId = data.toString();
-                        validateSystemId(doctypeExternalID.systemId);
-                        changeState(State.AFTER_EXTERNAL_ID);
+                        doctypeExternalID.publicId += data.toString();
                     }
                 } else {
-                    // SYSTEM keyword - only one string, and it's the systemId
-                    if (doctypeExternalID == null) {
-                        doctypeExternalID = new ExternalID();
+                    if (doctypeExternalID.systemId == null) {
+                        doctypeExternalID.systemId = data.toString();
+                    } else {
+                        doctypeExternalID.systemId += data.toString();
                     }
-                    doctypeExternalID.systemId = data.toString();
-                    validateSystemId(doctypeExternalID.systemId);
-                    changeState(State.AFTER_EXTERNAL_ID);
                 }
                 break;
 
@@ -982,19 +973,28 @@ class DTDParser implements TokenConsumer {
 
             case QUOT:
             case APOS:
-                // Track which quote we're seeing
-                if (!sawClosingQuoteOfPublicId) {
-                    // First quote we see is the closing quote of the public ID
-                    sawClosingQuoteOfPublicId = true;
+                if (!sawWhitespaceAfterPublicId) {
+                    // WFC: External ID (Production 75)
+                    // "Whitespace is required between public ID and system ID"
+                    throw fatalError("Expected whitespace between public ID and system ID", locator);
+                }
+                if (quoteDepth == 0) {
+                    // Opening quote of the system ID
+                    quoteDepth = 1;
                 } else {
-                    // Subsequent quotes - must have whitespace before them (opening quote of system ID)
-                    // This is the opening quote of system ID - just ignore and wait for CDATA
-                    // But we need to have seen whitespace first
+                    // Closing quote of the system ID
+                    quoteDepth = 0;
+                    if (doctypeExternalID.systemId == null) {
+                        doctypeExternalID.systemId = ""; // Empty system ID
+                    }
+                    validateSystemId(doctypeExternalID.systemId);
+                    changeState(State.AFTER_EXTERNAL_ID);
                 }
                 break;
 
             case CDATA:
-                // This is the system ID - must have seen whitespace and quote first
+                // System ID content, which may arrive split across several CDATA
+                // deliveries depending on how the input happens to be chunked.
                 if (!sawWhitespaceAfterPublicId) {
                     // WFC: External ID (Production 75)
                     // "Whitespace is required between public ID and system ID"
@@ -1003,9 +1003,11 @@ class DTDParser implements TokenConsumer {
                 if (doctypeExternalID == null) {
                     doctypeExternalID = new ExternalID();
                 }
-                doctypeExternalID.systemId = data.toString();
-                validateSystemId(doctypeExternalID.systemId);
-                changeState(State.AFTER_EXTERNAL_ID);
+                if (doctypeExternalID.systemId == null) {
+                    doctypeExternalID.systemId = data.toString();
+                } else {
+                    doctypeExternalID.systemId += data.toString();
+                }
                 break;
 
             default:
