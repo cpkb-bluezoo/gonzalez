@@ -499,8 +499,21 @@ class ExternalEntityDecoder {
             // Validate BOM/encoding compatibility (only if BOM was present)
             if (bom.requiresCharsetValidation()) {
                 validateBOMEncodingCompatibility(declEncoding);
+
+                // A BOM was already detected and consumed by parseBOM(), so it will
+                // never reach the CharsetDecoder. A generic "UTF-16"/"UTF-32" declared
+                // encoding (no explicit LE/BE suffix) is Java's BOM-sensing charset,
+                // which defaults to big-endian when it doesn't see a BOM of its own -
+                // silently misdecoding a little-endian document even though Gonzalez
+                // already correctly determined the byte order from the BOM. Trust the
+                // already-detected BOM in that case instead of re-resolving the generic
+                // name.
+                String normalized = declEncoding.toUpperCase().replace("-", "").replace("_", "");
+                if (!normalized.endsWith("LE") && !normalized.endsWith("BE")) {
+                    charset = bom.defaultCharset;
+                }
             }
-            
+
             tokenizer.encoding = declEncoding;
         } else {
             // No declared encoding - use BOM-indicated charset or default to UTF-8
