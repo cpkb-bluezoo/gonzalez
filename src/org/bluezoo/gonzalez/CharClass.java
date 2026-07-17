@@ -181,7 +181,10 @@ enum CharClass {
         ASCII_LOOKUP[';'] = SEMICOLON;
         ASCII_LOOKUP['%'] = PERCENT;
         ASCII_LOOKUP['#'] = HASH;
-        ASCII_LOOKUP[':'] = COLON;
+        // COLON is always NAME_START_CHAR per XML 1.0 SS2.3, unconditionally
+        // (no context dependency) - bake the remap directly into the table
+        // rather than checking for it in classify()'s hot path.
+        ASCII_LOOKUP[':'] = NAME_START_CHAR;
         ASCII_LOOKUP['['] = OPEN_BRACKET;
         ASCII_LOOKUP[']'] = CLOSE_BRACKET;
         ASCII_LOOKUP['('] = OPEN_PAREN;
@@ -225,7 +228,39 @@ enum CharClass {
             }
         }
     }
-    
+
+    /**
+     * True for the small set of ASCII characters whose classification can
+     * change depending on state/miniState/XML version (hex digits in a
+     * character-reference context, '-' in a name-accumulation context,
+     * control characters under XML 1.1's RestrictedChar rules). All other
+     * ASCII characters (the vast majority, including every delimiter/
+     * punctuation character) have exactly one classification regardless of
+     * context, so classify()'s hot path can return {@code ASCII_LOOKUP[c]}
+     * directly for them via a single table lookup - mirroring how Xerces's
+     * XMLChar.isContent()/isNameStart() fold their checks into one bitmask
+     * lookup - instead of testing each context-dependent case in turn.
+     */
+    private static final boolean[] NEEDS_CONTEXT_CHECK = new boolean[128];
+
+    static {
+        for (char c = 'A'; c <= 'F'; c++) {
+            NEEDS_CONTEXT_CHECK[c] = true;
+        }
+        for (char c = 'a'; c <= 'f'; c++) {
+            NEEDS_CONTEXT_CHECK[c] = true;
+        }
+        for (char c = '0'; c <= '9'; c++) {
+            NEEDS_CONTEXT_CHECK[c] = true;
+        }
+        NEEDS_CONTEXT_CHECK['-'] = true;
+        for (int i = 0; i < 128; i++) {
+            if (ASCII_LOOKUP[i] == ILLEGAL) {
+                NEEDS_CONTEXT_CHECK[i] = true;
+            }
+        }
+    }
+
     /**
      * Classifies a character into a CharClass based on the current State and MiniState.
      * <p>
@@ -258,11 +293,15 @@ enum CharClass {
         if (c < 128) {
             CharClass base = ASCII_LOOKUP[c];
 
-            // Fast path for WHITESPACE (very common, no context-dependent handling)
-            if (base == WHITESPACE) {
-                return WHITESPACE;
+            // Single table lookup covers every ASCII character whose class
+            // never varies with context (all delimiters/punctuation, plus
+            // whitespace and '.'/NAME_CHAR) - the common case falls straight
+            // through with no further branching, mirroring Xerces's single
+            // bitmask-table lookup instead of testing each special case in turn.
+            if (!NEEDS_CONTEXT_CHECK[c]) {
+                return base;
             }
-            
+
             // Fast path for NAME_START_CHAR (letters a-z, A-Z, underscore)
             // Only need context check for hex digits in character reference context
             if (base == NAME_START_CHAR) {
@@ -274,7 +313,7 @@ enum CharClass {
                 }
                 return NAME_START_CHAR;
             }
-            
+
             // Fast path for DIGIT (0-9)
             if (base == DIGIT) {
                 if (miniState == MiniState.ACCUMULATING_CHAR_REF_HEX || miniState == MiniState.SEEN_AMP_HASH_X) {
@@ -282,12 +321,7 @@ enum CharClass {
                 }
                 return DIGIT;
             }
-            
-            // COLON is always NAME_START_CHAR per XML 1.0 § 2.3
-            if (base == COLON) {
-                return NAME_START_CHAR;
-            }
-            
+
             // DASH needs context check for name accumulation
             if (base == DASH) {
                 if (miniState == MiniState.ACCUMULATING_NAME ||
@@ -298,7 +332,7 @@ enum CharClass {
                 }
                 return DASH;
             }
-            
+
             // ILLEGAL needs XML 1.1 check
             if (base == ILLEGAL) {
                 if (isXML11 && allowRestrictedChar) {
@@ -311,7 +345,7 @@ enum CharClass {
                 }
                 return ILLEGAL;
             }
-            
+
             // All other ASCII characters (punctuation, etc.) - return as-is
             return base;
         }
@@ -319,7 +353,122 @@ enum CharClass {
         // Unicode path (slower)
         return classifyUnicode(c, isXML11);
     }
-    
+
+    /**
+     * Classifies a full Unicode code point (0x0-0x10FFFF), for use by the
+     * byte-native tokenizer once a UTF-8 sequence has been decoded via
+     * {@link Utf8#decode(byte[], int, int)}.
+     * <p>
+     * Unlike {@link #classify(char, TokenizerState, MiniState, boolean, boolean)},
+     * which classifies one UTF-16 code unit at a time and so can only
+     * approximate a supplementary-plane character via its surrogate halves,
+     * this sees the complete code point and applies the NameStartChar/
+     * NameChar ranges exactly.
+     *
+     * @param codePoint the code point to classify
+     * @param miniState the current tokenizer mini-state
+     * @param isXML11 true if using XML 1.1 rules
+     * @param allowRestrictedChar true to allow RestrictedChar in XML 1.1
+     * @return the character class for this code point in this context
+     */
+    static CharClass classifyCodePoint(int codePoint, MiniState miniState, boolean isXML11, boolean allowRestrictedChar) {
+        if (codePoint < 128) {
+            return classifyAsciiByte(codePoint, miniState, isXML11, allowRestrictedChar);
+        }
+        return classifyUnicodeCodePoint(codePoint, isXML11);
+    }
+
+    /**
+     * ASCII byte classification (0-127), applying the same context-dependent
+     * overrides as {@link #classify(char, TokenizerState, MiniState, boolean, boolean)}'s
+     * ASCII fast path. Kept as a self-contained copy rather than a shared
+     * helper so the existing, heavily-exercised char-based path is never
+     * touched by the byte-native work.
+     */
+    private static CharClass classifyAsciiByte(int b, MiniState miniState, boolean isXML11, boolean allowRestrictedChar) {
+        CharClass base = ASCII_LOOKUP[b];
+
+        if (base == WHITESPACE) {
+            return WHITESPACE;
+        }
+
+        if (base == NAME_START_CHAR) {
+            if (miniState == MiniState.ACCUMULATING_CHAR_REF_HEX || miniState == MiniState.SEEN_AMP_HASH_X) {
+                if ((b >= 'A' && b <= 'F') || (b >= 'a' && b <= 'f')) {
+                    return HEX_DIGIT;
+                }
+            }
+            return NAME_START_CHAR;
+        }
+
+        if (base == DIGIT) {
+            if (miniState == MiniState.ACCUMULATING_CHAR_REF_HEX || miniState == MiniState.SEEN_AMP_HASH_X) {
+                return HEX_DIGIT;
+            }
+            return DIGIT;
+        }
+
+        if (base == COLON) {
+            return NAME_START_CHAR;
+        }
+
+        if (base == DASH) {
+            if (miniState == MiniState.ACCUMULATING_NAME ||
+                miniState == MiniState.ACCUMULATING_ENTITY_NAME ||
+                miniState == MiniState.ACCUMULATING_PARAM_ENTITY_NAME ||
+                miniState == MiniState.ACCUMULATING_MARKUP_NAME) {
+                return NAME_CHAR;
+            }
+            return DASH;
+        }
+
+        if (base == ILLEGAL) {
+            if (isXML11 && allowRestrictedChar) {
+                if ((b >= 0x1 && b <= 0x8) || (b == 0xB) || (b == 0xC) || (b >= 0xE && b <= 0x1F)) {
+                    return CHAR_DATA;
+                }
+            }
+            if (b == 0x7F && !isXML11) {
+                return CHAR_DATA;
+            }
+            return ILLEGAL;
+        }
+
+        return base;
+    }
+
+    /**
+     * Classifies a code point at or above U+0080. Below U+10000 this is
+     * exactly the existing BMP logic (a code point in this range is never
+     * ambiguous the way a lone surrogate half is, and {@link Utf8#decode}
+     * never produces a decoded code point in the surrogate range - encoded
+     * surrogates are rejected as malformed UTF-8 before classification is
+     * ever reached). At or above U+10000, {@code Utf8.decode} has already
+     * rejected anything past U+10FFFF, so every code point reaching here is
+     * a legal XML character in both XML 1.0 and 1.1; NameStartChar is
+     * exactly [#x10000-#xEFFFF], and XML defines no NameChar-only ranges
+     * above the BMP, so NameChar coincides with NameStartChar here.
+     */
+    private static CharClass classifyUnicodeCodePoint(int codePoint, boolean isXML11) {
+        if (codePoint < 0x10000) {
+            char c = (char) codePoint;
+            if (!isLegalXMLChar(c, isXML11)) {
+                return ILLEGAL;
+            }
+            if (isNameStartChar(c, isXML11)) {
+                return NAME_START_CHAR;
+            }
+            if (isNameChar(c, isXML11)) {
+                return NAME_CHAR;
+            }
+            return CHAR_DATA;
+        }
+        if (codePoint <= 0xEFFFF) {
+            return NAME_START_CHAR;
+        }
+        return CHAR_DATA;
+    }
+
     /**
      * Returns true if the mini-state is in a context where we're recognizing predefined entities.
      */

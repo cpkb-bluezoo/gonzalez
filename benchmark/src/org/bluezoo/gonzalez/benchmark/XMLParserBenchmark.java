@@ -173,6 +173,32 @@ public class XMLParserBenchmark {
         parser.close();
     }
 
+    /**
+     * Chunk size matching Xerces's XMLEntityManager.DEFAULT_BUFFER_SIZE, so
+     * largeFile_Gonzalez_Chunked below reads the input stream-style, the way
+     * largeFile_JDK effectively does internally (XMLEntityManager reads its
+     * ByteArrayInputStream in 8192-byte calls regardless of the stream's
+     * backing store) - unlike largeFile_Gonzalez above, which hands Gonzalez
+     * the entire document in a single receive() call.
+     */
+    private static final int XERCES_CHUNK_SIZE = 8192;
+
+    @Benchmark
+    public void largeFile_Gonzalez_Chunked() throws Exception {
+        Parser parser = new Parser();
+        parser.setFeature("http://xml.org/sax/features/namespaces", namespaceAware);
+        parser.setContentHandler(emptyHandler);
+
+        int offset = 0;
+        while (offset < largeBytes.length) {
+            int len = Math.min(XERCES_CHUNK_SIZE, largeBytes.length - offset);
+            ByteBuffer chunk = ByteBuffer.wrap(largeBytes, offset, len);
+            parser.receive(chunk);
+            offset += len;
+        }
+        parser.close();
+    }
+
     @Benchmark
     public void largeFile_Gonzalez_Reuse() throws Exception {
         if (reusableParser == null) {

@@ -387,18 +387,17 @@ Benchmark results comparing Gonzalez with the JDK's bundled Xerces SAX parser
 
 | Document Size | Gonzalez | Xerces | Comparison |
 |---------------|----------|--------|------------|
-| Small plain (1.3KB) | 10.3 µs | 11.3 µs | Gonzalez **1.10x faster** |
-| Small NS-heavy (2.9KB) | 20.2 µs | 18.8 µs | Xerces 1.08x faster |
-| Large plain (1MB) | 4035 µs | 1803 µs | Xerces 2.24x faster |
-| Large NS-heavy (1.4MB) | 9433 µs | 4578 µs | Xerces 2.06x faster |
+| Small plain (1.3KB) | 10.4 µs | 11.3 µs | Gonzalez **1.09x faster** |
+| Small NS-heavy (2.9KB) | 19.9 µs | 18.8 µs | Xerces 1.06x faster |
+| Large plain (1MB) | 3835 µs | 1799 µs | Xerces 2.13x faster |
+| Large NS-heavy (1.4MB) | 9423 µs | 4607 µs | Xerces 2.05x faster |
 
 For small documents, Gonzalez can slightly outperform Xerces due to its
 lightweight architecture and efficient NIO buffer handling.
 
-For larger documents, Xerces is faster due to decades of micro-optimisation
-in its char[] processing and custom UTF-8 decoder. However, Gonzalez's
-streaming architecture provides benefits that don't show in synthetic
-benchmarks:
+For larger documents, Xerces is faster.
+Gonzalez's streaming architecture provides benefits that don't show
+in synthetic benchmarks, though:
 
 - **Non-blocking I/O**: Your thread is never waiting on data from a network
   connection, allowing integration with async frameworks like Netty or Gumdrop

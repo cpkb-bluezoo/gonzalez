@@ -499,8 +499,21 @@ class ExternalEntityDecoder {
             // Validate BOM/encoding compatibility (only if BOM was present)
             if (bom.requiresCharsetValidation()) {
                 validateBOMEncodingCompatibility(declEncoding);
+
+                // A BOM was already detected and consumed by parseBOM(), so it will
+                // never reach the CharsetDecoder. A generic "UTF-16"/"UTF-32" declared
+                // encoding (no explicit LE/BE suffix) is Java's BOM-sensing charset,
+                // which defaults to big-endian when it doesn't see a BOM of its own -
+                // silently misdecoding a little-endian document even though Gonzalez
+                // already correctly determined the byte order from the BOM. Trust the
+                // already-detected BOM in that case instead of re-resolving the generic
+                // name.
+                String normalized = declEncoding.toUpperCase().replace("-", "").replace("_", "");
+                if (!normalized.endsWith("LE") && !normalized.endsWith("BE")) {
+                    charset = bom.defaultCharset;
+                }
             }
-            
+
             tokenizer.encoding = declEncoding;
         } else {
             // No declared encoding - use BOM-indicated charset or default to UTF-8
@@ -608,21 +621,21 @@ class ExternalEntityDecoder {
 
             // Decode into charBuffer (from current position to limit)
             CoderResult result = decoder.decode(data, charBuffer, false);
-            
+
             // Check for decoding errors
             if (result.isError()) {
                 if (result.isMalformed()) {
-                    throw tokenizer.fatalError("Malformed byte sequence in encoding " + charset.name() + 
+                    throw tokenizer.fatalError("Malformed byte sequence in encoding " + charset.name() +
                         " (length: " + result.length() + ")");
                 } else if (result.isUnmappable()) {
-                    throw tokenizer.fatalError("Unmappable byte sequence in encoding " + charset.name() + 
+                    throw tokenizer.fatalError("Unmappable byte sequence in encoding " + charset.name() +
                         " (length: " + result.length() + ")");
                 }
             }
-            
+
             // Normalize line endings
             normalizeLineEndings();
-            
+
             // Flip to read mode before passing to tokenizer
             charBuffer.flip();
             
@@ -698,15 +711,15 @@ class ExternalEntityDecoder {
      * 
      * <p>XML line ending normalization rules:
      * <ul>
-     *   <li>CR (\r) alone → LF (\n)</li>
-     *   <li>CR LF (\r\n) → LF (\n) - the LF is removed</li>
-     *   <li>LF (\n) alone → LF (unchanged)</li>
-     *   <li>XML 1.1 only: NEL (\u0085) → LF</li>
-     *   <li>XML 1.1 only: LS (\u2028) → LF</li>
+     *   <li>CR (\r) alone -> LF (\n)</li>
+     *   <li>CR LF (\r\n) -> LF (\n) - the LF is removed</li>
+     *   <li>LF (\n) alone -> LF (unchanged)</li>
+     *   <li>XML 1.1 only: NEL (\u0085) -> LF</li>
+     *   <li>XML 1.1 only: LS (\u2028) -> LF</li>
      * </ul>
      * 
      * <p>This implementation uses a single-pass O(n) algorithm with separate
-     * read and write positions, avoiding the O(n²) cost of shifting data
+     * read and write positions, avoiding the O(n^2) cost of shifting data
      * for each CRLF encountered.
      */
     private void normalizeLineEndings() {

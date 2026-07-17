@@ -282,6 +282,18 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * Current CDATA text being accumulated.
      */
     private StringBuilder currentCDATAText;
+
+    /**
+     * Count (capped at 2) of consecutive ']' characters at the end of the most
+     * recently delivered CDATA token in element content, carried across
+     * separate CDATA token deliveries within the same contiguous run of raw
+     * character data. The tokenizer may split what is logically one run of
+     * text into several CDATA deliveries depending on how the input happens
+     * to be chunked (see Tokenizer's greedy-accumulation flush), so the
+     * "]]&gt;' must not appear in content" check cannot rely on the forbidden
+     * sequence always falling within a single delivery's buffer.
+     */
+    private int trailingCloseBrackets;
     
     /**
      * Whether startDocument has been called.
@@ -1662,9 +1674,17 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
      * Handles tokens in element content.
      */
     private void handleElementContent(Token token, CharBuffer data) throws SAXException {
+        if (token != Token.CDATA) {
+            // Any other token interrupts the run of raw literal characters, so a
+            // ']' at the end of a previous CDATA delivery can no longer combine
+            // with what follows to form the forbidden ']]>' sequence.
+            trailingCloseBrackets = 0;
+        }
         switch (token) {
             case CDATA:
-                // Character data - check for forbidden ]]> sequence
+                // Character data - check for forbidden ]]> sequence, including one
+                // straddling the boundary with the previous CDATA delivery.
+                checkCrossDeliveryForbiddenSequence(data);
                 if (data.hasArray() && !data.isReadOnly()) {
                     char[] cdataChars = data.array();
                     int cdataOff = data.arrayOffset() + data.position();
@@ -1683,7 +1703,8 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
                         }
                     }
                 }
-                
+                updateTrailingCloseBrackets(data);
+
                 if (validationEnabled && dtdParser != null) {
                     // Validation requires String - allocate only when needed
                     String text = data.toString();
@@ -1833,9 +1854,53 @@ class ContentParser implements TokenConsumer, SAXAttributes.StringBuilderRecycle
  throw fatalError("Unexpected token in element content: " + token);
         }
     }
-    
+
     /**
-     * Handles tokens after START_END_ELEMENT (&lt;/). 
+     * Checks whether the trailing ']' run carried over from the previous CDATA
+     * delivery combines with the start of this delivery to form the forbidden
+     * ']]&gt;' sequence.
+     */
+    private void checkCrossDeliveryForbiddenSequence(CharBuffer data) throws SAXException {
+        if (trailingCloseBrackets == 0 || data.remaining() == 0) {
+            return;
+        }
+        int pos = data.position();
+        char first = data.get(pos);
+        if (trailingCloseBrackets >= 2 && first == '>') {
+            throw fatalError("The character sequence ']]>' must not appear in content");
+        }
+        if (data.remaining() >= 2 && first == ']' && data.get(pos + 1) == '>') {
+            throw fatalError("The character sequence ']]>' must not appear in content");
+        }
+    }
+
+    /**
+     * Updates the count of consecutive ']' characters at the end of the given
+     * CDATA delivery, carrying forward the previous count if this entire
+     * delivery is itself made up of ']' characters.
+     */
+    private void updateTrailingCloseBrackets(CharBuffer data) {
+        int len = data.remaining();
+        if (len == 0) {
+            return;
+        }
+        int base = data.position();
+        int trailing = 0;
+        int i = base + len - 1;
+        while (i >= base && data.get(i) == ']' && trailing < 2) {
+            trailing++;
+            i--;
+        }
+        if (i < base) {
+            // Every character in this delivery was ']' - extends the previous run.
+            trailingCloseBrackets = Math.min(2, trailingCloseBrackets + trailing);
+        } else {
+            trailingCloseBrackets = trailing;
+        }
+    }
+
+    /**
+     * Handles tokens after START_END_ELEMENT (&lt;/).
      */
     private void handleEndElementStart(Token token, CharBuffer data) throws SAXException {
         if (token == Token.NAME) {

@@ -489,8 +489,11 @@ class Tokenizer implements Locator2 {
         
         // Validate that we're in a valid end state
         // If we're in the middle of parsing something (like an entity reference after '&'),
-        // that's a well-formedness error
-        if (miniState != MiniState.READY) {
+        // that's a well-formedness error. A greedy-accumulation mini-state (CDATA/whitespace
+        // runs) is not an error here even though it isn't READY: every character that reached
+        // it already passed shouldStopAccumulating(), and the run was flushed via
+        // emitTokenWindow() when the buffer it was consuming ran out, so nothing is dangling.
+        if (miniState != MiniState.READY && !miniState.isGreedyAccumulation()) {
             // WFC: Well-Formed Documents (Section 2.1)
             // "All tokens must be complete at end of document"
             throw fatalError("Incomplete token at end of input: " + miniState);
@@ -994,90 +997,46 @@ class Tokenizer implements Locator2 {
                         switch (state) {
                             case CONTENT:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_CONTENT) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case ATTR_VALUE_QUOT:
+                            case DOCTYPE_QUOTED_QUOT:
+                            case DOCTYPE_INTERNAL_QUOTED_QUOT:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '"') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_QUOT) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case ATTR_VALUE_APOS:
-                                while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '\'') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
-                                        break;
-                                    }
-                                }
-                                break;
                             case DOCTYPE_QUOTED_APOS:
                             case DOCTYPE_INTERNAL_QUOTED_APOS:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '\'') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
-                                        break;
-                                    }
-                                }
-                                break;
-                            case DOCTYPE_QUOTED_QUOT:
-                            case DOCTYPE_INTERNAL_QUOTED_QUOT:
-                                while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '"') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_APOS) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case COMMENT:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '-') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_COMMENT) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case CDATA_SECTION:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == ']') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_CDATA_SECTION) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case PI_DATA:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '?') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_PI_DATA) != 0) {
                                         break;
                                     }
                                 }
@@ -1096,8 +1055,7 @@ class Tokenizer implements Locator2 {
                     if (hasDirectArray && miniState == MiniState.ACCUMULATING_WHITESPACE) {
                         int scanStart = pos;
                         while (++pos < limit) {
-                            char ch = chars[pos];
-                            if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+                            if ((STOP_MASKS[chars[pos]] & STOP_WHITESPACE) != 0) {
                                 break;
                             }
                         }
@@ -1409,7 +1367,15 @@ class Tokenizer implements Locator2 {
             int tokenLength = pos - tokenStartPos;
             if (tokenLength > 0) {
                 emitTokenWindow(charBuffer, miniState.getTokenType(), tokenStartPos, tokenLength);            }
-            miniState = MiniState.READY;
+            // Do NOT reset miniState to READY here: we only reach this branch because the
+            // buffer ran out while shouldStopAccumulating() kept saying "continue", not because
+            // a real delimiter was seen. Resuming through READY re-derives behavior from the
+            // top-level grammar transition table, which is context-free and can disagree with
+            // shouldStopAccumulating() for the same character (e.g. '%' inside a DOCTYPE-internal
+            // quoted literal is ordinary PubidChar data, but READY's table for that state treats
+            // '%' as a parameter-entity-reference trigger) - staying in the same accumulation
+            // mini-state keeps resumption on the same, context-aware path regardless of how the
+            // input happens to be chunked.
         } else if (miniState != MiniState.READY) {
             // We're in a non-greedy, non-READY state (e.g., SEEN_AMP waiting for entity name)
             // This means we have an incomplete token. Rewind the buffer to save it for next receive()
@@ -1472,6 +1438,64 @@ class Tokenizer implements Locator2 {
     }
 
     /**
+     * Bit flags into {@link #STOP_MASKS}, one per bulk-scan stop condition.
+     * A single shared table tested via bitwise AND, rather than one boolean
+     * array per condition, mirrors Xerces's XMLChar.isContent()/isNameStart()
+     * design directly: one 64KB byte[] reused for every character-property
+     * query in the tokenizer, instead of several separate boolean[] tables
+     * (each 64KB in its own right) that a document alternating rapidly
+     * between accumulation kinds - attribute-heavy documents especially -
+     * would otherwise have to keep shuttling between in cache.
+     */
+    private static final int STOP_CONTENT = 0x01;
+    private static final int STOP_QUOT = 0x02;
+    private static final int STOP_APOS = 0x04;
+    private static final int STOP_COMMENT = 0x08;
+    private static final int STOP_CDATA_SECTION = 0x10;
+    private static final int STOP_PI_DATA = 0x20;
+    private static final int STOP_WHITESPACE = 0x40;
+
+    /**
+     * Precomputed per-character stop-condition bitmask for all bulk-scan
+     * fast paths (CONTENT, quoted attribute/DOCTYPE values, COMMENT,
+     * CDATA_SECTION, PI_DATA, and ACCUMULATING_WHITESPACE). Each bulk-scan
+     * loop tests {@code (STOP_MASKS[ch] & STOP_X) != 0} - a single array
+     * lookup plus a bitwise AND, in place of a chain of character/delimiter
+     * comparisons or a call to needsSlowPathClassification().
+     */
+    private static final byte[] STOP_MASKS = new byte[0x10000];
+
+    static {
+        for (int i = 0; i < 0x10000; i++) {
+            char ch = (char) i;
+            boolean slow = needsSlowPathClassification(ch);
+            int mask = 0;
+            if (ch == '<' || ch == '&' || slow) {
+                mask |= STOP_CONTENT;
+            }
+            if (ch == '<' || ch == '&' || ch == '"' || slow) {
+                mask |= STOP_QUOT;
+            }
+            if (ch == '<' || ch == '&' || ch == '\'' || slow) {
+                mask |= STOP_APOS;
+            }
+            if (ch == '-' || slow) {
+                mask |= STOP_COMMENT;
+            }
+            if (ch == ']' || slow) {
+                mask |= STOP_CDATA_SECTION;
+            }
+            if (ch == '?' || slow) {
+                mask |= STOP_PI_DATA;
+            }
+            if (!(ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')) {
+                mask |= STOP_WHITESPACE;
+            }
+            STOP_MASKS[i] = (byte) mask;
+        }
+    }
+
+    /**
      * Determines if accumulation should stop for the given character class.
      */
     private boolean shouldStopAccumulating(CharClass cc, MiniState miniState) {
@@ -1524,7 +1548,7 @@ class Tokenizer implements Locator2 {
             charBuffer.position(startPos);
             return false;
         }
-        
+
         // Verify exact match
         for (int i = 0; i < sequence.length(); i++) {
             char actual = charBuffer.get();
@@ -1533,7 +1557,15 @@ class Tokenizer implements Locator2 {
                 // Include what we actually found for debugging
                 StringBuilder found = new StringBuilder();
                 charBuffer.position(charBuffer.position() - 1); // Back up to show what we found
-                for (int j = 0; j < Math.min(sequence.length(), charBuffer.remaining() + 1); j++) {
+                // Compute the bound once: charBuffer.remaining() shrinks with every get()
+                // below, so re-evaluating it as part of the loop condition would make the
+                // bound chase itself downward and truncate the context whenever remaining()
+                // starts out close to sequence.length() (e.g. right at a chunk/buffer
+                // boundary), even though the full context is available. Cap at remaining()
+                // exactly (not remaining() + 1) - there is no extra character to read beyond
+                // what is actually left in the buffer.
+                int contextLength = Math.min(sequence.length(), charBuffer.remaining());
+                for (int j = 0; j < contextLength; j++) {
                     found.append(charBuffer.get());
                 }
                 // WFC: Well-Formed Documents (Section 2.1)

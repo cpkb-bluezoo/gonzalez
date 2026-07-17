@@ -272,6 +272,18 @@ class SAXAttributes implements Attributes2 {
      */
     public void addAttribute(String uri, String localName, String qName,
             String type, Object value, boolean specified) throws NamespaceException {
+        // Get QName from pool (checkout and update) up front, before the duplicate
+        // scan below, so its cached hash (computed once in update()) can drive
+        // QName.equals()'s existing hash-based fast rejection for the expanded-name
+        // check, instead of unconditionally calling getLocalName().equals()/
+        // getURI().equals() on every already-added attribute. Likewise pre-hash
+        // qName once rather than per comparison. For elements with many attributes
+        // this turns most loop iterations into a single int comparison rather than
+        // a String comparison.
+        QName qnameKey = qnamePool.checkout();
+        qnameKey.update(uri, localName, qName);
+        int qNameHash = qName.hashCode();
+
         // Check for duplicate attribute by qName (well-formedness constraint) and by
         // expanded name (namespace-aware duplicate detection) in a single pass over
         // the already-added attributes, instead of two separate full scans - halves
@@ -282,21 +294,18 @@ class SAXAttributes implements Attributes2 {
         boolean expandedNameDuplicate = false;
         for (int i = 0; i < attributeCount; i++) {
             QName existing = attributes.get(i).qname;
-            if (!qNameDuplicate && existing.getQName().equals(qName)) {
+            if (!qNameDuplicate && existing.getQName().hashCode() == qNameHash && existing.getQName().equals(qName)) {
                 qNameDuplicate = true;
             }
-            if (!expandedNameDuplicate && existing.getLocalName().equals(localName) && existing.getURI().equals(uri)) {
+            if (!expandedNameDuplicate && existing.equals(qnameKey)) {
                 expandedNameDuplicate = true;
             }
         }
 
         if (qNameDuplicate) {
+            qnamePool.returnToPool(qnameKey);
             throw new NamespaceException("Duplicate attribute: " + qName);
         }
-
-        // Get QName from pool (checkout and update)
-        QName qnameKey = qnamePool.checkout();
-        qnameKey.update(uri, localName, qName);
 
         if (expandedNameDuplicate) {
             qnamePool.returnToPool(qnameKey);
