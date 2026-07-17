@@ -181,7 +181,10 @@ enum CharClass {
         ASCII_LOOKUP[';'] = SEMICOLON;
         ASCII_LOOKUP['%'] = PERCENT;
         ASCII_LOOKUP['#'] = HASH;
-        ASCII_LOOKUP[':'] = COLON;
+        // COLON is always NAME_START_CHAR per XML 1.0 SS2.3, unconditionally
+        // (no context dependency) - bake the remap directly into the table
+        // rather than checking for it in classify()'s hot path.
+        ASCII_LOOKUP[':'] = NAME_START_CHAR;
         ASCII_LOOKUP['['] = OPEN_BRACKET;
         ASCII_LOOKUP[']'] = CLOSE_BRACKET;
         ASCII_LOOKUP['('] = OPEN_PAREN;
@@ -225,7 +228,39 @@ enum CharClass {
             }
         }
     }
-    
+
+    /**
+     * True for the small set of ASCII characters whose classification can
+     * change depending on state/miniState/XML version (hex digits in a
+     * character-reference context, '-' in a name-accumulation context,
+     * control characters under XML 1.1's RestrictedChar rules). All other
+     * ASCII characters (the vast majority, including every delimiter/
+     * punctuation character) have exactly one classification regardless of
+     * context, so classify()'s hot path can return {@code ASCII_LOOKUP[c]}
+     * directly for them via a single table lookup - mirroring how Xerces's
+     * XMLChar.isContent()/isNameStart() fold their checks into one bitmask
+     * lookup - instead of testing each context-dependent case in turn.
+     */
+    private static final boolean[] NEEDS_CONTEXT_CHECK = new boolean[128];
+
+    static {
+        for (char c = 'A'; c <= 'F'; c++) {
+            NEEDS_CONTEXT_CHECK[c] = true;
+        }
+        for (char c = 'a'; c <= 'f'; c++) {
+            NEEDS_CONTEXT_CHECK[c] = true;
+        }
+        for (char c = '0'; c <= '9'; c++) {
+            NEEDS_CONTEXT_CHECK[c] = true;
+        }
+        NEEDS_CONTEXT_CHECK['-'] = true;
+        for (int i = 0; i < 128; i++) {
+            if (ASCII_LOOKUP[i] == ILLEGAL) {
+                NEEDS_CONTEXT_CHECK[i] = true;
+            }
+        }
+    }
+
     /**
      * Classifies a character into a CharClass based on the current State and MiniState.
      * <p>
@@ -258,11 +293,15 @@ enum CharClass {
         if (c < 128) {
             CharClass base = ASCII_LOOKUP[c];
 
-            // Fast path for WHITESPACE (very common, no context-dependent handling)
-            if (base == WHITESPACE) {
-                return WHITESPACE;
+            // Single table lookup covers every ASCII character whose class
+            // never varies with context (all delimiters/punctuation, plus
+            // whitespace and '.'/NAME_CHAR) - the common case falls straight
+            // through with no further branching, mirroring Xerces's single
+            // bitmask-table lookup instead of testing each special case in turn.
+            if (!NEEDS_CONTEXT_CHECK[c]) {
+                return base;
             }
-            
+
             // Fast path for NAME_START_CHAR (letters a-z, A-Z, underscore)
             // Only need context check for hex digits in character reference context
             if (base == NAME_START_CHAR) {
@@ -274,7 +313,7 @@ enum CharClass {
                 }
                 return NAME_START_CHAR;
             }
-            
+
             // Fast path for DIGIT (0-9)
             if (base == DIGIT) {
                 if (miniState == MiniState.ACCUMULATING_CHAR_REF_HEX || miniState == MiniState.SEEN_AMP_HASH_X) {
@@ -282,12 +321,7 @@ enum CharClass {
                 }
                 return DIGIT;
             }
-            
-            // COLON is always NAME_START_CHAR per XML 1.0 § 2.3
-            if (base == COLON) {
-                return NAME_START_CHAR;
-            }
-            
+
             // DASH needs context check for name accumulation
             if (base == DASH) {
                 if (miniState == MiniState.ACCUMULATING_NAME ||
@@ -298,7 +332,7 @@ enum CharClass {
                 }
                 return DASH;
             }
-            
+
             // ILLEGAL needs XML 1.1 check
             if (base == ILLEGAL) {
                 if (isXML11 && allowRestrictedChar) {
@@ -311,7 +345,7 @@ enum CharClass {
                 }
                 return ILLEGAL;
             }
-            
+
             // All other ASCII characters (punctuation, etc.) - return as-is
             return base;
         }
