@@ -997,7 +997,7 @@ class Tokenizer implements Locator2 {
                         switch (state) {
                             case CONTENT:
                                 while (++pos < limit) {
-                                    if (CONTENT_STOP[chars[pos]]) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_CONTENT) != 0) {
                                         break;
                                     }
                                 }
@@ -1006,7 +1006,7 @@ class Tokenizer implements Locator2 {
                             case DOCTYPE_QUOTED_QUOT:
                             case DOCTYPE_INTERNAL_QUOTED_QUOT:
                                 while (++pos < limit) {
-                                    if (QUOT_STOP[chars[pos]]) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_QUOT) != 0) {
                                         break;
                                     }
                                 }
@@ -1015,28 +1015,28 @@ class Tokenizer implements Locator2 {
                             case DOCTYPE_QUOTED_APOS:
                             case DOCTYPE_INTERNAL_QUOTED_APOS:
                                 while (++pos < limit) {
-                                    if (APOS_STOP[chars[pos]]) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_APOS) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case COMMENT:
                                 while (++pos < limit) {
-                                    if (COMMENT_STOP[chars[pos]]) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_COMMENT) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case CDATA_SECTION:
                                 while (++pos < limit) {
-                                    if (CDATA_SECTION_STOP[chars[pos]]) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_CDATA_SECTION) != 0) {
                                         break;
                                     }
                                 }
                                 break;
                             case PI_DATA:
                                 while (++pos < limit) {
-                                    if (PI_DATA_STOP[chars[pos]]) {
+                                    if ((STOP_MASKS[chars[pos]] & STOP_PI_DATA) != 0) {
                                         break;
                                     }
                                 }
@@ -1055,7 +1055,7 @@ class Tokenizer implements Locator2 {
                     if (hasDirectArray && miniState == MiniState.ACCUMULATING_WHITESPACE) {
                         int scanStart = pos;
                         while (++pos < limit) {
-                            if (WHITESPACE_STOP[chars[pos]]) {
+                            if ((STOP_MASKS[chars[pos]] & STOP_WHITESPACE) != 0) {
                                 break;
                             }
                         }
@@ -1438,55 +1438,60 @@ class Tokenizer implements Locator2 {
     }
 
     /**
-     * Precomputed per-character stop table for the CONTENT bulk-scan fast
-     * path: true if the character is a delimiter (&lt;, &amp;) or would
-     * otherwise need needsSlowPathClassification() handling. Folds both
-     * checks into a single array lookup instead of a chain of branches,
-     * mirroring Xerces's XMLChar.isContent() bitmask table (prototype: only
-     * applied to the CONTENT case so far, pending a benchmark).
+     * Bit flags into {@link #STOP_MASKS}, one per bulk-scan stop condition.
+     * A single shared table tested via bitwise AND, rather than one boolean
+     * array per condition, mirrors Xerces's XMLChar.isContent()/isNameStart()
+     * design directly: one 64KB byte[] reused for every character-property
+     * query in the tokenizer, instead of several separate boolean[] tables
+     * (each 64KB in its own right) that a document alternating rapidly
+     * between accumulation kinds - attribute-heavy documents especially -
+     * would otherwise have to keep shuttling between in cache.
      */
-    private static final boolean[] CONTENT_STOP = new boolean[0x10000];
+    private static final int STOP_CONTENT = 0x01;
+    private static final int STOP_QUOT = 0x02;
+    private static final int STOP_APOS = 0x04;
+    private static final int STOP_COMMENT = 0x08;
+    private static final int STOP_CDATA_SECTION = 0x10;
+    private static final int STOP_PI_DATA = 0x20;
+    private static final int STOP_WHITESPACE = 0x40;
 
     /**
-     * Stop table shared by ATTR_VALUE_QUOT, DOCTYPE_QUOTED_QUOT, and
-     * DOCTYPE_INTERNAL_QUOTED_QUOT bulk scans (stop on &lt;, &amp;, or ").
-     * All three states have identical stop rules, so one table serves all.
+     * Precomputed per-character stop-condition bitmask for all bulk-scan
+     * fast paths (CONTENT, quoted attribute/DOCTYPE values, COMMENT,
+     * CDATA_SECTION, PI_DATA, and ACCUMULATING_WHITESPACE). Each bulk-scan
+     * loop tests {@code (STOP_MASKS[ch] & STOP_X) != 0} - a single array
+     * lookup plus a bitwise AND, in place of a chain of character/delimiter
+     * comparisons or a call to needsSlowPathClassification().
      */
-    private static final boolean[] QUOT_STOP = new boolean[0x10000];
-
-    /**
-     * Stop table shared by ATTR_VALUE_APOS, DOCTYPE_QUOTED_APOS, and
-     * DOCTYPE_INTERNAL_QUOTED_APOS bulk scans (stop on &lt;, &amp;, or ').
-     * All three states have identical stop rules, so one table serves all.
-     */
-    private static final boolean[] APOS_STOP = new boolean[0x10000];
-
-    /** Stop table for the COMMENT bulk scan (stop on '-'). */
-    private static final boolean[] COMMENT_STOP = new boolean[0x10000];
-
-    /** Stop table for the CDATA_SECTION bulk scan (stop on ']'). */
-    private static final boolean[] CDATA_SECTION_STOP = new boolean[0x10000];
-
-    /** Stop table for the PI_DATA bulk scan (stop on '?'). */
-    private static final boolean[] PI_DATA_STOP = new boolean[0x10000];
-
-    /**
-     * Stop table for the ACCUMULATING_WHITESPACE bulk scan: true if the
-     * character is NOT one of space/tab/LF/CR (i.e. accumulation should stop).
-     */
-    private static final boolean[] WHITESPACE_STOP = new boolean[0x10000];
+    private static final byte[] STOP_MASKS = new byte[0x10000];
 
     static {
         for (int i = 0; i < 0x10000; i++) {
             char ch = (char) i;
             boolean slow = needsSlowPathClassification(ch);
-            CONTENT_STOP[i] = (ch == '<' || ch == '&' || slow);
-            QUOT_STOP[i] = (ch == '<' || ch == '&' || ch == '"' || slow);
-            APOS_STOP[i] = (ch == '<' || ch == '&' || ch == '\'' || slow);
-            COMMENT_STOP[i] = (ch == '-' || slow);
-            CDATA_SECTION_STOP[i] = (ch == ']' || slow);
-            PI_DATA_STOP[i] = (ch == '?' || slow);
-            WHITESPACE_STOP[i] = !(ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r');
+            int mask = 0;
+            if (ch == '<' || ch == '&' || slow) {
+                mask |= STOP_CONTENT;
+            }
+            if (ch == '<' || ch == '&' || ch == '"' || slow) {
+                mask |= STOP_QUOT;
+            }
+            if (ch == '<' || ch == '&' || ch == '\'' || slow) {
+                mask |= STOP_APOS;
+            }
+            if (ch == '-' || slow) {
+                mask |= STOP_COMMENT;
+            }
+            if (ch == ']' || slow) {
+                mask |= STOP_CDATA_SECTION;
+            }
+            if (ch == '?' || slow) {
+                mask |= STOP_PI_DATA;
+            }
+            if (!(ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')) {
+                mask |= STOP_WHITESPACE;
+            }
+            STOP_MASKS[i] = (byte) mask;
         }
     }
 
