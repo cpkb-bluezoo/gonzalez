@@ -21,21 +21,29 @@
 
 package org.bluezoo.gonzalez;
 
+import java.nio.ByteBuffer;
+
 /**
  * Decodes single UTF-8 byte sequences without allocation, distinguishing a
  * sequence that is merely incomplete (more bytes may still arrive) from one
  * that is conclusively invalid (no amount of additional input can fix it).
  * <p>
- * This is the byte-native tokenizer's replacement for {@code CharsetDecoder}:
- * where the legacy tokenizer receives already-decoded {@code char}s, the
- * byte-native tokenizer decodes UTF-8 sequences itself as part of scanning
- * for structural bytes (see BYTE-TOKENIZER.md, Decision 4).
+ * Used by {@link FastUtf8CharsetDecoder} to decode UTF-8 in bulk, faster
+ * than the JDK's generic {@code java.nio.charset.CharsetDecoder} machinery,
+ * while feeding the same char-based {@code Tokenizer} the legacy pipeline
+ * always has (see FAST-UTF8-DECODER.md).
  * <p>
  * {@link #decode(byte[], int, int)} returns a single {@code int} packing both
  * the decoded code point and the number of bytes consumed, to avoid
  * allocating a result object on every call; {@link #MALFORMED} and
  * {@link #TRUNCATED} are negative sentinels that can never collide with a
  * valid packed result, since a decoded code point is always non-negative.
+ * <p>
+ * {@link #decode(ByteBuffer, int, int)} is the same decoder for a caller
+ * that only has a non-array-backed {@link ByteBuffer} (e.g. a direct
+ * buffer) - {@link FastUtf8CharsetDecoder} uses the array overload when its
+ * input buffer exposes a backing array, and this one otherwise, so a direct
+ * buffer is scanned in place rather than copied.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -165,6 +173,116 @@ class Utf8 {
             return TRUNCATED;
         }
         int b3 = buf[pos + 3] & 0xFF;
+        if (!isContinuation(b3)) {
+            return MALFORMED;
+        }
+        int codePoint = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+        return pack(codePoint, 4);
+    }
+
+    /**
+     * Decodes the single UTF-8 code point starting at {@code buf.get(pos)}.
+     * <p>
+     * Identical contract to {@link #decode(byte[], int, int)}, for a caller
+     * whose {@link ByteBuffer} is not array-backed (e.g. a direct buffer) -
+     * used only as the fallback when {@code buf.hasArray()} is false, since
+     * {@code get(int)} carries bounds-checked, virtual-dispatch overhead
+     * that raw array indexing avoids. Never mutates {@code buf}'s position;
+     * the caller tracks its own scan position exactly as with the array
+     * overload.
+     *
+     * @param buf the byte buffer to read from
+     * @param pos the position of the sequence's first byte
+     * @param limit the exclusive upper bound of valid data in {@code buf}
+     * @return a value packing the decoded code point and its length in
+     *         bytes, or {@link #MALFORMED} or {@link #TRUNCATED}
+     */
+    static int decode(ByteBuffer buf, int pos, int limit) {
+        if (pos >= limit) {
+            return TRUNCATED;
+        }
+        int b0 = buf.get(pos) & 0xFF;
+
+        if (b0 < 0x80) {
+            return pack(b0, 1);
+        }
+        if (b0 < 0xC2) {
+            return MALFORMED;
+        }
+        if (b0 < 0xE0) {
+            return decodeTwoByte(buf, pos, limit, b0);
+        }
+        if (b0 < 0xF0) {
+            return decodeThreeByte(buf, pos, limit, b0);
+        }
+        if (b0 < 0xF5) {
+            return decodeFourByte(buf, pos, limit, b0);
+        }
+        return MALFORMED;
+    }
+
+    private static int decodeTwoByte(ByteBuffer buf, int pos, int limit, int b0) {
+        if (pos + 1 >= limit) {
+            return TRUNCATED;
+        }
+        int b1 = buf.get(pos + 1) & 0xFF;
+        if (!isContinuation(b1)) {
+            return MALFORMED;
+        }
+        int codePoint = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+        return pack(codePoint, 2);
+    }
+
+    private static int decodeThreeByte(ByteBuffer buf, int pos, int limit, int b0) {
+        if (pos + 1 >= limit) {
+            return TRUNCATED;
+        }
+        int b1 = buf.get(pos + 1) & 0xFF;
+        if (!isContinuation(b1)) {
+            return MALFORMED;
+        }
+        if (b0 == 0xE0 && b1 < 0xA0) {
+            return MALFORMED;
+        }
+        if (b0 == 0xED && b1 >= 0xA0) {
+            return MALFORMED;
+        }
+        if (pos + 2 >= limit) {
+            return TRUNCATED;
+        }
+        int b2 = buf.get(pos + 2) & 0xFF;
+        if (!isContinuation(b2)) {
+            return MALFORMED;
+        }
+        int codePoint = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+        return pack(codePoint, 3);
+    }
+
+    private static int decodeFourByte(ByteBuffer buf, int pos, int limit, int b0) {
+        if (pos + 1 >= limit) {
+            return TRUNCATED;
+        }
+        int b1 = buf.get(pos + 1) & 0xFF;
+        if (!isContinuation(b1)) {
+            return MALFORMED;
+        }
+        if (b0 == 0xF0 && b1 < 0x90) {
+            return MALFORMED;
+        }
+        if (b0 == 0xF4 && b1 >= 0x90) {
+            return MALFORMED;
+        }
+        if (pos + 2 >= limit) {
+            return TRUNCATED;
+        }
+        int b2 = buf.get(pos + 2) & 0xFF;
+        if (!isContinuation(b2)) {
+            return MALFORMED;
+        }
+        if (pos + 3 >= limit) {
+            return TRUNCATED;
+        }
+        int b3 = buf.get(pos + 3) & 0xFF;
         if (!isContinuation(b3)) {
             return MALFORMED;
         }

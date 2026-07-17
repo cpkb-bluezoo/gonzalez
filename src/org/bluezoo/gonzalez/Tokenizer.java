@@ -997,90 +997,46 @@ class Tokenizer implements Locator2 {
                         switch (state) {
                             case CONTENT:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if (CONTENT_STOP[chars[pos]]) {
                                         break;
                                     }
                                 }
                                 break;
                             case ATTR_VALUE_QUOT:
+                            case DOCTYPE_QUOTED_QUOT:
+                            case DOCTYPE_INTERNAL_QUOTED_QUOT:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '"') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if (QUOT_STOP[chars[pos]]) {
                                         break;
                                     }
                                 }
                                 break;
                             case ATTR_VALUE_APOS:
-                                while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '\'') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
-                                        break;
-                                    }
-                                }
-                                break;
                             case DOCTYPE_QUOTED_APOS:
                             case DOCTYPE_INTERNAL_QUOTED_APOS:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '\'') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
-                                        break;
-                                    }
-                                }
-                                break;
-                            case DOCTYPE_QUOTED_QUOT:
-                            case DOCTYPE_INTERNAL_QUOTED_QUOT:
-                                while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '<' || ch == '&' || ch == '"') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if (APOS_STOP[chars[pos]]) {
                                         break;
                                     }
                                 }
                                 break;
                             case COMMENT:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '-') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if (COMMENT_STOP[chars[pos]]) {
                                         break;
                                     }
                                 }
                                 break;
                             case CDATA_SECTION:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == ']') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if (CDATA_SECTION_STOP[chars[pos]]) {
                                         break;
                                     }
                                 }
                                 break;
                             case PI_DATA:
                                 while (++pos < limit) {
-                                    char ch = chars[pos];
-                                    if (ch == '?') {
-                                        break;
-                                    }
-                                    if (needsSlowPathClassification(ch)) {
+                                    if (PI_DATA_STOP[chars[pos]]) {
                                         break;
                                     }
                                 }
@@ -1099,8 +1055,7 @@ class Tokenizer implements Locator2 {
                     if (hasDirectArray && miniState == MiniState.ACCUMULATING_WHITESPACE) {
                         int scanStart = pos;
                         while (++pos < limit) {
-                            char ch = chars[pos];
-                            if (ch != ' ' && ch != '\t' && ch != '\n' && ch != '\r') {
+                            if (WHITESPACE_STOP[chars[pos]]) {
                                 break;
                             }
                         }
@@ -1480,6 +1435,59 @@ class Tokenizer implements Locator2 {
             return true;
         }
         return ch == 0xFFFE || ch == 0xFFFF;
+    }
+
+    /**
+     * Precomputed per-character stop table for the CONTENT bulk-scan fast
+     * path: true if the character is a delimiter (&lt;, &amp;) or would
+     * otherwise need needsSlowPathClassification() handling. Folds both
+     * checks into a single array lookup instead of a chain of branches,
+     * mirroring Xerces's XMLChar.isContent() bitmask table (prototype: only
+     * applied to the CONTENT case so far, pending a benchmark).
+     */
+    private static final boolean[] CONTENT_STOP = new boolean[0x10000];
+
+    /**
+     * Stop table shared by ATTR_VALUE_QUOT, DOCTYPE_QUOTED_QUOT, and
+     * DOCTYPE_INTERNAL_QUOTED_QUOT bulk scans (stop on &lt;, &amp;, or ").
+     * All three states have identical stop rules, so one table serves all.
+     */
+    private static final boolean[] QUOT_STOP = new boolean[0x10000];
+
+    /**
+     * Stop table shared by ATTR_VALUE_APOS, DOCTYPE_QUOTED_APOS, and
+     * DOCTYPE_INTERNAL_QUOTED_APOS bulk scans (stop on &lt;, &amp;, or ').
+     * All three states have identical stop rules, so one table serves all.
+     */
+    private static final boolean[] APOS_STOP = new boolean[0x10000];
+
+    /** Stop table for the COMMENT bulk scan (stop on '-'). */
+    private static final boolean[] COMMENT_STOP = new boolean[0x10000];
+
+    /** Stop table for the CDATA_SECTION bulk scan (stop on ']'). */
+    private static final boolean[] CDATA_SECTION_STOP = new boolean[0x10000];
+
+    /** Stop table for the PI_DATA bulk scan (stop on '?'). */
+    private static final boolean[] PI_DATA_STOP = new boolean[0x10000];
+
+    /**
+     * Stop table for the ACCUMULATING_WHITESPACE bulk scan: true if the
+     * character is NOT one of space/tab/LF/CR (i.e. accumulation should stop).
+     */
+    private static final boolean[] WHITESPACE_STOP = new boolean[0x10000];
+
+    static {
+        for (int i = 0; i < 0x10000; i++) {
+            char ch = (char) i;
+            boolean slow = needsSlowPathClassification(ch);
+            CONTENT_STOP[i] = (ch == '<' || ch == '&' || slow);
+            QUOT_STOP[i] = (ch == '<' || ch == '&' || ch == '"' || slow);
+            APOS_STOP[i] = (ch == '<' || ch == '&' || ch == '\'' || slow);
+            COMMENT_STOP[i] = (ch == '-' || slow);
+            CDATA_SECTION_STOP[i] = (ch == ']' || slow);
+            PI_DATA_STOP[i] = (ch == '?' || slow);
+            WHITESPACE_STOP[i] = !(ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r');
+        }
     }
 
     /**
