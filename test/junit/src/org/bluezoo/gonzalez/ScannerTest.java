@@ -333,6 +333,85 @@ public class ScannerTest {
         return runScanner(xml.toCharArray(), 0);
     }
 
+    // ===== M6: real name-character classes + character-reference legality =====
+
+    private static List<String> runScannerXml11(String xml) throws Exception {
+        RecordingSaxHandler sink = new RecordingSaxHandler();
+        SAXAdapter adapter = new SAXAdapter(false);
+        adapter.setContentHandler(sink);
+        adapter.setLexicalHandler(sink);
+        Scanner scanner = new Scanner(adapter, true);
+        scanner.receive(CharBuffer.wrap(xml.toCharArray()));
+        scanner.close();
+        return sink.getEvents();
+    }
+
+    @Test
+    public void testLegalUnicodeNameCharacterAccepted() throws Exception {
+        // Greek lambda (U+03BB), within the 0x370-0x1FFF NameStartChar range.
+        String xml = "<\u03bb\u03bb/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,\u03bb\u03bb,\u03bb\u03bb,[])",
+                "endElement(,\u03bb\u03bb,\u03bb\u03bb)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testIllegalUnicodeCharacterRejectedInElementName() throws Exception {
+        // U+2018 (LEFT SINGLE QUOTATION MARK) falls in the gap between the
+        // 0x200C-0x200D and 0x2070-0x218F NameStartChar ranges - the old
+        // "any non-ASCII is legal" approximation would have wrongly
+        // accepted it; real NameStartChar classification rejects it.
+        String xml = "<a\u2018b/>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for an illegal Unicode name character");
+        } catch (org.xml.sax.SAXException e) {
+            // expected - falls through to "Expected '=' after attribute name"
+            // or a malformed-tag error, since the name scan stops right at
+            // the illegal character; the specific message isn't the point.
+        }
+    }
+
+    @Test
+    public void testNumericCharacterReferenceControlCharRejectedInXml10() throws Exception {
+        String xml = "<root>&#8;</root>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for an illegal control character reference in XML 1.0");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("out of range"));
+        }
+    }
+
+    @Test
+    public void testNumericCharacterReferenceZeroAlwaysRejected() throws Exception {
+        // Illegal in both XML 1.0 and 1.1 - the one control code point XML
+        // 1.1's char-ref leniency does not extend to.
+        String xml = "<root>&#0;</root>";
+        try {
+            runScannerXml11(xml);
+            org.junit.Assert.fail("expected a fatal error for &#0; even in XML 1.1");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("out of range"));
+        }
+    }
+
+    @Test
+    public void testNumericCharacterReferenceControlCharAllowedInXml11() throws Exception {
+        // XML 1.1 permits referencing (not literally writing) C0/C1 control
+        // characters - the same &#8; that testNumericCharacterReferenceControlCharRejectedInXml10
+        // rejects under the default (XML 1.0) constructor is accepted here.
+        String xml = "<root>&#8;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:" + (char) 8,
+                "endElement(,root,root)",
+                "endDocument()"), runScannerXml11(xml));
+    }
+
     @Test
     public void testSimpleInternalEntityInContent() throws Exception {
         String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root>&foo;</root>";

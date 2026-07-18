@@ -72,6 +72,39 @@ import org.xml.sax.SAXException;
  * and recursively calling {@link #scan()} (for content, which may contain
  * markup) or walking it directly (for attribute values, which never do).
  * <p>
+ * <b>DTD defaulting/normalisation/ignorableWhitespace (M5)</b> and
+ * <b>real name-character classes and character-reference legality
+ * (M6)</b>. M5 added {@link DTDModel}-driven attribute defaulting, type-aware
+ * attribute value normalisation, and content-type-driven {@link
+ * XMLHandler#ignorableWhitespace}, deliberately scoped to just those three
+ * (full content-model conformance checking and VC validity checks were
+ * surfaced as a much larger, separate tier and deferred - see
+ * ASYNC-PIPELINE.md's M5 section). M6 replaced the crude "any non-ASCII
+ * character is a legal name character" approximation M1-M5 used with the
+ * real Unicode {@link #isNameChar}/{@link #isNameStartChar} ranges (XML 1.0
+ * 5th edition's simplified production, identical in XML 1.1), and added
+ * real legality checking for numeric character references ({@link
+ * #isLegalCharRefCodePoint}, XML-1.1-aware via the {@link #xml11}
+ * constructor flag). Both M6 changes were chosen specifically because they
+ * add no new hot-path cost: NameChar/NameStartChar checking replaces an
+ * existing per-character check in each of this class's ~14 name-scanning
+ * call sites rather than adding a new one, and character-reference
+ * legality is already cold-path (only reached once {@code &#} has been
+ * seen). Three further "M6" items from the milestone's original
+ * description - literal-character restricted-char rejection in content/
+ * attribute values, the {@code "]]>"} WFC in content, and first-character-
+ * must-be-NameStartChar (not just NameChar) enforcement - were deliberately
+ * <b>not</b> done this milestone: each would need a genuinely new check
+ * inside the hot content/attribute-value scanning loops (not just a more
+ * accurate version of an existing one), and this session is currently under
+ * a standing "no benchmarking until further along" instruction, so their
+ * performance cost can't be measured and verified acceptable right now.
+ * Flagged explicitly for the Conformance hardening phase rather than
+ * silently skipped. {@code standalone} declaration semantics and NEL/LS
+ * line-ending normalisation remain out of scope for the same reasons as
+ * before (VC-territory per M5's precedent; ExternalEntityDecoder's job,
+ * respectively).
+ * <p>
  * <b>Zero allocation.</b> This class's job is to identify contiguous runs
  * and push them downstream as fast as possible - it never assembles a
  * complete value into a buffer of its own before emitting. Literal runs are
@@ -270,8 +303,26 @@ class Scanner {
     private static final int MAX_ENTITY_EXPANSIONS = 100_000;
     private int entityExpansionCount;
 
+    /** M6: XML 1.1 vs 1.0 mode, affecting only numeric character reference
+     *  legality (see {@link #decodeEntityRef()}) - see class Javadoc "M6"
+     *  section for why nothing else in this class needs it. Determined by
+     *  the caller before construction (in the eventual cut-over pipeline,
+     *  from an earlier byte-level declaration-parsing stage - analogous to
+     *  the old parser's {@code ExternalEntityDecoder}/{@code XMLDeclParser} -
+     *  which does not exist yet in this new pipeline and is not this
+     *  milestone's concern; not a circular dependency, since that stage
+     *  runs entirely before any character reaches a Scanner). */
+    private final boolean xml11;
+
+    /** Convenience constructor for XML 1.0 (the common case, and every
+     *  caller before this milestone). */
     Scanner(XMLHandler handler) throws SAXException {
+        this(handler, false);
+    }
+
+    Scanner(XMLHandler handler, boolean xml11) throws SAXException {
         this.handler = handler;
+        this.xml11 = xml11;
         this.buf = new char[INITIAL_CAPACITY];
         handler.startDocument();
     }
@@ -327,12 +378,77 @@ class Scanner {
         return c == ' ' || c == '\t' || c == '\n' || c == '\r';
     }
 
-    // Permissive ASCII-plus-non-ASCII check, not the exact XML NameStartChar/
-    // NameChar Unicode ranges - sufficient for M1's architecture/perf probe;
-    // exact legality is deferred to conformance hardening.
+    /**
+     * XML NameChar (M6): {@code NameStartChar | "-" | "." | [0-9] | #xB7 |
+     * [#x0300-#x036F] | [#x203F-#x2040]} - the modern, simplified production
+     * from XML 1.0 5th edition / XML 1.1 (identical in both - see {@link
+     * #isNameStartChar}). Replaces M1-M5's cruder "any non-ASCII is legal"
+     * approximation with the real Unicode ranges, at zero additional
+     * hot-path cost: every one of this method's ~14 call sites already
+     * calls it once per character in a name-scanning loop, so making the
+     * check itself more accurate doesn't add a new check anywhere, only
+     * corrects an existing one. {@code CharClass.java} (the old parser's
+     * classifier) additionally accepts a much larger legacy table of
+     * pre-5th-edition {@code CombiningChar}/{@code Extender} ranges beyond
+     * what the current spec text requires; not ported here - see class
+     * Javadoc "M6" section for the full list of what's deliberately still
+     * deferred to the Conformance hardening phase.
+     */
     private static boolean isNameChar(char c) {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
-                || c == '_' || c == '-' || c == '.' || c == ':' || c > 127;
+        if (isNameStartChar(c)) {
+            return true;
+        }
+        return c == '-' || c == '.' || (c >= '0' && c <= '9')
+                || c == 0xB7
+                || (c >= 0x0300 && c <= 0x036F)
+                || (c >= 0x203F && c <= 0x2040);
+    }
+
+    /**
+     * XML NameStartChar: {@code ":" | [A-Z] | "_" | [a-z] | [#xC0-#xD6] |
+     * [#xD8-#xF6] | [#xF8-#x2FF] | [#x370-#x37D] | [#x37F-#x1FFF] |
+     * [#x200C-#x200D] | [#x2070-#x218F] | [#x2C00-#x2FEF] | [#x3001-#xD7FF]
+     * | [#xF900-#xFDCF] | [#xFDF0-#xFFFD] | [#x10000-#xEFFFF]} - identical
+     * in XML 1.0 5th edition and XML 1.1. Astral-plane characters
+     * (U+10000-U+EFFFF) are represented as UTF-16 surrogate pairs; both
+     * halves are accepted individually here (this class scans {@code char},
+     * not code points), matching every other per-{@code char} scan in this
+     * file.
+     */
+    private static boolean isNameStartChar(char c) {
+        if (c == ':' || c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+            return true;
+        }
+        if (c < 0xC0) {
+            return false;
+        }
+        if (c <= 0x2FF) {
+            return (c >= 0xC0 && c <= 0xD6) || (c >= 0xD8 && c <= 0xF6) || c >= 0xF8;
+        }
+        if (c >= 0x370 && c <= 0x1FFF) {
+            return c != 0x37E;
+        }
+        if (c >= 0x200C && c <= 0x200D) {
+            return true;
+        }
+        if (c >= 0x2070 && c <= 0x218F) {
+            return true;
+        }
+        if (c >= 0x2C00 && c <= 0x2FEF) {
+            return true;
+        }
+        if (c >= 0x3001 && c <= 0xD7FF) {
+            return true;
+        }
+        if (c >= 0xF900 && c <= 0xFDCF) {
+            return true;
+        }
+        if (c >= 0xFDF0 && c <= 0xFFFD) {
+            return true;
+        }
+        // Surrogate pairs (U+10000-U+EFFFF): accept both halves, matching
+        // the char-at-a-time scanning model used throughout this class.
+        return c >= 0xD800 && c <= 0xDFFF;
     }
 
     /** Allocation-free comparison of a buffer range against a String, used for
@@ -639,7 +755,7 @@ class Scanner {
             } catch (NumberFormatException e) {
                 throw handler.fatalError("Malformed character reference");
             }
-            if (codePoint < 0 || codePoint > 0x10FFFF) {
+            if (!isLegalCharRefCodePoint(codePoint, xml11)) {
                 throw handler.fatalError("Character reference out of range: " + codePoint);
             }
             pos = p + 1;
@@ -1408,11 +1524,32 @@ class Scanner {
         } catch (NumberFormatException e) {
             throw handler.fatalError("Malformed character reference");
         }
-        if (codePoint < 0 || codePoint > 0x10FFFF) {
+        if (!isLegalCharRefCodePoint(codePoint, xml11)) {
             throw handler.fatalError("Character reference out of range: " + codePoint);
         }
         sb.appendCodePoint(codePoint);
         return p + 1;
+    }
+
+    /**
+     * Legal code point for a numeric character reference ({@code &#NN;}/
+     * {@code &#xNN;}), matching the old parser's {@code
+     * Tokenizer.isLegalXMLChar(int)} exactly. Deliberately more permissive
+     * than literal-character legality would be (not enforced in this
+     * milestone - see class Javadoc "M6" section): XML 1.1 allows
+     * referencing C0/C1 control characters via character reference even
+     * though they may not appear literally.
+     */
+    private static boolean isLegalCharRefCodePoint(int codePoint, boolean xml11) {
+        if (xml11) {
+            return (codePoint >= 0x1 && codePoint <= 0xD7FF)
+                    || (codePoint >= 0xE000 && codePoint <= 0xFFFD)
+                    || (codePoint >= 0x10000 && codePoint <= 0x10FFFF);
+        }
+        return codePoint == 0x9 || codePoint == 0xA || codePoint == 0xD
+                || (codePoint >= 0x20 && codePoint <= 0xD7FF)
+                || (codePoint >= 0xE000 && codePoint <= 0xFFFD)
+                || (codePoint >= 0x10000 && codePoint <= 0x10FFFF);
     }
 
     /**
