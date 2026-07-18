@@ -239,6 +239,315 @@ public class ScannerTest {
         }
     }
 
+    // ===== M4: DOCTYPE / internal general entities differential =====
+    //
+    // None of the benchmark corpus files use DOCTYPE, so this is a
+    // hand-written sample rather than a corpus file. The old parser reports
+    // machinery this milestone deliberately does not yet (see Scanner's
+    // class Javadoc "M4" section and XMLHandler's incremental lexical/DTD
+    // boundary event set decision): startDTD()/endDTD() bracketing the
+    // internal subset, and startEntity()/endEntity() bracketing each
+    // internal-entity expansion. Both are normalized away below, exactly
+    // like M1 normalized away CDATA boundary markers - this validates
+    // *content* correctness (including recursive/nested entity expansion)
+    // without asserting on lexical boundary events this milestone doesn't
+    // claim to fire. One more normalization is needed: this Scanner fires
+    // startDocument() at construction, before any DOCTYPE scanning, whereas
+    // the old parser fires the internal subset's comment()/processingInstruction()
+    // events *before* startDocument() - a startDocument-vs-DTD-scan
+    // ordering difference, not a content one, so those events are moved to
+    // just after startDocument() in the reference before comparing.
+
+    private static List<String> normalizeM4Reference(List<String> events) {
+        java.util.ArrayList<String> filtered = new java.util.ArrayList<String>();
+        for (String e : events) {
+            if (e.startsWith("startDTD(") || e.equals("endDTD()")
+                    || e.startsWith("startEntity(") || e.startsWith("endEntity(")) {
+                continue;
+            }
+            filtered.add(e);
+        }
+        int docIdx = filtered.indexOf("startDocument()");
+        if (docIdx > 0) {
+            java.util.ArrayList<String> reordered = new java.util.ArrayList<String>();
+            reordered.add("startDocument()");
+            reordered.addAll(filtered.subList(0, docIdx));
+            reordered.addAll(filtered.subList(docIdx + 1, filtered.size()));
+            filtered = reordered;
+        }
+        return stripCDATABoundariesAndRecoalesce(filtered);
+    }
+
+    private static final String M4_SAMPLE_XML = "<!DOCTYPE root [\n"
+            + "<!-- a comment in the internal subset -->\n"
+            + "<!ATTLIST root id CDATA #IMPLIED>\n"
+            // No PI data here deliberately: the old parser's DTDParser-level PI
+            // handling keeps the target/data separator whitespace as part of
+            // the data (unlike its own top-level PI handling, and unlike this
+            // Scanner's single scanPI() used consistently in both contexts) -
+            // a pre-existing old-parser inconsistency between contexts, not
+            // something M4 needs to replicate; sidestepped by not exercising
+            // PI data here.
+            + "<?subset-pi?>\n"
+            + "<!ENTITY a \"Alice\">\n"
+            + "<!ENTITY b \"&a; and Bob\">\n"
+            + "<!ENTITY markup \"<child>nested</child>\">\n"
+            + "]>\n"
+            + "<root id=\"&b;\">\n"
+            + "Hello &a;, meet &b;. 1 &amp; 2\n"
+            + "&markup;\n"
+            + "<child attr=\"&a; &#65; end\">text</child>\n"
+            + "</root>\n";
+
+    @Test
+    public void testDifferential_internalGeneralEntities() throws Exception {
+        byte[] bytes = M4_SAMPLE_XML.getBytes(StandardCharsets.UTF_8);
+        List<String> reference = normalizeM4Reference(runCurrentParser(bytes));
+        assertTrue("reference recording should not be trivially empty", reference.size() > 5);
+
+        char[] chars = M4_SAMPLE_XML.toCharArray();
+        for (int chunkSize : CHUNK_SIZES) {
+            List<String> actual = runScanner(chars, chunkSize);
+            assertEquals("chunk size " + chunkSize, reference, actual);
+        }
+    }
+
+    @Test(timeout = 5000)
+    public void testDoctypeAndEntitiesSplitAcrossReceiveBoundary_chunkSize1() throws Exception {
+        // The DOCTYPE/internal-subset scanning added in M4 is entirely new
+        // atomic-retry-on-underflow logic (see Scanner's "M4" section) -
+        // unlike M1's constructs, it had no prior chunk-fuzzing coverage at
+        // all. chunkSize=1 delivers one character at a time, exercising
+        // every possible split point through the DOCTYPE keyword, the
+        // internal subset's declarations, and the entity references
+        // themselves.
+        List<String> reference = normalizeM4Reference(
+                runCurrentParser(M4_SAMPLE_XML.getBytes(StandardCharsets.UTF_8)));
+        List<String> actual = runScanner(M4_SAMPLE_XML.toCharArray(), 1);
+        assertEquals(reference, actual);
+    }
+
+    // ===== M4: hand-crafted entity coverage =====
+
+    private static List<String> runScannerWithDoctype(String xml) throws Exception {
+        return runScanner(xml.toCharArray(), 0);
+    }
+
+    @Test
+    public void testSimpleInternalEntityInContent() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:bar",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testEntityValueCharRefExpandedAtDeclarationTime() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"a &#65; b\">]><root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:a A b",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testEntityContainingMarkupProducesElementEvents() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"<b>bold</b>\">]><root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "startElement(,b,b,[])",
+                "characters:bold",
+                "endElement(,b,b)",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testNestedEntityReferenceResolvesRecursively() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY a \"x\"><!ENTITY b \"&a; y\">]><root>&b;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:x y",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testEntityInAttributeValue() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root a=\"x &foo; y\"/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ a=x bar y(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testEntityInAttributeValueRejectsLiteralLessThan() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"<\">]><root a=\"&foo;\"/>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for '<' via entity expansion in an attribute value");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("not allowed in an attribute value"));
+        }
+    }
+
+    @Test
+    public void testSelfReferentialEntityIsFatal() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"&foo;\">]><root>&foo;</root>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for a self-referential entity");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("Recursive"));
+        }
+    }
+
+    @Test
+    public void testMutuallyRecursiveEntitiesFatal() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY a \"&b;\"><!ENTITY b \"&a;\">]><root>&a;</root>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for mutually recursive entities");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("Recursive"));
+        }
+    }
+
+    @Test
+    public void testExternalEntityReferenceIsFatal() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo SYSTEM \"foo.ent\">]><root>&foo;</root>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for an external entity reference");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("External entities are not supported"));
+        }
+    }
+
+    @Test
+    public void testUndeclaredEntityWithDoctypePresentIsFatal() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root>&other;</root>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for an undeclared entity reference");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("was not declared"));
+        }
+    }
+
+    @Test
+    public void testParameterEntityDeclarationRejected() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY % pe \"x\">]><root/>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for a parameter entity declaration");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("Parameter entity"));
+        }
+    }
+
+    @Test
+    public void testParameterEntityReferenceInSubsetRejected() throws Exception {
+        String xml = "<!DOCTYPE root [%pe;]><root/>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for a parameter entity reference");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("Parameter entity"));
+        }
+    }
+
+    @Test
+    public void testDuplicateEntityDeclarationFirstWins() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"first\"><!ENTITY foo \"second\">]><root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:first",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testDoctypeMustPrecedeRootElement() throws Exception {
+        String xml = "<root/><!DOCTYPE root []>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for a DOCTYPE after the root element");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("must precede the root element"));
+        }
+    }
+
+    @Test
+    public void testOnlyOneDoctypeAllowed() throws Exception {
+        String xml = "<!DOCTYPE root []><!DOCTYPE root []><root/>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for a second DOCTYPE declaration");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("Only one DOCTYPE"));
+        }
+    }
+
+    @Test
+    public void testRootElementNameMustMatchDoctypeName() throws Exception {
+        String xml = "<!DOCTYPE other []><root/>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for a root element name mismatch");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("does not match DOCTYPE name"));
+        }
+    }
+
+    @Test
+    public void testDoctypeWithExternalIdAndInternalSubsetIsSkippedNotFetched() throws Exception {
+        String xml = "<!DOCTYPE root SYSTEM \"nonexistent.dtd\" [<!ENTITY foo \"bar\">]>"
+                + "<root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:bar",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testElementAndAttlistDeclarationsSkippedSyntactically() throws Exception {
+        // Default attribute value containing '>' inside quotes must not
+        // terminate the <!ATTLIST...> declaration early.
+        String xml = "<!DOCTYPE root [<!ELEMENT root (#PCDATA)>"
+                + "<!ATTLIST root note CDATA \"a > b\">"
+                + "<!ENTITY foo \"bar\">]><root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:bar",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testDoctypeWithNoInternalSubset() throws Exception {
+        String xml = "<!DOCTYPE root><root>text</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:text",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
     // ===== Hand-crafted production coverage =====
 
     @Test
@@ -306,13 +615,16 @@ public class ScannerTest {
     }
 
     @Test
-    public void testUnsupportedGeneralEntityIsFatal() throws Exception {
+    public void testUndeclaredGeneralEntityIsFatal() throws Exception {
+        // M4: a general entity reference is no longer unconditionally
+        // unsupported - but referencing one that was never declared (no
+        // DOCTYPE at all here) is still a fatal WFC violation.
         String xml = "<root>&customEntity;</root>";
         try {
             runScanner(xml.toCharArray(), 0);
-            org.junit.Assert.fail("expected a fatal error for a general entity reference");
+            org.junit.Assert.fail("expected a fatal error for an undeclared general entity reference");
         } catch (org.xml.sax.SAXException e) {
-            assertTrue(e.getMessage().contains("General entity references"));
+            assertTrue(e.getMessage().contains("was not declared"));
         }
     }
 
