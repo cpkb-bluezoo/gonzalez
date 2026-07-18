@@ -78,6 +78,19 @@ class SAXAdapter implements XMLHandler {
     // time just to reverse iteration order for endPrefixMapping.
     private final ArrayList<String> endedPrefixesBuffer = new ArrayList<String>();
 
+    // Current attribute being assembled from startAttribute()/
+    // attributeValueContent() calls. attributeValueFirstChunk is true only
+    // until the first attributeValueContent() call for the current
+    // attribute; combined with that call's own end flag, it identifies the
+    // common single-chunk case, which is handed straight to addAttribute()
+    // with no accumulation at all. attributeValueBuilder is only touched in
+    // the rarer multi-chunk case, and is a single reused field (not a pool)
+    // since attributes are only ever assembled one at a time, never nested
+    // or concurrent.
+    private String currentAttributeName;
+    private boolean attributeValueFirstChunk;
+    private final StringBuilder attributeValueBuilder = new StringBuilder();
+
     /**
      * Creates a new adapter.
      *
@@ -149,17 +162,39 @@ class SAXAdapter implements XMLHandler {
     }
 
     @Override
-    public void attribute(String name, CharBuffer value) throws SAXException {
-        // Materialized immediately: the CharBuffer is only valid for the
-        // duration of this call, but the value must survive until
-        // endAttributes() fires the SAX event.
-        String valueStr = value.toString();
+    public void startAttribute(String name) throws SAXException {
+        currentAttributeName = name;
+        attributeValueFirstChunk = true;
+    }
+
+    @Override
+    public void attributeValueContent(CharBuffer value, boolean end) throws SAXException {
+        if (attributeValueFirstChunk && end) {
+            // Common case: exactly one chunk for this attribute - hand it
+            // straight through, no accumulation, no StringBuilder touched at all.
+            addCurrentAttribute(value.toString());
+            return;
+        }
+        if (attributeValueFirstChunk) {
+            attributeValueBuilder.setLength(0);
+            attributeValueFirstChunk = false;
+        }
+        // CharBuffer implements CharSequence via the absolute (non-position-
+        // mutating) get(int) internally, so this does not disturb value's
+        // position - safe even though Scanner still owns this buffer.
+        attributeValueBuilder.append(value);
+        if (end) {
+            addCurrentAttribute(attributeValueBuilder.toString());
+        }
+    }
+
+    private void addCurrentAttribute(String valueStr) throws SAXException {
         try {
             // uri="" and localName=name for now, exactly as
             // ContentParser.handleAttributeValue does - resolved in
             // resolveAttributeNamespaces() below once all xmlns declarations
             // for this element are known, regardless of attribute order.
-            attributes.addAttribute("", name, name, "CDATA", valueStr, true);
+            attributes.addAttribute("", currentAttributeName, currentAttributeName, "CDATA", valueStr, true);
         } catch (NamespaceException e) {
             throw fatalError(e.getMessage());
         }
@@ -208,7 +243,11 @@ class SAXAdapter implements XMLHandler {
     }
 
     @Override
-    public void characters(CharBuffer text) throws SAXException {
+    public void characters(CharBuffer text, boolean end) throws SAXException {
+        // end is unused here: SAX's own characters() already tolerates being
+        // split across calls exactly like this event does, so there is
+        // nothing to coalesce - each chunk passes straight through as its
+        // own characters() call, synchronously, within this method.
         if (contentHandler == null) {
             return;
         }
@@ -274,6 +313,17 @@ class SAXAdapter implements XMLHandler {
             return;
         }
         contentHandler.processingInstruction(target, (data == null) ? "" : data.toString());
+    }
+
+    @Override
+    public void saveBuffers() throws SAXException {
+        // No-op: this adapter never defers copying. characters()/comment()
+        // pass through to the wrapped SAX handler synchronously within the
+        // call that delivers them (matching SAX's own contract), and
+        // attributeValueContent's multi-chunk case copies into
+        // attributeValueBuilder immediately via StringBuilder.append(CharBuffer)
+        // rather than holding a reference. Nothing here is ever left
+        // unflushed across events, so there is nothing to save.
     }
 
     @Override

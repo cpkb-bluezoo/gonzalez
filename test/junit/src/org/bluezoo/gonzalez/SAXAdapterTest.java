@@ -42,6 +42,13 @@ public class SAXAdapterTest {
         return CharBuffer.wrap(s);
     }
 
+    /** Convenience for the common single-chunk case: startAttribute() then
+     *  one attributeValueContent(value, end=true) call. */
+    private static void attr(SAXAdapter adapter, String name, String value) throws Exception {
+        adapter.startAttribute(name);
+        adapter.attributeValueContent(cb(value), true);
+    }
+
     @Test
     public void testSimpleElementWithAttributeAndText_namespaceUnaware() throws Exception {
         SAXAdapter adapter = new SAXAdapter(false);
@@ -50,9 +57,9 @@ public class SAXAdapterTest {
 
         adapter.startDocument();
         adapter.startElement("root");
-        adapter.attribute("attr", cb("val"));
+        attr(adapter, "attr", "val");
         adapter.endAttributes();
-        adapter.characters(cb("text"));
+        adapter.characters(cb("text"), true);
         adapter.endElement();
         adapter.endDocument();
 
@@ -80,7 +87,7 @@ public class SAXAdapterTest {
         adapter.endElement();
         adapter.startElement("sibling");
         adapter.endAttributes();
-        adapter.characters(cb("x"));
+        adapter.characters(cb("x"), true);
         adapter.endElement();
         adapter.endElement();
         adapter.endDocument();
@@ -99,6 +106,67 @@ public class SAXAdapterTest {
     }
 
     @Test
+    public void testMultiChunkCharactersAndAttributeValue() throws Exception {
+        // Exercises the streaming/end-flag path directly: a characters() run
+        // split into two chunks, and an attribute value split into two
+        // chunks - both should coalesce into single logical values on the
+        // SAX side (RecordingSaxHandler coalesces characters(); SAXAdapter
+        // itself coalesces attributeValueContent() into one Attributes entry).
+        SAXAdapter adapter = new SAXAdapter(false);
+        RecordingSaxHandler sink = new RecordingSaxHandler();
+        adapter.setContentHandler(sink);
+
+        adapter.startDocument();
+        adapter.startElement("root");
+        adapter.startAttribute("attr");
+        adapter.attributeValueContent(cb("Here is"), false);
+        adapter.attributeValueContent(cb(" the value"), true);
+        adapter.endAttributes();
+        adapter.characters(cb("hello "), false);
+        adapter.characters(cb("world"), true);
+        adapter.endElement();
+        adapter.endDocument();
+
+        List<String> expected = Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ attr=Here is the value(CDATA)])",
+                "characters:hello world",
+                "endElement(,root,root)",
+                "endDocument()");
+        assertEquals(expected, sink.getEvents());
+    }
+
+    @Test
+    public void testEmptyClosingChunkAfterOpenRun() throws Exception {
+        // The HTTP/2-DATA-frame-style empty closing event: a run reported
+        // with end=false, later confirmed complete via a separate empty
+        // end=true call (as Scanner does when a receive() boundary falls
+        // exactly between the last real character and the terminator).
+        SAXAdapter adapter = new SAXAdapter(false);
+        RecordingSaxHandler sink = new RecordingSaxHandler();
+        adapter.setContentHandler(sink);
+
+        adapter.startDocument();
+        adapter.startElement("root");
+        adapter.startAttribute("attr");
+        adapter.attributeValueContent(cb("value"), false);
+        adapter.attributeValueContent(CharBuffer.wrap(new char[0]), true);
+        adapter.endAttributes();
+        adapter.characters(cb("text"), false);
+        adapter.characters(CharBuffer.wrap(new char[0]), true);
+        adapter.endElement();
+        adapter.endDocument();
+
+        List<String> expected = Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ attr=value(CDATA)])",
+                "characters:text",
+                "endElement(,root,root)",
+                "endDocument()");
+        assertEquals(expected, sink.getEvents());
+    }
+
+    @Test
     public void testXmlnsReportedAsPlainAttribute_namespaceUnaware() throws Exception {
         // In namespace-unaware mode, xmlns genuinely is just an attribute and
         // must be reported as one (no namespace() event, no resolution).
@@ -109,8 +177,8 @@ public class SAXAdapterTest {
         // <root xmlns="urn:x" attr="v"/>
         adapter.startDocument();
         adapter.startElement("root");
-        adapter.attribute("xmlns", cb("urn:x"));
-        adapter.attribute("attr", cb("v"));
+        attr(adapter, "xmlns", "urn:x");
+        attr(adapter, "attr", "v");
         adapter.endAttributes();
         adapter.endElement();
         adapter.endDocument();
@@ -129,11 +197,11 @@ public class SAXAdapterTest {
         //   <p:child/>
         // </root>
         //
-        // The prefixed attribute is reported (via attribute()) BEFORE its
-        // governing xmlns:p declaration (via namespace()) - this must still
-        // resolve correctly, matching XML's rule that attribute order within
-        // a start tag doesn't affect namespace resolution, and exercising
-        // the same resolve-at-endAttributes()-time design as
+        // The prefixed attribute is reported before its governing xmlns:p
+        // declaration (via namespace()) - this must still resolve correctly,
+        // matching XML's rule that attribute order within a start tag
+        // doesn't affect namespace resolution, and exercising the same
+        // resolve-at-endAttributes()-time design as
         // ContentParser.fireStartElement/SAXAttributes.resolveAttributeNamespaces.
         SAXAdapter adapter = new SAXAdapter(true);
         RecordingSaxHandler sink = new RecordingSaxHandler();
@@ -142,9 +210,9 @@ public class SAXAdapterTest {
         adapter.startDocument();
         adapter.startElement("root");
         adapter.namespace("", "urn:default");
-        adapter.attribute("p:attr", cb("v1"));
+        attr(adapter, "p:attr", "v1");
         adapter.namespace("p", "urn:p");
-        adapter.attribute("attr2", cb("v2"));
+        attr(adapter, "attr2", "v2");
         adapter.endAttributes();
 
         adapter.startElement("p:child");
@@ -211,6 +279,33 @@ public class SAXAdapterTest {
     }
 
     @Test
+    public void testSaveBuffersIsHarmlessAtAnyPoint() throws Exception {
+        // SAXAdapter never defers copying, so saveBuffers() must be safe to
+        // call at any point (including mid-attribute-value-accumulation, its
+        // trickiest moment) without disturbing anything already in progress.
+        SAXAdapter adapter = new SAXAdapter(false);
+        RecordingSaxHandler sink = new RecordingSaxHandler();
+        adapter.setContentHandler(sink);
+
+        adapter.startDocument();
+        adapter.startElement("root");
+        adapter.startAttribute("attr");
+        adapter.attributeValueContent(cb("part1"), false);
+        adapter.saveBuffers();
+        adapter.attributeValueContent(cb("part2"), true);
+        adapter.endAttributes();
+        adapter.endElement();
+        adapter.endDocument();
+
+        List<String> expected = Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ attr=part1part2(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()");
+        assertEquals(expected, sink.getEvents());
+    }
+
+    @Test
     public void testDuplicateAttributeDetection_namespaceUnaware() throws Exception {
         SAXAdapter adapter = new SAXAdapter(false);
         RecordingSaxHandler sink = new RecordingSaxHandler();
@@ -218,9 +313,9 @@ public class SAXAdapterTest {
 
         adapter.startDocument();
         adapter.startElement("root");
-        adapter.attribute("attr", cb("v1"));
+        attr(adapter, "attr", "v1");
         try {
-            adapter.attribute("attr", cb("v2"));
+            attr(adapter, "attr", "v2");
             org.junit.Assert.fail("expected SAXException for duplicate attribute");
         } catch (org.xml.sax.SAXException e) {
             // expected - NamespaceException from SAXAttributes.addAttribute,

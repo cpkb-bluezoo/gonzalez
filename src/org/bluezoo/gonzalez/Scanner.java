@@ -36,14 +36,28 @@ import org.xml.sax.SAXException;
  * <p>
  * <b>Deliberately out of scope for this milestone</b> (by design, not
  * oversight - see the milestone list): DOCTYPE/DTD, general entity
- * references, namespace resolution (xmlns is reported via
- * {@link XMLHandler#attribute}, matching namespace-unaware behaviour - a
- * later milestone adds the stateless filter that reroutes it to
- * {@link XMLHandler#namespace}), and location tracking. Duplicate-attribute
- * detection is not performed here either - it is enforced downstream by
- * whatever consumes these events (for the current milestone, {@link
- * SAXAdapter}'s reuse of {@link SAXAttributes}), a deliberate division of
- * responsibility rather than a gap.
+ * references, namespace resolution (xmlns is reported as a regular
+ * attribute, matching namespace-unaware behaviour - a later milestone adds
+ * the stateless filter that reroutes it to {@link XMLHandler#namespace}),
+ * and location tracking. Duplicate-attribute detection is not performed
+ * here either - it is enforced downstream by whatever consumes these events
+ * (for the current milestone, {@link SAXAdapter}'s reuse of
+ * {@link SAXAttributes}), a deliberate division of responsibility rather
+ * than a gap. Line-ending normalisation is likewise not this class's
+ * concern - it belongs at the byte-to-char decode stage (ExternalEntityDecoder),
+ * done once right at the start of the pipeline, not re-derived here.
+ * <p>
+ * <b>Zero allocation.</b> This class's job is to identify contiguous runs
+ * and push them downstream as fast as possible - it never assembles a
+ * complete value into a buffer of its own before emitting. Literal runs are
+ * always zero-copy views directly into the scan buffer. Entity references
+ * are backed either by static, invariant, shared buffers (predefined
+ * entities - their content never changes, so no copying protocol is
+ * needed) or by a single small buffer allocated once per Scanner instance
+ * (numeric character references - see {@link #decodeEntityRef()} and
+ * {@link XMLHandler#saveBuffers()}). See {@link XMLHandler}'s class Javadoc
+ * for the full streaming/{@code end}-flag/{@code saveBuffers()} design this
+ * implements.
  * <p>
  * <b>Suspend/resume model.</b> {@link #receive(CharBuffer)} appends into an
  * internal, self-compacting buffer and scans as much as it can. Every
@@ -53,12 +67,20 @@ import org.xml.sax.SAXException;
  * single atomic emit: on running out of data mid-construct, scanning simply
  * rewinds to that construct's start and the whole thing is retried from
  * scratch once more data arrives - nothing has been emitted yet, so this is
- * always safe. The one construct that emits multiple events before
- * completing - a start tag's attribute list - carries the coarse resumable
- * flag {@link #inStartTag}: once {@link XMLHandler#startElement} has fired,
- * the attribute-scanning loop itself rewinds only to the start of whichever
- * individual attribute was in progress, never re-entering already-emitted
- * ones.
+ * always safe. Content and attribute-value scanning are different: since
+ * they stream multiple events per logical run (see above), once any event
+ * has been emitted for a run there is no rewinding past it - {@link
+ * #scanContent()} and {@link #scanAttributeValueStreaming()} both return
+ * {@code boolean} (true = made confirmed progress / caller should continue;
+ * false = blocked on currently-available data, caller must stop and wait)
+ * and are simply re-entered, continuing from the current {@code pos}, on
+ * the next {@link #receive(CharBuffer)} call. The one construct that emits
+ * multiple *events of a different kind* before completing - a start tag's
+ * attribute list - carries the coarse resumable flag {@link #inStartTag}
+ * (and, when specifically mid-value, {@link #inAttributeValue}): once
+ * {@link XMLHandler#startElement} has fired, the attribute-scanning loop
+ * itself resumes at exactly the sub-step it left off at, never re-entering
+ * already-emitted attributes or already-emitted value chunks.
  * <p>
  * <b>Name interning (M2).</b> Element/attribute names are interned via
  * {@link #namePool} ({@link PackedName}). A first version reused the
@@ -82,7 +104,6 @@ import org.xml.sax.SAXException;
 class Scanner {
 
     private static final int INITIAL_CAPACITY = 8192;
-    private static final int INITIAL_SCRATCH_CAPACITY = 256;
 
     private final XMLHandler handler;
 
@@ -92,6 +113,21 @@ class Scanner {
 
     /** Coarse resumable mode: startElement has fired, resume the attribute loop. */
     private boolean inStartTag;
+
+    /** Finer resumable mode within the attribute loop: startAttribute() has
+     *  fired for the current attribute and its value is being streamed;
+     *  resume {@link #scanAttributeValueStreaming()} directly rather than
+     *  re-entering the attribute loop from its top. Valid (and meaningful)
+     *  only while true; {@link #pendingQuote} and {@link #attrValueRunOpen}
+     *  are its associated state. */
+    private boolean inAttributeValue;
+    private char pendingQuote;
+    private boolean attrValueRunOpen;
+
+    /** True if the most recent characters() emission for the run currently
+     *  in progress had end=false and has not yet been closed with end=true -
+     *  see {@link #scanContent()}. */
+    private boolean contentRunOpen;
 
     /** WFC "Element Type Match" stack of interned qNames. */
     private final ArrayList<String> elementStack = new ArrayList<String>();
@@ -106,17 +142,39 @@ class Scanner {
      */
     private final PackedName namePool = new PackedName();
 
-    /** Reusable growable buffer for attribute values containing entity references. */
-    private char[] valueScratch;
-    private int valueScratchLen;
+    // ===== Entity reference buffers (see class Javadoc: "Zero allocation") =====
 
-    /** Reusable scratch for one decoded entity reference (1 char, or 2 for a surrogate pair). */
-    private final char[] entityScratch = new char[2];
+    private static CharBuffer predefinedBuffer(char c) {
+        CharBuffer cb = CharBuffer.allocate(1);
+        cb.put(c);
+        cb.flip();
+        return cb.asReadOnlyBuffer();
+    }
+
+    private static final CharBuffer PREDEFINED_AMP = predefinedBuffer('&');
+    private static final CharBuffer PREDEFINED_LT = predefinedBuffer('<');
+    private static final CharBuffer PREDEFINED_GT = predefinedBuffer('>');
+    private static final CharBuffer PREDEFINED_APOS = predefinedBuffer('\'');
+    private static final CharBuffer PREDEFINED_QUOT = predefinedBuffer('"');
+
+    /** Shared empty buffer for the HTTP/2-DATA-frame-style empty closing
+     *  event (see XMLHandler's class Javadoc) - always empty, so, like the
+     *  predefined-entity buffers, safe to share without any copying protocol. */
+    private static final CharBuffer EMPTY_BUFFER = CharBuffer.wrap(new char[0]).asReadOnlyBuffer();
+
+    /** Backing array for numeric character reference decoding - one tiny
+     *  (2-char, for surrogate pairs) array allocated once per Scanner
+     *  instance (per parser), reused for every numeric reference in the
+     *  document. {@link #numericRefBuffer} wraps it once; only its
+     *  position/limit are adjusted per use. {@link XMLHandler#saveBuffers()}
+     *  fires immediately before each write into this array - see
+     *  {@link #decodeEntityRef()}. */
+    private final char[] numericRefArray = new char[2];
+    private final CharBuffer numericRefBuffer = CharBuffer.wrap(numericRefArray);
 
     Scanner(XMLHandler handler) throws SAXException {
         this.handler = handler;
         this.buf = new char[INITIAL_CAPACITY];
-        this.valueScratch = new char[INITIAL_SCRATCH_CAPACITY];
         handler.startDocument();
     }
 
@@ -124,11 +182,15 @@ class Scanner {
      * Feeds more decoded character data to the scanner. May be called
      * multiple times; an incomplete construct at the end of one call is
      * resumed (or, for atomic constructs, retried from its start) on the
-     * next.
+     * next. Fires {@link XMLHandler#saveBuffers()} once, after all
+     * currently-available data has been scanned, since the scan buffer may
+     * be compacted/reused before the next call - see XMLHandler's class
+     * Javadoc.
      */
     void receive(CharBuffer data) throws SAXException {
         append(data);
         scan();
+        handler.saveBuffers();
     }
 
     /**
@@ -136,7 +198,7 @@ class Scanner {
      * mid-construct or with unclosed elements.
      */
     void close() throws SAXException {
-        if (inStartTag || !elementStack.isEmpty()) {
+        if (inStartTag || inAttributeValue || !elementStack.isEmpty()) {
             throw handler.fatalError("Document ended unexpectedly (unclosed element or tag)");
         }
         handler.endDocument();
@@ -193,6 +255,13 @@ class Scanner {
 
     private void scan() throws SAXException {
         while (true) {
+            if (inAttributeValue) {
+                if (!scanAttributeValueStreaming()) {
+                    return;
+                }
+                inAttributeValue = false;
+                continue;
+            }
             if (inStartTag) {
                 if (!scanAttributesAndTagEnd()) {
                     return;
@@ -208,8 +277,7 @@ class Scanner {
                     return;
                 }
             } else {
-                scanContent();
-                if (pos >= limit) {
+                if (!scanContent()) {
                     return;
                 }
             }
@@ -219,13 +287,24 @@ class Scanner {
     // ===== Content (text) =====
 
     /**
-     * Scans text content up to the next '&lt;' (left for the main loop to
-     * dispatch) or until the buffer is exhausted. Literal runs are emitted
-     * as a zero-copy view directly into the scan buffer; entity references
-     * are decoded through {@link #entityScratch}. Never fails - an
-     * incomplete entity reference at the end of the buffer is rewound to its
-     * '&amp;' and left for the next call, with everything before it already
-     * safely emitted.
+     * Scans and streams text content up to the next '&lt;' or until the
+     * buffer is exhausted, emitting each contiguous run (or decoded entity
+     * reference) as its own {@link XMLHandler#characters} call with an
+     * explicit end flag - see {@link XMLHandler}'s class Javadoc for the
+     * streaming/end-flag/zero-allocation design this implements.
+     * <p>
+     * Returns true if it stopped because it found '&lt;' (confirmed end of
+     * this run - the main loop should dispatch to markup next); false if it
+     * could not make further progress with currently-available data
+     * (genuinely out of data, or blocked on an incomplete entity reference
+     * right at the buffer's end). The caller must not simply loop again in
+     * the false case - nothing about a blocked state changes without new
+     * input, and doing so would spin forever (this is, in fact, a real bug
+     * this exact method had before it returned a status the caller could
+     * act on: an entity reference incomplete at a buffer boundary left
+     * {@code pos < limit} sitting on the unconsumed '&amp;', which the
+     * previous void-returning/{@code pos >= limit}-inferring version could
+     * not distinguish from "nothing left to do").
      * <p>
      * Nothing is emitted while {@link #elementStack} is empty (prolog or
      * epilog, per XML's {@code Misc*} production - only whitespace, comments
@@ -233,46 +312,80 @@ class Scanner {
      * {@link XMLHandler#characters} content by SAX-conforming parsers). The
      * text is still scanned and consumed, just not delivered.
      */
-    private void scanContent() throws SAXException {
+    private boolean scanContent() throws SAXException {
         boolean insideDocument = !elementStack.isEmpty();
-        while (pos < limit) {
+        while (true) {
             int runStart = pos;
             while (pos < limit && buf[pos] != '<' && buf[pos] != '&') {
                 pos++;
             }
-            if (insideDocument && pos > runStart) {
-                handler.characters(CharBuffer.wrap(buf, runStart, pos - runStart));
+            if (pos >= limit) {
+                if (insideDocument && pos > runStart) {
+                    handler.characters(CharBuffer.wrap(buf, runStart, pos - runStart), false);
+                    contentRunOpen = true;
+                }
+                return false;
             }
-            if (pos >= limit || buf[pos] == '<') {
-                return;
+            if (buf[pos] == '<') {
+                if (insideDocument) {
+                    if (pos > runStart) {
+                        handler.characters(CharBuffer.wrap(buf, runStart, pos - runStart), true);
+                        contentRunOpen = false;
+                    } else if (contentRunOpen) {
+                        handler.characters(EMPTY_BUFFER, true);
+                        contentRunOpen = false;
+                    }
+                }
+                return true;
             }
             // buf[pos] == '&'
+            if (insideDocument && pos > runStart) {
+                handler.characters(CharBuffer.wrap(buf, runStart, pos - runStart), false);
+                contentRunOpen = true;
+            }
             int ampPos = pos;
-            int decoded = decodeEntityRef();
-            if (decoded < 0) {
+            CharBuffer decoded = decodeEntityRef();
+            if (decoded == null) {
                 pos = ampPos;
-                return;
+                return false;
             }
+            boolean atMarkup = (pos < limit && buf[pos] == '<');
             if (insideDocument) {
-                handler.characters(CharBuffer.wrap(entityScratch, 0, decoded));
+                handler.characters(decoded, atMarkup);
+                contentRunOpen = !atMarkup;
             }
+            if (atMarkup) {
+                return true;
+            }
+            // loop continues, scanning the next run after the entity
         }
     }
 
     /**
      * Attempts to decode one entity/character reference starting at
      * {@code buf[pos]} (which must be '&amp;'). On success, advances
-     * {@code pos} past the trailing ';', writes the decoded character(s)
-     * into {@link #entityScratch}, and returns the count written (1, or 2
-     * for a surrogate pair). Returns -1 if there is not yet enough buffered
-     * data to be sure; {@code pos} is left unchanged and the caller must
-     * rewind further back to the start of whatever construct is being
-     * scanned and wait for more data.
+     * {@code pos} past the trailing ';' and returns the CharBuffer to emit:
+     * <ul>
+     * <li>for one of the five predefined entities, the corresponding static,
+     * invariant, shared buffer (rewound before return) - its content never
+     * changes, so it is always safe to reference, no matter how long a
+     * consumer holds onto it;</li>
+     * <li>for a numeric character reference, {@link #numericRefBuffer}
+     * (repositioned before return) - reused across every numeric reference
+     * in the document, so {@link XMLHandler#saveBuffers()} fires
+     * immediately before repositioning it, telling any consumer holding an
+     * unflushed reference from a prior numeric-reference event that it must
+     * copy that data now.</li>
+     * </ul>
+     * Returns null if there is not yet enough buffered data to be sure;
+     * {@code pos} is left unchanged and the caller must rewind further back
+     * to the start of whatever construct is being scanned and wait for more
+     * data.
      */
-    private int decodeEntityRef() throws SAXException {
+    private CharBuffer decodeEntityRef() throws SAXException {
         int p = pos + 1;
         if (p >= limit) {
-            return -1;
+            return null;
         }
         if (buf[p] == '#') {
             p++;
@@ -293,7 +406,7 @@ class Scanner {
                 p++;
             }
             if (p >= limit) {
-                return -1;
+                return null;
             }
             if (p == digitsStart) {
                 throw handler.fatalError("Empty character reference");
@@ -308,14 +421,18 @@ class Scanner {
                 throw handler.fatalError("Character reference out of range: " + codePoint);
             }
             pos = p + 1;
+            handler.saveBuffers();
+            numericRefBuffer.clear();
             if (codePoint < 0x10000) {
-                entityScratch[0] = (char) codePoint;
-                return 1;
+                numericRefArray[0] = (char) codePoint;
+                numericRefBuffer.limit(1);
+            } else {
+                int cp = codePoint - 0x10000;
+                numericRefArray[0] = (char) (0xD800 + (cp >> 10));
+                numericRefArray[1] = (char) (0xDC00 + (cp & 0x3FF));
+                numericRefBuffer.limit(2);
             }
-            int cp = codePoint - 0x10000;
-            entityScratch[0] = (char) (0xD800 + (cp >> 10));
-            entityScratch[1] = (char) (0xDC00 + (cp & 0x3FF));
-            return 2;
+            return numericRefBuffer;
         }
 
         int nameStart = p;
@@ -323,32 +440,32 @@ class Scanner {
             p++;
         }
         if (p >= limit) {
-            return -1;
+            return null;
         }
         if (p == nameStart || buf[p] != ';') {
             throw handler.fatalError("Malformed entity reference");
         }
         int len = p - nameStart;
-        char decoded;
+        CharBuffer predefined;
         if (len == 3 && buf[nameStart] == 'a' && buf[nameStart + 1] == 'm' && buf[nameStart + 2] == 'p') {
-            decoded = '&';
+            predefined = PREDEFINED_AMP;
         } else if (len == 2 && buf[nameStart] == 'l' && buf[nameStart + 1] == 't') {
-            decoded = '<';
+            predefined = PREDEFINED_LT;
         } else if (len == 2 && buf[nameStart] == 'g' && buf[nameStart + 1] == 't') {
-            decoded = '>';
+            predefined = PREDEFINED_GT;
         } else if (len == 4 && buf[nameStart] == 'a' && buf[nameStart + 1] == 'p'
                 && buf[nameStart + 2] == 'o' && buf[nameStart + 3] == 's') {
-            decoded = '\'';
+            predefined = PREDEFINED_APOS;
         } else if (len == 4 && buf[nameStart] == 'q' && buf[nameStart + 1] == 'u'
                 && buf[nameStart + 2] == 'o' && buf[nameStart + 3] == 't') {
-            decoded = '"';
+            predefined = PREDEFINED_QUOT;
         } else {
             throw handler.fatalError("General entity references are not supported in this milestone: &"
                     + new String(buf, nameStart, len) + ";");
         }
         pos = p + 1;
-        entityScratch[0] = decoded;
-        return 1;
+        predefined.rewind();
+        return predefined;
     }
 
     // ===== Markup dispatch =====
@@ -398,10 +515,13 @@ class Scanner {
      * Scans attributes and the tag terminator ('&gt;' or '/&gt;'). Called
      * both immediately after {@link #scanStartTag} (fresh) and again by the
      * main loop whenever {@link #inStartTag} is still true at the start of a
-     * {@link #receive(CharBuffer)} call (resumed). Each loop iteration is
-     * itself atomic: on underflow anywhere within one attribute, {@code pos}
-     * rewinds to that attribute's start (not the tag start), so
-     * already-emitted attributes are never re-emitted.
+     * {@link #receive(CharBuffer)} call (resumed). Whitespace/name/'='/quote
+     * scanning for one attribute is atomic: on underflow there, {@code pos}
+     * rewinds to that attribute's start (nothing emitted yet for it, safe).
+     * Once {@link XMLHandler#startAttribute} has fired, though, this method
+     * is committed - {@link #scanAttributeValueStreaming()} handles its own
+     * resumption via {@link #inAttributeValue} instead of rewinding, since
+     * value content may already have been emitted.
      */
     private boolean scanAttributesAndTagEnd() throws SAXException {
         while (true) {
@@ -472,76 +592,81 @@ class Scanner {
             }
             pos++;
 
-            CharBuffer value = scanAttributeValue(quote);
-            if (value == null) {
-                pos = attrStart;
+            handler.startAttribute(attrName);
+            pendingQuote = quote;
+            attrValueRunOpen = false;
+            if (!scanAttributeValueStreaming()) {
+                inAttributeValue = true;
                 return false;
             }
-            handler.attribute(attrName, value);
         }
     }
 
     /**
-     * Scans an attribute value up to (and consuming) the matching quote.
-     * Returns a zero-copy view directly into the scan buffer if the value
-     * contains no entity references (the common case); falls back to
-     * accumulating into {@link #valueScratch} only once an entity is
-     * actually found. Returns null on underflow - the caller discards
-     * everything scanned so far for this attribute and rewinds to its start.
+     * Streams the current attribute's value as a sequence of
+     * {@link XMLHandler#attributeValueContent} calls terminated by
+     * {@link #pendingQuote} - structurally identical to {@link
+     * #scanContent()} (same run-scan/emit/entity-decode shape, same
+     * end-flag semantics, same zero-allocation approach), just with a
+     * different terminator and event. Called both immediately after the
+     * opening quote is consumed (fresh) and again whenever {@link
+     * #inAttributeValue} is still true at the start of a {@link
+     * #receive(CharBuffer)} call (resumed) - safe either way since it
+     * always continues from the current {@code pos}.
+     * <p>
+     * Returns true once the closing quote is found (this attribute's value
+     * is complete); false on underflow, having already emitted whatever was
+     * available - the caller must not rewind past this point (see
+     * {@link #scanAttributesAndTagEnd()}).
      */
-    private CharBuffer scanAttributeValue(char quote) throws SAXException {
-        int valueStart = pos;
-        boolean usingScratch = false;
-        int copyFrom = valueStart;
+    private boolean scanAttributeValueStreaming() throws SAXException {
+        char quote = pendingQuote;
         while (true) {
+            int runStart = pos;
             while (pos < limit && buf[pos] != quote && buf[pos] != '&' && buf[pos] != '<') {
                 pos++;
             }
             if (pos >= limit) {
-                return null;
+                if (pos > runStart) {
+                    handler.attributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), false);
+                    attrValueRunOpen = true;
+                }
+                return false;
             }
             if (buf[pos] == '<') {
                 throw handler.fatalError("'<' is not allowed in an attribute value");
             }
             if (buf[pos] == quote) {
-                if (!usingScratch) {
-                    CharBuffer result = CharBuffer.wrap(buf, valueStart, pos - valueStart);
-                    pos++;
-                    return result;
+                if (pos > runStart) {
+                    handler.attributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), true);
+                } else if (attrValueRunOpen) {
+                    handler.attributeValueContent(EMPTY_BUFFER, true);
                 }
-                appendToScratch(buf, copyFrom, pos - copyFrom);
+                attrValueRunOpen = false;
                 pos++;
-                return CharBuffer.wrap(valueScratch, 0, valueScratchLen);
+                return true;
             }
             // buf[pos] == '&'
-            if (!usingScratch) {
-                usingScratch = true;
-                valueScratchLen = 0;
+            if (pos > runStart) {
+                handler.attributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), false);
+                attrValueRunOpen = true;
             }
-            appendToScratch(buf, copyFrom, pos - copyFrom);
-            int n = decodeEntityRef();
-            if (n < 0) {
-                return null;
+            int ampPos = pos;
+            CharBuffer decoded = decodeEntityRef();
+            if (decoded == null) {
+                pos = ampPos;
+                return false;
             }
-            appendToScratch(entityScratch, 0, n);
-            copyFrom = pos;
-        }
-    }
-
-    private void appendToScratch(char[] src, int off, int len) {
-        if (len == 0) {
-            return;
-        }
-        int needed = valueScratchLen + len;
-        if (needed > valueScratch.length) {
-            int newCap = valueScratch.length * 2;
-            while (newCap < needed) {
-                newCap *= 2;
+            boolean atQuote = (pos < limit && buf[pos] == quote);
+            handler.attributeValueContent(decoded, atQuote);
+            if (atQuote) {
+                attrValueRunOpen = false;
+                pos++;
+                return true;
             }
-            valueScratch = Arrays.copyOf(valueScratch, newCap);
+            attrValueRunOpen = true;
+            // loop continues, scanning the next run after the entity
         }
-        System.arraycopy(src, off, valueScratch, valueScratchLen, len);
-        valueScratchLen += len;
     }
 
     // ===== End tag =====
@@ -671,7 +796,7 @@ class Scanner {
             }
             if (buf[p + 1] == ']' && buf[p + 2] == '>') {
                 if (p > contentStart) {
-                    handler.characters(CharBuffer.wrap(buf, contentStart, p - contentStart));
+                    handler.characters(CharBuffer.wrap(buf, contentStart, p - contentStart), true);
                 }
                 pos = p + 3;
                 return true;

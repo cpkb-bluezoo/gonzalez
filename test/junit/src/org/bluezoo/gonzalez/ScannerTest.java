@@ -278,4 +278,56 @@ public class ScannerTest {
         }
     }
 
+    // ===== Regression: entity reference split across a receive() boundary =====
+    //
+    // A real bug, found while reworking scanContent() to stream with an
+    // explicit end flag: with the entity incomplete right at the end of
+    // currently-available data, scanContent() rewound pos to the unconsumed
+    // '&' and returned - but pos was still < limit (the '&' itself remained
+    // buffered), so the caller's "pos >= limit means done" inference never
+    // held, and scan() looped calling scanContent() again with identical
+    // state, forever. None of the differential corpus files contain any
+    // entity references at all, and the hand-crafted entity tests above all
+    // use one-shot delivery (chunkSize 0), so this path had zero coverage
+    // until now. chunkSize=1 delivers one character at a time, exercising
+    // every possible split point within each entity reference - including
+    // the exact "split right after '&', nothing else buffered yet" case
+    // that triggers the bug. @Test(timeout=...) turns a real hang into a
+    // fast, clear failure instead of stalling the whole suite.
+
+    @Test(timeout = 5000)
+    public void testPredefinedEntitySplitAcrossReceiveBoundary_content() throws Exception {
+        String xml = "<root>1 &amp; 2 &lt; 3</root>";
+        List<String> events = runScanner(xml.toCharArray(), 1);
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:1 & 2 < 3",
+                "endElement(,root,root)",
+                "endDocument()"), events);
+    }
+
+    @Test(timeout = 5000)
+    public void testNumericCharacterReferenceSplitAcrossReceiveBoundary_content() throws Exception {
+        String xml = "<root>&#65;&#x1F600;</root>";
+        List<String> events = runScanner(xml.toCharArray(), 1);
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:A\uD83D\uDE00",
+                "endElement(,root,root)",
+                "endDocument()"), events);
+    }
+
+    @Test(timeout = 5000)
+    public void testEntitySplitAcrossReceiveBoundary_attributeValue() throws Exception {
+        String xml = "<root a=\"x &amp; y &#65; z\"/>";
+        List<String> events = runScanner(xml.toCharArray(), 1);
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ a=x & y A z(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), events);
+    }
+
 }
