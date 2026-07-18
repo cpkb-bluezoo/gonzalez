@@ -93,21 +93,66 @@ import org.xml.sax.ext.LexicalHandler;
 public class Parser implements XMLReader, PSVIProvider {
 
     /**
-     * The tokenizer that converts characters to tokens.
+     * Which internal pipeline this {@code Parser} drives: the original,
+     * fully-featured {@link Tokenizer}/{@link ContentParser}/{@link
+     * DTDParser} chain, or the newer {@link Scanner}/{@link SAXAdapter}
+     * chain. Both are fed by the same {@link ExternalEntityDecoder}, via the
+     * narrow {@link ByteDecoderTarget} interface each of {@link Tokenizer}/
+     * {@link Scanner} implements - see that interface's own class Javadoc.
+     * {@link #SCANNER} does not yet support DTD validation, PSVI, {@code
+     * EntityResolver2}, or several other {@link ContentParser}-only
+     * features/properties - {@link #getFeature}/{@link #setFeature}/{@link
+     * #getProperty}/{@link #setProperty} throw {@link
+     * SAXNotSupportedException} for those in {@link #SCANNER} mode rather
+     * than silently answering from an inactive {@link ContentParser}
+     * instance.
+     */
+    public enum Pipeline {
+        TOKENIZER, SCANNER
+    }
+
+    private final Pipeline pipeline;
+
+    /**
+     * The tokenizer that converts characters to tokens. Non-null only when
+     * {@link #pipeline} is {@link Pipeline#TOKENIZER}.
      * Initialized in post-XMLDecl state (PROLOG_BEFORE_DOCTYPE).
      */
     private final Tokenizer tokenizer;
-    
+
     /**
-     * The external entity decoder that converts bytes to characters.
-     * The decoder handles XMLDecl parsing before passing content to the tokenizer.
-     */
-    private final ExternalEntityDecoder decoder;
-    
-    /**
-     * The parser that converts tokens to SAX events.
+     * The parser that converts tokens to SAX events. Non-null only when
+     * {@link #pipeline} is {@link Pipeline#TOKENIZER}.
      */
     private final ContentParser xmlParser;
+
+    /**
+     * The external entity decoder that converts bytes to characters, for
+     * either pipeline - see {@link ByteDecoderTarget}. Constructed once (in
+     * the constructor) and reused via {@link #reset()} for {@link
+     * Pipeline#TOKENIZER}; for {@link Pipeline#SCANNER}, {@link Scanner}
+     * itself is inherently single-document (it has no {@code reset()}), so
+     * this - and {@link #scanner} - are instead (re)built lazily, once per
+     * document, by {@link #ensureScannerReady()}.
+     */
+    private ExternalEntityDecoder decoder;
+
+    /** Non-null only when {@link #pipeline} is {@link Pipeline#SCANNER},
+     *  and only once {@link #ensureScannerReady()} has run for the document
+     *  currently being received. */
+    private Scanner scanner;
+
+    // ===== Pipeline#SCANNER configuration (mirrors what ContentParser/
+    // Tokenizer already store internally for Pipeline#TOKENIZER) - read by
+    // ensureScannerReady() when it (re)builds the Scanner-side chain. =====
+    private ContentHandler scannerContentHandler;
+    private DTDHandler scannerDtdHandler;
+    private ErrorHandler scannerErrorHandler;
+    private EntityResolver scannerEntityResolver;
+    private LexicalHandler scannerLexicalHandler;
+    private boolean scannerNamespaces = true;
+    private String scannerPublicId;
+    private String scannerSystemId;
 
     /**
      * Reusable byte buffer for parse() methods.
@@ -121,15 +166,65 @@ public class Parser implements XMLReader, PSVIProvider {
     static final boolean debug = false;
 
     /**
-     * Creates a new Parser instance.
-     * The tokenizer is initialized in PROLOG_BEFORE_DOCTYPE state (post-XMLDecl).
-     * The decoder handles XMLDecl parsing before feeding content to the tokenizer.
+     * Creates a new Parser instance driving the default {@link
+     * Pipeline#TOKENIZER} pipeline - equivalent to {@code
+     * new Parser(Pipeline.TOKENIZER)}.
      */
     public Parser() {
-        xmlParser = new ContentParser();
-        TokenConsumer consumer = debug ? new DebugTokenConsumer(xmlParser, "(document)") : xmlParser;
-        tokenizer = new Tokenizer(null, consumer, TokenizerState.PROLOG_BEFORE_DOCTYPE, false);
-        decoder = new ExternalEntityDecoder(tokenizer, null, null, false); // Document entity
+        this(Pipeline.TOKENIZER);
+    }
+
+    /**
+     * Creates a new Parser instance driving the given internal pipeline.
+     *
+     * @param pipeline which pipeline to drive - see {@link Pipeline}
+     */
+    public Parser(Pipeline pipeline) {
+        this.pipeline = pipeline;
+        if (pipeline == Pipeline.TOKENIZER) {
+            xmlParser = new ContentParser();
+            TokenConsumer consumer = debug ? new DebugTokenConsumer(xmlParser, "(document)") : xmlParser;
+            tokenizer = new Tokenizer(null, consumer, TokenizerState.PROLOG_BEFORE_DOCTYPE, false);
+            decoder = new ExternalEntityDecoder(tokenizer, null, null, false); // Document entity
+        } else {
+            xmlParser = null;
+            tokenizer = null;
+            decoder = null; // built lazily by ensureScannerReady()
+        }
+    }
+
+    /**
+     * (Re)builds the {@link #scanner}/{@link #decoder} pair for {@link
+     * Pipeline#SCANNER} mode, if not already built for the document
+     * currently being received - a no-op once already built, matching
+     * {@link Tokenizer}/{@link ContentParser}'s own single-construction-
+     * per-document shape as closely as {@link Scanner}'s lack of a {@code
+     * reset()} allows. Called from {@link #receive(ByteBuffer)}.
+     */
+    private void ensureScannerReady() throws SAXException {
+        if (scanner != null) {
+            return;
+        }
+        SAXAdapter adapter = new SAXAdapter(scannerNamespaces);
+        adapter.setContentHandler(scannerContentHandler);
+        adapter.setLexicalHandler(scannerLexicalHandler);
+        adapter.setErrorHandler(scannerErrorHandler);
+        adapter.setPublicId(scannerPublicId);
+        adapter.setSystemId(scannerSystemId);
+        XMLHandler target = scannerNamespaces ? new NamespaceFilter(adapter, false) : adapter;
+        scanner = new Scanner(target, false, scannerEntityResolver, scannerSystemId);
+        decoder = new ExternalEntityDecoder(scanner, scannerPublicId, scannerSystemId, false);
+    }
+
+    /** Throws {@link SAXNotSupportedException} - used by {@link
+     *  #getFeature}/{@link #setFeature}/{@link #getProperty}/{@link
+     *  #setProperty} for the {@link ContentParser}-only surface that
+     *  {@link Pipeline#SCANNER} doesn't support yet, so a caller finds out
+     *  immediately rather than getting a stale/misleading answer from an
+     *  inactive {@link ContentParser} instance. */
+    private static SAXNotSupportedException scannerUnsupported(String name) throws SAXNotSupportedException {
+        throw new SAXNotSupportedException(
+                name + " is not supported by the Pipeline.SCANNER pipeline yet");
     }
 
     // ========================================================================
@@ -169,8 +264,15 @@ public class Parser implements XMLReader, PSVIProvider {
             setSystemId(input.getSystemId());
         }
         
-        // Set initial encoding from InputSource if specified
+        // Set initial encoding from InputSource if specified. For
+        // Pipeline.SCANNER, decoder isn't built until ensureScannerReady()
+        // runs (it needs scannerPublicId/scannerSystemId, just set above,
+        // and must exist before setInitialCharset can be called on it) -
+        // receive() below would build it anyway, just too late for this.
         if (input.getEncoding() != null) {
+            if (pipeline == Pipeline.SCANNER) {
+                ensureScannerReady();
+            }
             try {
                 Charset charset = Charset.forName(input.getEncoding());
                 decoder.setInitialCharset(charset);
@@ -253,7 +355,7 @@ public class Parser implements XMLReader, PSVIProvider {
         }
         
         // Try to use EntityResolver to resolve the systemId
-        EntityResolver resolver = xmlParser.getEntityResolver();
+        EntityResolver resolver = getEntityResolver();
         if (resolver != null) {
             InputSource source = resolver.resolveEntity(null, systemId);
             if (source != null) {
@@ -357,7 +459,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public ContentHandler getContentHandler() {
-        return xmlParser.getContentHandler();
+        return (pipeline == Pipeline.SCANNER) ? scannerContentHandler : xmlParser.getContentHandler();
     }
 
     /**
@@ -372,7 +474,11 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setContentHandler(ContentHandler handler) {
-        xmlParser.setContentHandler(handler);
+        if (pipeline == Pipeline.SCANNER) {
+            scannerContentHandler = handler;
+        } else {
+            xmlParser.setContentHandler(handler);
+        }
     }
 
     /**
@@ -383,7 +489,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public DTDHandler getDTDHandler() {
-        return xmlParser.getDTDHandler();
+        return (pipeline == Pipeline.SCANNER) ? scannerDtdHandler : xmlParser.getDTDHandler();
     }
 
     /**
@@ -397,7 +503,13 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setDTDHandler(DTDHandler handler) {
-        xmlParser.setDTDHandler(handler);
+        if (pipeline == Pipeline.SCANNER) {
+            // Stored but not yet wired to anything - Scanner doesn't report
+            // notationDecl/unparsedEntityDecl events to a DTDHandler yet.
+            scannerDtdHandler = handler;
+        } else {
+            xmlParser.setDTDHandler(handler);
+        }
     }
 
     /**
@@ -408,7 +520,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public ErrorHandler getErrorHandler() {
-        return xmlParser.getErrorHandler();
+        return (pipeline == Pipeline.SCANNER) ? scannerErrorHandler : xmlParser.getErrorHandler();
     }
 
     /**
@@ -423,7 +535,14 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setErrorHandler(ErrorHandler handler) {
-        xmlParser.setErrorHandler(handler);
+        if (pipeline == Pipeline.SCANNER) {
+            // Stored but not yet wired to anything - Scanner reports every
+            // error as fatal (throws directly) and has no non-fatal error()/
+            // warning() reporting path yet (no validation support).
+            scannerErrorHandler = handler;
+        } else {
+            xmlParser.setErrorHandler(handler);
+        }
     }
 
     /**
@@ -434,7 +553,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public EntityResolver getEntityResolver() {
-        return xmlParser.getEntityResolver();
+        return (pipeline == Pipeline.SCANNER) ? scannerEntityResolver : xmlParser.getEntityResolver();
     }
 
     /**
@@ -454,7 +573,11 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setEntityResolver(EntityResolver resolver) {
-        xmlParser.setEntityResolver(resolver);
+        if (pipeline == Pipeline.SCANNER) {
+            scannerEntityResolver = resolver;
+        } else {
+            xmlParser.setEntityResolver(resolver);
+        }
     }
 
     /**
@@ -501,7 +624,19 @@ public class Parser implements XMLReader, PSVIProvider {
         if (name == null) {
             throw new NullPointerException("Feature name cannot be null");
         }
-        
+        if (pipeline == Pipeline.SCANNER) {
+            if ("http://xml.org/sax/features/namespaces".equals(name)) {
+                return scannerNamespaces;
+            }
+            // Honestly false, not thrown - Scanner never validates, so
+            // "is validation happening" always has an honest answer even
+            // though turning it on is accepted (see setFeature).
+            if ("http://xml.org/sax/features/validation".equals(name)) {
+                return false;
+            }
+            throw scannerUnsupported(name);
+        }
+
         switch (name) {
             // Delegate is-standalone to tokenizer (it owns XML declaration info)
             case "http://xml.org/sax/features/is-standalone":
@@ -589,7 +724,39 @@ public class Parser implements XMLReader, PSVIProvider {
         if (name == null) {
             throw new NullPointerException("Feature name cannot be null");
         }
-        
+        if (pipeline == Pipeline.SCANNER) {
+            if ("http://xml.org/sax/features/namespaces".equals(name)) {
+                if (scanner != null && value != scannerNamespaces) {
+                    throw new SAXNotSupportedException(
+                            "Cannot change " + name + " once parsing has started for Pipeline.SCANNER");
+                }
+                scannerNamespaces = value;
+                return;
+            }
+            // Scanner always fetches external general/parameter entities
+            // when referenced - there's no way to disable that yet, but
+            // accepting a request for the (already-fixed) enabled state is
+            // a legitimate no-op, not an unsupported one. Only actually
+            // trying to turn it off is unsupported.
+            if ("http://xml.org/sax/features/external-general-entities".equals(name)
+                    || "http://xml.org/sax/features/external-parameter-entities".equals(name)) {
+                if (!value) {
+                    throw scannerUnsupported(name + "=false");
+                }
+                return;
+            }
+            // Scanner never validates - accepting a request to turn
+            // validation on is a no-op (matches its fixed, already-false
+            // behavior; see getFeature) rather than unsupported. Only
+            // meaningful to reject if it could ever silently mislead a
+            // caller, which returning false from getFeature already
+            // prevents.
+            if ("http://xml.org/sax/features/validation".equals(name)) {
+                return;
+            }
+            throw scannerUnsupported(name);
+        }
+
         switch (name) {
             // Mutable features (delegate to ContentParser)
             case "http://xml.org/sax/features/namespaces":
@@ -692,6 +859,12 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public Object getProperty(String name) throws SAXNotRecognizedException, SAXNotSupportedException {
+        if (pipeline == Pipeline.SCANNER) {
+            if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
+                return scannerLexicalHandler;
+            }
+            throw scannerUnsupported(name);
+        }
         // SAX2 extension properties
         if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
             return xmlParser.getLexicalHandler();
@@ -727,6 +900,25 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setProperty(String name, Object value) throws SAXNotRecognizedException, SAXNotSupportedException {
+        if (pipeline == Pipeline.SCANNER) {
+            if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
+                if (value instanceof LexicalHandler) {
+                    scannerLexicalHandler = (LexicalHandler) value;
+                    return;
+                }
+                throw new SAXNotSupportedException("Value must be a LexicalHandler");
+            }
+            // Scanner has no JAXP external-DTD access-control concept yet
+            // (it always fetches what it can resolve) - accepting any
+            // requested restriction level as a no-op rather than rejecting
+            // it outright, matching the external-general/parameter-entities
+            // features' own "already-permissive, so accepting is honest"
+            // reasoning in setFeature.
+            if ("http://javax.xml.XMLConstants/property/accessExternalDTD".equals(name)) {
+                return;
+            }
+            throw scannerUnsupported(name);
+        }
         // SAX2 extension properties
         if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
             if (value instanceof LexicalHandler) {
@@ -790,9 +982,18 @@ public class Parser implements XMLReader, PSVIProvider {
      * @throws SAXException if reset fails
      */
     public void reset() throws SAXException {
-        decoder.reset();
-        tokenizer.reset();
-        xmlParser.reset();
+        if (pipeline == Pipeline.TOKENIZER) {
+            decoder.reset();
+            tokenizer.reset();
+            xmlParser.reset();
+        } else {
+            // Scanner has no reset() of its own (inherently single-
+            // document) - ensureScannerReady() rebuilds a fresh scanner/
+            // decoder pair from the still-held scannerXxx configuration on
+            // the next receive().
+            scanner = null;
+            decoder = null;
+        }
     }
 
     // ========================================================================
@@ -812,7 +1013,11 @@ public class Parser implements XMLReader, PSVIProvider {
      * @param publicId the public identifier, or null if not available
      */
     public void setPublicId(String publicId) {
-        tokenizer.publicId = publicId;
+        if (pipeline == Pipeline.SCANNER) {
+            scannerPublicId = publicId;
+        } else {
+            tokenizer.publicId = publicId;
+        }
     }
 
     /**
@@ -828,7 +1033,11 @@ public class Parser implements XMLReader, PSVIProvider {
      * @param systemId the system identifier, or null if not available
      */
     public void setSystemId(String systemId) {
-        tokenizer.systemId = systemId;
+        if (pipeline == Pipeline.SCANNER) {
+            scannerSystemId = systemId;
+        } else {
+            tokenizer.systemId = systemId;
+        }
     }
 
     /**
@@ -867,6 +1076,9 @@ public class Parser implements XMLReader, PSVIProvider {
      * @throws IllegalStateException if called after {@link #close()}
      */
     public void receive(ByteBuffer data) throws SAXException {
+        if (pipeline == Pipeline.SCANNER) {
+            ensureScannerReady();
+        }
         decoder.receive(data);
     }
 
@@ -890,8 +1102,13 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     public void close() throws SAXException {
         decoder.close();
-        // Validate that parsing is complete (no unclosed constructs)
-        xmlParser.close();
+        if (pipeline == Pipeline.TOKENIZER) {
+            // Validate that parsing is complete (no unclosed constructs) -
+            // Scanner's own close() (invoked via decoder.close(), through
+            // the ByteDecoderTarget interface) already does the equivalent
+            // check itself.
+            xmlParser.close();
+        }
     }
 
     /**
@@ -900,7 +1117,7 @@ public class Parser implements XMLReader, PSVIProvider {
      * @return the public identifier, or null if not set
      */
     public String getPublicId() {
-        return tokenizer.publicId;
+        return (pipeline == Pipeline.SCANNER) ? scannerPublicId : tokenizer.publicId;
     }
 
     /**
@@ -909,7 +1126,7 @@ public class Parser implements XMLReader, PSVIProvider {
      * @return the system identifier, or null if not set
      */
     public String getSystemId() {
-        return tokenizer.systemId;
+        return (pipeline == Pipeline.SCANNER) ? scannerSystemId : tokenizer.systemId;
     }
 
     // ========================================================================
@@ -943,8 +1160,11 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public ValidationSource getValidationSource() {
-        return xmlParser.getDTDParser() != null 
-            ? ValidationSource.DTD 
+        if (pipeline == Pipeline.SCANNER) {
+            return ValidationSource.NONE;
+        }
+        return xmlParser.getDTDParser() != null
+            ? ValidationSource.DTD
             : ValidationSource.NONE;
     }
     
@@ -963,6 +1183,9 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public String getDTDAttributeType(int attrIndex) {
+        if (pipeline == Pipeline.SCANNER) {
+            return "CDATA";
+        }
         SAXAttributes attrs = xmlParser.getCurrentAttributes();
         if (attrs != null && attrIndex >= 0 && attrIndex < attrs.getLength()) {
             return attrs.getType(attrIndex);

@@ -27,8 +27,10 @@ import java.util.Iterator;
 import java.util.Map;
 
 import org.xml.sax.ContentHandler;
+import org.xml.sax.ErrorHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -60,6 +62,9 @@ class SAXAdapter implements XMLHandler {
 
     private ContentHandler contentHandler;
     private LexicalHandler lexicalHandler;
+    private ErrorHandler errorHandler;
+    private String publicId;
+    private String systemId;
 
     private final boolean namespaceAware;
     private final NamespaceScopeTracker namespaceTracker;
@@ -119,6 +124,18 @@ class SAXAdapter implements XMLHandler {
 
     void setLexicalHandler(LexicalHandler handler) {
         this.lexicalHandler = handler;
+    }
+
+    void setErrorHandler(ErrorHandler handler) {
+        this.errorHandler = handler;
+    }
+
+    void setPublicId(String publicId) {
+        this.publicId = publicId;
+    }
+
+    void setSystemId(String systemId) {
+        this.systemId = systemId;
     }
 
     @Override
@@ -343,9 +360,25 @@ class SAXAdapter implements XMLHandler {
         // unflushed across events, so there is nothing to save.
     }
 
+    /**
+     * Builds a proper {@link SAXParseException} (not a plain {@link
+     * SAXException}) and notifies {@link #errorHandler} if one is set -
+     * mirroring {@code ContentParser.fatalError(String)}'s exact shape
+     * (build exception, call {@code errorHandler.fatalError(exception)},
+     * return it) so callers/harnesses that rely on either signal (a
+     * genuinely-typed {@code SAXParseException} propagating out of {@code
+     * parse()}, or the standard SAX {@code ErrorHandler.fatalError}
+     * callback firing) see the same behaviour regardless of which pipeline
+     * is active. Line/column are always -1 ("unknown") - {@link Scanner}
+     * does not track position yet, a known, documented gap.
+     */
     @Override
     public SAXException fatalError(String message) throws SAXException {
-        return new SAXException(message);
+        SAXParseException exception = new SAXParseException(message, publicId, systemId, -1, -1);
+        if (errorHandler != null) {
+            errorHandler.fatalError(exception);
+        }
+        return exception;
     }
 
 }

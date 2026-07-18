@@ -50,7 +50,7 @@ import org.xml.sax.ext.Locator2;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class Tokenizer implements Locator2 {
+class Tokenizer implements Locator2, ByteDecoderTarget {
 
     private static boolean debug = false;
 
@@ -1693,8 +1693,19 @@ class Tokenizer implements Locator2 {
     /**
      * Creates a fatal error exception.
      */
-    SAXException fatalError(String message) throws SAXException {
+    @Override
+    public SAXException fatalError(String message) throws SAXException {
         return consumer.fatalError(message);
+    }
+
+    /** {@link ByteDecoderTarget#setXml11} - {@link ExternalEntityDecoder}
+     *  already wrote {@code xml11} as a direct field assignment before this
+     *  interface existed; this is that same assignment via a method, so a
+     *  single {@code ExternalEntityDecoder} can drive either {@link
+     *  Tokenizer} or {@link Scanner}. */
+    @Override
+    public void setXml11(boolean xml11) {
+        this.xml11 = xml11;
     }
 
     @Override

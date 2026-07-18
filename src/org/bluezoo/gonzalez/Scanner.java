@@ -169,7 +169,7 @@ import org.xml.sax.SAXException;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class Scanner {
+class Scanner implements ByteDecoderTarget {
 
     private static final int INITIAL_CAPACITY = 8192;
 
@@ -372,14 +372,20 @@ class Scanner {
 
     /** M6: XML 1.1 vs 1.0 mode, affecting only numeric character reference
      *  legality (see {@link #decodeEntityRef()}) - see class Javadoc "M6"
-     *  section for why nothing else in this class needs it. Determined by
-     *  the caller before construction (in the eventual cut-over pipeline,
-     *  from an earlier byte-level declaration-parsing stage - analogous to
-     *  the old parser's {@code ExternalEntityDecoder}/{@code XMLDeclParser} -
-     *  which does not exist yet in this new pipeline and is not this
-     *  milestone's concern; not a circular dependency, since that stage
-     *  runs entirely before any character reaches a Scanner). */
-    private final boolean xml11;
+     *  section for why nothing else in this class needs it. Either supplied
+     *  by the caller up front (every direct/test construction - the common
+     *  case when the version is already known), or defaulted at
+     *  construction and updated exactly once via {@link #setXml11} - the
+     *  {@link ByteDecoderTarget} interface method {@link
+     *  ExternalEntityDecoder} calls once it has resolved the XML/text
+     *  declaration's version directly from the raw bytes, strictly before
+     *  any real document content reaches this Scanner (the same timing
+     *  {@code ExternalEntityDecoder} already uses for {@code Tokenizer};
+     *  see {@code Parser.Pipeline}). Not final for that reason - {@link
+     *  #setXml11} keeps {@link #contentStopTable}/{@link
+     *  #quotAttrStopTable}/{@link #aposAttrStopTable} in sync whenever it
+     *  changes. */
+    private boolean xml11;
 
     /** Resolves external entity/DTD identifiers to actual bytes - see
      *  "external entity/DTD fetching" below. Null (the common case, and
@@ -413,8 +419,18 @@ class Scanner {
         this.entityResolver = entityResolver;
         this.baseSystemId = baseSystemId;
         this.buf = new char[INITIAL_CAPACITY];
+        this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
+        this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
+        this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
         handler.startDocument();
     }
+
+    /** Resolved from {@link #xml11} at construction, and re-resolved by
+     *  {@link #setXml11} if it changes - see the {@code CONTENT_STOP_XML10}/
+     *  {@code XML11} family's Javadoc. */
+    private boolean[] contentStopTable;
+    private boolean[] quotAttrStopTable;
+    private boolean[] aposAttrStopTable;
 
     /**
      * Feeds more decoded character data to the scanner. May be called
@@ -425,7 +441,8 @@ class Scanner {
      * be compacted/reused before the next call - see XMLHandler's class
      * Javadoc.
      */
-    void receive(CharBuffer data) throws SAXException {
+    @Override
+    public void receive(CharBuffer data) throws SAXException {
         append(data);
         scan();
         handler.saveBuffers();
@@ -435,7 +452,8 @@ class Scanner {
      * Signals end of input. Reports a fatal error if the document ends
      * mid-construct or with unclosed elements.
      */
-    void close() throws SAXException {
+    @Override
+    public void close() throws SAXException {
         if (inStartTag || inAttributeValue || inDoctype || !elementStack.isEmpty()) {
             throw handler.fatalError("Document ended unexpectedly (unclosed element or tag)");
         }
@@ -443,6 +461,24 @@ class Scanner {
             throw handler.fatalError("Document must contain a root element");
         }
         handler.endDocument();
+    }
+
+    @Override
+    public SAXException fatalError(String message) throws SAXException {
+        return handler.fatalError(message);
+    }
+
+    /** {@link ByteDecoderTarget#setXml11} - see {@link #xml11}'s own
+     *  Javadoc for the timing guarantee this relies on (called strictly
+     *  before any real document content, so the mid-flight state this
+     *  mutates - the three derived lookup tables - is never observed in an
+     *  inconsistent state by a concurrently-in-progress scan). */
+    @Override
+    public void setXml11(boolean xml11) {
+        this.xml11 = xml11;
+        this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
+        this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
+        this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
     }
 
     private void append(CharBuffer data) {
@@ -481,14 +517,69 @@ class Scanner {
      *  class's established boundary), so this only needs to reject, not
      *  additionally normalize, anything it sees. */
     private boolean isLegalLiteralChar(char c) {
-        if (xml11) {
-            if (c >= 0x1 && c <= 0xD7FF) {
-                return !((c >= 0x7F && c <= 0x84) || (c >= 0x86 && c <= 0x9F));
-            }
-            return (c >= 0xE000 && c <= 0xFFFD) || (c >= 0xD800 && c <= 0xDFFF);
-        }
+        return xml11 ? isLegalLiteralCharXml11(c) : isLegalLiteralCharXml10(c);
+    }
+
+    private static boolean isLegalLiteralCharXml10(char c) {
         return c == 0x9 || c == 0xA || c == 0xD || (c >= 0x20 && c <= 0xD7FF)
                 || (c >= 0xE000 && c <= 0xFFFD) || (c >= 0xD800 && c <= 0xDFFF);
+    }
+
+    private static boolean isLegalLiteralCharXml11(char c) {
+        if (c >= 0x1 && c <= 0xD7FF) {
+            return !((c >= 0x7F && c <= 0x84) || (c >= 0x86 && c <= 0x9F));
+        }
+        return (c >= 0xE000 && c <= 0xFFFD) || (c >= 0xD800 && c <= 0xDFFF);
+    }
+
+    /**
+     * Precomputed per-character stop tables for the hot bulk-scan loops in
+     * {@link #scanContent()} and {@link #scanAttributeValueStreaming()},
+     * mirroring the technique just proven on {@code Tokenizer}'s own bulk
+     * scans (see commit "Replace per-character branch chains with lookup
+     * tables in Tokenizer bulk scans"): profiling showed the naive
+     * comparison-chain-plus-legality-check run once per character across
+     * every text/attribute-value run as a dominant cost relative to Xerces's
+     * single bitmask-table lookup. One table per (construct, XML version)
+     * combination - selected once per {@link Scanner} instance (XML version
+     * never changes mid-document) rather than re-branched on {@link #xml11}
+     * per character.
+     * <p>
+     * {@link #CONTENT_STOP_XML10}/{@link #CONTENT_STOP_XML11}: true for
+     * '&lt;', '&amp;', ']' (needs {@link #contentBracketRun} tracking), '>'
+     * (only sometimes illegal - depends on {@link #contentBracketRun} - so
+     * conservatively always routed to the slow path rather than baked into a
+     * table that can't see runtime state), or any character {@link
+     * #isLegalLiteralChar} rejects.
+     * <p>
+     * {@link #QUOT_ATTR_STOP_XML10}/{@code _XML11} and {@link
+     * #APOS_ATTR_STOP_XML10}/{@code _XML11}: true for the run's own quote
+     * character, '&amp;', '&lt;', tab/LF/CR (needs in-place normalisation to
+     * a space - XML 3.3.3), or any illegal character.
+     */
+    private static final boolean[] CONTENT_STOP_XML10 = new boolean[0x10000];
+    private static final boolean[] CONTENT_STOP_XML11 = new boolean[0x10000];
+    private static final boolean[] QUOT_ATTR_STOP_XML10 = new boolean[0x10000];
+    private static final boolean[] QUOT_ATTR_STOP_XML11 = new boolean[0x10000];
+    private static final boolean[] APOS_ATTR_STOP_XML10 = new boolean[0x10000];
+    private static final boolean[] APOS_ATTR_STOP_XML11 = new boolean[0x10000];
+
+    static {
+        for (int i = 0; i < 0x10000; i++) {
+            char c = (char) i;
+            boolean legal10 = isLegalLiteralCharXml10(c);
+            boolean legal11 = isLegalLiteralCharXml11(c);
+            boolean contentStructural = (c == '<' || c == '&' || c == ']' || c == '>');
+            CONTENT_STOP_XML10[i] = contentStructural || !legal10;
+            CONTENT_STOP_XML11[i] = contentStructural || !legal11;
+            boolean needsSubst = (c == '\t' || c == '\n' || c == '\r');
+            boolean quotStructural = (c == '"' || c == '&' || c == '<' || needsSubst);
+            boolean aposStructural = (c == '\'' || c == '&' || c == '<' || needsSubst);
+            QUOT_ATTR_STOP_XML10[i] = quotStructural || !legal10;
+            QUOT_ATTR_STOP_XML11[i] = quotStructural || !legal11;
+            APOS_ATTR_STOP_XML10[i] = aposStructural || !legal10;
+            APOS_ATTR_STOP_XML11[i] = aposStructural || !legal11;
+        }
     }
 
     private SAXException illegalCharError(char c) throws SAXException {
@@ -515,6 +606,60 @@ class Scanner {
     }
 
     /**
+     * Fast-path equivalent of a {@code while (pos < limit && buf[pos] != '<'
+     * && buf[pos] != '&') { checkContentChar(buf[pos]); pos++; }} loop, used
+     * by {@link #scanContent()}'s common (no DTD, or a mixed/ANY-content
+     * element) case: bulk-skips runs of ordinary characters via a single
+     * {@link #contentStopTable} lookup per character instead of {@link
+     * #checkContentChar}'s comparison chain, only falling back to per-
+     * character handling for the characters the table actually flags
+     * (']'/'>' - {@link #contentBracketRun} tracking for the "]]&gt;" WFC -
+     * or an illegal character; '&lt;'/'&amp;' end the run, matching {@link
+     * #checkContentChar}'s loop condition exactly). Mutates {@link #pos} to
+     * just past the last character consumed - either at '&lt;'/'&amp;', or
+     * at {@link #limit} if the buffer ran out first.
+     */
+    private void scanContentRunFast() throws SAXException {
+        while (true) {
+            int before = pos;
+            while (pos < limit && !contentStopTable[buf[pos]]) {
+                pos++;
+            }
+            if (pos > before) {
+                // Every character just bulk-skipped is, by construction of
+                // contentStopTable, guaranteed not ']' - so any in-progress
+                // "]]" run is broken, exactly as checkContentChar's own
+                // trailing "else { contentBracketRun = 0; }" branch would
+                // have done for the last such character.
+                contentBracketRun = 0;
+            }
+            if (pos >= limit) {
+                return;
+            }
+            char c = buf[pos];
+            if (c == '<' || c == '&') {
+                return;
+            }
+            if (c == ']') {
+                contentBracketRun++;
+                pos++;
+                continue;
+            }
+            if (c == '>') {
+                if (contentBracketRun >= 2) {
+                    throw handler.fatalError(
+                            "\"]]>\" is not allowed in content, except to mark the end of a CDATA section");
+                }
+                contentBracketRun = 0;
+                pos++;
+                continue;
+            }
+            // Only remaining reason contentStopTable[c] could be true.
+            throw illegalCharError(c);
+        }
+    }
+
+    /**
      * XML NameChar (M6): {@code NameStartChar | "-" | "." | [0-9] | #xB7 |
      * [#x0300-#x036F] | [#x203F-#x2040]} - the modern, simplified production
      * from XML 1.0 5th edition / XML 1.1 (identical in both - see {@link
@@ -531,7 +676,11 @@ class Scanner {
      * deferred to the Conformance hardening phase.
      */
     private static boolean isNameChar(char c) {
-        if (isNameStartChar(c)) {
+        return NAME_CHAR_TABLE[c];
+    }
+
+    private static boolean isNameCharSlow(char c) {
+        if (isNameStartCharSlow(c)) {
             return true;
         }
         return c == '-' || c == '.' || (c >= '0' && c <= '9')
@@ -552,6 +701,10 @@ class Scanner {
      * file.
      */
     private static boolean isNameStartChar(char c) {
+        return NAME_START_CHAR_TABLE[c];
+    }
+
+    private static boolean isNameStartCharSlow(char c) {
         if (c == ':' || c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
             return true;
         }
@@ -585,6 +738,30 @@ class Scanner {
         // Surrogate pairs (U+10000-U+EFFFF): accept both halves, matching
         // the char-at-a-time scanning model used throughout this class.
         return c >= 0xD800 && c <= 0xDFFF;
+    }
+
+    /** Precomputed per-character lookup tables for {@link #isNameChar}/
+     *  {@link #isNameStartChar} - the same technique as {@link
+     *  #CONTENT_STOP_XML10} and friends, applied here because profiling the
+     *  {@code attrs} benchmark doc type (many short attribute names per
+     *  element) showed {@code isNameStartChar}'s branch chain - called once
+     *  per character by {@code isNameChar}'s name-scanning loops, which run
+     *  for every element/attribute/entity/PI name in the document - as a
+     *  dominant cost, comparable to the content/attribute-value runs
+     *  {@code CONTENT_STOP}/{@code QUOT_ATTR_STOP}/{@code APOS_ATTR_STOP}
+     *  already address. No XML 1.0 vs 1.1 split needed - name character
+     *  rules don't depend on the XML version. */
+    private static final boolean[] NAME_START_CHAR_TABLE = new boolean[0x10000];
+    private static final boolean[] NAME_CHAR_TABLE = new boolean[0x10000];
+
+    static {
+        for (int i = 0; i < 0x10000; i++) {
+            char c = (char) i;
+            NAME_START_CHAR_TABLE[i] = isNameStartCharSlow(c);
+        }
+        for (int i = 0; i < 0x10000; i++) {
+            NAME_CHAR_TABLE[i] = isNameCharSlow((char) i);
+        }
     }
 
     /** Throws if {@code buf[nameStart]} is not a legal NameStartChar - call
@@ -717,10 +894,7 @@ class Scanner {
                     pos++;
                 }
             } else {
-                while (pos < limit && buf[pos] != '<' && buf[pos] != '&') {
-                    checkContentChar(buf[pos]);
-                    pos++;
-                }
+                scanContentRunFast();
             }
             boolean runIsWhitespace = elementOnlyContent && pos > runStart && isWs(buf[runStart]);
             if (!insideDocument && pos > runStart) {
@@ -1183,6 +1357,11 @@ class Scanner {
      */
     private boolean scanAttributeValueStreaming() throws SAXException {
         char quote = pendingQuote;
+        // Resolved once for the whole attribute value (the quote character
+        // and XML version are both fixed for its duration) - see the
+        // CONTENT_STOP_XML10/XML11 family's Javadoc for why this table-
+        // lookup replaces the naive per-character comparison chain.
+        boolean[] attrStopTable = (quote == '"') ? quotAttrStopTable : aposAttrStopTable;
         while (true) {
             int runStart = pos;
             // Unconditional attribute-value normalisation (XML 3.3.3): a
@@ -1192,16 +1371,23 @@ class Scanner {
             // to substitute in place: this range is buf's own scratch
             // storage, about to be emitted and then either consumed or
             // copied per saveBuffers()'s contract - nothing reads the
-            // original raw bytes at this position again.
-            while (pos < limit && buf[pos] != quote && buf[pos] != '&' && buf[pos] != '<') {
-                char c = buf[pos];
-                if (!isLegalLiteralChar(c)) {
-                    throw illegalCharError(c);
+            // original raw bytes at this position again. The substitution
+            // itself doesn't end the run (scanning resumes in the same run
+            // right after it), so bulk-skipping resumes after each one.
+            while (true) {
+                while (pos < limit && !attrStopTable[buf[pos]]) {
+                    pos++;
                 }
+                if (pos >= limit) {
+                    break;
+                }
+                char c = buf[pos];
                 if (c == '\t' || c == '\n' || c == '\r') {
                     buf[pos] = ' ';
+                    pos++;
+                    continue;
                 }
-                pos++;
+                break;
             }
             if (pos >= limit) {
                 if (pos > runStart) {
@@ -1212,6 +1398,10 @@ class Scanner {
             }
             if (buf[pos] == '<') {
                 throw handler.fatalError("'<' is not allowed in an attribute value");
+            }
+            if (buf[pos] != quote && buf[pos] != '&') {
+                // Only remaining reason attrStopTable flagged this character.
+                throw illegalCharError(buf[pos]);
             }
             if (buf[pos] == quote) {
                 if (pos > runStart) {

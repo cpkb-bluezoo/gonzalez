@@ -100,19 +100,19 @@ public class XMLConformanceTest {
      *  scoring/reporting logic is otherwise untouched by the Conformance
      *  hardening phase. Set to {@code "scanner"} (by the {@code
      *  test-conformance-scanner} ant target) to run the new async pipeline
-     *  (Scanner -> NamespaceFilter -> SAXAdapter) via {@link
-     *  ScannerXMLReader} instead - the device under test, not the harness
-     *  itself, changes. */
+     *  (Scanner -> NamespaceFilter -> SAXAdapter) via {@code new
+     *  Parser(Parser.Pipeline.SCANNER)} instead - the device under test, not
+     *  the harness itself, changes. */
     private static final String PARSER_PROPERTY = "gonzalez.conformance.parser";
 
     /** Constructs the parser under test for a single {@link #runTest()}
      *  invocation - see {@link #PARSER_PROPERTY}. Only used for the actual
      *  test file being scored; index/manifest files are always parsed with
-     *  the old {@link Parser} in {@link #parseIndexFile}, since loading test
-     *  metadata isn't part of what's being tested. */
+     *  the default-pipeline {@link Parser} in {@link #parseIndexFile}, since
+     *  loading test metadata isn't part of what's being tested. */
     private static XMLReader newParserUnderTest() {
         if ("scanner".equals(System.getProperty(PARSER_PROPERTY))) {
-            return new ScannerXMLReader();
+            return new Parser(Parser.Pipeline.SCANNER);
         }
         return new Parser();
     }
