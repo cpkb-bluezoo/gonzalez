@@ -33,7 +33,6 @@ import java.nio.CharBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -228,8 +227,33 @@ class Scanner implements ByteDecoderTarget {
     /** M5: names of attributes specified on the start tag currently being
      *  scanned, reset once per {@link #scanStartTag} - lets {@link
      *  #applyAttributeDefaults} know which declared attributes were left
-     *  unspecified and need a default injected. */
-    private final HashSet<String> seenAttributeNames = new HashSet<String>();
+     *  unspecified and need a default injected. A small reference-equality
+     *  linear scan rather than a {@code HashSet}: attribute counts per
+     *  element are typically tiny (1-20), where a hash table's bucket/
+     *  boxing overhead loses to a plain array scan - and every name that
+     *  ever reaches this array is guaranteed {@link #namePool}-interned
+     *  (both start-tag attribute names, in {@link
+     *  #scanAttributesAndTagEnd}, and ATTLIST-declared names, in {@link
+     *  #scanAttlistDeclaration}), so {@code ==} is a correct, not just
+     *  faster, replacement for {@code equals()}. */
+    private String[] seenAttributeNames = new String[8];
+    private int seenAttributeNameCount;
+
+    private void recordSeenAttributeName(String name) {
+        if (seenAttributeNameCount == seenAttributeNames.length) {
+            seenAttributeNames = Arrays.copyOf(seenAttributeNames, seenAttributeNames.length * 2);
+        }
+        seenAttributeNames[seenAttributeNameCount++] = name;
+    }
+
+    private boolean wasAttributeSeen(String name) {
+        for (int i = 0; i < seenAttributeNameCount; i++) {
+            if (seenAttributeNames[i] == name) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     /**
      * Interns element/attribute names: M1 called {@code new String(...)} for
@@ -1231,7 +1255,7 @@ class Scanner implements ByteDecoderTarget {
         }
         pos = p;
         elementStack.add(qName);
-        seenAttributeNames.clear();
+        seenAttributeNameCount = 0;
         handler.startElement(qName);
         inStartTag = true;
         return true;
@@ -1296,7 +1320,7 @@ class Scanner implements ByteDecoderTarget {
             }
             checkNameStartChar(nameStart);
             String attrName = namePool.intern(CharBuffer.wrap(buf, nameStart, pos - nameStart));
-            seenAttributeNames.add(attrName);
+            recordSeenAttributeName(attrName);
 
             while (pos < limit && isWs(buf[pos])) {
                 pos++;
@@ -2350,7 +2374,12 @@ class Scanner implements ByteDecoderTarget {
                 throw handler.fatalError("Malformed attribute-list declaration");
             }
             checkNameStartChar(attrNameStart);
-            String attrName = new String(buf, attrNameStart, p - attrNameStart);
+            // Interned via the same namePool as attribute names encountered
+            // during actual start-tag scanning (see scanAttributesAndTagEnd),
+            // so applyAttributeDefaults()'s wasAttributeSeen() check - a
+            // reference-equality linear scan, not a HashSet - works
+            // correctly against DTDModel's stored declaration names too.
+            String attrName = namePool.intern(CharBuffer.wrap(buf, attrNameStart, p - attrNameStart));
 
             int ws3 = p;
             p = skipOptionalWhitespace(p);
@@ -3411,7 +3440,7 @@ class Scanner implements ByteDecoderTarget {
         for (Map.Entry<String, DTDModel.AttDef> entry : declared.entrySet()) {
             String name = entry.getKey();
             DTDModel.AttDef def = entry.getValue();
-            if (def.defaultValue == null || seenAttributeNames.contains(name)) {
+            if (def.defaultValue == null || wasAttributeSeen(name)) {
                 continue;
             }
             handler.startAttribute(name, def.type);

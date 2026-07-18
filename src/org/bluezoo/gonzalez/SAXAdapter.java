@@ -31,6 +31,7 @@ import org.xml.sax.ErrorHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
+import org.xml.sax.ext.Attributes2;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -45,9 +46,24 @@ import org.xml.sax.ext.LexicalHandler;
  * filter) never resolves names itself.
  * <p>
  * Attributes are buffered from {@link #startElement(String)} to
- * {@link #endAttributes()} using the same pooled {@link SAXAttributes} /
- * {@link QNamePool} / {@link NamespaceScopeTracker} machinery the current
- * parser uses, following the same resolve-at-end-of-tag pattern as
+ * {@link #endAttributes()} into this class's own small pooled {@link Attr}
+ * list, and this class implements {@link Attributes2} directly rather than
+ * delegating to a separate object (unlike {@code ContentParser}, which
+ * shares {@link SAXAttributes} - a richer implementation with lazy DTD-
+ * backed {@code getType()}/{@code isDeclared()} lookups this pipeline
+ * doesn't need, since {@link Scanner} already resolves an attribute's type
+ * before {@link #startAttribute} ever sees it). {@link #startElement(String)}
+ * clearing the list back to zero-length is genuinely {@code O(1)} - unlike
+ * {@code SAXAttributes.clear()}, there is no per-attribute pool (a
+ * {@link QNamePool} entry, a {@code StringBuilder}) to return, since {@link
+ * Attr} doesn't use one; see {@link Attr}'s own Javadoc. Duplicate-attribute
+ * detection ("WFC Unique Att Spec") is a reference-equality linear scan
+ * rather than a hash-based check, since {@code Scanner.namePool} guarantees
+ * every attribute name reaching {@link #startAttribute} is already interned
+ * - the same technique {@code Scanner.wasAttributeSeen} uses for its own,
+ * analogous check.
+ * <p>
+ * Namespace resolution follows the same resolve-at-end-of-tag pattern as
  * {@code ContentParser.fireStartElement} (an xmlns declaration appearing
  * after a prefixed attribute in the same start tag must still resolve that
  * attribute correctly). Since {@link XMLHandler#endElement()} carries no
@@ -58,7 +74,26 @@ import org.xml.sax.ext.LexicalHandler;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class SAXAdapter implements XMLHandler {
+class SAXAdapter implements XMLHandler, Attributes2 {
+
+    /**
+     * One buffered attribute. Pooled and reused across {@link
+     * #startElement(String)} calls exactly like {@code SAXAttributes}'s own
+     * {@code Attribute} holder - the list only ever grows (never shrinks)
+     * to the high-water mark of attributes-per-element seen so far - but
+     * unlike that class's holder, has no {@link QNamePool} entry of its own
+     * to check out/return: {@link #uri}/{@link #localName}/{@link #qName}
+     * are plain fields, resolved in place by {@link
+     * #resolveAttributeNamespaces}, needing no pooled wrapper object at all.
+     */
+    private static final class Attr {
+        String uri = "";
+        String localName;
+        String qName;
+        String type;
+        String value;
+        boolean specified;
+    }
 
     private ContentHandler contentHandler;
     private LexicalHandler lexicalHandler;
@@ -69,7 +104,13 @@ class SAXAdapter implements XMLHandler {
     private final boolean namespaceAware;
     private final NamespaceScopeTracker namespaceTracker;
     private final QNamePool qnamePool;
-    private final SAXAttributes attributes;
+
+    // This element's buffered attributes - see Attr's own Javadoc for the
+    // pooling/duplicate-detection design. attrCount is the "used" length;
+    // attrPool.size() is the high-water mark (>= attrCount always).
+    private final ArrayList<Attr> attrPool = new ArrayList<Attr>();
+    private int attrCount;
+    private boolean hasPrefixedAttributes;
 
     // Element stack. qName is always pushed; uri/localName are only
     // meaningful (and only pushed) in namespace-aware mode, so their depth
@@ -109,13 +150,10 @@ class SAXAdapter implements XMLHandler {
     SAXAdapter(boolean namespaceAware) {
         this.namespaceAware = namespaceAware;
         this.namespaceTracker = namespaceAware ? new NamespaceScopeTracker() : null;
-        // SAXAttributes.addAttribute() always checks out a QName - it tracks
-        // qName duplicates via QName equality regardless of namespace
-        // awareness (WFC "Unique Att Spec" applies to the raw qName either
-        // way) - so the pool is needed even when namespaceAware is false.
+        // Only the element's own name is resolved via a pooled QName (see
+        // endAttributes()) - attributes no longer need one at all, per
+        // Attr's own Javadoc.
         this.qnamePool = new QNamePool();
-        this.attributes = new SAXAttributes();
-        attributes.setQNamePool(qnamePool);
     }
 
     void setContentHandler(ContentHandler handler) {
@@ -164,7 +202,10 @@ class SAXAdapter implements XMLHandler {
         if (namespaceTracker != null) {
             namespaceTracker.pushContext();
         }
-        attributes.clear();
+        // O(1): no per-attribute pool to return anything to - see Attr's
+        // own Javadoc.
+        attrCount = 0;
+        hasPrefixedAttributes = false;
         qNameStack.add(qName);
     }
 
@@ -207,16 +248,92 @@ class SAXAdapter implements XMLHandler {
         }
     }
 
+    /**
+     * Buffers the current attribute (name/type already captured by {@link
+     * #startAttribute}) into {@link #attrPool}. {@code uri=""} and {@code
+     * localName=qName} for now, exactly as {@code ContentParser.
+     * handleAttributeValue} does - resolved in {@link
+     * #resolveAttributeNamespaces} below once all xmlns declarations for
+     * this element are known, regardless of attribute order.
+     * <p>
+     * Duplicate-name detection (WFC "Unique Att Spec") is a reference-
+     * equality scan against the qNames buffered so far: safe, not just
+     * fast, because {@code currentAttributeName} is always {@code
+     * Scanner.namePool}-interned by the time it reaches {@link
+     * #startAttribute} (same content always means the same {@code String}
+     * instance). This subsumes what {@code SAXAttributes.addAttribute}'s
+     * own (more expensive) "duplicate by expanded name" scan checked at
+     * add-time too: before any attribute is namespace-resolved, {@code uri}
+     * is {@code ""} and {@code localName} equals {@code qName} for every
+     * attribute, so "duplicate by expanded name" and "duplicate by qName"
+     * are the same check at this point - only {@link
+     * #resolveAttributeNamespaces}'s post-resolution scan below catches a
+     * genuine same-namespace-different-prefix duplicate.
+     */
     private void addCurrentAttribute(String valueStr) throws SAXException {
-        try {
-            // uri="" and localName=name for now, exactly as
-            // ContentParser.handleAttributeValue does - resolved in
-            // resolveAttributeNamespaces() below once all xmlns declarations
-            // for this element are known, regardless of attribute order.
-            attributes.addAttribute("", currentAttributeName, currentAttributeName, currentAttributeType, valueStr,
-                    true);
-        } catch (NamespaceException e) {
-            throw fatalError(e.getMessage());
+        String qName = currentAttributeName;
+        for (int i = 0; i < attrCount; i++) {
+            if (attrPool.get(i).qName == qName) {
+                throw fatalError("Duplicate attribute: " + qName);
+            }
+        }
+        Attr attr;
+        if (attrCount < attrPool.size()) {
+            attr = attrPool.get(attrCount);
+        } else {
+            attr = new Attr();
+            attrPool.add(attr);
+        }
+        attr.uri = "";
+        attr.localName = qName;
+        attr.qName = qName;
+        attr.type = currentAttributeType;
+        attr.value = valueStr;
+        attr.specified = true;
+        attrCount++;
+        if (qName.indexOf(':') >= 0) {
+            hasPrefixedAttributes = true;
+        }
+    }
+
+    /**
+     * Resolves any prefixed attributes' {@code uri}/{@code localName} now
+     * that every xmlns declaration on this element is known - ported from
+     * {@code SAXAttributes.resolveAttributeNamespaces}, operating on {@link
+     * #attrPool} instead. A no-op (single boolean check) unless this
+     * element actually has a prefixed attribute.
+     */
+    private void resolveAttributeNamespaces(NamespaceScopeTracker tracker) throws SAXException {
+        if (!hasPrefixedAttributes) {
+            return;
+        }
+        for (int i = 0; i < attrCount; i++) {
+            Attr attr = attrPool.get(i);
+            String qName = attr.qName;
+            int colonPos = qName.indexOf(':');
+            if (colonPos > 0 && attr.uri.isEmpty()) {
+                if (qName.startsWith("xmlns:")) {
+                    continue;
+                }
+                String prefix = qName.substring(0, colonPos);
+                String localName = qName.substring(colonPos + 1);
+                String uri = tracker.getURI(prefix);
+                if (uri == null) {
+                    throw fatalError("Unbound namespace prefix: " + prefix);
+                }
+                attr.uri = uri;
+                attr.localName = localName;
+                for (int j = 0; j < attrCount; j++) {
+                    if (j == i) {
+                        continue;
+                    }
+                    Attr other = attrPool.get(j);
+                    if (other.localName.equals(localName) && other.uri.equals(uri)) {
+                        throw fatalError("Duplicate attribute by expanded name: {" + uri + "}" + localName
+                                + " (qName: " + qName + ")");
+                    }
+                }
+            }
         }
     }
 
@@ -233,11 +350,7 @@ class SAXAdapter implements XMLHandler {
                 }
             }
 
-            try {
-                attributes.resolveAttributeNamespaces(namespaceTracker);
-            } catch (NamespaceException e) {
-                throw fatalError(e.getMessage());
-            }
+            resolveAttributeNamespaces(namespaceTracker);
 
             QName elementQName;
             try {
@@ -253,11 +366,11 @@ class SAXAdapter implements XMLHandler {
             localNameStack.add(localName);
 
             if (contentHandler != null) {
-                contentHandler.startElement(uri, localName, qName, attributes);
+                contentHandler.startElement(uri, localName, qName, this);
             }
         } else {
             if (contentHandler != null) {
-                contentHandler.startElement("", qName, qName, attributes);
+                contentHandler.startElement("", qName, qName, this);
             }
         }
     }
@@ -379,6 +492,155 @@ class SAXAdapter implements XMLHandler {
             errorHandler.fatalError(exception);
         }
         return exception;
+    }
+
+    // ===== Attributes / Attributes2 =====
+    //
+    // Implemented directly against attrPool/attrCount (see Attr's own
+    // Javadoc) rather than delegating to SAXAttributes - this pipeline has
+    // no DTD-backed lazy getType()/isDeclared() to offer (Scanner already
+    // resolves an attribute's type before startAttribute ever sees it, and
+    // has no attribute-declaration introspection wired here), so there is
+    // nothing that class's extra machinery would add.
+
+    private int findIndexByQName(String qName) {
+        for (int i = 0; i < attrCount; i++) {
+            if (attrPool.get(i).qName.equals(qName)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private int findIndexByExpandedName(String uri, String localName) {
+        for (int i = 0; i < attrCount; i++) {
+            Attr attr = attrPool.get(i);
+            if (attr.localName.equals(localName) && attr.uri.equals(uri)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    @Override
+    public int getLength() {
+        return attrCount;
+    }
+
+    @Override
+    public String getURI(int index) {
+        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).uri;
+    }
+
+    @Override
+    public String getLocalName(int index) {
+        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).localName;
+    }
+
+    @Override
+    public String getQName(int index) {
+        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).qName;
+    }
+
+    @Override
+    public String getType(int index) {
+        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).type;
+    }
+
+    @Override
+    public String getValue(int index) {
+        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).value;
+    }
+
+    @Override
+    public int getIndex(String uri, String localName) {
+        return findIndexByExpandedName(uri, localName);
+    }
+
+    @Override
+    public int getIndex(String qName) {
+        return findIndexByQName(qName);
+    }
+
+    @Override
+    public String getType(String uri, String localName) {
+        int i = findIndexByExpandedName(uri, localName);
+        return i < 0 ? null : attrPool.get(i).type;
+    }
+
+    @Override
+    public String getType(String qName) {
+        int i = findIndexByQName(qName);
+        return i < 0 ? null : attrPool.get(i).type;
+    }
+
+    @Override
+    public String getValue(String uri, String localName) {
+        int i = findIndexByExpandedName(uri, localName);
+        return i < 0 ? null : attrPool.get(i).value;
+    }
+
+    @Override
+    public String getValue(String qName) {
+        int i = findIndexByQName(qName);
+        return i < 0 ? null : attrPool.get(i).value;
+    }
+
+    // Attributes2 - no DTD-declaration introspection wired here yet (see
+    // this section's header comment), so isDeclared() is always false
+    // rather than performing a lazy DTD lookup; isSpecified() is always
+    // true, matching this pipeline's existing behaviour (every attribute
+    // reaching addCurrentAttribute, defaulted or explicit, is recorded the
+    // same way - see Scanner.applyAttributeDefaults).
+
+    @Override
+    public boolean isDeclared(int index) {
+        if (index < 0 || index >= attrCount) {
+            throw new ArrayIndexOutOfBoundsException(index);
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isDeclared(String qName) {
+        if (findIndexByQName(qName) < 0) {
+            throw new IllegalArgumentException("Unknown attribute: " + qName);
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isDeclared(String uri, String localName) {
+        if (findIndexByExpandedName(uri, localName) < 0) {
+            throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
+        }
+        return false;
+    }
+
+    @Override
+    public boolean isSpecified(int index) {
+        if (index < 0 || index >= attrCount) {
+            throw new ArrayIndexOutOfBoundsException(index);
+        }
+        return attrPool.get(index).specified;
+    }
+
+    @Override
+    public boolean isSpecified(String qName) {
+        int i = findIndexByQName(qName);
+        if (i < 0) {
+            throw new IllegalArgumentException("Unknown attribute: " + qName);
+        }
+        return attrPool.get(i).specified;
+    }
+
+    @Override
+    public boolean isSpecified(String uri, String localName) {
+        int i = findIndexByExpandedName(uri, localName);
+        if (i < 0) {
+            throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
+        }
+        return attrPool.get(i).specified;
     }
 
 }
