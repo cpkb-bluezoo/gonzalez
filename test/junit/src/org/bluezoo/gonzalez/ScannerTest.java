@@ -189,6 +189,56 @@ public class ScannerTest {
         assertDifferential("benchmark/resources/large-ns.xml");
     }
 
+    // ===== M3: namespace-aware differential (Scanner -> NamespaceFilter -> SAXAdapter(true)) =====
+
+    private static List<String> runScannerNamespaceAware(char[] chars, int chunkSize) throws Exception {
+        RecordingSaxHandler sink = new RecordingSaxHandler();
+        SAXAdapter adapter = new SAXAdapter(true);
+        adapter.setContentHandler(sink);
+        adapter.setLexicalHandler(sink);
+        NamespaceFilter filter = new NamespaceFilter(adapter, false);
+        Scanner scanner = new Scanner(filter);
+        if (chunkSize <= 0) {
+            scanner.receive(CharBuffer.wrap(chars));
+        } else {
+            int off = 0;
+            while (off < chars.length) {
+                int len = Math.min(chunkSize, chars.length - off);
+                scanner.receive(CharBuffer.wrap(chars, off, len));
+                off += len;
+            }
+        }
+        scanner.close();
+        return sink.getEvents();
+    }
+
+    private static List<String> runCurrentParserNamespaceAware(byte[] bytes) throws Exception {
+        RecordingSaxHandler sink = new RecordingSaxHandler();
+        Parser parser = new Parser();
+        parser.setFeature("http://xml.org/sax/features/namespaces", true);
+        parser.setContentHandler(sink);
+        parser.setProperty("http://xml.org/sax/properties/lexical-handler", sink);
+        parser.parse(new InputSource(new ByteArrayInputStream(bytes)));
+        return sink.getEvents();
+    }
+
+    @Test
+    public void testDifferential_namespaceAwareMode() throws Exception {
+        // Same corpus as the unaware-mode test above, this time resolved:
+        // xmlns declarations become namespace()/startPrefixMapping events,
+        // not plain attributes, and prefixed names resolve to uri/localName
+        // on both sides.
+        byte[] bytes = Files.readAllBytes(Paths.get("benchmark/resources/large-ns.xml"));
+        List<String> reference = stripCDATABoundariesAndRecoalesce(runCurrentParserNamespaceAware(bytes));
+        assertTrue("reference recording should not be trivially empty", reference.size() > 5);
+
+        char[] chars = decodeAndStripDecl(bytes);
+        for (int chunkSize : CHUNK_SIZES) {
+            List<String> actual = runScannerNamespaceAware(chars, chunkSize);
+            assertEquals("chunk size " + chunkSize, reference, actual);
+        }
+    }
+
     // ===== Hand-crafted production coverage =====
 
     @Test
