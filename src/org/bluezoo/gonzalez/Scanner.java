@@ -21,6 +21,14 @@
 
 package org.bluezoo.gonzalez;
 
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.MalformedURLException;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.CharBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,6 +37,8 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import org.xml.sax.EntityResolver;
+import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
 /**
@@ -198,6 +208,20 @@ class Scanner {
      *  see {@link #scanContent()}. */
     private boolean contentRunOpen;
 
+    /** WFC "no ']]>' in content, except to mark the end of a CDATA section":
+     *  count of consecutive literal ']' characters just scanned in {@link
+     *  #scanContent()}'s current literal run, so a ']' immediately followed
+     *  by ']' then '>' - even split across a receive() boundary - is caught.
+     *  Reset to 0 at every run boundary (markup, entity reference) - see
+     *  {@link #scanContent()} - since the WFC only applies to a
+     *  <em>literal</em>, contiguous occurrence in the source, not one
+     *  assembled from unrelated adjacent runs or via entity expansion
+     *  (writing {@code &gt;} instead of a literal '&gt;' right after "]]"
+     *  is the spec-sanctioned way to avoid this WFC, and correctly never
+     *  triggers it here, since decoded entity text never touches this
+     *  counter). */
+    private int contentBracketRun;
+
     /** WFC "Element Type Match" stack of interned qNames. */
     private final ArrayList<String> elementStack = new ArrayList<String>();
 
@@ -253,6 +277,13 @@ class Scanner {
      *  reject a DOCTYPE appearing after it and to know when to stop
      *  expecting one. */
     private boolean rootStarted;
+    /** True once the root element has closed - epilog WFCs ({@code Misc*}:
+     *  only Comment/PI/whitespace allowed, WFC "One root element" rejects a
+     *  second start tag) apply once this is true, exactly as they apply to
+     *  the prolog (before {@link #rootStarted}) - both are "outside the
+     *  document element" for this purpose, distinguished only for the
+     *  "second root element" check. */
+    private boolean rootEnded;
     private boolean doctypeSeen;
     private String doctypeName;
 
@@ -270,7 +301,17 @@ class Scanner {
     private boolean doctypeSubsetClosed;
     private String doctypeNamePending;
     private HashMap<String, String> doctypePendingEntities;
-    private HashSet<String> doctypePendingExternalNames;
+    private HashMap<String, String[]> doctypePendingExternalNames;
+    private HashMap<String, String> doctypePendingParamEntities;
+    private HashMap<String, String[]> doctypePendingParamExternalNames;
+
+    /** The DOCTYPE's own external ID, if any, captured in {@link
+     *  #scanDoctype} and consumed once the whole declaration - internal
+     *  subset included, if present - has committed, by both of {@link
+     *  #scanDoctype}'s and {@link #scanDoctypeSubset}'s completion paths.
+     *  Null (the common case) means no external subset to fetch. */
+    private String doctypeExternalPublicId;
+    private String doctypeExternalSystemId;
 
     /** Internal general entities declared in the DOCTYPE's internal subset:
      *  name -> raw replacement text. Character references in the text are
@@ -289,11 +330,37 @@ class Scanner {
      *  needing the old architecture's lazy/list-of-tokens representation. */
     private final HashMap<String, String> generalEntities = new HashMap<String, String>();
 
-    /** Names declared via an external ID (SYSTEM/PUBLIC) rather than a quoted
-     *  literal - recognised syntactically so a later reference produces a
-     *  clear "not supported" error rather than "not declared", but never
-     *  fetched or expanded (out of scope for this milestone). */
-    private final HashSet<String> externalEntityNames = new HashSet<String>();
+    /** Entities declared via an external ID (SYSTEM/PUBLIC) rather than a
+     *  quoted literal, keyed by name, value {@code {publicId, systemId}}
+     *  (publicId may be null) - fetched lazily, at first reference in
+     *  content (see {@link #expandGeneralEntityInContent}), matching how
+     *  internal entities are already only resolved lazily. Referencing one
+     *  from an <em>attribute value</em> is instead always a fatal WFC
+     *  violation ("No External Entity References") - never fetched there,
+     *  regardless of this map. */
+    private final HashMap<String, String[]> externalEntityNames = new HashMap<String, String[]>();
+
+    /** Parameter entities ({@code <!ENTITY % name "...">}), keyed by name -
+     *  the same shape as {@link #generalEntities}/{@link #externalEntityNames}
+     *  but a separate namespace (XML 4.1: general and parameter entity names
+     *  are in distinct spaces, so the same name may denote both). Unlike
+     *  general entities, a parameter entity reference ({@code %name;}) is
+     *  resolved immediately, at the point it is encountered while scanning
+     *  DTD declarations - never lazily - since its replacement text stands in
+     *  for a sequence of complete declarations, not character data; see
+     *  {@link #expandParameterEntityReference}. */
+    private final HashMap<String, String> parameterEntities = new HashMap<String, String>();
+
+    /** External parameter entities, keyed by name, value {@code {publicId,
+     *  systemId}} - fetched (not lazily, since a reference always needs its
+     *  replacement text right away to keep parsing) the same way an external
+     *  general entity is, via {@link #fetchExternalResource}. */
+    private final HashMap<String, String[]> parameterEntityExternalIds = new HashMap<String, String[]>();
+
+    /** Names of parameter entities currently being expanded - the parameter-
+     *  entity analogue of {@link #entityExpansionStack}, kept separate since
+     *  general and parameter entity names occupy different namespaces. */
+    private final ArrayList<String> parameterEntityExpansionStack = new ArrayList<String>();
 
     /** Names of entities currently being expanded, used for the "No
      *  Recursion" WFC (self- or mutually-referential entities). A linear
@@ -314,15 +381,37 @@ class Scanner {
      *  runs entirely before any character reaches a Scanner). */
     private final boolean xml11;
 
-    /** Convenience constructor for XML 1.0 (the common case, and every
-     *  caller before this milestone). */
+    /** Resolves external entity/DTD identifiers to actual bytes - see
+     *  "external entity/DTD fetching" below. Null (the common case, and
+     *  every caller before this capability existed) means "no external
+     *  fetching capability at all": an external SYSTEM/PUBLIC identifier
+     *  will still be recognised syntactically, but referencing it is
+     *  rejected the same way an unresolvable one would be. */
+    private final EntityResolver entityResolver;
+
+    /** The document's own system identifier, for resolving a relative
+     *  SYSTEM identifier against - see {@link #resolveAndOpen}. Null if
+     *  unknown (e.g. parsing from an in-memory string with no URI at all). */
+    private final String baseSystemId;
+
+    /** Convenience constructor for XML 1.0 with no external fetching
+     *  capability (the common case, and every caller before this
+     *  milestone). */
     Scanner(XMLHandler handler) throws SAXException {
         this(handler, false);
     }
 
+    /** Convenience constructor with no external fetching capability. */
     Scanner(XMLHandler handler, boolean xml11) throws SAXException {
+        this(handler, xml11, null, null);
+    }
+
+    Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String baseSystemId)
+            throws SAXException {
         this.handler = handler;
         this.xml11 = xml11;
+        this.entityResolver = entityResolver;
+        this.baseSystemId = baseSystemId;
         this.buf = new char[INITIAL_CAPACITY];
         handler.startDocument();
     }
@@ -350,6 +439,9 @@ class Scanner {
         if (inStartTag || inAttributeValue || inDoctype || !elementStack.isEmpty()) {
             throw handler.fatalError("Document ended unexpectedly (unclosed element or tag)");
         }
+        if (!rootStarted) {
+            throw handler.fatalError("Document must contain a root element");
+        }
         handler.endDocument();
     }
 
@@ -376,6 +468,50 @@ class Scanner {
 
     private static boolean isWs(char c) {
         return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    }
+
+    /** Legal-{@code Char} check for a LITERAL content/attribute-value
+     *  character. XML 1.0's {@code Char} production excludes all C0/C1
+     *  controls outside tab/CR/LF entirely; XML 1.1's does too for a
+     *  <em>literal</em> appearance - it only relaxes restricted characters
+     *  for character <em>references</em> (see {@link #isLegalCharRefCodePoint}
+     *  - a deliberately more permissive, separate check for a different
+     *  question). Line-ending characters (CR in particular) are assumed
+     *  already normalized upstream (ExternalEntityDecoder's job, per this
+     *  class's established boundary), so this only needs to reject, not
+     *  additionally normalize, anything it sees. */
+    private boolean isLegalLiteralChar(char c) {
+        if (xml11) {
+            if (c >= 0x1 && c <= 0xD7FF) {
+                return !((c >= 0x7F && c <= 0x84) || (c >= 0x86 && c <= 0x9F));
+            }
+            return (c >= 0xE000 && c <= 0xFFFD) || (c >= 0xD800 && c <= 0xDFFF);
+        }
+        return c == 0x9 || c == 0xA || c == 0xD || (c >= 0x20 && c <= 0xD7FF)
+                || (c >= 0xE000 && c <= 0xFFFD) || (c >= 0xD800 && c <= 0xDFFF);
+    }
+
+    private SAXException illegalCharError(char c) throws SAXException {
+        return handler.fatalError(
+                "Character U+" + String.format("%04X", (int) c) + " is not a legal XML character");
+    }
+
+    /** Combined per-character check for {@link #scanContent()}'s literal
+     *  runs: legal-{@code Char} rejection, then {@link #contentBracketRun}
+     *  tracking for the "]]&gt;" WFC - see their respective Javadocs. One
+     *  call per character keeps this to a single branch-cluster in the hot
+     *  loop rather than two separate passes. */
+    private void checkContentChar(char c) throws SAXException {
+        if (!isLegalLiteralChar(c)) {
+            throw illegalCharError(c);
+        }
+        if (c == ']') {
+            contentBracketRun++;
+        } else if (c == '>' && contentBracketRun >= 2) {
+            throw handler.fatalError("\"]]>\" is not allowed in content, except to mark the end of a CDATA section");
+        } else {
+            contentBracketRun = 0;
+        }
     }
 
     /**
@@ -449,6 +585,25 @@ class Scanner {
         // Surrogate pairs (U+10000-U+EFFFF): accept both halves, matching
         // the char-at-a-time scanning model used throughout this class.
         return c >= 0xD800 && c <= 0xDFFF;
+    }
+
+    /** Throws if {@code buf[nameStart]} is not a legal NameStartChar - call
+     *  immediately after any name-scanning loop confirms the name is
+     *  non-empty (so {@code buf[nameStart]} is safe to read). {@code
+     *  isNameChar} alone (used by the scanning loop itself) is not enough:
+     *  a Name's first character has a narrower legal set than its
+     *  continuation characters (e.g. digits/hyphen/period are legal
+     *  NameChars but not legal first characters) - found missing via
+     *  xmlconf Conformance hardening (multiple not-wf tests specifically
+     *  target a name starting with a digit). Cold path everywhere this is
+     *  called (comments/PI/entity-ref/DOCTYPE-adjacent names, or - for
+     *  element/attribute names - only once per name, not per character), so
+     *  this carries none of the hot-path cost concern that motivated
+     *  deferring it during M6 itself. */
+    private void checkNameStartChar(int nameStart) throws SAXException {
+        if (!isNameStartChar(buf[nameStart])) {
+            throw handler.fatalError("Names must begin with a legal NameStartChar");
+        }
     }
 
     /** Allocation-free comparison of a buffer range against a String, used for
@@ -558,14 +713,30 @@ class Scanner {
                 // mixed/ANY content) case is untouched below.
                 boolean ws0 = isWs(buf[pos]);
                 while (pos < limit && buf[pos] != '<' && buf[pos] != '&' && isWs(buf[pos]) == ws0) {
+                    checkContentChar(buf[pos]);
                     pos++;
                 }
             } else {
                 while (pos < limit && buf[pos] != '<' && buf[pos] != '&') {
+                    checkContentChar(buf[pos]);
                     pos++;
                 }
             }
             boolean runIsWhitespace = elementOnlyContent && pos > runStart && isWs(buf[runStart]);
+            if (!insideDocument && pos > runStart) {
+                // Misc* (prolog/epilog): only whitespace, Comment, and PI
+                // are legal - non-whitespace character data is a WFC
+                // violation ("document element" / no text before or after
+                // the root element). Entity/character references are
+                // rejected unconditionally just below, at the '&' check -
+                // Misc allows none of them either, whitespace or not.
+                for (int i = runStart; i < pos; i++) {
+                    if (!isWs(buf[i])) {
+                        throw handler.fatalError("Only whitespace, comments, and processing instructions "
+                                + "are allowed " + (rootEnded ? "after the root element" : "before the root element"));
+                    }
+                }
+            }
             if (pos >= limit) {
                 if (insideDocument && pos > runStart) {
                     emitContentRun(CharBuffer.wrap(buf, runStart, pos - runStart), false, runIsWhitespace);
@@ -584,6 +755,7 @@ class Scanner {
                         contentRunOpen = false;
                     }
                 }
+                contentBracketRun = 0;
                 return true;
             }
             if (buf[pos] != '&') {
@@ -599,6 +771,12 @@ class Scanner {
                     contentRunOpen = false;
                 }
                 continue;
+            }
+            if (!insideDocument) {
+                // Misc* (prolog/epilog) allows no entity or character
+                // reference at all, whitespace-valued or not.
+                throw handler.fatalError("Entity and character references are only allowed "
+                        + "within the document element");
             }
             // buf[pos] == '&'. The pending "runStart..ampPos" text (if any)
             // is confirmed, real buffered data regardless of how the entity
@@ -632,10 +810,15 @@ class Scanner {
                     emitContentRun(EMPTY_BUFFER, true, contentRunIsWhitespace);
                 }
                 contentRunOpen = false;
+                contentBracketRun = 0;
                 expandGeneralEntityInContent(pendingEntityName);
                 continue;
             }
             CharBuffer decoded = lastDecodedRef;
+            // A predefined/numeric character reference is also not literal
+            // source text (see contentBracketRun's Javadoc) - reset so it
+            // can't combine with adjacent literal ']'/'>' characters.
+            contentBracketRun = 0;
             boolean atMarkup = (pos < limit && buf[pos] == '<');
             if (insideDocument) {
                 // Entity-produced content is never routed through
@@ -784,6 +967,7 @@ class Scanner {
         if (p == nameStart || buf[p] != ';') {
             throw handler.fatalError("Malformed entity reference");
         }
+        checkNameStartChar(nameStart);
         int len = p - nameStart;
         CharBuffer predefined = matchPredefined(buf, nameStart, len);
         if (predefined == null) {
@@ -855,12 +1039,20 @@ class Scanner {
         if (p == nameStart) {
             throw handler.fatalError("Malformed start tag");
         }
+        checkNameStartChar(nameStart);
+        if (rootEnded) {
+            // WFC "unique document element" (only one root element is
+            // allowed) - a second start tag once the first has fully closed.
+            throw handler.fatalError("A document may contain only one root element");
+        }
         String qName = namePool.intern(CharBuffer.wrap(buf, nameStart, p - nameStart));
         if (!rootStarted) {
-            if (doctypeSeen && !qName.equals(doctypeName)) {
-                throw handler.fatalError("Document root element \"" + qName
-                        + "\" does not match DOCTYPE name \"" + doctypeName + "\"");
-            }
+            // The root element's name matching the DOCTYPE's Name is VC
+            // "Root Element Type" (XML 1.0 SS3.2), not a WFC - a non-
+            // validating processor must not reject a mismatch here. Found
+            // via xmlconf Conformance hardening: this had been incorrectly
+            // enforced as fatal since M4. Real enforcement belongs with
+            // validation support (a recoverable error, not fatalError).
             rootStarted = true;
         }
         pos = p;
@@ -911,6 +1103,7 @@ class Scanner {
                 pos += 2;
                 applyAttributeDefaults(elementStack.get(elementStack.size() - 1));
                 elementStack.remove(elementStack.size() - 1);
+                rootEnded = elementStack.isEmpty();
                 handler.endAttributes();
                 handler.endElement();
                 return true;
@@ -927,6 +1120,7 @@ class Scanner {
             if (pos == nameStart) {
                 throw handler.fatalError("Malformed start tag");
             }
+            checkNameStartChar(nameStart);
             String attrName = namePool.intern(CharBuffer.wrap(buf, nameStart, pos - nameStart));
             seenAttributeNames.add(attrName);
 
@@ -1001,6 +1195,9 @@ class Scanner {
             // original raw bytes at this position again.
             while (pos < limit && buf[pos] != quote && buf[pos] != '&' && buf[pos] != '<') {
                 char c = buf[pos];
+                if (!isLegalLiteralChar(c)) {
+                    throw illegalCharError(c);
+                }
                 if (c == '\t' || c == '\n' || c == '\r') {
                     buf[pos] = ' ';
                 }
@@ -1152,6 +1349,7 @@ class Scanner {
         if (p == nameStart) {
             throw handler.fatalError("Malformed end tag");
         }
+        checkNameStartChar(nameStart);
         int nameEnd = p;
         while (p < limit && isWs(buf[p])) {
             p++;
@@ -1178,6 +1376,7 @@ class Scanner {
             throw handler.fatalError("Mismatched end tag: expected </" + expected + "> but found </"
                     + new String(buf, nameStart, nameLen) + ">");
         }
+        rootEnded = elementStack.isEmpty();
 
         pos = p;
         handler.endElement();
@@ -1250,6 +1449,13 @@ class Scanner {
             pos = tagStart;
             return false;
         }
+        if (elementStack.isEmpty()) {
+            // CDATA sections are markup that can only appear within element
+            // content - never in the prolog or epilog (Misc* allows only
+            // Comment/PI/whitespace).
+            throw handler.fatalError(
+                    "CDATA sections are only allowed within the document element");
+        }
         int contentStart = tagStart + CDATA_MARKER.length;
         int p = contentStart;
         while (true) {
@@ -1290,6 +1496,7 @@ class Scanner {
         if (p == targetStart) {
             throw handler.fatalError("Malformed processing instruction");
         }
+        checkNameStartChar(targetStart);
         String target = namePool.intern(CharBuffer.wrap(buf, targetStart, p - targetStart));
         if (target.length() == 3
                 && (target.charAt(0) == 'x' || target.charAt(0) == 'X')
@@ -1362,6 +1569,8 @@ class Scanner {
     private static final char[] REQUIRED_MARKER = "#REQUIRED".toCharArray();
     private static final char[] IMPLIED_MARKER = "#IMPLIED".toCharArray();
     private static final char[] FIXED_MARKER = "#FIXED".toCharArray();
+    private static final char[] INCLUDE_MARKER = "INCLUDE".toCharArray();
+    private static final char[] IGNORE_MARKER = "IGNORE".toCharArray();
 
     /** M5: element content types and attribute defaults/types declared in
      *  the internal DTD subset - see class Javadoc "M5" section. */
@@ -1410,10 +1619,16 @@ class Scanner {
         }
     }
 
+    /** Set by {@link #skipExternalId} on success: the captured PUBLIC
+     *  literal (null if the external ID was SYSTEM-only) and SYSTEM literal,
+     *  used by external entity/DTD fetching. */
+    private String lastExternalIdPublicId;
+    private String lastExternalIdSystemId;
+
     /** Skips a {@code SYSTEM "..."} or {@code PUBLIC "..." "..."} external
-     *  ID starting at {@code p}. Returns the position past it, or -1 if
-     *  underflow. The literals themselves are discarded - nothing is ever
-     *  fetched (out of scope for this milestone). */
+     *  ID starting at {@code p}, capturing the literal(s) into {@link
+     *  #lastExternalIdPublicId}/{@link #lastExternalIdSystemId}. Returns the
+     *  position past it, or -1 if underflow. */
     private int skipExternalId(int p) throws SAXException {
         boolean isPublic;
         int m = matchKeyword(p, SYSTEM_MARKER);
@@ -1443,11 +1658,16 @@ class Scanner {
             throw handler.fatalError("Malformed external ID");
         }
 
+        lastExternalIdPublicId = null;
+        lastExternalIdSystemId = null;
+
         if (isPublic) {
+            int litStart = p + 1;
             int r = findQuotedLiteralEnd(p);
             if (r < 0) {
                 return -1;
             }
+            lastExternalIdPublicId = new String(buf, litStart, r - 1 - litStart);
             p = r;
             int ws2 = p;
             p = skipOptionalWhitespace(p);
@@ -1458,7 +1678,13 @@ class Scanner {
                 throw handler.fatalError("Malformed external ID");
             }
         }
-        return findQuotedLiteralEnd(p);
+        int sysLitStart = p + 1;
+        int sysEnd = findQuotedLiteralEnd(p);
+        if (sysEnd < 0) {
+            return -1;
+        }
+        lastExternalIdSystemId = new String(buf, sysLitStart, sysEnd - 1 - sysLitStart);
+        return sysEnd;
     }
 
     /** Skips a {@code <!ELEMENT ...>}/{@code <!ATTLIST ...>}/{@code
@@ -1592,14 +1818,16 @@ class Scanner {
     /**
      * Parses one {@code <!ENTITY ...>} declaration, {@code p} positioned
      * just past the "<!ENTITY" keyword. On success, records the declaration
-     * into {@code pendingEntities}/{@code pendingExternalNames} (first
-     * declaration wins for a repeated name, per XML 4.2) and returns the
-     * position past the closing '>'; returns -1 on underflow. A parameter
-     * entity declaration ('%' right after "<!ENTITY") is rejected outright -
-     * see class Javadoc for scope.
+     * into {@code pendingEntities}/{@code pendingExternalNames} - or, for a
+     * parameter entity declaration ('%' right after "<!ENTITY"), into {@code
+     * pendingParamEntities}/{@code pendingParamExternalNames} instead (first
+     * declaration wins for a repeated name, per XML 4.2, tracked separately
+     * per namespace) - and returns the position past the closing '>';
+     * returns -1 on underflow.
      */
     private int scanEntityDeclaration(int p, HashMap<String, String> pendingEntities,
-            HashSet<String> pendingExternalNames) throws SAXException {
+            HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
         int ws = p;
         p = skipOptionalWhitespace(p);
         if (p >= limit) {
@@ -1609,8 +1837,17 @@ class Scanner {
             throw handler.fatalError("Malformed entity declaration");
         }
 
+        boolean isParam = false;
         if (buf[p] == '%') {
-            throw handler.fatalError("Parameter entity declarations are not supported in this milestone");
+            isParam = true;
+            int ws3 = p + 1;
+            p = skipOptionalWhitespace(p + 1);
+            if (p >= limit) {
+                return -1;
+            }
+            if (p == ws3) {
+                throw handler.fatalError("Malformed parameter entity declaration");
+            }
         }
 
         int nameStart = p;
@@ -1623,6 +1860,7 @@ class Scanner {
         if (p == nameStart) {
             throw handler.fatalError("Malformed entity declaration");
         }
+        checkNameStartChar(nameStart);
         String name = new String(buf, nameStart, p - nameStart);
 
         int ws2 = p;
@@ -1651,19 +1889,29 @@ class Scanner {
             }
             p++;
 
-            if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
+            if (isParam) {
+                if (!pendingParamEntities.containsKey(name) && !parameterEntities.containsKey(name)) {
+                    pendingParamEntities.put(name, sb.toString());
+                }
+            } else if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
                 pendingEntities.put(name, sb.toString());
             }
             return p;
         }
 
-        // External entity (SYSTEM or PUBLIC): recognised syntactically and
-        // recorded by name only - not fetched, not expandable (see class
-        // Javadoc).
+        // External entity (SYSTEM or PUBLIC): recorded with its identifiers
+        // for lazy fetching at first content reference (see
+        // expandGeneralEntityInContent) - captured into locals immediately,
+        // since lastExternalIdPublicId/SystemId are overwritten by any
+        // subsequent skipExternalId call (there is none within this method,
+        // but the fields are shared scanner-wide state, not scoped to this
+        // call, so capturing promptly is the safe habit).
         int r = skipExternalId(p);
         if (r < 0) {
             return -1;
         }
+        String extPublicId = lastExternalIdPublicId;
+        String extSystemId = lastExternalIdSystemId;
         p = r;
 
         p = skipOptionalWhitespace(p);
@@ -1697,6 +1945,7 @@ class Scanner {
             if (p == ndataNameStart) {
                 throw handler.fatalError("Malformed entity declaration");
             }
+            checkNameStartChar(ndataNameStart);
             p = skipOptionalWhitespace(p);
             if (p >= limit) {
                 return -1;
@@ -1707,8 +1956,12 @@ class Scanner {
         }
         p++;
 
-        if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
-            pendingExternalNames.add(name);
+        if (isParam) {
+            if (!pendingParamEntities.containsKey(name) && !parameterEntities.containsKey(name)) {
+                pendingParamExternalNames.put(name, new String[] { extPublicId, extSystemId });
+            }
+        } else if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
+            pendingExternalNames.put(name, new String[] { extPublicId, extSystemId });
         }
         return p;
     }
@@ -1763,6 +2016,7 @@ class Scanner {
         if (p == nameStart) {
             throw handler.fatalError("Malformed element declaration");
         }
+        checkNameStartChar(nameStart);
         String name = new String(buf, nameStart, p - nameStart);
 
         int ws2 = p;
@@ -1878,6 +2132,7 @@ class Scanner {
         if (p == nameStart) {
             throw handler.fatalError("Malformed attribute-list declaration");
         }
+        checkNameStartChar(nameStart);
         String elementName = new String(buf, nameStart, p - nameStart);
 
         while (true) {
@@ -1904,6 +2159,7 @@ class Scanner {
             if (p == attrNameStart) {
                 throw handler.fatalError("Malformed attribute-list declaration");
             }
+            checkNameStartChar(attrNameStart);
             String attrName = new String(buf, attrNameStart, p - attrNameStart);
 
             int ws3 = p;
@@ -2082,6 +2338,7 @@ class Scanner {
         if (p == nameStart) {
             throw handler.fatalError("Malformed DOCTYPE declaration");
         }
+        checkNameStartChar(nameStart);
         String name = new String(buf, nameStart, p - nameStart);
 
         p = skipOptionalWhitespace(p);
@@ -2096,6 +2353,12 @@ class Scanner {
                 pos = tagStart;
                 return false;
             }
+            // Captured into instance fields, not locals: the DOCTYPE
+            // declaration's completion may be arbitrarily far away across
+            // receive() boundaries once the (possibly-resumable)
+            // scanDoctypeSubset() path below takes over.
+            doctypeExternalPublicId = lastExternalIdPublicId;
+            doctypeExternalSystemId = lastExternalIdSystemId;
             p = r;
             p = skipOptionalWhitespace(p);
             if (p >= limit) {
@@ -2116,7 +2379,9 @@ class Scanner {
             // rewinding to tagStart.
             doctypeNamePending = name;
             doctypePendingEntities = new HashMap<String, String>();
-            doctypePendingExternalNames = new HashSet<String>();
+            doctypePendingExternalNames = new HashMap<String, String[]>();
+            doctypePendingParamEntities = new HashMap<String, String>();
+            doctypePendingParamExternalNames = new HashMap<String, String[]>();
             pos = p + 1;
             inDoctype = true;
             if (!scanDoctypeSubset()) {
@@ -2126,15 +2391,37 @@ class Scanner {
             return true;
         }
 
-        // No internal subset: S? '>' remains side-effect-free, atomic.
+        // No internal subset: S? '>' remains side-effect-free, atomic - but
+        // an external subset may still follow, fetched only now that the
+        // declaration itself has fully, atomically committed (matching this
+        // whole method's atomic-retry-on-underflow contract: nothing
+        // external is ever fetched speculatively, only once we're sure).
         if (buf[p] != '>') {
             throw handler.fatalError("Malformed DOCTYPE declaration");
         }
         p++;
+        pos = p;
+        finishDoctypeExternalSubset(name);
         doctypeSeen = true;
         doctypeName = name;
-        pos = p;
         return true;
+    }
+
+    /** Shared by both of {@link #scanDoctype}'s/{@link #scanDoctypeSubset}'s
+     *  completion paths: fetches and parses the DOCTYPE's external subset,
+     *  if {@link #skipExternalId} captured one, then resolves ATTLIST
+     *  default values against the now-fully-known entity table (which may
+     *  have just grown from the external subset, in addition to whatever
+     *  the internal subset, if any, already contributed). */
+    private void finishDoctypeExternalSubset(String rootName) throws SAXException {
+        if (doctypeExternalSystemId != null) {
+            char[] chars = fetchExternalResource("the external DTD subset for \"" + rootName + "\"",
+                    doctypeExternalPublicId, doctypeExternalSystemId);
+            parseExternalSubset(chars);
+        }
+        doctypeExternalPublicId = null;
+        doctypeExternalSystemId = null;
+        resolveAttlistDefaultsAgainstEntities();
     }
 
     /**
@@ -2175,7 +2462,27 @@ class Scanner {
                     break;
                 }
                 if (c == '%') {
-                    throw handler.fatalError("Parameter entity references are not supported in this milestone");
+                    // A parameter entity reference here stands for a
+                    // sequence of complete declarations (WFC "PEs in
+                    // Internal Subset"), so - unlike every other construct
+                    // in this method - it cannot be dispatched until the
+                    // whole "%name;" is confirmed present; only then is it
+                    // safe to hand off to expandParameterEntityReference(),
+                    // whose own nested parse (over the already fully-
+                    // buffered replacement text) never itself underflows.
+                    int q = pos + 1;
+                    while (q < limit && isNameChar(buf[q])) {
+                        q++;
+                    }
+                    if (q >= limit) {
+                        return false;
+                    }
+                    if (buf[q] != ';') {
+                        throw handler.fatalError("Malformed parameter entity reference");
+                    }
+                    expandParameterEntityReference(doctypePendingEntities, doctypePendingExternalNames,
+                            doctypePendingParamEntities, doctypePendingParamExternalNames);
+                    continue;
                 }
                 if (c != '<') {
                     throw handler.fatalError("Malformed internal DTD subset");
@@ -2207,7 +2514,8 @@ class Scanner {
                         }
                         if (em == KW_MATCH) {
                             int r = scanEntityDeclaration(pos + ENTITY_MARKER.length, doctypePendingEntities,
-                                    doctypePendingExternalNames);
+                                    doctypePendingExternalNames, doctypePendingParamEntities,
+                                    doctypePendingParamExternalNames);
                             if (r < 0) {
                                 return false;
                             }
@@ -2268,12 +2576,16 @@ class Scanner {
         pos++;
 
         generalEntities.putAll(doctypePendingEntities);
-        externalEntityNames.addAll(doctypePendingExternalNames);
-        resolveAttlistDefaultsAgainstEntities();
+        externalEntityNames.putAll(doctypePendingExternalNames);
+        parameterEntities.putAll(doctypePendingParamEntities);
+        parameterEntityExternalIds.putAll(doctypePendingParamExternalNames);
+        finishDoctypeExternalSubset(doctypeNamePending);
         doctypeSeen = true;
         doctypeName = doctypeNamePending;
         doctypePendingEntities = null;
         doctypePendingExternalNames = null;
+        doctypePendingParamEntities = null;
+        doctypePendingParamExternalNames = null;
         doctypeNamePending = null;
         doctypeSubsetClosed = false;
         return true;
@@ -2301,14 +2613,20 @@ class Scanner {
      *  mitigation for entity-expansion amplification, aka "billion laughs" -
      *  not a substitute for a real resource budget, but enough for this
      *  milestone's scope). */
-    private void checkEntityReferenceable(String name) throws SAXException {
+    /** @param allowExternal true for a content-context reference (external
+     *         entities are fetched there - see {@link
+     *         #expandGeneralEntityInContent}); false for an attribute-value
+     *         reference, where WFC "No External Entity References" makes
+     *         referencing one always fatal, regardless of fetchability. */
+    private void checkEntityReferenceable(String name, boolean allowExternal) throws SAXException {
         boolean isGeneral = generalEntities.containsKey(name);
-        boolean isExternal = externalEntityNames.contains(name);
+        boolean isExternal = externalEntityNames.containsKey(name);
         if (!isGeneral && !isExternal) {
             throw handler.fatalError("Entity \"" + name + "\" was not declared");
         }
-        if (isExternal) {
-            throw handler.fatalError("External entities are not supported in this milestone: &" + name + ";");
+        if (isExternal && !allowExternal) {
+            throw handler.fatalError(
+                    "External entity \"" + name + "\" may not be referenced in an attribute value");
         }
         if (entityExpansionStack.contains(name)) {
             throw handler.fatalError("Recursive entity reference: &" + name + ";");
@@ -2342,8 +2660,22 @@ class Scanner {
      * case here, unlike every other use of these fields.
      */
     private void expandGeneralEntityInContent(String name) throws SAXException {
-        checkEntityReferenceable(name);
-        String replacement = generalEntities.get(name);
+        checkEntityReferenceable(name, true);
+        char[] replacementChars;
+        String[] externalIds = externalEntityNames.get(name);
+        if (externalIds != null) {
+            // External general entity: fetched lazily, right here, at first
+            // reference - matching how internal entities are also only
+            // resolved lazily. A fetched entity's content may begin with an
+            // optional text declaration (same '<?xml ...?>' shape as the
+            // main document's XML declaration, but version is optional and
+            // it's never followed by 'standalone' - close enough to reuse
+            // the same strip logic; Scanner does not parse declarations
+            // itself either way, per its established boundary).
+            replacementChars = XmlDeclUtil.stripXmlDeclaration(fetchExternalEntity(name, externalIds[0], externalIds[1]));
+        } else {
+            replacementChars = generalEntities.get(name).toCharArray();
+        }
 
         entityExpansionStack.add(name);
         char[] savedBuf = buf;
@@ -2352,7 +2684,7 @@ class Scanner {
         boolean savedContentRunOpen = contentRunOpen;
         int stackDepthAtEntry = elementStack.size();
 
-        buf = replacement.toCharArray();
+        buf = replacementChars;
         pos = 0;
         limit = buf.length;
         contentRunOpen = false;
@@ -2399,7 +2731,7 @@ class Scanner {
      * here.
      */
     private String expandGeneralEntityInAttributeValue(String name) throws SAXException {
-        checkEntityReferenceable(name);
+        checkEntityReferenceable(name, false);
         String replacement = generalEntities.get(name);
         entityExpansionStack.add(name);
         try {
@@ -2470,6 +2802,405 @@ class Scanner {
      */
     private String resolveAttlistDefaultValue(String raw) throws SAXException {
         return resolveAttributeText(raw.toCharArray(), "an attribute default value");
+    }
+
+    // ===== External entity/DTD fetching =====
+    //
+    // Both the DOCTYPE's own external subset and an external general
+    // entity's replacement text are fetched the same way: resolve
+    // publicId/systemId via entityResolver if set, falling back to
+    // resolving systemId against baseSystemId and opening it directly
+    // (matching the old parser's own ContentParser.processExternalEntity
+    // fallback); decode the fetched bytes with the same BOM/declared-
+    // encoding detection ScannerXMLReader uses for the main document
+    // (XmlDeclUtil, factored out once needed in both places). Both call
+    // sites strip a leading declaration themselves afterward (Scanner does
+    // not parse declarations - see class Javadoc "M6" section).
+
+    /** Fetches and decodes {@code publicId}/{@code systemId} - the shared
+     *  core of external entity and external DTD subset fetching. {@code
+     *  what} is used only in error messages. */
+    private char[] fetchExternalResource(String what, String publicId, String systemId) throws SAXException {
+        try {
+            InputSource resolved = null;
+            if (entityResolver != null) {
+                resolved = entityResolver.resolveEntity(publicId, systemId);
+            }
+            InputStream in;
+            String encodingHint;
+            if (resolved != null && resolved.getByteStream() != null) {
+                in = resolved.getByteStream();
+                encodingHint = resolved.getEncoding();
+            } else {
+                String resolvedSystemId = resolveSystemId(systemId);
+                if (resolvedSystemId == null) {
+                    throw handler.fatalError("Cannot resolve " + what + ": no system identifier");
+                }
+                in = openStream(resolvedSystemId);
+                encodingHint = null;
+            }
+            byte[] bytes = readAllExternalBytes(in);
+            return XmlDeclUtil.decodeBytes(bytes, encodingHint);
+        } catch (IOException e) {
+            throw handler.fatalError("Failed to fetch " + what + " (" + systemId + "): " + e.getMessage());
+        }
+    }
+
+    private char[] fetchExternalEntity(String name, String publicId, String systemId) throws SAXException {
+        return fetchExternalResource("entity \"" + name + "\"", publicId, systemId);
+    }
+
+    private String resolveSystemId(String systemId) {
+        if (systemId == null || baseSystemId == null) {
+            return systemId;
+        }
+        try {
+            return new URI(baseSystemId).resolve(systemId).toString();
+        } catch (URISyntaxException | IllegalArgumentException e) {
+            return systemId;
+        }
+    }
+
+    private static InputStream openStream(String resolvedSystemId) throws IOException {
+        try {
+            return new URL(resolvedSystemId).openStream();
+        } catch (MalformedURLException e) {
+            return new FileInputStream(resolvedSystemId);
+        }
+    }
+
+    private static byte[] readAllExternalBytes(InputStream in) throws IOException {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] chunk = new byte[8192];
+            int n;
+            while ((n = in.read(chunk)) != -1) {
+                out.write(chunk, 0, n);
+            }
+            return out.toByteArray();
+        } finally {
+            in.close();
+        }
+    }
+
+    /**
+     * Parses a fetched external DTD subset's declarations - the same
+     * markupdecl content an internal subset's {@code '['...']'} holds, but
+     * unbracketed (terminated by end of the fetched content, not by ']')
+     * and, since the whole thing is already fully in memory with nothing
+     * more ever arriving, a straight-line one-shot parse rather than a
+     * resumable one (no {@code doctypeSubsetClosed}-style state needed -
+     * see {@link #scanDoctypeSubset()} for why that resumability exists at
+     * all, and why it doesn't apply here). Declarations are merged into
+     * {@link #generalEntities}/{@link #externalEntityNames}/{@link
+     * #dtdModel} with the same first-wins semantics those already use, so
+     * calling this <em>after</em> the internal subset (if any) has already
+     * committed its own declarations - see the two call sites in {@link
+     * #scanDoctype}/{@link #scanDoctypeSubset} - naturally gives internal
+     * declarations precedence over external ones, matching XML 4.2's rule
+     * for entities (and applied here, for simplicity, uniformly to
+     * element/attribute declarations too).
+     */
+    private void parseExternalSubset(char[] rawChars) throws SAXException {
+        char[] chars = XmlDeclUtil.stripXmlDeclaration(rawChars);
+        HashMap<String, String> pendingEntities = new HashMap<String, String>();
+        HashMap<String, String[]> pendingExternalNames = new HashMap<String, String[]>();
+        HashMap<String, String> pendingParamEntities = new HashMap<String, String>();
+        HashMap<String, String[]> pendingParamExternalNames = new HashMap<String, String[]>();
+
+        char[] savedBuf = buf;
+        int savedPos = pos;
+        int savedLimit = limit;
+        buf = chars;
+        pos = 0;
+        limit = chars.length;
+        try {
+            parseMarkupDeclSeq(false, pendingEntities, pendingExternalNames, pendingParamEntities,
+                    pendingParamExternalNames);
+            for (Map.Entry<String, String> entry : pendingEntities.entrySet()) {
+                if (!generalEntities.containsKey(entry.getKey())
+                        && !externalEntityNames.containsKey(entry.getKey())) {
+                    generalEntities.put(entry.getKey(), entry.getValue());
+                }
+            }
+            for (Map.Entry<String, String[]> entry : pendingExternalNames.entrySet()) {
+                if (!generalEntities.containsKey(entry.getKey())
+                        && !externalEntityNames.containsKey(entry.getKey())) {
+                    externalEntityNames.put(entry.getKey(), entry.getValue());
+                }
+            }
+            for (Map.Entry<String, String> entry : pendingParamEntities.entrySet()) {
+                if (!parameterEntities.containsKey(entry.getKey())
+                        && !parameterEntityExternalIds.containsKey(entry.getKey())) {
+                    parameterEntities.put(entry.getKey(), entry.getValue());
+                }
+            }
+            for (Map.Entry<String, String[]> entry : pendingParamExternalNames.entrySet()) {
+                if (!parameterEntities.containsKey(entry.getKey())
+                        && !parameterEntityExternalIds.containsKey(entry.getKey())) {
+                    parameterEntityExternalIds.put(entry.getKey(), entry.getValue());
+                }
+            }
+        } finally {
+            buf = savedBuf;
+            pos = savedPos;
+            limit = savedLimit;
+        }
+    }
+
+    /**
+     * One-shot parse of a sequence of markup declarations (the {@code
+     * extSubsetDecl} grammar: {@code (markupdecl | conditionalSect |
+     * DeclSep)*}), operating on the currently-swapped {@link #buf}/{@link
+     * #pos}/{@link #limit} - the caller owns the swap (and its restoration).
+     * Three callers share this: {@link #parseExternalSubset}'s own top-level
+     * content; {@link #expandParameterEntityReference}'s nested parse of a
+     * parameter entity's replacement text (both from internal-subset and
+     * external-subset context - by the time a parameter entity reference is
+     * expanded, its replacement text is always already fully known, exactly
+     * like a general entity's is by the time {@link
+     * #expandGeneralEntityInContent} swaps it in, so this never itself needs
+     * to signal underflow); and {@link #parseConditionalSection}'s parse of
+     * an INCLUDE section's content, which is itself an {@code extSubsetDecl}
+     * per the grammar, just terminated by its own {@code "]]>"} rather than
+     * end of buffer.
+     *
+     * @param stopAtSectionEnd true when parsing an INCLUDE section's content:
+     *         stop at (and consume) a {@code "]]>"} rather than requiring
+     *         end-of-buffer
+     */
+    private void parseMarkupDeclSeq(boolean stopAtSectionEnd, HashMap<String, String> pendingEntities,
+            HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        while (true) {
+            pos = skipOptionalWhitespace(pos);
+            if (stopAtSectionEnd && pos + 2 < limit && buf[pos] == ']' && buf[pos + 1] == ']'
+                    && buf[pos + 2] == '>') {
+                pos += 3;
+                return;
+            }
+            if (pos >= limit) {
+                if (stopAtSectionEnd) {
+                    throw handler.fatalError("Unterminated INCLUDE conditional section");
+                }
+                return;
+            }
+            char c = buf[pos];
+            if (c == '%') {
+                expandParameterEntityReference(pendingEntities, pendingExternalNames, pendingParamEntities,
+                        pendingParamExternalNames);
+                continue;
+            }
+            if (c != '<' || pos + 1 >= limit) {
+                throw handler.fatalError("Malformed markup declaration");
+            }
+            char c2 = buf[pos + 1];
+            if (c2 == '?') {
+                if (!scanPI(pos)) {
+                    throw handler.fatalError("Malformed processing instruction");
+                }
+            } else if (c2 == '!') {
+                if (pos + 2 >= limit) {
+                    throw handler.fatalError("Malformed markup declaration");
+                }
+                if (buf[pos + 2] == '-') {
+                    if (!scanComment(pos)) {
+                        throw handler.fatalError("Malformed comment");
+                    }
+                } else if (buf[pos + 2] == '[') {
+                    parseConditionalSection(pendingEntities, pendingExternalNames, pendingParamEntities,
+                            pendingParamExternalNames);
+                } else {
+                    int em = matchKeyword(pos, ENTITY_MARKER);
+                    if (em == KW_MATCH) {
+                        int r = scanEntityDeclaration(pos + ENTITY_MARKER.length, pendingEntities,
+                                pendingExternalNames, pendingParamEntities, pendingParamExternalNames);
+                        if (r < 0) {
+                            throw handler.fatalError("Malformed entity declaration");
+                        }
+                        pos = r;
+                    } else {
+                        int am = matchKeyword(pos, ATTLIST_MARKER);
+                        if (am == KW_MATCH) {
+                            int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length);
+                            if (r < 0) {
+                                throw handler.fatalError("Malformed attribute-list declaration");
+                            }
+                            pos = r;
+                        } else {
+                            int elm = matchKeyword(pos, ELEMENT_MARKER);
+                            if (elm == KW_MATCH) {
+                                int r = scanElementDeclaration(pos + ELEMENT_MARKER.length);
+                                if (r < 0) {
+                                    throw handler.fatalError("Malformed element declaration");
+                                }
+                                pos = r;
+                            } else {
+                                int r = skipMarkupDeclaration(pos);
+                                if (r < 0) {
+                                    throw handler.fatalError("Malformed markup declaration");
+                                }
+                                pos = r;
+                            }
+                        }
+                    }
+                }
+            } else {
+                throw handler.fatalError("Malformed markup declaration");
+            }
+        }
+    }
+
+    /**
+     * Parses one {@code conditionalSect} ({@code <![ INCLUDE [ ... ]]>} or
+     * {@code <![ IGNORE [ ... ]]>}), {@code pos} positioned at the leading
+     * '<'. An INCLUDE section's content is itself a nested {@code
+     * extSubsetDecl} sequence, parsed via a recursive {@link
+     * #parseMarkupDeclSeq} call that stops at its own matching {@code "]]>"}
+     * rather than end-of-buffer; an IGNORE section's content is skipped
+     * without being parsed at all, via {@link #skipIgnoredSection}. Mutates
+     * {@link #pos} to just past the section's own closing {@code "]]>"}.
+     */
+    private void parseConditionalSection(HashMap<String, String> pendingEntities,
+            HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        pos += 3; // "<!["
+        pos = skipOptionalWhitespace(pos);
+        int im = matchKeyword(pos, INCLUDE_MARKER);
+        boolean include;
+        if (im == KW_MATCH) {
+            include = true;
+            pos += INCLUDE_MARKER.length;
+        } else {
+            int gm = matchKeyword(pos, IGNORE_MARKER);
+            if (gm != KW_MATCH) {
+                throw handler.fatalError("Malformed conditional section: expected INCLUDE or IGNORE");
+            }
+            include = false;
+            pos += IGNORE_MARKER.length;
+        }
+        pos = skipOptionalWhitespace(pos);
+        if (pos >= limit || buf[pos] != '[') {
+            throw handler.fatalError("Malformed conditional section");
+        }
+        pos++;
+        if (include) {
+            parseMarkupDeclSeq(true, pendingEntities, pendingExternalNames, pendingParamEntities,
+                    pendingParamExternalNames);
+        } else {
+            skipIgnoredSection();
+        }
+    }
+
+    /**
+     * Skips an IGNORE conditional section's content from {@link #pos} (just
+     * past its opening '[') to just past its closing {@code "]]>"}, without
+     * parsing any of it - bracket-nesting-aware per the {@code
+     * ignoreSectContents} grammar, so a nested {@code "<!["..."]]>"} pair
+     * inside the ignored content doesn't terminate the outer section early.
+     */
+    private void skipIgnoredSection() throws SAXException {
+        int depth = 1;
+        while (depth > 0) {
+            if (pos + 2 < limit && buf[pos] == '<' && buf[pos + 1] == '!' && buf[pos + 2] == '[') {
+                depth++;
+                pos += 3;
+            } else if (pos + 2 < limit && buf[pos] == ']' && buf[pos + 1] == ']' && buf[pos + 2] == '>') {
+                depth--;
+                pos += 3;
+            } else if (pos < limit) {
+                pos++;
+            } else {
+                throw handler.fatalError("Unterminated IGNORE conditional section");
+            }
+        }
+    }
+
+    /**
+     * Expands one {@code %name;} parameter entity reference, {@link #pos}
+     * positioned at the '%'. The referenced parameter entity's replacement
+     * text - a literal value captured at declaration time, or freshly
+     * fetched via {@link #fetchExternalResource} if declared external,
+     * exactly like an external general entity is fetched lazily at first
+     * content reference (see {@link #expandGeneralEntityInContent}) - is
+     * parsed as its own nested {@link #parseMarkupDeclSeq} sequence, so any
+     * declarations it contains contribute to the same {@code pending*} maps
+     * the caller is accumulating into (WFC "PEs in Internal Subset" is
+     * enforced by construction: this is only ever reached at a declaration-
+     * separator position, never mid-declaration). {@link #pos} ends up just
+     * past the reference's trailing ';' in the outer buffer.
+     */
+    private void expandParameterEntityReference(HashMap<String, String> pendingEntities,
+            HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        int nameStart = pos + 1;
+        int q = nameStart;
+        while (q < limit && isNameChar(buf[q])) {
+            q++;
+        }
+        if (q >= limit || buf[q] != ';') {
+            throw handler.fatalError("Malformed parameter entity reference");
+        }
+        if (q == nameStart) {
+            throw handler.fatalError("Malformed parameter entity reference");
+        }
+        checkNameStartChar(nameStart);
+        String name = new String(buf, nameStart, q - nameStart);
+        int resumeAt = q + 1;
+
+        char[] replacementChars = resolveParameterEntityReplacement(name, pendingParamEntities,
+                pendingParamExternalNames);
+
+        if (parameterEntityExpansionStack.contains(name)) {
+            throw handler.fatalError("Recursive parameter entity reference: %" + name + ";");
+        }
+        if (++entityExpansionCount > MAX_ENTITY_EXPANSIONS) {
+            throw handler.fatalError("Entity expansion limit exceeded");
+        }
+        parameterEntityExpansionStack.add(name);
+        char[] savedBuf = buf;
+        int savedLimit = limit;
+        buf = replacementChars;
+        pos = 0;
+        limit = buf.length;
+        try {
+            parseMarkupDeclSeq(false, pendingEntities, pendingExternalNames, pendingParamEntities,
+                    pendingParamExternalNames);
+            if (pos != limit) {
+                throw handler.fatalError("Parameter entity \"" + name + "\" replacement text is not well-formed");
+            }
+        } finally {
+            buf = savedBuf;
+            limit = savedLimit;
+            parameterEntityExpansionStack.remove(parameterEntityExpansionStack.size() - 1);
+        }
+        pos = resumeAt;
+    }
+
+    /** Resolves {@code name}'s replacement text for {@link
+     *  #expandParameterEntityReference}: an already-declared literal value
+     *  (checked first among {@code pendingParamEntities} - declared so far in
+     *  the subset currently being parsed - then the scanner-wide {@link
+     *  #parameterEntities}, for a name declared in an earlier-parsed subset),
+     *  or a freshly-fetched external one. */
+    private char[] resolveParameterEntityReplacement(String name, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        String literal = pendingParamEntities.get(name);
+        if (literal == null) {
+            literal = parameterEntities.get(name);
+        }
+        if (literal != null) {
+            return literal.toCharArray();
+        }
+        String[] externalIds = pendingParamExternalNames.get(name);
+        if (externalIds == null) {
+            externalIds = parameterEntityExternalIds.get(name);
+        }
+        if (externalIds == null) {
+            throw handler.fatalError("Parameter entity \"%" + name + ";\" was not declared");
+        }
+        char[] fetched = fetchExternalResource("parameter entity \"" + name + "\"", externalIds[0], externalIds[1]);
+        return XmlDeclUtil.stripXmlDeclaration(fetched);
     }
 
     /**

@@ -502,14 +502,34 @@ public class ScannerTest {
     }
 
     @Test
-    public void testExternalEntityReferenceIsFatal() throws Exception {
-        String xml = "<!DOCTYPE root [<!ENTITY foo SYSTEM \"foo.ent\">]><root>&foo;</root>";
+    public void testExternalEntityReferenceInAttributeValueIsFatal() throws Exception {
+        // WFC "No External Entity References": unlike in content (fetched -
+        // see testExternalGeneralEntityIsFetchedAndExpandedInContent below),
+        // referencing an external entity from an attribute value is always
+        // fatal, regardless of whether it could be fetched.
+        String xml = "<!DOCTYPE root [<!ENTITY foo SYSTEM \"foo.ent\">]><root a=\"&foo;\"/>";
         try {
             runScannerWithDoctype(xml);
-            org.junit.Assert.fail("expected a fatal error for an external entity reference");
+            org.junit.Assert.fail("expected a fatal error for an external entity reference in an attribute value");
         } catch (org.xml.sax.SAXException e) {
-            assertTrue(e.getMessage().contains("External entities are not supported"));
+            assertTrue(e.getMessage().contains("may not be referenced in an attribute value"));
         }
+    }
+
+    @Test
+    public void testExternalGeneralEntityIsFetchedAndExpandedInContent() throws Exception {
+        // test/junit/resources/external-entity.ent contains the literal text
+        // "external entity content" (no markup) - resolved relative to the
+        // JVM's working directory, since this test's Scanner has no
+        // baseSystemId (matching runScannerWithDoctype's plain constructor).
+        String xml = "<!DOCTYPE root [<!ENTITY foo SYSTEM \"test/junit/resources/external-entity.ent\">]>"
+                + "<root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:external entity content",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
     }
 
     @Test
@@ -524,24 +544,37 @@ public class ScannerTest {
     }
 
     @Test
-    public void testParameterEntityDeclarationRejected() throws Exception {
+    public void testParameterEntityDeclarationAlone() throws Exception {
+        // A parameter entity declaration with no reference to it is legal
+        // and simply has no observable effect.
         String xml = "<!DOCTYPE root [<!ENTITY % pe \"x\">]><root/>";
-        try {
-            runScannerWithDoctype(xml);
-            org.junit.Assert.fail("expected a fatal error for a parameter entity declaration");
-        } catch (org.xml.sax.SAXException e) {
-            assertTrue(e.getMessage().contains("Parameter entity"));
-        }
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
     }
 
     @Test
-    public void testParameterEntityReferenceInSubsetRejected() throws Exception {
+    public void testParameterEntityReferenceInInternalSubsetExpandsToDeclarations() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY % pe \"<!ENTITY foo 'bar'>\">%pe;]><root>&foo;</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:bar",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testUndeclaredParameterEntityReferenceIsFatal() throws Exception {
         String xml = "<!DOCTYPE root [%pe;]><root/>";
         try {
             runScannerWithDoctype(xml);
-            org.junit.Assert.fail("expected a fatal error for a parameter entity reference");
+            org.junit.Assert.fail("expected a fatal error for an undeclared parameter entity reference");
         } catch (org.xml.sax.SAXException e) {
             assertTrue(e.getMessage().contains("Parameter entity"));
+            assertTrue(e.getMessage().contains("was not declared"));
         }
     }
 
@@ -579,24 +612,75 @@ public class ScannerTest {
     }
 
     @Test
-    public void testRootElementNameMustMatchDoctypeName() throws Exception {
+    public void testRootElementNameMismatchIsNotFatal() throws Exception {
+        // VC "Root Element Type" (XML 1.0 3.2), not a WFC - a non-validating
+        // processor must not reject this (found via xmlconf Conformance
+        // hardening; M4 had incorrectly enforced it as fatal).
         String xml = "<!DOCTYPE other []><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testDoctypeWithUnresolvableExternalIdIsFatal() throws Exception {
+        // An external subset that genuinely can't be fetched is a fatal
+        // error (task #17: external DTD/entity fetching), not silently
+        // ignored - unlike M4, where this was deliberately never attempted
+        // at all. The internal subset's own declarations are still fully
+        // usable up to that point (not tested here specifically, since the
+        // fetch failure aborts the parse regardless - see
+        // testDoctypeWithExternalIdAndInternalSubsetBothContribute below for
+        // the successful-fetch case demonstrating internal-wins-over-
+        // external precedence).
+        String xml = "<!DOCTYPE root SYSTEM \"nonexistent.dtd\" [<!ENTITY foo \"bar\">]>"
+                + "<root>&foo;</root>";
         try {
             runScannerWithDoctype(xml);
-            org.junit.Assert.fail("expected a fatal error for a root element name mismatch");
+            org.junit.Assert.fail("expected a fatal error for an unresolvable external DTD subset");
         } catch (org.xml.sax.SAXException e) {
-            assertTrue(e.getMessage().contains("does not match DOCTYPE name"));
+            assertTrue(e.getMessage().contains("Failed to fetch"));
         }
     }
 
     @Test
-    public void testDoctypeWithExternalIdAndInternalSubsetIsSkippedNotFetched() throws Exception {
-        String xml = "<!DOCTYPE root SYSTEM \"nonexistent.dtd\" [<!ENTITY foo \"bar\">]>"
-                + "<root>&foo;</root>";
+    public void testDoctypeWithExternalIdAndInternalSubsetBothContribute() throws Exception {
+        // test/junit/resources/external-subset.dtd declares &extfoo; -
+        // fetched and merged alongside the internal subset's own &foo;,
+        // demonstrating both internal and external subset entities are
+        // usable together (and, via testDuplicateEntityDeclarationFirstWins-
+        // style "first wins" semantics already covered elsewhere, that
+        // internal declarations would win over a same-named external one,
+        // per XML 4.2 - not separately exercised here since the two
+        // fixtures don't declare overlapping names).
+        String xml = "<!DOCTYPE root SYSTEM \"test/junit/resources/external-subset.dtd\" "
+                + "[<!ENTITY foo \"internal value\">]>"
+                + "<root>&foo; / &extfoo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
                 "startElement(,root,root,[])",
-                "characters:bar",
+                "characters:internal value / value from external subset",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testExternalSubsetConditionalSectionsAndParameterEntity() throws Exception {
+        // test/junit/resources/param-entity-conditional.dtd exercises both
+        // features newly built for task #18: an INCLUDE section whose
+        // content is a parameter entity reference expanding to a full
+        // <!ELEMENT> declaration (mirroring the common real-world DTD idiom
+        // seen in xmlconf's ibm/valid/P31 test), and an IGNORE section
+        // containing text that is not valid markup at all - proving it is
+        // genuinely skipped unparsed, not merely tolerated.
+        String xml = "<!DOCTYPE root SYSTEM \"test/junit/resources/param-entity-conditional.dtd\">"
+                + "<root>hello</root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:hello",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }

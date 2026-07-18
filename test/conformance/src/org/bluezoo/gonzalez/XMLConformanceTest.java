@@ -35,6 +35,7 @@ import org.xml.sax.ErrorHandler;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
+import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.DefaultHandler;
 
 import static org.junit.Assert.*;
@@ -92,11 +93,39 @@ public class XMLConformanceTest {
         }
         return sb.toString();
     }
-    
+
+    /** System property name selecting which parser this harness exercises.
+     *  Unset (the default, used by the {@code test-conformance} ant target)
+     *  runs the still-default old parser, unchanged - this file's own
+     *  scoring/reporting logic is otherwise untouched by the Conformance
+     *  hardening phase. Set to {@code "scanner"} (by the {@code
+     *  test-conformance-scanner} ant target) to run the new async pipeline
+     *  (Scanner -> NamespaceFilter -> SAXAdapter) via {@link
+     *  ScannerXMLReader} instead - the device under test, not the harness
+     *  itself, changes. */
+    private static final String PARSER_PROPERTY = "gonzalez.conformance.parser";
+
+    /** Constructs the parser under test for a single {@link #runTest()}
+     *  invocation - see {@link #PARSER_PROPERTY}. Only used for the actual
+     *  test file being scored; index/manifest files are always parsed with
+     *  the old {@link Parser} in {@link #parseIndexFile}, since loading test
+     *  metadata isn't part of what's being tested. */
+    private static XMLReader newParserUnderTest() {
+        if ("scanner".equals(System.getProperty(PARSER_PROPERTY))) {
+            return new ScannerXMLReader();
+        }
+        return new Parser();
+    }
+
     private static final File XMLCONF_DIR = new File("xmlconf");
     private static final File OUTPUT_DIR = new File("test/output");
-    private static final File REPORT_FILE = new File(OUTPUT_DIR, "xml-conformance-report.txt");
-    private static final File STATS_FILE = new File(OUTPUT_DIR, "conformance-statistics.txt");
+    // Report/stats file names include the parser-under-test so a
+    // test-conformance-scanner run doesn't clobber test-conformance's
+    // report, and both can be compared side by side.
+    private static final String REPORT_SUFFIX =
+            "scanner".equals(System.getProperty(PARSER_PROPERTY)) ? "-scanner" : "";
+    private static final File REPORT_FILE = new File(OUTPUT_DIR, "xml-conformance-report" + REPORT_SUFFIX + ".txt");
+    private static final File STATS_FILE = new File(OUTPUT_DIR, "conformance-statistics" + REPORT_SUFFIX + ".txt");
     
     private static List<TestCase> allTests;
     private static List<TestResult> results = new ArrayList<>();
@@ -377,7 +406,7 @@ public class XMLConformanceTest {
             final boolean[] gotValidationError = {false}; // Use array to make it effectively final
             SAXParseException capturedException = null;
             
-            Parser parser = new Parser();
+            XMLReader parser = newParserUnderTest();
             parser.setFeature("http://xml.org/sax/features/external-general-entities", true);
             parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
             parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");

@@ -320,7 +320,52 @@
     <fail if='conformance.tests.failed'
           message='Conformance test failures detected. See report: ${test}/output/xml-conformance-report.txt'/>
   </target>
-  
+
+  <!-- Run W3C XML conformance tests against the new async Scanner pipeline
+       (Scanner -> NamespaceFilter -> SAXAdapter, via ScannerXMLReader)
+       instead of the old, still-default parser. Same harness, same
+       manifest/scoring logic as test-conformance - only the device under
+       test (via -Dgonzalez.conformance.parser=scanner) and the report file
+       names (suffixed "-scanner") differ, so results can be compared
+       side by side without one run clobbering the other's report. -->
+  <target name='test-conformance-scanner' depends='conformance-build'
+          description='Run W3C XML conformance tests against the new Scanner pipeline'>
+    <mkdir dir='${test}/junit/results'/>
+    <mkdir dir='${test}/output'/>
+    <junit printsummary='yes' haltonfailure='no' fork='yes' showoutput='true'
+           failureproperty='conformance.tests.failed'>
+      <sysproperty key='gonzalez.conformance.parser' value='scanner'/>
+      <classpath>
+        <pathelement location='${build.core}'/>
+        <pathelement location='${build.xslt}'/>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
+        <pathelement location='${test}/conformance/classes'/>
+        <pathelement location='${test}/junit/lib/${junit.jar}'/>
+        <pathelement location='${test}/junit/lib/${hamcrest.jar}'/>
+      </classpath>
+      <formatter type='xml'/>
+      <formatter type='plain' usefile='false'/>
+      <batchtest fork='yes' todir='${test}/junit/results'>
+        <fileset dir='${test}/conformance/src'>
+          <include name='**/XMLConformanceTest.java'/>
+        </fileset>
+      </batchtest>
+    </junit>
+
+    <echo message=''/>
+    <echo message='Conformance report written to ${test}/output/xml-conformance-report-scanner.txt'/>
+    <echo message=''/>
+    <echo message='=== XML Conformance Test Statistics (Scanner pipeline) ==='/>
+    <echo message=''/>
+    <available file='${test}/output/conformance-statistics-scanner.txt' property='scanner.stats.file.exists'/>
+    <loadfile property='scanner.stats.content' srcFile='${test}/output/conformance-statistics-scanner.txt'
+              failonerror='false' quiet='true'/>
+    <echo message='${scanner.stats.content}'/>
+
+    <!-- Deliberately no <fail> here while the Conformance hardening phase is
+         in progress - this target is for measuring/iterating, not gating. -->
+  </target>
+
   <!-- Main test target: unit + conformance -->
   <target name='test' depends='test-unit,test-conformance' description='Run all tests'>
     <echo message='All tests complete'/>
