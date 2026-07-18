@@ -161,12 +161,15 @@ final class XmlDeclUtil {
      * on the main document, or a text declaration on an external entity/DTD
      * subset - both share the same {@code '<?xml' ... '?>'} shape for this
      * purpose) - {@link Scanner} never parses a declaration itself; that is
-     * always this earlier, separate pipeline stage's job. Throws if a
-     * declaration-looking prefix ({@code "<?xml"}) never finds
-     * its closing {@code "?>"} - a real, if malformed, not-wf document, not
-     * something to silently treat as having no declaration at all.
+     * always this earlier, separate pipeline stage's job. Throws (via {@code
+     * handler}, so it reaches {@code ErrorHandler.fatalError} like every
+     * other well-formedness error, rather than propagating as a bare {@code
+     * SAXException} the caller's normal error-reporting path never sees) if
+     * a declaration-looking prefix ({@code "<?xml"}) never finds its closing
+     * {@code "?>"} - a real, if malformed, not-wf document, not something to
+     * silently treat as having no declaration at all.
      */
-    static char[] stripXmlDeclaration(char[] all) throws SAXException {
+    static char[] stripXmlDeclaration(char[] all, XMLHandler handler) throws SAXException {
         int start = 0;
         if (all.length > 5 && all[0] == '<' && all[1] == '?' && all[2] == 'x' && all[3] == 'm' && all[4] == 'l') {
             int j = 5;
@@ -174,7 +177,7 @@ final class XmlDeclUtil {
                 j++;
             }
             if (j + 1 >= all.length) {
-                throw new SAXException("Malformed XML declaration: missing closing \"?>\"");
+                throw handler.fatalError("Malformed XML declaration: missing closing \"?>\"");
             }
             start = j + 2;
             while (start < all.length && (all[start] == '\n' || all[start] == '\r')) {

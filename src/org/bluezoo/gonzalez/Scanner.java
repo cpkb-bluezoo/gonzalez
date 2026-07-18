@@ -689,6 +689,23 @@ class Scanner implements ByteDecoderTarget {
                 "Character U+" + String.format("%04X", (int) c) + " is not a legal XML character");
     }
 
+    /** Legal-{@code Char} check for a whole already-fully-scanned span
+     *  (comment text, PI data, a CDATA section, or a quoted-literal entity
+     *  value) - constructs whose own terminator scan (looking for {@code
+     *  "-->"}, {@code "?>"}, {@code "]]>"}, or the closing quote) does not
+     *  itself reject any particular character, unlike {@link #scanContent}'s
+     *  hot loop, which folds the check into its own per-character stop
+     *  table. Called only once the terminator has actually been found (never
+     *  on a retried-after-underflow partial span), matching every other
+     *  "commit only at the very end" construct in this class. */
+    private void checkLiteralCharSpan(int start, int end) throws SAXException {
+        for (int i = start; i < end; i++) {
+            if (!isLegalLiteralChar(buf[i])) {
+                throw illegalCharError(buf[i]);
+            }
+        }
+    }
+
     /** Combined per-character check for {@link #scanContent()}'s literal
      *  runs: legal-{@code Char} rejection, then {@link #contentBracketRun}
      *  tracking for the "]]&gt;" WFC - see their respective Javadocs. One
@@ -1449,7 +1466,13 @@ class Scanner implements ByteDecoderTarget {
             }
             pos++;
 
-            String attrType = lookupAttributeType(elementStack.get(elementStack.size() - 1), attrName);
+            String currentElementName = elementStack.get(elementStack.size() - 1);
+            String attrType = lookupAttributeType(currentElementName, attrName);
+            if (validationEnabled && dtdModel.getAttributes(currentElementName) != null
+                    && attributeDefOf(currentElementName, attrName) == null) {
+                handler.error("Validity Constraint: Attribute Value Type (Section 3.3.1). Attribute \"" + attrName
+                        + "\" is not declared for element \"" + currentElementName + "\".");
+            }
             handler.startAttribute(attrName, attrType);
             pendingQuote = quote;
             attrValueRunOpen = false;
@@ -1457,7 +1480,7 @@ class Scanner implements ByteDecoderTarget {
             if (normalizingCurrentAttribute) {
                 normalizeBuilder.setLength(0);
                 if (validationEnabled) {
-                    currentAttrElementName = elementStack.get(elementStack.size() - 1);
+                    currentAttrElementName = currentElementName;
                     currentAttrName = attrName;
                     currentAttrType = attrType;
                 }
@@ -1753,6 +1776,7 @@ class Scanner implements ByteDecoderTarget {
             }
             if (buf[p + 1] == '-') {
                 if (buf[p + 2] == '>') {
+                    checkLiteralCharSpan(contentStart, p);
                     handler.comment(CharBuffer.wrap(buf, contentStart, p - contentStart));
                     pos = p + 3;
                     return true;
@@ -1798,6 +1822,7 @@ class Scanner implements ByteDecoderTarget {
                 return false;
             }
             if (buf[p + 1] == ']' && buf[p + 2] == '>') {
+                checkLiteralCharSpan(contentStart, p);
                 if (p > contentStart) {
                     if (validationEnabled) {
                         boolean allWs = true;
@@ -1855,6 +1880,7 @@ class Scanner implements ByteDecoderTarget {
                 return false;
             }
             if (buf[p + 1] == '>') {
+                checkLiteralCharSpan(dataStart, p);
                 CharBuffer data = (p > dataStart) ? CharBuffer.wrap(buf, dataStart, p - dataStart) : null;
                 handler.processingInstruction(target, data);
                 pos = p + 2;
@@ -1905,6 +1931,7 @@ class Scanner implements ByteDecoderTarget {
     private static final char[] FIXED_MARKER = "#FIXED".toCharArray();
     private static final char[] INCLUDE_MARKER = "INCLUDE".toCharArray();
     private static final char[] IGNORE_MARKER = "IGNORE".toCharArray();
+    private static final char[] NOTATION_MARKER = "<!NOTATION".toCharArray();
 
     /** Element content types/models and attribute defaults/types/VCs
      *  declared in the internal DTD subset. */
@@ -2021,13 +2048,25 @@ class Scanner implements ByteDecoderTarget {
         return sysEnd;
     }
 
-    /** Skips a {@code <!ELEMENT ...>}/{@code <!ATTLIST ...>}/{@code
-     *  <!NOTATION ...>} declaration starting at {@code p} (the '&lt;')
-     *  without interpreting its content - just finds the matching '>',
-     *  treating quoted sections (default attribute values, etc.) as opaque
-     *  so an embedded '>' inside one does not terminate early. Returns the
-     *  position past the '>', or -1 if underflow. */
+    /** Skips a {@code <!NOTATION ...>} declaration starting at {@code p}
+     *  (the '&lt;') without interpreting its content - just finds the
+     *  matching '>', treating quoted sections (PUBLIC/SYSTEM literals) as
+     *  opaque so an embedded '>' inside one does not terminate early.
+     *  Called only after the caller has already ruled out {@code
+     *  <!ENTITY}/{@code <!ATTLIST}/{@code <!ELEMENT}/a comment, so the only
+     *  markupdecl production left is {@code NotationDecl}; confirms the
+     *  {@code "<!NOTATION"} keyword itself (case-sensitively - a wrong-case
+     *  or misspelled keyword here is a well-formedness error, not silently
+     *  skippable markup) before skipping past it. Returns the position past
+     *  the '>', or -1 if underflow. */
     private int skipMarkupDeclaration(int p) throws SAXException {
+        int nm = matchKeyword(p, NOTATION_MARKER);
+        if (nm == KW_NEED_MORE) {
+            return -1;
+        }
+        if (nm != KW_MATCH) {
+            throw handler.fatalError("Expected an element, attribute-list, or notation declaration");
+        }
         p += 2; // skip "<!"
         while (true) {
             if (p >= limit) {
@@ -2142,6 +2181,9 @@ class Scanner implements ByteDecoderTarget {
                 // Could be the start of "&#..." straddling the buffer
                 // boundary - can't yet tell, must wait for more data.
                 return -1;
+            }
+            if (!isLegalLiteralChar(c)) {
+                throw illegalCharError(c);
             }
             sb.append(c);
             q++;
@@ -2341,7 +2383,12 @@ class Scanner implements ByteDecoderTarget {
             if (requireNameStartChar) {
                 checkNameStartChar(tokenStart);
             }
-            values.add(new String(buf, tokenStart, q - tokenStart));
+            String token = new String(buf, tokenStart, q - tokenStart);
+            if (validationEnabled && values.contains(token)) {
+                handler.error("Validity Constraint: No Duplicate Types (Section 3.3.1). \"" + token
+                        + "\" appears more than once in this attribute's enumerated type.");
+            }
+            values.add(token);
             q = skipOptionalWhitespace(q);
             if (q >= limit) {
                 return -1;
@@ -2463,11 +2510,16 @@ class Scanner implements ByteDecoderTarget {
                 if (buf[p] == '?' || buf[p] == '*' || buf[p] == '+') {
                     p++;
                 }
-                if (validationEnabled) {
-                    cmPos = modelStart;
-                    cmEnd = p;
-                    model = parseContentModelGroup();
-                }
+                // Parsed unconditionally, not just when validating: a
+                // malformed content model (wrong connectors, PCDATA not
+                // first, a nested group inside Mixed content, a missing
+                // "*" on a Mixed content group with element names, ...) is
+                // a well-formedness problem in the declaration's own
+                // syntax, not a validity constraint - every processor must
+                // reject it, not just a validating one.
+                cmPos = modelStart;
+                cmEnd = p;
+                model = parseContentModelGroup();
             }
         }
 
@@ -2480,6 +2532,10 @@ class Scanner implements ByteDecoderTarget {
         }
         p++;
 
+        if (validationEnabled && dtdModel.getElementDeclaration(name) != null) {
+            handler.error("Validity Constraint: Unique Element Type Declaration (Section 3.2). "
+                    + "Element \"" + name + "\" is already declared.");
+        }
         ElementDeclaration decl = new ElementDeclaration();
         decl.name = name;
         decl.contentType = type;
@@ -2594,16 +2650,49 @@ class Scanner implements ByteDecoderTarget {
                         throw handler.fatalError("Malformed content model");
                     }
                     checkNameStartChar(nameStart);
+                    String mixedName = new String(buf, nameStart, cmPos - nameStart);
+                    if (validationEnabled) {
+                        for (int i = 1; i < children.size(); i++) {
+                            if (mixedName.equals(children.get(i).elementName)) {
+                                handler.error("Validity Constraint: No Duplicate Types (Section 3.3.1). \""
+                                        + mixedName + "\" appears more than once in this mixed-content declaration.");
+                                break;
+                            }
+                        }
+                    }
                     children.add(new ElementDeclaration.ContentModel(ElementDeclaration.ContentModel.NodeType.ELEMENT,
-                            new String(buf, nameStart, cmPos - nameStart),
-                            ElementDeclaration.ContentModel.Occurrence.ONCE));
+                            mixedName, ElementDeclaration.ContentModel.Occurrence.ONCE));
                     cmPos = skipCmWhitespace(cmPos);
                 }
                 if (cmPos >= cmEnd || buf[cmPos] != ')') {
                     throw handler.fatalError("Malformed content model");
                 }
                 cmPos++;
-                ElementDeclaration.ContentModel.Occurrence occ = readCmOccurrence();
+                // Mixed ::= '(' S? '#PCDATA' (S? '|' S? Name)* S? ')*'
+                //         | '(' S? '#PCDATA' S? ')'
+                // A group with element names must end in a literal "*" (not
+                // "?"/"+", and not merely absent); bare "(#PCDATA)" may
+                // have either no occurrence indicator or a "*" (accepted
+                // widely as a degenerate case of the first production with
+                // zero names), but never "?"/"+".
+                ElementDeclaration.ContentModel.Occurrence occ;
+                boolean hasElementNames = children.size() > 1;
+                if (hasElementNames) {
+                    if (cmPos >= cmEnd || buf[cmPos] != '*') {
+                        throw handler.fatalError(
+                                "A mixed-content declaration with element names must end with \")*\"");
+                    }
+                    cmPos++;
+                    occ = ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE;
+                } else if (cmPos < cmEnd && (buf[cmPos] == '?' || buf[cmPos] == '+')) {
+                    throw handler.fatalError(
+                            "\"(#PCDATA)\" may not be followed by a \"" + buf[cmPos] + "\" occurrence indicator");
+                } else if (cmPos < cmEnd && buf[cmPos] == '*') {
+                    cmPos++;
+                    occ = ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE;
+                } else {
+                    occ = ElementDeclaration.ContentModel.Occurrence.ONCE;
+                }
                 return new ElementDeclaration.ContentModel(ElementDeclaration.ContentModel.NodeType.CHOICE, children,
                         occ);
             }
@@ -2767,10 +2856,18 @@ class Scanner implements ByteDecoderTarget {
                 }
                 // The literal keyword text itself is the SAX type string
                 // ("CDATA", "ID", "IDREF", "IDREFS", "ENTITY", "ENTITIES",
-                // "NMTOKEN", "NMTOKENS", or "NOTATION") - not separately
-                // checked against that keyword set; an unrecognised word
-                // here is simply reported as that type's literal text.
+                // "NMTOKEN", "NMTOKENS", or "NOTATION") once confirmed
+                // against that fixed keyword set (AttType, XML 1.0 SS3.3) -
+                // rejecting anything else, including a wrong-case spelling
+                // like "cdata" or "Id", is a well-formedness check, not a
+                // validity constraint: it applies whether or not validation
+                // is enabled.
                 type = new String(buf, typeStart, p - typeStart);
+                if (!"CDATA".equals(type) && !"ID".equals(type) && !"IDREF".equals(type)
+                        && !"IDREFS".equals(type) && !"ENTITY".equals(type) && !"ENTITIES".equals(type)
+                        && !"NMTOKEN".equals(type) && !"NMTOKENS".equals(type) && !"NOTATION".equals(type)) {
+                    throw handler.fatalError("Unrecognised attribute type \"" + type + "\"");
+                }
                 if ("NOTATION".equals(type)) {
                     int ws3b = p;
                     p = skipOptionalWhitespace(p);
@@ -3002,6 +3099,9 @@ class Scanner implements ByteDecoderTarget {
         doctypeExternalPublicId = null;
         doctypeExternalSystemId = null;
         resolveAttlistDefaultsAgainstEntities();
+        if (validationEnabled) {
+            checkAttlistDefaultsLegal();
+        }
     }
 
     /**
@@ -3252,7 +3352,8 @@ class Scanner implements ByteDecoderTarget {
             // it's never followed by 'standalone' - close enough to reuse
             // the same strip logic; Scanner does not parse declarations
             // itself either way, per its established boundary).
-            replacementChars = XmlDeclUtil.stripXmlDeclaration(fetchExternalEntity(name, externalIds[0], externalIds[1]));
+            replacementChars = XmlDeclUtil.stripXmlDeclaration(
+                    fetchExternalEntity(name, externalIds[0], externalIds[1]), handler);
         } else {
             replacementChars = generalEntities.get(name).toCharArray();
         }
@@ -3482,7 +3583,7 @@ class Scanner implements ByteDecoderTarget {
      * element/attribute declarations too).
      */
     private void parseExternalSubset(char[] rawChars) throws SAXException {
-        char[] chars = XmlDeclUtil.stripXmlDeclaration(rawChars);
+        char[] chars = XmlDeclUtil.stripXmlDeclaration(rawChars, handler);
         HashMap<String, String> pendingEntities = new HashMap<String, String>();
         HashMap<String, String[]> pendingExternalNames = new HashMap<String, String[]>();
         HashMap<String, String> pendingParamEntities = new HashMap<String, String>();
@@ -3780,7 +3881,7 @@ class Scanner implements ByteDecoderTarget {
             throw handler.fatalError("Parameter entity \"%" + name + ";\" was not declared");
         }
         char[] fetched = fetchExternalResource("parameter entity \"" + name + "\"", externalIds[0], externalIds[1]);
-        return XmlDeclUtil.stripXmlDeclaration(fetched);
+        return XmlDeclUtil.stripXmlDeclaration(fetched, handler);
     }
 
     /**
@@ -3905,29 +4006,39 @@ class Scanner implements ByteDecoderTarget {
         return tokens;
     }
 
-    private void checkNameProduction(String attrName, String value, String typeLabel) throws SAXException {
-        if (value.isEmpty() || !isNameStartChar(value.charAt(0))) {
-            reportBadAttributeValueFormat(attrName, value, typeLabel, "Name");
-            return;
+    private static boolean matchesNameProduction(String value) {
+        if (value.isEmpty() || !isNameStartCharSlow(value.charAt(0))) {
+            return false;
         }
         for (int i = 1; i < value.length(); i++) {
-            if (!isNameChar(value.charAt(i))) {
-                reportBadAttributeValueFormat(attrName, value, typeLabel, "Name");
-                return;
+            if (!isNameCharSlow(value.charAt(i))) {
+                return false;
             }
+        }
+        return true;
+    }
+
+    private static boolean matchesNmtokenProduction(String value) {
+        if (value.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (!isNameCharSlow(value.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void checkNameProduction(String attrName, String value, String typeLabel) throws SAXException {
+        if (!matchesNameProduction(value)) {
+            reportBadAttributeValueFormat(attrName, value, typeLabel, "Name");
         }
     }
 
     private void checkNmtokenProduction(String attrName, String value, String typeLabel) throws SAXException {
-        if (value.isEmpty()) {
+        if (!matchesNmtokenProduction(value)) {
             reportBadAttributeValueFormat(attrName, value, typeLabel, "Nmtoken");
-            return;
-        }
-        for (int i = 0; i < value.length(); i++) {
-            if (!isNameChar(value.charAt(i))) {
-                reportBadAttributeValueFormat(attrName, value, typeLabel, "Nmtoken");
-                return;
-            }
         }
     }
 
@@ -3946,6 +4057,81 @@ class Scanner implements ByteDecoderTarget {
         handler.error("Validity Constraint: " + ("NOTATION".equals(type) ? "Notation Attributes" : "Enumeration")
                 + " (Section 3.3.1). Value \"" + value + "\" of attribute \"" + attrName
                 + "\" is not one of the declared values for element \"" + elementName + "\".");
+    }
+
+    /** VC "Attribute Default Legal" (Section 3.3.2): a declared default
+     *  value must itself meet its own declared type's lexical constraints -
+     *  checked once per {@code <!ATTLIST>} declaration, independent of
+     *  whether any element instance ever actually uses the default (unlike
+     *  {@link #checkAttributeValueVCs}, which checks a value actually
+     *  written into the document). Called from {@link
+     *  #resolveAttlistDefaultsAgainstEntities}'s caller once every default
+     *  has been entity-resolved. ID-typed attributes are excluded: VC "ID
+     *  Attribute Default" (checked at declaration time by {@link
+     *  #checkAttlistDeclarationVCs}) already forbids them from having a
+     *  default at all. */
+    private void checkAttlistDefaultsLegal() throws SAXException {
+        for (Map.Entry<String, LinkedHashMap<String, DTDModel.AttDef>> elemEntry : dtdModel.allAttlists()
+                .entrySet()) {
+            String elementName = elemEntry.getKey();
+            for (Map.Entry<String, DTDModel.AttDef> attrEntry : elemEntry.getValue().entrySet()) {
+                String attrName = attrEntry.getKey();
+                DTDModel.AttDef def = attrEntry.getValue();
+                if (def.defaultValue == null) {
+                    continue;
+                }
+                checkAttributeDefaultLegal(elementName, attrName, def);
+            }
+        }
+    }
+
+    private void checkAttributeDefaultLegal(String elementName, String attrName, DTDModel.AttDef def)
+            throws SAXException {
+        String value = def.defaultValue;
+        switch (def.type) {
+            case "IDREF":
+            case "ENTITY":
+                if (!matchesNameProduction(value)) {
+                    reportBadDefaultFormat(attrName, value, "Name");
+                }
+                break;
+            case "IDREFS":
+            case "ENTITIES":
+                for (String token : splitTokens(value)) {
+                    if (!matchesNameProduction(token)) {
+                        reportBadDefaultFormat(attrName, value, "Names");
+                    }
+                }
+                break;
+            case "NMTOKEN":
+                if (!matchesNmtokenProduction(value)) {
+                    reportBadDefaultFormat(attrName, value, "Nmtoken");
+                }
+                break;
+            case "NMTOKENS":
+                for (String token : splitTokens(value)) {
+                    if (!matchesNmtokenProduction(token)) {
+                        reportBadDefaultFormat(attrName, value, "Nmtokens");
+                    }
+                }
+                break;
+            case "ENUMERATION":
+            case "NOTATION":
+                if (def.enumeration != null && !def.enumeration.contains(value)) {
+                    handler.error("Validity Constraint: Attribute Default Legal (Section 3.3.2). Default value \""
+                            + value + "\" of attribute \"" + attrName
+                            + "\" is not one of its declared enumerated values.");
+                }
+                break;
+            default:
+                // CDATA/ID have no further lexical constraint here.
+                break;
+        }
+    }
+
+    private void reportBadDefaultFormat(String attrName, String value, String production) throws SAXException {
+        handler.error("Validity Constraint: Attribute Default Legal (Section 3.3.2). Default value \"" + value
+                + "\" of attribute \"" + attrName + "\" does not match the " + production + " production.");
     }
 
     private void checkFixedValue(String elementName, String attrName, String value) throws SAXException {

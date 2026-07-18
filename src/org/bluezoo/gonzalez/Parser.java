@@ -265,15 +265,20 @@ public class Parser implements XMLReader, PSVIProvider {
             setSystemId(input.getSystemId());
         }
         
-        // Set initial encoding from InputSource if specified. For
-        // Pipeline.SCANNER, decoder isn't built until ensureScannerReady()
-        // runs (it needs scannerPublicId/scannerSystemId, just set above,
-        // and must exist before setInitialCharset can be called on it) -
-        // receive() below would build it anyway, just too late for this.
+        // For Pipeline.SCANNER, decoder isn't built until ensureScannerReady()
+        // runs (it needs scannerPublicId/scannerSystemId, just set above).
+        // Built unconditionally here, not just when an encoding is given:
+        // receive() below would build it lazily on first call anyway, but an
+        // empty input stream (zero bytes, immediate EOF) never calls
+        // receive() at all, and close() below unconditionally calls
+        // decoder.close() - so decoder must exist before that regardless of
+        // whether any bytes ever actually arrive.
+        if (pipeline == Pipeline.SCANNER) {
+            ensureScannerReady();
+        }
+
+        // Set initial encoding from InputSource if specified.
         if (input.getEncoding() != null) {
-            if (pipeline == Pipeline.SCANNER) {
-                ensureScannerReady();
-            }
             try {
                 Charset charset = Charset.forName(input.getEncoding());
                 decoder.setInitialCharset(charset);
