@@ -60,28 +60,30 @@ import org.xml.sax.SAXException;
  * {@code endElement(uri, localName, qName)}) maintains its own stack keyed
  * off the {@link #startElement(String)}/{@link #endAttributes()} pair it
  * already received, popped 1:1 per {@link #endElement()} call.</li>
- * <li>{@link #piData} arrives as a stream bracketed by {@link #piTarget},
- * the same shape {@link #attributeValueContent}/{@link #startAttribute} use
- * - a processing instruction's data is scanned as a single opaque run, so it
- * gets the same treatment as an attribute value rather than being buffered
- * whole before reporting (see below).</li>
+ * <li>{@link #piData}/{@link #commentData} each arrive as a stream bracketed
+ * by {@link #piTarget}/{@link #startComment} respectively, the same shape
+ * {@link #attributeValueContent}/{@link #startAttribute} use - a processing
+ * instruction's data and a comment's text are each scanned as a single
+ * opaque run, so they get the same treatment as an attribute value rather
+ * than being buffered whole before reporting (see below).</li>
  * <li>Text content ({@link #attributeValueContent}, {@link #characters},
- * {@link #piData}, {@link #comment(CharBuffer)}) is delivered as {@link
- * CharBuffer} throughout, converted to {@code char[]}/offset/length only at
- * the eventual SAX boundary, so native consumers can work with buffers
+ * {@link #piData}, {@link #commentData}) is delivered as {@link CharBuffer}
+ * throughout, converted to {@code char[]}/offset/length only at the
+ * eventual SAX boundary, so native consumers can work with buffers
  * directly.</li>
  * </ul>
  * <p>
- * <b>Streaming content, attribute values, and PI data, with an explicit
- * "end" flag.</b> The scanner's job is to identify contiguous runs and push
- * them downstream as fast as possible - it never assembles a complete
- * value/run into its own buffer before emitting (no allocation for that
- * purpose at all). A single logical run (text between two tags, one
- * attribute's value, or one processing instruction's data) may therefore
- * arrive as one call or several, exactly as SAX's own {@code characters()}
- * already tolerates being split. {@link #characters(CharBuffer, boolean,
- * boolean)}, {@link #attributeValueContent}, and {@link #piData} all carry
- * an explicit {@code end} flag - true on the call that completes the run -
+ * <b>Streaming content, attribute values, PI data, and comment text, with an
+ * explicit "end" flag.</b> The scanner's job is to identify contiguous runs
+ * and push them downstream as fast as possible - it never assembles a
+ * complete value/run into its own buffer before emitting (no allocation for
+ * that purpose at all). A single logical run (text between two tags, one
+ * attribute's value, one processing instruction's data, or one comment's
+ * text) may therefore arrive as one call or several, exactly as SAX's own
+ * {@code characters()} already tolerates being split. {@link
+ * #characters(CharBuffer, boolean, boolean)}, {@link #attributeValueContent},
+ * {@link #piData}, and {@link #commentData} all carry an explicit {@code
+ * end} flag - true on the call that completes the run -
  * rather than requiring a downstream consumer to infer completion from the
  * next event's type. This matters because it lets a consumer that needs to
  * coalesce chunks into one value (a DOM builder, the SAX adapter assembling
@@ -100,11 +102,11 @@ import org.xml.sax.SAXException;
  * sequence (mirroring an HTTP/2 DATA frame's empty closing frame with
  * END_STREAM set) - a rare edge case that costs one extra call only when a
  * buffer boundary happens to land exactly on the terminator. {@link
- * #piData} alone always fires at least this one closing call even when a PI
- * has no data at all, since - unlike {@link #attributeValueContent}, which
- * has {@link #endAttributes()} as an unambiguous terminator regardless of
- * how many value chunks preceded it - a PI has no separate "end" event of
- * its own to fall back on.
+ * #piData}/{@link #commentData} alone always fire at least this one closing
+ * call even when a PI has no data, or a comment no text, at all, since -
+ * unlike {@link #attributeValueContent}, which has {@link #endAttributes()}
+ * as an unambiguous terminator regardless of how many value chunks preceded
+ * it - neither has a separate "end" event of its own to fall back on.
  * <p>
  * <b>Entity references and {@link #saveBuffers()}.</b> Predefined entities
  * ({@code &amp;}, {@code &lt;}, {@code &gt;}, {@code &apos;}, {@code &quot;})
@@ -237,11 +239,131 @@ interface XMLHandler {
     void endElement() throws SAXException;
 
     /**
-     * Reports a comment.
-     *
-     * @param text the comment text; valid only for the duration of this call
+     * Signals the start of a comment. Followed by one or more {@link
+     * #commentData} calls for its text, the last of which has {@code
+     * end=true} - the same streamed shape {@link #piTarget}/{@link #piData}
+     * use, and for the same reason (a comment's text, like a PI's data, is a
+     * single opaque run that may be arbitrarily long and so should not force
+     * the whole thing to be buffered before anything can be reported).
      */
-    void comment(CharBuffer text) throws SAXException;
+    void startComment() throws SAXException;
+
+    /**
+     * Reports a chunk of the current comment's text (see {@link
+     * #startComment}).
+     *
+     * @param text the text chunk; valid only for the duration of this call
+     *             unless retained per {@link #saveBuffers()}'s contract
+     * @param end true if this chunk completes the comment's text
+     */
+    void commentData(CharBuffer text, boolean end) throws SAXException;
+
+    /**
+     * Signals the start of a CDATA section ({@code <![CDATA[...]]>}). Its
+     * actual text is reported through the ordinary {@link #characters}
+     * event (a CDATA section is, semantically, just character data spelled
+     * with different delimiters - see XML 2.7) - this and {@link #endCDATA}
+     * exist purely so a consumer that cares about the distinction (SAX's
+     * {@code LexicalHandler}) can recover it.
+     */
+    void startCDATA() throws SAXException;
+
+    /**
+     * Signals the end of the CDATA section most recently started by {@link
+     * #startCDATA}.
+     */
+    void endCDATA() throws SAXException;
+
+    /**
+     * Signals the start of the DTD (the {@code <!DOCTYPE ...>} declaration),
+     * once its root element name and, if present, external identifiers are
+     * known. Followed by zero or more {@link #notationDecl}/{@link
+     * #unparsedEntityDecl} calls as declarations are encountered (in the
+     * internal subset, the external subset, or both), then exactly one
+     * {@link #endDTD} once the whole declaration - internal subset,
+     * external subset, and closing '&gt;' - has been fully processed. Not
+     * fired at all for a document with no {@code <!DOCTYPE>}.
+     *
+     * @param name the document type name (the root element's expected name)
+     * @param publicId the external subset's public identifier, or null if
+     *                  none was given or there is no external subset
+     * @param systemId the external subset's system identifier, or null if
+     *                  there is no external subset
+     */
+    void startDTD(String name, String publicId, String systemId) throws SAXException;
+
+    /**
+     * Signals the end of the DTD most recently started by {@link #startDTD}.
+     */
+    void endDTD() throws SAXException;
+
+    /**
+     * Signals the start of a general entity's replacement text being
+     * expanded in document content, immediately followed by whatever
+     * structural/character events that replacement text itself produces,
+     * then {@link #endEntity} once it is fully processed. Mirrors SAX's own
+     * {@code LexicalHandler} convention: never fired for the five predefined
+     * entities (they decode to a single invariant character, reported
+     * directly, with no separate entity boundary to report) or for a
+     * general entity reference used within an attribute value (SAX's
+     * streaming model cannot report those boundaries - the whole attribute
+     * value is reported as one flat string). The well-known pseudo-name
+     * {@code "[dtd]"} brackets the fetching and parsing of an external DTD
+     * subset as a whole, the same convention {@code LexicalHandler} itself
+     * documents.
+     *
+     * @param name the entity's name, or {@code "[dtd]"} for an external DTD
+     *             subset
+     */
+    void startEntity(String name) throws SAXException;
+
+    /**
+     * Signals the end of the entity most recently started by {@link
+     * #startEntity}.
+     *
+     * @param name the entity's name, matching the {@link #startEntity} call
+     *             this closes
+     */
+    void endEntity(String name) throws SAXException;
+
+    /**
+     * Reports a {@code <!NOTATION ...>} declaration, as it is encountered
+     * (in the internal or external subset). First declaration wins for a
+     * repeated name, matching every other DTD declaration kind in this
+     * pipeline - a later duplicate is silently not reported again.
+     *
+     * @param name the notation's name
+     * @param publicId the notation's public identifier, or null if it was
+     *                  declared with a system identifier only
+     * @param systemId the notation's system identifier, or null if it was
+     *                  declared with a public identifier only (a bare {@code
+     *                  PublicID}, legal only for a notation - unlike every
+     *                  other external identifier in XML, which always
+     *                  requires a system identifier)
+     */
+    void notationDecl(String name, String publicId, String systemId) throws SAXException;
+
+    /**
+     * Reports an unparsed external general entity declaration - one with an
+     * {@code NDATA} annotation, naming a notation that identifies the
+     * entity's (non-XML) data format. Reported once the whole DTD is known
+     * to be complete (internal subset merged, external subset - if any -
+     * fetched and parsed), the same "first declaration wins, reported only
+     * for whichever declaration actually wins" point {@link
+     * XMLHandler}-internal entity bookkeeping already commits at, unlike
+     * {@link #notationDecl}, which is reported immediately as encountered.
+     *
+     * @param name the entity's name
+     * @param publicId the entity's public identifier, or null if none was given
+     * @param systemId the entity's system identifier
+     * @param notationName the name of the notation identifying this
+     *                      entity's data format - not necessarily declared
+     *                      yet at the point this fires; {@link
+     *                      #notationDecl} and this event carry no ordering
+     *                      guarantee relative to each other
+     */
+    void unparsedEntityDecl(String name, String publicId, String systemId, String notationName)
+            throws SAXException;
 
     /**
      * Signals the start of a processing instruction, reporting its target.

@@ -921,6 +921,20 @@ class Scanner implements ByteDecoderTarget {
                 inPI = false;
                 continue;
             }
+            if (inComment) {
+                if (!scanCommentData()) {
+                    return;
+                }
+                inComment = false;
+                continue;
+            }
+            if (inCDATA) {
+                if (!scanCDATAContent()) {
+                    return;
+                }
+                inCDATA = false;
+                continue;
+            }
             if (inAttributeValue) {
                 if (!scanAttributeValueStreaming()) {
                     return;
@@ -1755,6 +1769,18 @@ class Scanner implements ByteDecoderTarget {
         }
     }
 
+    /** Coarse resumable mode, mirroring {@link #inPI}: {@link
+     *  XMLHandler#startComment} has fired for the comment currently being
+     *  scanned and its text is being streamed via {@link
+     *  #scanCommentData()}; a caller that can re-enter mid-construct ({@link
+     *  #scan()}'s main loop, and {@link #scanDoctypeSubset()} for a comment
+     *  nested in a DOCTYPE's internal subset - a comment, like a PI, is part
+     *  of {@code markupdecl}) must check this and resume {@link
+     *  #scanCommentData()} directly. Set only when {@link
+     *  #scanCommentData()} itself returns false; cleared by whichever
+     *  caller successfully resumes it. */
+    private boolean inComment;
+
     private boolean scanComment(int tagStart) throws SAXException {
         if (tagStart + 4 > limit) {
             pos = tagStart;
@@ -1763,24 +1789,45 @@ class Scanner implements ByteDecoderTarget {
         if (buf[tagStart + 3] != '-') {
             throw handler.fatalError("Malformed markup declaration");
         }
-        int contentStart = tagStart + 4;
-        int p = contentStart;
+        handler.startComment();
+        pos = tagStart + 4;
+        if (!scanCommentData()) {
+            inComment = true;
+            return false;
+        }
+        return true;
+    }
+
+    /** Streams a comment's text, {@link #pos} positioned just past its
+     *  opening {@code "<!--"}. Resumable like {@link #scanPIData()}: on
+     *  underflow, whatever has been confirmed so far is emitted via {@link
+     *  XMLHandler#commentData} with {@code end=false} and {@link #pos}
+     *  stays exactly where scanning stopped (never rewound). Reports
+     *  exactly one or more {@link XMLHandler#commentData} calls, the last
+     *  of which has {@code end=true} - see {@link XMLHandler#startComment}'s
+     *  Javadoc for why, even for an empty comment ({@code <!---->}).
+     */
+    private boolean scanCommentData() throws SAXException {
+        // p is a local lookahead cursor, distinct from pos - see
+        // scanPIData's identical pattern and Javadoc for why a lone '-'
+        // that turns out not to start "-->" must not reset the pending
+        // span's start.
+        int p = pos;
         while (true) {
             while (p < limit && buf[p] != '-') {
                 p++;
             }
-            if (p >= limit) {
-                pos = tagStart;
-                return false;
-            }
-            if (p + 2 >= limit) {
-                pos = tagStart;
+            checkLiteralCharSpan(pos, p);
+            if (p >= limit || p + 2 >= limit) {
+                if (p > pos) {
+                    handler.commentData(CharBuffer.wrap(buf, pos, p - pos), false);
+                    pos = p;
+                }
                 return false;
             }
             if (buf[p + 1] == '-') {
                 if (buf[p + 2] == '>') {
-                    checkLiteralCharSpan(contentStart, p);
-                    handler.comment(CharBuffer.wrap(buf, contentStart, p - contentStart));
+                    handler.commentData(CharBuffer.wrap(buf, pos, p - pos), true);
                     pos = p + 3;
                     return true;
                 }
@@ -1791,6 +1838,27 @@ class Scanner implements ByteDecoderTarget {
     }
 
     private static final char[] CDATA_MARKER = "<![CDATA[".toCharArray();
+
+    /** Coarse resumable mode, mirroring {@link #inPI}: {@link
+     *  XMLHandler#startCDATA} has fired for the CDATA section currently
+     *  being scanned and its content is being streamed via {@link
+     *  #scanCDATAContent()}; {@link #scan()}'s main loop checks this and
+     *  resumes {@link #scanCDATAContent()} directly rather than
+     *  re-dispatching from {@link #pos}. Unlike {@link #inPI}, never needs
+     *  checking inside {@link #scanDoctypeSubset()} too - a CDATA section can
+     *  only appear within element content, never inside a DOCTYPE's internal
+     *  subset. Set only when {@link #scanCDATAContent()} itself returns
+     *  false; cleared by whichever caller successfully resumes it. */
+    private boolean inCDATA;
+
+    /** True if the CDATA section currently being scanned has already had a
+     *  {@link XMLHandler#characters} chunk reported with {@code end=false} -
+     *  mirrors {@link #contentRunOpen}/{@link #attrValueRunOpen}, needed so
+     *  a final, otherwise-empty call to {@link #scanCDATAContent()} (the
+     *  closing {@code "]]>"} found with no new characters since the last
+     *  chunk) still emits the matching empty {@code end=true} closing frame
+     *  rather than silently dropping it. */
+    private boolean cdataRunOpen;
 
     private boolean scanCDATA(int tagStart) throws SAXException {
         int matchLen = Math.min(CDATA_MARKER.length, limit - tagStart);
@@ -1810,37 +1878,72 @@ class Scanner implements ByteDecoderTarget {
             throw handler.fatalError(
                     "CDATA sections are only allowed within the document element");
         }
-        int contentStart = tagStart + CDATA_MARKER.length;
-        int p = contentStart;
+        handler.startCDATA();
+        pos = tagStart + CDATA_MARKER.length;
+        cdataRunOpen = false;
+        if (!scanCDATAContent()) {
+            inCDATA = true;
+            return false;
+        }
+        return true;
+    }
+
+    /** Streams a CDATA section's content, {@link #pos} positioned just past
+     *  its opening {@code "<![CDATA["}. Resumable like {@link
+     *  #scanAttributeValueStreaming()}: on underflow, whatever has been
+     *  confirmed so far is emitted via {@link XMLHandler#characters} (never
+     *  {@code ignorable} - see {@link #checkContentChar}'s own reasoning for
+     *  why entity-produced/non-literal-source-text content stays out of
+     *  {@code ignorableWhitespace} treatment, which applies here for the
+     *  same underlying reason: this class doesn't track whether the
+     *  enclosing element is element-only content for CDATA the way {@link
+     *  #scanContent} does for ordinary text) with {@code end=false}, and
+     *  {@link #pos} stays exactly where scanning stopped (never rewound), so
+     *  a later resumed call picks up right there. */
+    private boolean scanCDATAContent() throws SAXException {
+        // p is a local lookahead cursor, distinct from pos - see
+        // scanPIData's identical pattern and Javadoc for why a ']' (or
+        // "]]") that turns out not to start "]]>" must not reset the
+        // pending span's start.
+        int p = pos;
         while (true) {
             while (p < limit && buf[p] != ']') {
                 p++;
             }
-            if (p >= limit) {
-                pos = tagStart;
-                return false;
-            }
-            if (p + 2 >= limit) {
-                pos = tagStart;
+            checkLiteralCharSpan(pos, p);
+            if (p >= limit || p + 2 >= limit) {
+                if (p > pos) {
+                    emitCDATAChunk(pos, p, false);
+                    cdataRunOpen = true;
+                    pos = p;
+                }
                 return false;
             }
             if (buf[p + 1] == ']' && buf[p + 2] == '>') {
-                checkLiteralCharSpan(contentStart, p);
-                if (p > contentStart) {
-                    if (validationEnabled) {
-                        boolean allWs = true;
-                        for (int i = contentStart; i < p && allWs; i++) {
-                            allWs = isWs(buf[i]);
-                        }
-                        recordTextForValidation(new String(buf, contentStart, p - contentStart), allWs);
-                    }
-                    handler.characters(CharBuffer.wrap(buf, contentStart, p - contentStart), false, true);
+                if (p > pos || cdataRunOpen) {
+                    emitCDATAChunk(pos, p, true);
                 }
+                cdataRunOpen = false;
                 pos = p + 3;
+                handler.endCDATA();
                 return true;
             }
+            // buf[p] == ']' but not followed by ']>' - just data, keep
+            // scanning past it (matching scanContentRunFast's own bulk-skip
+            // discipline for the analogous "]"-in-content case).
             p++;
         }
+    }
+
+    private void emitCDATAChunk(int start, int end, boolean isEnd) throws SAXException {
+        if (end > start && validationEnabled) {
+            boolean allWs = true;
+            for (int i = start; i < end && allWs; i++) {
+                allWs = isWs(buf[i]);
+            }
+            recordTextForValidation(new String(buf, start, end - start), allWs);
+        }
+        handler.characters(CharBuffer.wrap(buf, start, end - start), false, isEnd);
     }
 
     // ===== Processing instruction =====
@@ -1928,24 +2031,37 @@ class Scanner implements ByteDecoderTarget {
      * only completion signal - there is no separate "end of PI" event.
      */
     private boolean scanPIData() throws SAXException {
+        // p is a local lookahead cursor, distinct from pos: a '?' not
+        // actually followed by '>' (just a literal '?' in the data, legal
+        // and common) is not a chunk boundary, so it must not reset the
+        // start of the pending span the way scanContentRunFast's per-
+        // character bulk-skip legitimately does for its own, unrelated
+        // reasons - only p advances past it; pos (and so the span about to
+        // be emitted) stays put until data is actually confirmed and
+        // handed to piData. Found via testDifferential_markup - a real
+        // literal '?' inside PI data upstream of the true "?>" silently
+        // dropped everything from the previous chunk boundary up to and
+        // including that '?' when pos was (wrongly) advanced past it here
+        // without first emitting.
+        int p = pos;
         while (true) {
-            int dataStart = pos;
-            while (pos < limit && buf[pos] != '?') {
-                pos++;
+            while (p < limit && buf[p] != '?') {
+                p++;
             }
-            checkLiteralCharSpan(dataStart, pos);
-            if (pos >= limit || pos + 1 >= limit) {
-                if (pos > dataStart) {
-                    handler.piData(CharBuffer.wrap(buf, dataStart, pos - dataStart), false);
+            checkLiteralCharSpan(pos, p);
+            if (p >= limit || p + 1 >= limit) {
+                if (p > pos) {
+                    handler.piData(CharBuffer.wrap(buf, pos, p - pos), false);
+                    pos = p;
                 }
                 return false;
             }
-            if (buf[pos + 1] == '>') {
-                handler.piData(CharBuffer.wrap(buf, dataStart, pos - dataStart), true);
-                pos += 2;
+            if (buf[p + 1] == '>') {
+                handler.piData(CharBuffer.wrap(buf, pos, p - pos), true);
+                pos = p + 2;
                 return true;
             }
-            pos++;
+            p++;
         }
     }
 
@@ -2107,44 +2223,133 @@ class Scanner implements ByteDecoderTarget {
         return sysEnd;
     }
 
-    /** Skips a {@code <!NOTATION ...>} declaration starting at {@code p}
-     *  (the '&lt;') without interpreting its content - just finds the
-     *  matching '>', treating quoted sections (PUBLIC/SYSTEM literals) as
-     *  opaque so an embedded '>' inside one does not terminate early.
-     *  Called only after the caller has already ruled out {@code
-     *  <!ENTITY}/{@code <!ATTLIST}/{@code <!ELEMENT}/a comment, so the only
-     *  markupdecl production left is {@code NotationDecl}; confirms the
-     *  {@code "<!NOTATION"} keyword itself (case-sensitively - a wrong-case
-     *  or misspelled keyword here is a well-formedness error, not silently
-     *  skippable markup) before skipping past it. Returns the position past
-     *  the '>', or -1 if underflow. */
-    private int skipMarkupDeclaration(int p) throws SAXException {
-        int nm = matchKeyword(p, NOTATION_MARKER);
-        if (nm == KW_NEED_MORE) {
+    /** {@code <!NOTATION>} declarations seen so far, by name - only ever
+     *  used for this "first declaration wins" dedup check ({@link
+     *  #handler}'s {@link XMLHandler#notationDecl} is the actual record of
+     *  what was declared; nothing else in this class looks a notation name
+     *  back up). Notations are reported immediately as encountered, unlike
+     *  entity declarations (see {@link #scanEntityDeclaration}), since
+     *  reporting one is a self-contained, irreversible side effect with
+     *  nothing further to resolve against the rest of the DTD - the same
+     *  "commit once this declaration alone is confirmed complete" discipline
+     *  {@link #scanComment}/{@link #scanPI} already use mid-subset. */
+    private final HashSet<String> declaredNotations = new HashSet<String>();
+
+    /**
+     * Parses one {@code <!NOTATION ...>} declaration ({@code Name S
+     * (ExternalID | PublicID)}), {@code p} positioned just past the
+     * "<!NOTATION" keyword. Called only after the caller has already ruled
+     * out {@code <!ENTITY}/{@code <!ATTLIST}/{@code <!ELEMENT}/a comment, so
+     * this is the only remaining {@code markupdecl} production. Unlike
+     * {@link #skipExternalId} (shared by {@code <!ENTITY>}/the DOCTYPE's own
+     * external subset, both of which always require a system identifier),
+     * a notation's external identifier may be a bare {@code PublicID} - a
+     * public identifier with no system identifier at all - so this parses
+     * its own {@code (ExternalID | PublicID)} rather than reusing that
+     * method. Reports {@link XMLHandler#notationDecl} immediately once
+     * confirmed (first declaration wins for a repeated name, tracked via
+     * {@link #declaredNotations}). Returns the position past the
+     * declaration's closing '>', or -1 on underflow.
+     */
+    private int scanNotationDeclaration(int p) throws SAXException {
+        int ws = p;
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
             return -1;
         }
-        if (nm != KW_MATCH) {
-            throw handler.fatalError("Expected an element, attribute-list, or notation declaration");
+        if (p == ws) {
+            throw handler.fatalError("Malformed notation declaration");
         }
-        p += 2; // skip "<!"
-        while (true) {
-            if (p >= limit) {
-                return -1;
-            }
-            char c = buf[p];
-            if (c == '"' || c == '\'') {
-                int r = findQuotedLiteralEnd(p);
-                if (r < 0) {
-                    return -1;
-                }
-                p = r;
-                continue;
-            }
-            if (c == '>') {
-                return p + 1;
-            }
+
+        int nameStart = p;
+        while (p < limit && isNameChar(buf[p])) {
             p++;
         }
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == nameStart) {
+            throw handler.fatalError("Malformed notation declaration");
+        }
+        checkNameStartChar(nameStart);
+        String name = new String(buf, nameStart, p - nameStart);
+
+        int ws2 = p;
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == ws2) {
+            throw handler.fatalError("Malformed notation declaration");
+        }
+
+        boolean isPublic;
+        int sm = matchKeyword(p, SYSTEM_MARKER);
+        if (sm == KW_NEED_MORE) {
+            return -1;
+        }
+        if (sm == KW_MATCH) {
+            isPublic = false;
+            p += SYSTEM_MARKER.length;
+        } else {
+            int pm = matchKeyword(p, PUBLIC_MARKER);
+            if (pm == KW_NEED_MORE) {
+                return -1;
+            }
+            if (pm != KW_MATCH) {
+                throw handler.fatalError("Malformed notation declaration");
+            }
+            isPublic = true;
+            p += PUBLIC_MARKER.length;
+        }
+        int ws3 = p;
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == ws3) {
+            throw handler.fatalError("Malformed notation declaration");
+        }
+        int r = findQuotedLiteralEnd(p);
+        if (r < 0) {
+            return -1;
+        }
+        String publicId = isPublic ? new String(buf, p + 1, r - 1 - (p + 1)) : null;
+        String systemId = isPublic ? null : new String(buf, p + 1, r - 1 - (p + 1));
+        p = r;
+
+        if (isPublic) {
+            // PublicID (Name S 'PUBLIC' S PubidLiteral) has no trailing
+            // SystemLiteral; the fuller ExternalID form ('PUBLIC' S
+            // PubidLiteral S SystemLiteral) does - ambiguous until the next
+            // non-whitespace character is actually seen.
+            int afterWs = skipOptionalWhitespace(p);
+            if (afterWs >= limit) {
+                return -1;
+            }
+            if (buf[afterWs] == '"' || buf[afterWs] == '\'') {
+                int r2 = findQuotedLiteralEnd(afterWs);
+                if (r2 < 0) {
+                    return -1;
+                }
+                systemId = new String(buf, afterWs + 1, r2 - 1 - (afterWs + 1));
+                p = r2;
+            }
+        }
+
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
+            return -1;
+        }
+        if (buf[p] != '>') {
+            throw handler.fatalError("Malformed notation declaration");
+        }
+        p++;
+
+        if (declaredNotations.add(name)) {
+            handler.notationDecl(name, publicId, systemId);
+        }
+        return p;
     }
 
     /** Decodes one character reference {@code &#...;}/{@code &#x...;}
@@ -2246,6 +2451,25 @@ class Scanner implements ByteDecoderTarget {
             }
             sb.append(c);
             q++;
+        }
+    }
+
+    /** Fires {@link XMLHandler#unparsedEntityDecl} for every entry in {@code
+     *  externalNames} that was declared with an NDATA annotation (a non-null
+     *  third array element - see {@link #scanEntityDeclaration}) - called at
+     *  each of this class's two "the whole DTD's entities are now finally
+     *  known" merge points ({@link #scanDoctypeSubset}'s own completion, and
+     *  {@link #parseExternalSubset}'s), right where each entry is confirmed
+     *  to be the winning ("first declaration wins") declaration for its
+     *  name, unlike {@link XMLHandler#notationDecl}-reporting {@link
+     *  #scanNotationDeclaration}, which reports immediately as encountered
+     *  since it has no analogous merge step to wait for. */
+    private void reportUnparsedEntities(Map<String, String[]> externalNames) throws SAXException {
+        for (Map.Entry<String, String[]> entry : externalNames.entrySet()) {
+            String[] ids = entry.getValue();
+            if (ids[2] != null) {
+                handler.unparsedEntityDecl(entry.getKey(), ids[0], ids[1], ids[2]);
+            }
         }
     }
 
@@ -2352,6 +2576,7 @@ class Scanner implements ByteDecoderTarget {
         if (p >= limit) {
             return -1;
         }
+        String ndataName = null;
         if (buf[p] != '>') {
             int m = matchKeyword(p, NDATA_MARKER);
             if (m == KW_NEED_MORE) {
@@ -2359,6 +2584,12 @@ class Scanner implements ByteDecoderTarget {
             }
             if (m != KW_MATCH) {
                 throw handler.fatalError("Malformed entity declaration");
+            }
+            if (isParam) {
+                // PEDef ::= EntityValue | ExternalID (production 74) - NDATA
+                // is not part of a parameter entity's grammar at all, unlike
+                // a general entity's EntityDef, which explicitly allows it.
+                throw handler.fatalError("Parameter entities may not have an NDATA annotation");
             }
             p += NDATA_MARKER.length;
             int wsN = p;
@@ -2380,6 +2611,7 @@ class Scanner implements ByteDecoderTarget {
                 throw handler.fatalError("Malformed entity declaration");
             }
             checkNameStartChar(ndataNameStart);
+            ndataName = new String(buf, ndataNameStart, p - ndataNameStart);
             p = skipOptionalWhitespace(p);
             if (p >= limit) {
                 return -1;
@@ -2395,7 +2627,10 @@ class Scanner implements ByteDecoderTarget {
                 pendingParamExternalNames.put(name, new String[] { extPublicId, extSystemId });
             }
         } else if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
-            pendingExternalNames.put(name, new String[] { extPublicId, extSystemId });
+            // The optional third element is the NDATA-declared notation name
+            // (null for an ordinary, parsed external entity) - see {@link
+            // #unparsedEntityDecl} firing at this map's eventual merge point.
+            pendingExternalNames.put(name, new String[] { extPublicId, extSystemId, ndataName });
         }
         return p;
     }
@@ -3030,11 +3265,14 @@ class Scanner implements ByteDecoderTarget {
 
     /**
      * Parses {@code "<!DOCTYPE" Name (S ExternalID)? S?} - everything up to
-     * (but not including) an internal subset or the closing '&gt;', all of
-     * which is side-effect-free (no handler calls), so - unlike the internal
-     * subset itself, see {@link #scanDoctypeSubset()} - this part is safe to
-     * treat as one atomic retry-whole-on-underflow construct exactly like
-     * every other atomic construct in this class.
+     * (but not including) an internal subset or the closing '&gt;'. That
+     * prefix alone is side-effect-free (no handler calls), so - unlike the
+     * internal subset itself, see {@link #scanDoctypeSubset()} - it is safe
+     * to treat as one atomic retry-whole-on-underflow construct exactly like
+     * every other atomic construct in this class; {@link
+     * XMLHandler#startDTD}/{@link XMLHandler#endDTD} only fire once this
+     * method has otherwise fully committed (either branch below), never
+     * speculatively.
      */
     private boolean scanDoctype(int tagStart) throws SAXException {
         int km = matchKeyword(tagStart, DOCTYPE_MARKER);
@@ -3105,14 +3343,23 @@ class Scanner implements ByteDecoderTarget {
 
         if (buf[p] == '[') {
             // From here on, the internal subset may call scanComment()/
-            // scanPI() - real, irreversible handler.comment()/piTarget()/
-            // piData() calls - so this can no longer be an atomic whole-
-            // retry construct: a later underflow deeper in the
+            // scanPI() - real, irreversible handler.startComment()/
+            // commentData()/piTarget()/piData() calls - so this can no
+            // longer be an atomic whole-retry construct: a later underflow
+            // deeper in the
             // subset must not cause an already-fired comment/PI to fire
             // again. Hand off to the properly resumable scanDoctypeSubset(),
             // which - like scanAttributesAndTagEnd()/inStartTag - tracks its
             // own progress via pos and the doctypeXxx fields rather than
-            // rewinding to tagStart.
+            // rewinding to tagStart. handler.startDTD() fires right here,
+            // exactly once (this branch is never re-entered on a resumed
+            // call - a later call finds inDoctype already true and goes
+            // straight to scanDoctypeSubset() via scan()'s main loop
+            // instead), so every notationDecl/unparsedEntityDecl the
+            // internal (and, later, external) subset produces is correctly
+            // bracketed between it and the matching handler.endDTD() at
+            // scanDoctypeSubset()'s own completion.
+            handler.startDTD(name, doctypeExternalPublicId, doctypeExternalSystemId);
             doctypeNamePending = name;
             doctypePendingEntities = new HashMap<String, String>();
             doctypePendingExternalNames = new HashMap<String, String[]>();
@@ -3137,7 +3384,9 @@ class Scanner implements ByteDecoderTarget {
         }
         p++;
         pos = p;
+        handler.startDTD(name, doctypeExternalPublicId, doctypeExternalSystemId);
         finishDoctypeExternalSubset(name);
+        handler.endDTD();
         doctypeSeen = true;
         doctypeName = name;
         return true;
@@ -3148,12 +3397,19 @@ class Scanner implements ByteDecoderTarget {
      *  if {@link #skipExternalId} captured one, then resolves ATTLIST
      *  default values against the now-fully-known entity table (which may
      *  have just grown from the external subset, in addition to whatever
-     *  the internal subset, if any, already contributed). */
+     *  the internal subset, if any, already contributed). The fetch+parse
+     *  is bracketed by {@link XMLHandler#startEntity}/{@link
+     *  XMLHandler#endEntity} using the well-known {@code "[dtd]"}
+     *  pseudo-name {@code LexicalHandler} itself documents for exactly this
+     *  purpose - nested inside the {@link XMLHandler#startDTD}/{@link
+     *  XMLHandler#endDTD} pair both callers fire around this method. */
     private void finishDoctypeExternalSubset(String rootName) throws SAXException {
         if (doctypeExternalSystemId != null) {
+            handler.startEntity("[dtd]");
             char[] chars = fetchExternalResource("the external DTD subset for \"" + rootName + "\"",
                     doctypeExternalPublicId, doctypeExternalSystemId);
             parseExternalSubset(chars);
+            handler.endEntity("[dtd]");
         }
         doctypeExternalPublicId = null;
         doctypeExternalSystemId = null;
@@ -3170,17 +3426,17 @@ class Scanner implements ByteDecoderTarget {
      * {@link #scan()}'s main loop whenever {@link #inDoctype} is still true
      * at the start of a {@link #receive(CharBuffer)} call. Unlike every
      * other atomic construct in this class, this cannot simply rewind to a
-     * fixed start point on underflow: {@code <!--comment-->} fires a real
-     * {@link XMLHandler#comment} event as a side effect (though the comment
-     * scan itself, via {@link #scanComment}, is still atomic - either the
-     * whole thing is found or nothing is committed), and {@code <?PI?>} is
-     * both a side effect (once {@link XMLHandler#piTarget} has fired) and,
-     * for a data span too large for one buffer, itself resumable via {@link
-     * #scanPI}/{@link #scanPIData} - this method checks {@link #inPI} at the
-     * top of its own loop for exactly that reason. Instead, {@link #pos}
-     * only ever advances past a declaration once it has been fully,
-     * successfully processed (comment/PI emitted, entity recorded, or other
-     * declaration skipped) - the same "confirmed progress, resume from here,
+     * fixed start point on underflow: both {@code <!--comment-->} and {@code
+     * <?PI?>} fire a real event (once {@link XMLHandler#startComment}/{@link
+     * XMLHandler#piTarget} has fired) as a side effect, and, for a text/data
+     * span too large for one buffer, are themselves resumable via {@link
+     * #scanComment}/{@link #scanCommentData} and {@link #scanPI}/{@link
+     * #scanPIData} respectively - this method checks {@link #inComment}/
+     * {@link #inPI} at the top of its own loop for exactly that reason.
+     * Instead, {@link #pos} only ever advances past a declaration once it
+     * has been fully, successfully processed (comment/PI emitted, entity
+     * recorded, or other declaration skipped) - the same "confirmed
+     * progress, resume from here, never rewind past it"
      * never rewind past it" discipline {@link #scanContent()}/{@link
      * #scanAttributeValueStreaming()} use for the same reason. {@link
      * #doctypePendingEntities}/{@link #doctypePendingExternalNames} (promoted
@@ -3204,6 +3460,16 @@ class Scanner implements ByteDecoderTarget {
                         return false;
                     }
                     inPI = false;
+                    continue;
+                }
+                if (inComment) {
+                    // A comment nested in the internal subset, suspended
+                    // mid-text on a prior call - same reasoning as the inPI
+                    // check just above.
+                    if (!scanCommentData()) {
+                        return false;
+                    }
+                    inComment = false;
                     continue;
                 }
                 pos = skipOptionalWhitespace(pos);
@@ -3298,7 +3564,15 @@ class Scanner implements ByteDecoderTarget {
                                     }
                                     pos = r;
                                 } else {
-                                    int r = skipMarkupDeclaration(pos);
+                                    int nm = matchKeyword(pos, NOTATION_MARKER);
+                                    if (nm == KW_NEED_MORE) {
+                                        return false;
+                                    }
+                                    if (nm != KW_MATCH) {
+                                        throw handler.fatalError(
+                                                "Expected an element, attribute-list, entity, or notation declaration");
+                                    }
+                                    int r = scanNotationDeclaration(pos + NOTATION_MARKER.length);
                                     if (r < 0) {
                                         return false;
                                     }
@@ -3332,9 +3606,11 @@ class Scanner implements ByteDecoderTarget {
 
         generalEntities.putAll(doctypePendingEntities);
         externalEntityNames.putAll(doctypePendingExternalNames);
+        reportUnparsedEntities(doctypePendingExternalNames);
         parameterEntities.putAll(doctypePendingParamEntities);
         parameterEntityExternalIds.putAll(doctypePendingParamExternalNames);
         finishDoctypeExternalSubset(doctypeNamePending);
+        handler.endDTD();
         doctypeSeen = true;
         doctypeName = doctypeNamePending;
         doctypePendingEntities = null;
@@ -3418,6 +3694,15 @@ class Scanner implements ByteDecoderTarget {
         checkEntityReferenceable(name, true);
         char[] replacementChars;
         String[] externalIds = externalEntityNames.get(name);
+        // Fired here, not any earlier - mirrors the old pipeline's own
+        // placement: after the reference is confirmed referenceable (a
+        // rejected reference never gets a start/endEntity pair at all), but
+        // before either fetching (external) or converting to a re-scannable
+        // string (internal) its replacement text - see XMLHandler#startEntity's
+        // "never fired for... an attribute value" carve-out, which is why
+        // this class's other entity-expansion method (used in attribute
+        // values) has no matching call.
+        handler.startEntity(name);
         if (externalIds != null) {
             // External general entity: fetched lazily, right here, at first
             // reference - matching how internal entities are also only
@@ -3463,6 +3748,7 @@ class Scanner implements ByteDecoderTarget {
                 // boundary.
                 emitContentRun(EMPTY_BUFFER, true, contentRunIsWhitespace);
             }
+            handler.endEntity(name);
         } finally {
             buf = savedBuf;
             pos = savedPos;
@@ -3685,6 +3971,10 @@ class Scanner implements ByteDecoderTarget {
                 if (!generalEntities.containsKey(entry.getKey())
                         && !externalEntityNames.containsKey(entry.getKey())) {
                     externalEntityNames.put(entry.getKey(), entry.getValue());
+                    if (entry.getValue()[2] != null) {
+                        handler.unparsedEntityDecl(entry.getKey(), entry.getValue()[0], entry.getValue()[1],
+                                entry.getValue()[2]);
+                    }
                 }
             }
             for (Map.Entry<String, String> entry : pendingParamEntities.entrySet()) {
@@ -3794,9 +4084,14 @@ class Scanner implements ByteDecoderTarget {
                                 }
                                 pos = r;
                             } else {
-                                int r = skipMarkupDeclaration(pos);
+                                int nm = matchKeyword(pos, NOTATION_MARKER);
+                                if (nm != KW_MATCH) {
+                                    throw handler.fatalError(
+                                            "Expected an element, attribute-list, entity, or notation declaration");
+                                }
+                                int r = scanNotationDeclaration(pos + NOTATION_MARKER.length);
                                 if (r < 0) {
-                                    throw handler.fatalError("Malformed markup declaration");
+                                    throw handler.fatalError("Malformed notation declaration");
                                 }
                                 pos = r;
                             }

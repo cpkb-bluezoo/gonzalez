@@ -202,8 +202,54 @@ class NamespaceFilter implements XMLHandler {
     }
 
     @Override
-    public void comment(CharBuffer text) throws SAXException {
-        delegate.comment(text);
+    public void startComment() throws SAXException {
+        delegate.startComment();
+    }
+
+    @Override
+    public void commentData(CharBuffer text, boolean end) throws SAXException {
+        delegate.commentData(text, end);
+    }
+
+    @Override
+    public void startCDATA() throws SAXException {
+        delegate.startCDATA();
+    }
+
+    @Override
+    public void endCDATA() throws SAXException {
+        delegate.endCDATA();
+    }
+
+    @Override
+    public void startDTD(String name, String publicId, String systemId) throws SAXException {
+        delegate.startDTD(name, publicId, systemId);
+    }
+
+    @Override
+    public void endDTD() throws SAXException {
+        delegate.endDTD();
+    }
+
+    @Override
+    public void startEntity(String name) throws SAXException {
+        delegate.startEntity(name);
+    }
+
+    @Override
+    public void endEntity(String name) throws SAXException {
+        delegate.endEntity(name);
+    }
+
+    @Override
+    public void notationDecl(String name, String publicId, String systemId) throws SAXException {
+        delegate.notationDecl(name, publicId, systemId);
+    }
+
+    @Override
+    public void unparsedEntityDecl(String name, String publicId, String systemId, String notationName)
+            throws SAXException {
+        delegate.unparsedEntityDecl(name, publicId, systemId, notationName);
     }
 
     @Override

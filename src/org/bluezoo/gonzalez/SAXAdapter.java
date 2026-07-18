@@ -27,6 +27,7 @@ import java.util.Iterator;
 import java.util.Map;
 
 import org.xml.sax.ContentHandler;
+import org.xml.sax.DTDHandler;
 import org.xml.sax.ErrorHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
@@ -97,6 +98,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     private ContentHandler contentHandler;
     private LexicalHandler lexicalHandler;
+    private DTDHandler dtdHandler;
     private ErrorHandler errorHandler;
     private String publicId;
     private String systemId;
@@ -148,6 +150,13 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     private boolean piDataFirstChunk;
     private final StringBuilder piDataBuilder = new StringBuilder();
 
+    // Current comment being assembled from startComment()/commentData()
+    // calls - the same shape as the PI fields just above and for the same
+    // reason: LexicalHandler.comment(char[], int, int) has no streaming
+    // form of its own.
+    private boolean commentDataFirstChunk;
+    private final StringBuilder commentDataBuilder = new StringBuilder();
+
     /**
      * Creates a new adapter.
      *
@@ -172,6 +181,10 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     void setLexicalHandler(LexicalHandler handler) {
         this.lexicalHandler = handler;
+    }
+
+    void setDTDHandler(DTDHandler handler) {
+        this.dtdHandler = handler;
     }
 
     void setErrorHandler(ErrorHandler handler) {
@@ -448,16 +461,95 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     }
 
     @Override
-    public void comment(CharBuffer text) throws SAXException {
+    public void startComment() throws SAXException {
+        commentDataFirstChunk = true;
+    }
+
+    @Override
+    public void commentData(CharBuffer text, boolean end) throws SAXException {
         if (lexicalHandler == null) {
             return;
         }
-        if (text.hasArray()) {
-            lexicalHandler.comment(text.array(), text.arrayOffset() + text.position(), text.remaining());
-        } else {
-            char[] chars = new char[text.remaining()];
-            text.get(chars);
-            lexicalHandler.comment(chars, 0, chars.length);
+        if (commentDataFirstChunk && end) {
+            // Common case: exactly one chunk - hand it straight through, not
+            // even a String allocation (unlike piData's own fast path,
+            // LexicalHandler.comment takes char[]/offset/length directly).
+            if (text.hasArray()) {
+                lexicalHandler.comment(text.array(), text.arrayOffset() + text.position(), text.remaining());
+            } else {
+                char[] chars = new char[text.remaining()];
+                text.get(chars);
+                lexicalHandler.comment(chars, 0, chars.length);
+            }
+            return;
+        }
+        if (commentDataFirstChunk) {
+            commentDataBuilder.setLength(0);
+            commentDataFirstChunk = false;
+        }
+        commentDataBuilder.append(text);
+        if (end) {
+            int len = commentDataBuilder.length();
+            char[] chars = new char[len];
+            commentDataBuilder.getChars(0, len, chars, 0);
+            lexicalHandler.comment(chars, 0, len);
+        }
+    }
+
+    @Override
+    public void startCDATA() throws SAXException {
+        if (lexicalHandler != null) {
+            lexicalHandler.startCDATA();
+        }
+    }
+
+    @Override
+    public void endCDATA() throws SAXException {
+        if (lexicalHandler != null) {
+            lexicalHandler.endCDATA();
+        }
+    }
+
+    @Override
+    public void startDTD(String name, String publicId, String systemId) throws SAXException {
+        if (lexicalHandler != null) {
+            lexicalHandler.startDTD(name, publicId, systemId);
+        }
+    }
+
+    @Override
+    public void endDTD() throws SAXException {
+        if (lexicalHandler != null) {
+            lexicalHandler.endDTD();
+        }
+    }
+
+    @Override
+    public void startEntity(String name) throws SAXException {
+        if (lexicalHandler != null) {
+            lexicalHandler.startEntity(name);
+        }
+    }
+
+    @Override
+    public void endEntity(String name) throws SAXException {
+        if (lexicalHandler != null) {
+            lexicalHandler.endEntity(name);
+        }
+    }
+
+    @Override
+    public void notationDecl(String name, String publicId, String systemId) throws SAXException {
+        if (dtdHandler != null) {
+            dtdHandler.notationDecl(name, publicId, systemId);
+        }
+    }
+
+    @Override
+    public void unparsedEntityDecl(String name, String publicId, String systemId, String notationName)
+            throws SAXException {
+        if (dtdHandler != null) {
+            dtdHandler.unparsedEntityDecl(name, publicId, systemId, notationName);
         }
     }
 
@@ -491,13 +583,14 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     @Override
     public void saveBuffers() throws SAXException {
-        // No-op: this adapter never defers copying. characters()/comment()
-        // pass through to the wrapped SAX handler synchronously within the
-        // call that delivers them (matching SAX's own contract), and
-        // attributeValueContent's multi-chunk case copies into
-        // attributeValueBuilder immediately via StringBuilder.append(CharBuffer)
-        // rather than holding a reference. Nothing here is ever left
-        // unflushed across events, so there is nothing to save.
+        // No-op: this adapter never defers copying. characters() passes
+        // through to the wrapped SAX handler synchronously within the call
+        // that delivers them (matching SAX's own contract), and
+        // attributeValueContent's/piData's/commentData's multi-chunk case
+        // each copy into their own StringBuilder immediately via
+        // StringBuilder.append(CharBuffer) rather than holding a reference.
+        // Nothing here is ever left unflushed across events, so there is
+        // nothing to save.
     }
 
     /**

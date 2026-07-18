@@ -244,7 +244,8 @@ public class SAXAdapterTest {
         adapter.setLexicalHandler(sink);
 
         adapter.startDocument();
-        adapter.comment(cb(" a comment "));
+        adapter.startComment();
+        adapter.commentData(cb(" a comment "), true);
         adapter.piTarget("target");
         adapter.piData(cb("pi data"), true);
         adapter.startElement("root");

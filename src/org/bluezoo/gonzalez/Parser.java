@@ -209,6 +209,7 @@ public class Parser implements XMLReader, PSVIProvider {
         SAXAdapter adapter = new SAXAdapter(scannerNamespaces);
         adapter.setContentHandler(scannerContentHandler);
         adapter.setLexicalHandler(scannerLexicalHandler);
+        adapter.setDTDHandler(scannerDtdHandler);
         adapter.setErrorHandler(scannerErrorHandler);
         adapter.setPublicId(scannerPublicId);
         adapter.setSystemId(scannerSystemId);
@@ -510,8 +511,6 @@ public class Parser implements XMLReader, PSVIProvider {
     @Override
     public void setDTDHandler(DTDHandler handler) {
         if (pipeline == Pipeline.SCANNER) {
-            // Stored but not yet wired to anything - Scanner doesn't report
-            // notationDecl/unparsedEntityDecl events to a DTDHandler yet.
             scannerDtdHandler = handler;
         } else {
             xmlParser.setDTDHandler(handler);

@@ -103,16 +103,14 @@ public class ScannerTest {
     }
 
     /**
-     * M1 does not emit startCDATA()/endCDATA() boundary markers (deferred
-     * per XMLHandler's incremental lexical-event-set decision), so the
-     * reference recording - which does have them, via LexicalHandler - splits
-     * a run of "whitespace, CDATA content, whitespace" into three separate
-     * coalesced characters() entries where the scanner produces one merged
-     * entry. This reproduces what the reference list would have looked like
-     * without those markers: drop them, then re-coalesce the now-adjacent
-     * characters() entries exactly as RecordingSaxHandler itself would have.
-     * This validates CDATA *content* correctness without asserting on a
-     * feature M1 doesn't claim to have.
+     * Drops startCDATA()/endCDATA() boundary markers from a recorded event
+     * list and re-coalesces the now-adjacent characters() entries, exactly
+     * as RecordingSaxHandler itself would have if those markers had never
+     * been interposed. Scanner reports these markers directly now (matching
+     * the old pipeline), so this is unneeded by any differential test that
+     * compares both sides' raw recordings directly - kept only for the
+     * handful of fixtures/callers below that still route through it
+     * (typically a no-op, since their content has no CDATA sections).
      */
     private static List<String> stripCDATABoundariesAndRecoalesce(List<String> events) {
         java.util.ArrayList<String> result = new java.util.ArrayList<String>();
@@ -144,7 +142,7 @@ public class ScannerTest {
 
     private void assertDifferential(String resourcePath) throws Exception {
         byte[] bytes = Files.readAllBytes(Paths.get(resourcePath));
-        List<String> reference = stripCDATABoundariesAndRecoalesce(runCurrentParser(bytes));
+        List<String> reference = runCurrentParser(bytes);
         assertTrue("reference recording should not be trivially empty", reference.size() > 5);
 
         char[] chars = decodeAndStripDecl(bytes);
@@ -239,34 +237,20 @@ public class ScannerTest {
         }
     }
 
-    // ===== M4: DOCTYPE / internal general entities differential =====
+    // ===== DOCTYPE / internal general entities differential =====
     //
     // None of the benchmark corpus files use DOCTYPE, so this is a
-    // hand-written sample rather than a corpus file. The old parser reports
-    // machinery this milestone deliberately does not yet (see Scanner's
-    // class Javadoc "M4" section and XMLHandler's incremental lexical/DTD
-    // boundary event set decision): startDTD()/endDTD() bracketing the
-    // internal subset, and startEntity()/endEntity() bracketing each
-    // internal-entity expansion. Both are normalized away below, exactly
-    // like M1 normalized away CDATA boundary markers - this validates
-    // *content* correctness (including recursive/nested entity expansion)
-    // without asserting on lexical boundary events this milestone doesn't
-    // claim to fire. One more normalization is needed: this Scanner fires
-    // startDocument() at construction, before any DOCTYPE scanning, whereas
-    // the old parser fires the internal subset's comment()/processingInstruction()
-    // events *before* startDocument() - a startDocument-vs-DTD-scan
-    // ordering difference, not a content one, so those events are moved to
-    // just after startDocument() in the reference before comparing.
+    // hand-written sample rather than a corpus file. Only one normalization
+    // is needed: this Scanner fires startDocument() at construction, before
+    // any DOCTYPE scanning, whereas the old parser fires the internal
+    // subset's comment()/processingInstruction() events *before*
+    // startDocument() - a startDocument-vs-DTD-scan ordering difference, not
+    // a content one, so those events are moved to just after startDocument()
+    // in the reference before comparing. startDTD()/endDTD()/startEntity()/
+    // endEntity() are otherwise compared directly, unnormalized.
 
     private static List<String> normalizeM4Reference(List<String> events) {
-        java.util.ArrayList<String> filtered = new java.util.ArrayList<String>();
-        for (String e : events) {
-            if (e.startsWith("startDTD(") || e.equals("endDTD()")
-                    || e.startsWith("startEntity(") || e.startsWith("endEntity(")) {
-                continue;
-            }
-            filtered.add(e);
-        }
+        java.util.ArrayList<String> filtered = new java.util.ArrayList<String>(events);
         int docIdx = filtered.indexOf("startDocument()");
         if (docIdx > 0) {
             java.util.ArrayList<String> reordered = new java.util.ArrayList<String>();
@@ -417,8 +401,12 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
+                "startEntity(foo)",
                 "characters:bar",
+                "endEntity(foo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -428,8 +416,12 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY foo \"a &#65; b\">]><root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
+                "startEntity(foo)",
                 "characters:a A b",
+                "endEntity(foo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -439,10 +431,14 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY foo \"<b>bold</b>\">]><root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
+                "startEntity(foo)",
                 "startElement(,b,b,[])",
                 "characters:bold",
                 "endElement(,b,b)",
+                "endEntity(foo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -452,8 +448,15 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY a \"x\"><!ENTITY b \"&a; y\">]><root>&b;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
-                "characters:x y",
+                "startEntity(b)",
+                "startEntity(a)",
+                "characters:x",
+                "endEntity(a)",
+                "characters: y",
+                "endEntity(b)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -463,6 +466,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root a=\"x &foo; y\"/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ a=x bar y(CDATA)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -526,8 +531,12 @@ public class ScannerTest {
                 + "<root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
+                "startEntity(foo)",
                 "characters:external entity content",
+                "endEntity(foo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -550,6 +559,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY % pe \"x\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -560,8 +571,12 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY % pe \"<!ENTITY foo 'bar'>\">%pe;]><root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
+                "startEntity(foo)",
                 "characters:bar",
+                "endEntity(foo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -583,8 +598,12 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY foo \"first\"><!ENTITY foo \"second\">]><root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
+                "startEntity(foo)",
                 "characters:first",
+                "endEntity(foo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -619,6 +638,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE other []><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(other,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -660,8 +681,18 @@ public class ScannerTest {
                 + "<root>&foo; / &extfoo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,test/junit/resources/external-subset.dtd)",
+                "startEntity([dtd])",
+                "endEntity([dtd])",
+                "endDTD()",
                 "startElement(,root,root,[])",
-                "characters:internal value / value from external subset",
+                "startEntity(foo)",
+                "characters:internal value",
+                "endEntity(foo)",
+                "characters: / ",
+                "startEntity(extfoo)",
+                "characters:value from external subset",
+                "endEntity(extfoo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -679,6 +710,10 @@ public class ScannerTest {
                 + "<root>hello</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,test/junit/resources/param-entity-conditional.dtd)",
+                "startEntity([dtd])",
+                "endEntity([dtd])",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "characters:hello",
                 "endElement(,root,root)",
@@ -696,8 +731,12 @@ public class ScannerTest {
                 + "<!ENTITY foo \"bar\">]><root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ note=a > b(CDATA)])",
+                "startEntity(foo)",
                 "characters:bar",
+                "endEntity(foo)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }
@@ -707,6 +746,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root><root>text</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "characters:text",
                 "endElement(,root,root)",
@@ -744,6 +785,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root id CDATA \"r1\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ id=r1(CDATA)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -754,6 +797,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root id CDATA \"r1\">]><root id=\"specified\"/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ id=specified(CDATA)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -764,6 +809,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root ver CDATA #FIXED \"1.0\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ ver=1.0(CDATA)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -774,6 +821,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root a CDATA #REQUIRED b CDATA #IMPLIED>]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -788,6 +837,8 @@ public class ScannerTest {
                 + "<!ENTITY greeting \"hello\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ msg=hello world(CDATA)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -799,6 +850,8 @@ public class ScannerTest {
                 + "<root token=\"  a\tb  \"/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ token=a b(NMTOKEN)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -810,6 +863,8 @@ public class ScannerTest {
                 + "<root note=\"  a  b  \"/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ note=  a  b  (CDATA)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -824,6 +879,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root id ID #IMPLIED>]><root id=\"x1\"/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ id=x1(ID)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -837,6 +894,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root kind NMTOKEN \"a\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ kind=a(NMTOKEN)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -850,6 +909,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root kind (a|b) \"a\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ kind=a(ENUMERATION)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -860,6 +921,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root kind NOTATION (a|b) \"a\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ kind=a(NOTATION)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -871,6 +934,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ATTLIST root id ID #IMPLIED>]><root extra=\"v\"/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[ extra=v(CDATA)])",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -892,6 +957,8 @@ public class ScannerTest {
                 + "<root>  <child/>  <child/>  </root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "ignorableWhitespace:  ",
                 "startElement(,child,child,[])",
@@ -910,6 +977,8 @@ public class ScannerTest {
                 + "<root>  <child/>  </root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "characters:  ",
                 "startElement(,child,child,[])",
@@ -924,6 +993,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root>  <child/>  </root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "characters:  ",
                 "startElement(,child,child,[])",
@@ -944,6 +1015,8 @@ public class ScannerTest {
         String xml = "<!DOCTYPE root [<!ELEMENT root (child)*>]><root>  text  <child/></root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
+                "startDTD(root,null,null)",
+                "endDTD()",
                 "startElement(,root,root,[])",
                 "ignorableWhitespace:  ",
                 "characters:text",
@@ -1004,7 +1077,9 @@ public class ScannerTest {
                 "comment: a comment ",
                 "processingInstruction(target,pi data)",
                 "startElement(,root,root,[])",
+                "startCDATA()",
                 "characters:<raw> & text",
+                "endCDATA()",
                 "endElement(,root,root)",
                 "endDocument()"), events);
     }
