@@ -59,6 +59,23 @@ import org.xml.sax.SAXException;
  * the attribute-scanning loop itself rewinds only to the start of whichever
  * individual attribute was in progress, never re-entering already-emitted
  * ones.
+ * <p>
+ * <b>Name interning (M2).</b> Element/attribute names are interned via
+ * {@link #namePool} ({@link PackedName}). A first version reused the
+ * existing {@link InternedStringPool} directly - measured as a strong net
+ * win overall (attrs +20%, multibyte +17%, both heavy-repeated-name-vocabulary
+ * docTypes) but with a real, reproduced ~5% regression on whitespace-heavy
+ * documents (large text content, comparatively little repeated name
+ * vocabulary, where interning's per-call cost isn't recouped as often and
+ * competes against an already-cheap TLAB-allocated String). {@link
+ * PackedName} replaces the per-character hash-then-compare loop with
+ * quad-packed primitive comparison - see its class Javadoc for the design.
+ * The WFC element-type-match stack ({@link #elementStack}) stores the
+ * interned qName rather than a separate packed handle: since both the
+ * pushed start-tag name and the compared end-tag name go through the same
+ * pool, a correctly-matched tag pair is the same canonical String instance,
+ * and {@code String.equals()}'s own reference-equality fast path already
+ * makes that comparison O(1) in the common case.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -76,10 +93,18 @@ class Scanner {
     /** Coarse resumable mode: startElement has fired, resume the attribute loop. */
     private boolean inStartTag;
 
-    /** WFC "Element Type Match" stack. String-based for M1; PackedName-handle
-     *  based interning is M2's optimisation, layered on top of this working
-     *  scanner rather than built in from the start. */
+    /** WFC "Element Type Match" stack of interned qNames. */
     private final ArrayList<String> elementStack = new ArrayList<String>();
+
+    /**
+     * Interns element/attribute names: M1 called {@code new String(...)} for
+     * every single occurrence, with no caching at all - for a repeated name
+     * (element/attribute vocabulary is typically small and reused constantly
+     * throughout a document) that is a fresh allocation every single time.
+     * See class Javadoc for the choice of {@link PackedName} over
+     * {@link InternedStringPool}.
+     */
+    private final PackedName namePool = new PackedName();
 
     /** Reusable growable buffer for attribute values containing entity references. */
     private char[] valueScratch;
@@ -148,6 +173,20 @@ class Scanner {
     private static boolean isNameChar(char c) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
                 || c == '_' || c == '-' || c == '.' || c == ':' || c > 127;
+    }
+
+    /** Allocation-free comparison of a buffer range against a String, used for
+     *  the WFC end-tag check (see {@link #scanEndTag}). */
+    private static boolean rangeEquals(char[] buf, int start, int len, String s) {
+        if (s.length() != len) {
+            return false;
+        }
+        for (int i = 0; i < len; i++) {
+            if (buf[start + i] != s.charAt(i)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     // ===== Main loop =====
@@ -347,7 +386,7 @@ class Scanner {
         if (p == nameStart) {
             throw handler.fatalError("Malformed start tag");
         }
-        String qName = new String(buf, nameStart, p - nameStart);
+        String qName = namePool.intern(CharBuffer.wrap(buf, nameStart, p - nameStart));
         pos = p;
         elementStack.add(qName);
         handler.startElement(qName);
@@ -406,7 +445,7 @@ class Scanner {
             if (pos == nameStart) {
                 throw handler.fatalError("Malformed start tag");
             }
-            String attrName = new String(buf, nameStart, pos - nameStart);
+            String attrName = namePool.intern(CharBuffer.wrap(buf, nameStart, pos - nameStart));
 
             while (pos < limit && isWs(buf[pos])) {
                 pos++;
@@ -533,13 +572,18 @@ class Scanner {
         }
         p++;
 
-        String name = new String(buf, nameStart, nameEnd - nameStart);
+        // The end tag's name is never exposed through XMLHandler - endElement()
+        // takes no arguments (see class Javadoc) - so it is purely internal WFC
+        // bookkeeping and does not need to become a String at all unless there
+        // is actually a mismatch to report.
+        int nameLen = nameEnd - nameStart;
         if (elementStack.isEmpty()) {
-            throw handler.fatalError("End tag without matching start tag: " + name);
+            throw handler.fatalError("End tag without matching start tag: " + new String(buf, nameStart, nameLen));
         }
         String expected = elementStack.remove(elementStack.size() - 1);
-        if (!expected.equals(name)) {
-            throw handler.fatalError("Mismatched end tag: expected </" + expected + "> but found </" + name + ">");
+        if (!rangeEquals(buf, nameStart, nameLen, expected)) {
+            throw handler.fatalError("Mismatched end tag: expected </" + expected + "> but found </"
+                    + new String(buf, nameStart, nameLen) + ">");
         }
 
         pos = p;
@@ -651,7 +695,7 @@ class Scanner {
         if (p == targetStart) {
             throw handler.fatalError("Malformed processing instruction");
         }
-        String target = new String(buf, targetStart, p - targetStart);
+        String target = namePool.intern(CharBuffer.wrap(buf, targetStart, p - targetStart));
         if (target.length() == 3
                 && (target.charAt(0) == 'x' || target.charAt(0) == 'X')
                 && (target.charAt(1) == 'm' || target.charAt(1) == 'M')
