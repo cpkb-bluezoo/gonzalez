@@ -406,15 +406,18 @@ interface XMLHandler {
     SAXException fatalError(String message) throws SAXException;
 
     /**
-     * Reports a recoverable validity constraint (VC) violation - unlike
-     * {@link #fatalError}, this does not stop parsing; the caller continues
-     * immediately after reporting. Mirrors {@code ContentParser.
-     * reportValidationError}'s SAX contract: routes to {@code
-     * ErrorHandler.error(SAXParseException)}, not {@code fatalError}, since
-     * a VC violation (unlike a WFC violation) means the document is not
-     * valid but may still be well-formed. Only ever called when validation
-     * is actually enabled - see {@code Scanner}'s own validation-enabled
-     * flag.
+     * Reports a recoverable error - unlike {@link #fatalError}, this does
+     * not stop parsing; the caller continues immediately after reporting.
+     * Mirrors {@code ContentParser.reportValidationError}'s SAX contract:
+     * routes to {@code ErrorHandler.error(SAXParseException)}, not {@code
+     * fatalError}. Almost always a recoverable validity constraint (VC)
+     * violation - meaning the document is not valid but may still be
+     * well-formed - and so, like every VC check, only reported when {@code
+     * Scanner}'s own validation-enabled flag is set; the one exception is a
+     * handful of well-formedness-adjacent issues the XML spec itself
+     * classifies as "error" rather than fatal (for example, a system
+     * identifier containing a URI fragment, XML 4.2.2), which are reported
+     * unconditionally, regardless of validation.
      *
      * @param message the error message
      */

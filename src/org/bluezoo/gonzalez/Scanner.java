@@ -1237,7 +1237,10 @@ class Scanner implements ByteDecoderTarget {
         if (buf[p] == '#') {
             p++;
             boolean hex = false;
-            if (p < limit && (buf[p] == 'x' || buf[p] == 'X')) {
+            if (p < limit && buf[p] == 'x') {
+                // Production 66: CharRef ::= '&#' [0-9]+ ';' | '&#x'
+                // [0-9a-fA-F]+ ';' - only a lowercase 'x' introduces the hex
+                // form; the referenced digits themselves may be either case.
                 hex = true;
                 p++;
             }
@@ -1417,6 +1420,15 @@ class Scanner implements ByteDecoderTarget {
                 return false;
             }
             char c = buf[pos];
+            if (pos == attrStart && isNameChar(c)) {
+                // STag ::= '<' Name (S Attribute)* S? '>' - S is mandatory
+                // before every Attribute, not just the first. This can only
+                // be reached from the second attribute onward: on the very
+                // first iteration, attrStart is wherever scanStartTag's own
+                // greedy name-char scan stopped, which by construction is
+                // never itself a name character.
+                throw handler.fatalError("White space is required between attributes");
+            }
             if (c == '>') {
                 pos++;
                 applyAttributeDefaults(elementStack.get(elementStack.size() - 1));
@@ -2161,6 +2173,58 @@ class Scanner implements ByteDecoderTarget {
     private String lastExternalIdPublicId;
     private String lastExternalIdSystemId;
 
+    /** XML 4.2.2's {@code PubidChar}: {@code #x20 | #xD | #xA | [a-zA-Z0-9] |
+     *  [-'()+,./:=?;!*#@$_%]} - deliberately far more restrictive than a
+     *  general literal's {@link #isLegalLiteralChar} (no {@code '<'},
+     *  {@code '>'}, {@code '['}, {@code '&'}, backslash, tab, or most other
+     *  punctuation). */
+    private static boolean isPubidChar(char c) {
+        if (c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+            return true;
+        }
+        switch (c) {
+            case ' ':
+            case '\r':
+            case '\n':
+            case '-':
+            case '\'':
+            case '(':
+            case ')':
+            case '+':
+            case ',':
+            case '.':
+            case '/':
+            case ':':
+            case '=':
+            case '?':
+            case ';':
+            case '!':
+            case '*':
+            case '#':
+            case '@':
+            case '$':
+            case '_':
+            case '%':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /** Validates an already-extracted public identifier literal against
+     *  {@link #isPubidChar} - shared by {@link #skipExternalId} and {@link
+     *  #scanNotationDeclaration}, the two places a {@code PubidLiteral} is
+     *  captured. */
+    private void checkPubidLiteral(String publicId) throws SAXException {
+        for (int i = 0; i < publicId.length(); i++) {
+            if (!isPubidChar(publicId.charAt(i))) {
+                throw handler.fatalError(
+                        "Character U+" + String.format("%04X", (int) publicId.charAt(i))
+                                + " is not allowed in a public identifier");
+            }
+        }
+    }
+
     /** Skips a {@code SYSTEM "..."} or {@code PUBLIC "..." "..."} external
      *  ID starting at {@code p}, capturing the literal(s) into {@link
      *  #lastExternalIdPublicId}/{@link #lastExternalIdSystemId}. Returns the
@@ -2204,6 +2268,7 @@ class Scanner implements ByteDecoderTarget {
                 return -1;
             }
             lastExternalIdPublicId = new String(buf, litStart, r - 1 - litStart);
+            checkPubidLiteral(lastExternalIdPublicId);
             p = r;
             int ws2 = p;
             p = skipOptionalWhitespace(p);
@@ -2220,7 +2285,20 @@ class Scanner implements ByteDecoderTarget {
             return -1;
         }
         lastExternalIdSystemId = new String(buf, sysLitStart, sysEnd - 1 - sysLitStart);
+        checkSystemLiteralNoFragment(lastExternalIdSystemId);
         return sysEnd;
+    }
+
+    /** XML 4.2.2/2.3: a system identifier is a URI reference and "may not
+     *  contain a fragment identifier" - unlike a {@code PubidChar}
+     *  restriction (see {@link #checkPubidLiteral}), this isn't part of the
+     *  {@code SystemLiteral} grammar itself (any character but the quote is
+     *  syntactically legal), so a violation is reported as a recoverable
+     *  error rather than rejected as malformed syntax. */
+    private void checkSystemLiteralNoFragment(String systemId) throws SAXException {
+        if (systemId.indexOf('#') >= 0) {
+            handler.error("A system identifier may not contain a URI fragment: \"" + systemId + "\"");
+        }
     }
 
     /** {@code <!NOTATION>} declarations seen so far, by name - only ever
@@ -2316,6 +2394,9 @@ class Scanner implements ByteDecoderTarget {
         }
         String publicId = isPublic ? new String(buf, p + 1, r - 1 - (p + 1)) : null;
         String systemId = isPublic ? null : new String(buf, p + 1, r - 1 - (p + 1));
+        if (isPublic) {
+            checkPubidLiteral(publicId);
+        }
         p = r;
 
         if (isPublic) {
@@ -2346,6 +2427,9 @@ class Scanner implements ByteDecoderTarget {
         }
         p++;
 
+        if (systemId != null) {
+            checkSystemLiteralNoFragment(systemId);
+        }
         if (declaredNotations.add(name)) {
             handler.notationDecl(name, publicId, systemId);
         }
@@ -2360,7 +2444,8 @@ class Scanner implements ByteDecoderTarget {
     private int decodeCharRefInto(StringBuilder sb, int q) throws SAXException {
         int p = q + 2; // skip "&#"
         boolean hex = false;
-        if (p < limit && (buf[p] == 'x' || buf[p] == 'X')) {
+        if (p < limit && buf[p] == 'x') {
+            // See decodeEntityRef's identical check: only lowercase 'x'.
             hex = true;
             p++;
         }
@@ -2419,10 +2504,24 @@ class Scanner implements ByteDecoderTarget {
      * share the same character-reference-expands-now / everything-else-
      * literal rule) starting at {@code buf[p]} (the opening quote), appending
      * the decoded text to {@code sb}. Shared by {@link #scanEntityDeclaration}
-     * and {@link #scanAttlistDeclaration}. Returns the position past the
-     * closing quote, or -1 on underflow.
+     * and {@link #scanAttlistDeclaration}. A general entity reference
+     * ({@code &name;}) is validated (the name itself must be legal) but not
+     * expanded here - it is appended to {@code sb} as its own literal
+     * {@code &name;} text, to be resolved later, once the whole entity table
+     * is known ({@link #resolveAttlistDefaultValue}) or when the containing
+     * entity's own replacement text is eventually scanned as content. {@code
+     * isEntityValue} selects between the two productions' differing
+     * treatment of a literal {@code '%'}: {@code EntityValue}'s grammar
+     * (XML 4.1 [9]) excludes a bare {@code '%'} entirely (it must begin a
+     * parameter entity reference, {@code %name;} - validated the same way as
+     * a general entity reference, but expanding a parameter entity mid-value
+     * is not yet supported, so this only confirms the reference's own syntax
+     * is legal, not that it resolves); {@code AttValue}'s grammar (XML 3.1
+     * [10]) has no such restriction - a literal {@code '%'} (for example
+     * {@code "100%"}) is ordinary character data. Returns the position past
+     * the closing quote, or -1 on underflow.
      */
-    private int scanQuotedLiteralWithCharRefs(int p, StringBuilder sb) throws SAXException {
+    private int scanQuotedLiteralWithCharRefs(int p, StringBuilder sb, boolean isEntityValue) throws SAXException {
         char quote = buf[p];
         int q = p + 1;
         while (true) {
@@ -2446,12 +2545,57 @@ class Scanner implements ByteDecoderTarget {
                 // boundary - can't yet tell, must wait for more data.
                 return -1;
             }
+            if (c == '&') {
+                int r = scanReferenceNameLiteral(q, sb, '&');
+                if (r < 0) {
+                    return -1;
+                }
+                q = r;
+                continue;
+            }
+            if (isEntityValue && c == '%') {
+                if (q + 1 >= limit) {
+                    return -1;
+                }
+                int r = scanReferenceNameLiteral(q, sb, '%');
+                if (r < 0) {
+                    return -1;
+                }
+                q = r;
+                continue;
+            }
             if (!isLegalLiteralChar(c)) {
                 throw illegalCharError(c);
             }
             sb.append(c);
             q++;
         }
+    }
+
+    /** Validates a {@code Name} immediately follows {@code buf[q]} (the
+     *  {@code marker} character - {@code '&'} for a {@code Reference}'s
+     *  {@code EntityRef}, {@code '%'} for a {@code PEReference}), terminated
+     *  by {@code ';'}, and appends the whole {@code marker + Name + ';'} span
+     *  to {@code sb} literally (unexpanded - see {@link
+     *  #scanQuotedLiteralWithCharRefs}). Returns the position past the
+     *  trailing {@code ';'}, or -1 on underflow. */
+    private int scanReferenceNameLiteral(int q, StringBuilder sb, char marker) throws SAXException {
+        int nameStart = q + 1;
+        int r = nameStart;
+        while (r < limit && isNameChar(buf[r])) {
+            r++;
+        }
+        if (r >= limit) {
+            return -1;
+        }
+        if (r == nameStart || buf[r] != ';') {
+            throw handler.fatalError(
+                    "A literal '" + marker + "' must begin a " + (marker == '%' ? "parameter entity" : "entity")
+                            + " reference (" + marker + "Name;)");
+        }
+        checkNameStartChar(nameStart);
+        sb.append(buf, q, r + 1 - q);
+        return r + 1;
     }
 
     /** Fires {@link XMLHandler#unparsedEntityDecl} for every entry in {@code
@@ -2532,7 +2676,7 @@ class Scanner implements ByteDecoderTarget {
 
         if (buf[p] == '"' || buf[p] == '\'') {
             StringBuilder sb = new StringBuilder();
-            int q = scanQuotedLiteralWithCharRefs(p, sb);
+            int q = scanQuotedLiteralWithCharRefs(p, sb, true);
             if (q < 0) {
                 return -1;
             }
@@ -2572,6 +2716,7 @@ class Scanner implements ByteDecoderTarget {
         String extSystemId = lastExternalIdSystemId;
         p = r;
 
+        int wsBeforeNdata = p;
         p = skipOptionalWhitespace(p);
         if (p >= limit) {
             return -1;
@@ -2584,6 +2729,13 @@ class Scanner implements ByteDecoderTarget {
             }
             if (m != KW_MATCH) {
                 throw handler.fatalError("Malformed entity declaration");
+            }
+            if (p == wsBeforeNdata) {
+                // NDataDecl ::= S 'NDATA' S Name - the leading S is
+                // mandatory, not optional; skipOptionalWhitespace above
+                // would have accepted "SYSTEM \"x\"NDATA foo" (zero
+                // whitespace) just as happily as one with it.
+                throw handler.fatalError("White space is required before \"NDATA\"");
             }
             if (isParam) {
                 // PEDef ::= EntityValue | ExternalID (production 74) - NDATA
@@ -2813,7 +2965,7 @@ class Scanner implements ByteDecoderTarget {
                 // reject it, not just a validating one.
                 cmPos = modelStart;
                 cmEnd = p;
-                model = parseContentModelGroup();
+                model = parseContentModelGroup(true);
             }
         }
 
@@ -2891,7 +3043,12 @@ class Scanner implements ByteDecoderTarget {
     private ElementDeclaration.ContentModel parseContentModelParticle() throws SAXException {
         cmPos = skipCmWhitespace(cmPos);
         if (cmPos < cmEnd && buf[cmPos] == '(') {
-            return parseContentModelGroup();
+            // false: a cp's own nested group is always element content
+            // (choice/seq of further cp) - Mixed content (#PCDATA...) is
+            // legal only as an ELEMENT declaration's own outermost group,
+            // never nested inside another one (cp ::= (Name | choice |
+            // seq) ...; Mixed is not itself a cp production).
+            return parseContentModelGroup(false);
         }
         int nameStart = cmPos;
         while (cmPos < cmEnd && isNameChar(buf[cmPos])) {
@@ -2909,23 +3066,32 @@ class Scanner implements ByteDecoderTarget {
 
     /**
      * Parses one parenthesised group - either mixed content ({@code
-     * (#PCDATA|a|b)*} or {@code (#PCDATA)}) or element content (a sequence
-     * {@code (a, b, c)} or choice {@code (a | b | c)} of particles,
-     * possibly nested) - {@link #cmPos} positioned at the opening '(' on
-     * entry (whether this is the outermost call from {@link
-     * #scanElementDeclaration} or a recursive one from {@link
-     * #parseContentModelParticle}), left just past this group's own
+     * (#PCDATA|a|b)*} or {@code (#PCDATA)}, only legal when {@code
+     * allowMixed}) or element content (a sequence {@code (a, b, c)} or
+     * choice {@code (a | b | c)} of particles, possibly nested) - {@link
+     * #cmPos} positioned at the opening '(' on entry (whether this is the
+     * outermost call from {@link #scanElementDeclaration}, which passes
+     * {@code allowMixed=true}, or a recursive one from {@link
+     * #parseContentModelParticle} for a nested group, which always passes
+     * {@code allowMixed=false} - {@code Mixed} is only a legal top-level
+     * production for an {@code <!ELEMENT>} declaration, never a legal
+     * {@code cp} within another group), left just past this group's own
      * closing ')' plus any trailing occurrence indicator on return. {@link
      * #cmEnd} is fixed for the whole recursive-descent parse (harmless for
      * an inner group to see a bound that extends past its own closing
      * paren - it only ever reads up to whichever comes first, its own
      * matching ')' or {@link #cmEnd}).
      */
-    private ElementDeclaration.ContentModel parseContentModelGroup() throws SAXException {
+    private ElementDeclaration.ContentModel parseContentModelGroup(boolean allowMixed) throws SAXException {
         cmPos++; // consume '('
         {
             cmPos = skipCmWhitespace(cmPos);
             int pm = matchKeyword(cmPos, PCDATA_MARKER);
+            if (pm == KW_MATCH && !allowMixed) {
+                throw handler.fatalError(
+                        "\"#PCDATA\" is only legal in an element declaration's own outermost content model "
+                                + "group, not nested inside another group");
+            }
             if (pm == KW_MATCH) {
                 cmPos += PCDATA_MARKER.length;
                 ArrayList<ElementDeclaration.ContentModel> children =
@@ -3233,7 +3399,7 @@ class Scanner implements ByteDecoderTarget {
                             throw handler.fatalError("Malformed attribute-list declaration");
                         }
                         StringBuilder sb = new StringBuilder();
-                        int r = scanQuotedLiteralWithCharRefs(p, sb);
+                        int r = scanQuotedLiteralWithCharRefs(p, sb, false);
                         if (r < 0) {
                             return -1;
                         }
@@ -3244,7 +3410,7 @@ class Scanner implements ByteDecoderTarget {
                 }
             } else if (buf[p] == '"' || buf[p] == '\'') {
                 StringBuilder sb = new StringBuilder();
-                int r = scanQuotedLiteralWithCharRefs(p, sb);
+                int r = scanQuotedLiteralWithCharRefs(p, sb, false);
                 if (r < 0) {
                     return -1;
                 }

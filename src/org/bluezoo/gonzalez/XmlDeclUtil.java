@@ -157,17 +157,23 @@ final class XmlDeclUtil {
     }
 
     /**
-     * Strips a leading {@code <?xml ...?>} declaration (an XML declaration
-     * on the main document, or a text declaration on an external entity/DTD
-     * subset - both share the same {@code '<?xml' ... '?>'} shape for this
-     * purpose) - {@link Scanner} never parses a declaration itself; that is
-     * always this earlier, separate pipeline stage's job. Throws (via {@code
-     * handler}, so it reaches {@code ErrorHandler.fatalError} like every
-     * other well-formedness error, rather than propagating as a bare {@code
-     * SAXException} the caller's normal error-reporting path never sees) if
-     * a declaration-looking prefix ({@code "<?xml"}) never finds its closing
-     * {@code "?>"} - a real, if malformed, not-wf document, not something to
-     * silently treat as having no declaration at all.
+     * Strips a leading {@code <?xml ...?>} text declaration from a fetched
+     * external entity or DTD subset's own content - {@link Scanner} never
+     * parses a declaration itself; that is always this earlier, separate
+     * pipeline stage's job, and only ever called for a {@code TextDecl}
+     * (never the main document's own {@code XMLDecl}, which {@link
+     * ExternalEntityDecoder} handles separately before {@link Scanner} ever
+     * sees the document's bytes). Throws (via {@code handler}, so it reaches
+     * {@code ErrorHandler.fatalError} like every other well-formedness
+     * error, rather than propagating as a bare {@code SAXException} the
+     * caller's normal error-reporting path never sees) if a declaration-
+     * looking prefix ({@code "<?xml"}) never finds its closing {@code "?>"}
+     * - a real, if malformed, not-wf document, not something to silently
+     * treat as having no declaration at all - or if it has a {@code
+     * standalone} pseudo-attribute (which {@code TextDecl ::= '<?xml'
+     * VersionInfo? EncodingDecl S? '?>'}, XML 4.3.1, does not permit at all,
+     * unlike the main document's own {@code XMLDecl}), or if {@code
+     * version}/{@code encoding} appear out of that same production's order.
      */
     static char[] stripXmlDeclaration(char[] all, XMLHandler handler) throws SAXException {
         int start = 0;
@@ -179,6 +185,17 @@ final class XmlDeclUtil {
             if (j + 1 >= all.length) {
                 throw handler.fatalError("Malformed XML declaration: missing closing \"?>\"");
             }
+            if (hasStandalonePseudoAttribute(all, 5, j)) {
+                throw handler.fatalError("A text declaration may not have a \"standalone\" "
+                        + "pseudo-attribute - that is only legal on the main document's own XML declaration");
+            }
+            int versionIdx = indexOfPseudoAttribute(all, 5, j, "version");
+            int encodingIdx = indexOfPseudoAttribute(all, 5, j, "encoding");
+            if (versionIdx >= 0 && encodingIdx >= 0 && encodingIdx < versionIdx) {
+                throw handler.fatalError(
+                        "A text declaration's \"version\" pseudo-attribute, if present, must come "
+                                + "before \"encoding\" (TextDecl ::= '<?xml' VersionInfo? EncodingDecl S? '?>')");
+            }
             start = j + 2;
             while (start < all.length && (all[start] == '\n' || all[start] == '\r')) {
                 start++;
@@ -187,6 +204,34 @@ final class XmlDeclUtil {
         char[] result = new char[all.length - start];
         System.arraycopy(all, start, result, 0, result.length);
         return result;
+    }
+
+    /** True if {@code "standalone"} appears as its own whole pseudo-
+     *  attribute name within {@code chars[start, end)} - see {@link
+     *  #indexOfPseudoAttribute}. */
+    private static boolean hasStandalonePseudoAttribute(char[] chars, int start, int end) {
+        return indexOfPseudoAttribute(chars, start, end, "standalone") >= 0;
+    }
+
+    /** Finds {@code name} appearing as its own whole pseudo-attribute name
+     *  (word-bounded - preceded by whitespace or the start of the span,
+     *  followed by whitespace or '=' - not merely a substring of something
+     *  else, such as an encoding name) within {@code chars[start, end)}.
+     *  Returns its index within that span, or -1 if not present. */
+    private static int indexOfPseudoAttribute(char[] chars, int start, int end, String name) {
+        String decl = new String(chars, start, end - start);
+        int idx = 0;
+        while ((idx = decl.indexOf(name, idx)) >= 0) {
+            boolean precededByWs = idx == 0 || Character.isWhitespace(decl.charAt(idx - 1));
+            int after = idx + name.length();
+            boolean followedByWsOrEq = after >= decl.length()
+                    || Character.isWhitespace(decl.charAt(after)) || decl.charAt(after) == '=';
+            if (precededByWs && followedByWsOrEq) {
+                return idx;
+            }
+            idx = after;
+        }
+        return -1;
     }
 
 }
