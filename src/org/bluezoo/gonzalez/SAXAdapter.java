@@ -88,6 +88,7 @@ class SAXAdapter implements XMLHandler {
     // since attributes are only ever assembled one at a time, never nested
     // or concurrent.
     private String currentAttributeName;
+    private String currentAttributeType;
     private boolean attributeValueFirstChunk;
     private final StringBuilder attributeValueBuilder = new StringBuilder();
 
@@ -162,8 +163,9 @@ class SAXAdapter implements XMLHandler {
     }
 
     @Override
-    public void startAttribute(String name) throws SAXException {
+    public void startAttribute(String name, String type) throws SAXException {
         currentAttributeName = name;
+        currentAttributeType = type;
         attributeValueFirstChunk = true;
     }
 
@@ -194,7 +196,8 @@ class SAXAdapter implements XMLHandler {
             // ContentParser.handleAttributeValue does - resolved in
             // resolveAttributeNamespaces() below once all xmlns declarations
             // for this element are known, regardless of attribute order.
-            attributes.addAttribute("", currentAttributeName, currentAttributeName, "CDATA", valueStr, true);
+            attributes.addAttribute("", currentAttributeName, currentAttributeName, currentAttributeType, valueStr,
+                    true);
         } catch (NamespaceException e) {
             throw fatalError(e.getMessage());
         }
@@ -257,6 +260,20 @@ class SAXAdapter implements XMLHandler {
             char[] chars = new char[text.remaining()];
             text.get(chars);
             contentHandler.characters(chars, 0, chars.length);
+        }
+    }
+
+    @Override
+    public void ignorableWhitespace(CharBuffer text, boolean end) throws SAXException {
+        if (contentHandler == null) {
+            return;
+        }
+        if (text.hasArray()) {
+            contentHandler.ignorableWhitespace(text.array(), text.arrayOffset() + text.position(), text.remaining());
+        } else {
+            char[] chars = new char[text.remaining()];
+            text.get(chars);
+            contentHandler.ignorableWhitespace(chars, 0, chars.length);
         }
     }
 

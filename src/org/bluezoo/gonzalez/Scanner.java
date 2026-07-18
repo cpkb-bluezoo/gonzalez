@@ -26,6 +26,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import org.xml.sax.SAXException;
 
@@ -147,6 +149,17 @@ class Scanner {
     private char pendingQuote;
     private boolean attrValueRunOpen;
 
+    /** M5: true while the attribute currently being scanned is declared
+     *  with a non-CDATA type, meaning its value needs the type-dependent
+     *  collapse normalisation (XML 3.3.3) applied - see {@link
+     *  #emitAttributeValueContent}. Materializing the value defeats the
+     *  zero-copy streaming path, but only for attributes an ATTLIST
+     *  actually declares non-CDATA; the common CDATA/no-DTD case is
+     *  untouched. {@link #normalizeBuilder} is a single reused field, not a
+     *  pool, since only one attribute is ever being scanned at a time. */
+    private boolean normalizingCurrentAttribute;
+    private final StringBuilder normalizeBuilder = new StringBuilder();
+
     /** True if the most recent characters() emission for the run currently
      *  in progress had end=false and has not yet been closed with end=true -
      *  see {@link #scanContent()}. */
@@ -154,6 +167,12 @@ class Scanner {
 
     /** WFC "Element Type Match" stack of interned qNames. */
     private final ArrayList<String> elementStack = new ArrayList<String>();
+
+    /** M5: names of attributes specified on the start tag currently being
+     *  scanned, reset once per {@link #scanStartTag} - lets {@link
+     *  #applyAttributeDefaults} know which declared attributes were left
+     *  unspecified and need a default injected. */
+    private final HashSet<String> seenAttributeNames = new HashSet<String>();
 
     /**
      * Interns element/attribute names: M1 called {@code new String(...)} for
@@ -400,29 +419,70 @@ class Scanner {
      */
     private boolean scanContent() throws SAXException {
         boolean insideDocument = !elementStack.isEmpty();
+        // M5: an element declared with element-only content (no #PCDATA at
+        // all) reports whitespace-only text via ignorableWhitespace()
+        // instead of characters() - see emitContentRun(). Determined once
+        // per call (a single map lookup), not per character.
+        boolean elementOnlyContent = insideDocument && isCurrentElementContentElementOnly();
         while (true) {
             int runStart = pos;
-            while (pos < limit && buf[pos] != '<' && buf[pos] != '&') {
-                pos++;
+            if (elementOnlyContent && pos < limit && buf[pos] != '<' && buf[pos] != '&') {
+                // Homogeneous-run scanning: also stop at a whitespace/non-
+                // whitespace transition, so every run this loop identifies
+                // is either all-whitespace or all-non-whitespace, and the
+                // ignorableWhitespace()-vs-characters() choice never needs
+                // to be revisited once made (it can't be: a run spanning a
+                // receive() boundary could otherwise start as all-whitespace
+                // within one call and only later, in a subsequent chunk, be
+                // revealed to contain non-whitespace content - by which
+                // point the whitespace-only prefix may already have gone out
+                // via ignorableWhitespace()). This costs one extra branch per
+                // character, but only when a DTD has actually declared the
+                // current element element-only - the common (no DTD, or
+                // mixed/ANY content) case is untouched below.
+                boolean ws0 = isWs(buf[pos]);
+                while (pos < limit && buf[pos] != '<' && buf[pos] != '&' && isWs(buf[pos]) == ws0) {
+                    pos++;
+                }
+            } else {
+                while (pos < limit && buf[pos] != '<' && buf[pos] != '&') {
+                    pos++;
+                }
             }
+            boolean runIsWhitespace = elementOnlyContent && pos > runStart && isWs(buf[runStart]);
             if (pos >= limit) {
                 if (insideDocument && pos > runStart) {
-                    handler.characters(CharBuffer.wrap(buf, runStart, pos - runStart), false);
+                    emitContentRun(CharBuffer.wrap(buf, runStart, pos - runStart), false, runIsWhitespace);
                     contentRunOpen = true;
+                    contentRunIsWhitespace = runIsWhitespace;
                 }
                 return false;
             }
             if (buf[pos] == '<') {
                 if (insideDocument) {
                     if (pos > runStart) {
-                        handler.characters(CharBuffer.wrap(buf, runStart, pos - runStart), true);
+                        emitContentRun(CharBuffer.wrap(buf, runStart, pos - runStart), true, runIsWhitespace);
                         contentRunOpen = false;
                     } else if (contentRunOpen) {
-                        handler.characters(EMPTY_BUFFER, true);
+                        emitContentRun(EMPTY_BUFFER, true, contentRunIsWhitespace);
                         contentRunOpen = false;
                     }
                 }
                 return true;
+            }
+            if (buf[pos] != '&') {
+                // Stopped at a whitespace/non-whitespace transition
+                // (elementOnlyContent's homogeneous-run scanning only) -
+                // not markup, not an entity reference. This is a fully
+                // confirmed, complete sub-run (nothing about it depends on
+                // more data arriving), so it closes with end=true, exactly
+                // like the '<' case above - then the outer loop simply
+                // starts a fresh run right here for whatever comes next.
+                if (insideDocument && pos > runStart) {
+                    emitContentRun(CharBuffer.wrap(buf, runStart, pos - runStart), true, runIsWhitespace);
+                    contentRunOpen = false;
+                }
+                continue;
             }
             // buf[pos] == '&'. The pending "runStart..ampPos" text (if any)
             // is confirmed, real buffered data regardless of how the entity
@@ -436,8 +496,9 @@ class Scanner {
             // compaction. Found via the M4 chunk-fuzzing differential test.
             int ampPos = pos;
             if (insideDocument && ampPos > runStart) {
-                handler.characters(CharBuffer.wrap(buf, runStart, ampPos - runStart), false);
+                emitContentRun(CharBuffer.wrap(buf, runStart, ampPos - runStart), false, runIsWhitespace);
                 contentRunOpen = true;
+                contentRunIsWhitespace = runIsWhitespace;
             }
             int refStatus = decodeEntityRef();
             if (refStatus == REF_NEED_MORE) {
@@ -452,7 +513,7 @@ class Scanner {
                 // closed off definitively (end=true) before the entity's
                 // own, entirely separate events fire.
                 if (insideDocument && contentRunOpen) {
-                    handler.characters(EMPTY_BUFFER, true);
+                    emitContentRun(EMPTY_BUFFER, true, contentRunIsWhitespace);
                 }
                 contentRunOpen = false;
                 expandGeneralEntityInContent(pendingEntityName);
@@ -461,13 +522,46 @@ class Scanner {
             CharBuffer decoded = lastDecodedRef;
             boolean atMarkup = (pos < limit && buf[pos] == '<');
             if (insideDocument) {
+                // Entity-produced content is never routed through
+                // ignorableWhitespace(), even if it happens to be all
+                // whitespace - a deliberate M5 scope simplification (see
+                // class Javadoc), not an oversight.
                 handler.characters(decoded, atMarkup);
                 contentRunOpen = !atMarkup;
+                contentRunIsWhitespace = false;
             }
             if (atMarkup) {
                 return true;
             }
             // loop continues, scanning the next run after the entity
+        }
+    }
+
+    /** True if the current (innermost open) element's declared content type
+     *  is element-only ({@link DTDModel.ContentType#ELEMENT} - no {@code
+     *  #PCDATA} at all), the only case where whitespace-only text is
+     *  reported via {@link XMLHandler#ignorableWhitespace} rather than
+     *  {@link XMLHandler#characters}. False for {@code MIXED}/{@code ANY}/
+     *  {@code EMPTY} content types and for an element with no {@code
+     *  <!ELEMENT>} declaration at all (including the common no-DTD case). */
+    private boolean isCurrentElementContentElementOnly() {
+        String currentElement = elementStack.get(elementStack.size() - 1);
+        return dtdModel.getContentType(currentElement) == DTDModel.ContentType.ELEMENT;
+    }
+
+    /** True if the most recently opened run - tracked via {@link
+     *  #contentRunOpen} - was routed through {@link
+     *  XMLHandler#ignorableWhitespace} rather than {@link
+     *  XMLHandler#characters}, so a later empty-closing-frame call (see
+     *  {@link #scanContent()}) closes it out via the same event type it was
+     *  opened with. */
+    private boolean contentRunIsWhitespace;
+
+    private void emitContentRun(CharBuffer text, boolean end, boolean isWhitespace) throws SAXException {
+        if (isWhitespace) {
+            handler.ignorableWhitespace(text, end);
+        } else {
+            handler.characters(text, end);
         }
     }
 
@@ -655,6 +749,7 @@ class Scanner {
         }
         pos = p;
         elementStack.add(qName);
+        seenAttributeNames.clear();
         handler.startElement(qName);
         inStartTag = true;
         return true;
@@ -685,6 +780,7 @@ class Scanner {
             char c = buf[pos];
             if (c == '>') {
                 pos++;
+                applyAttributeDefaults(elementStack.get(elementStack.size() - 1));
                 handler.endAttributes();
                 return true;
             }
@@ -697,6 +793,7 @@ class Scanner {
                     throw handler.fatalError("Malformed start tag");
                 }
                 pos += 2;
+                applyAttributeDefaults(elementStack.get(elementStack.size() - 1));
                 elementStack.remove(elementStack.size() - 1);
                 handler.endAttributes();
                 handler.endElement();
@@ -715,6 +812,7 @@ class Scanner {
                 throw handler.fatalError("Malformed start tag");
             }
             String attrName = namePool.intern(CharBuffer.wrap(buf, nameStart, pos - nameStart));
+            seenAttributeNames.add(attrName);
 
             while (pos < limit && isWs(buf[pos])) {
                 pos++;
@@ -741,9 +839,14 @@ class Scanner {
             }
             pos++;
 
-            handler.startAttribute(attrName);
+            String attrType = lookupAttributeType(elementStack.get(elementStack.size() - 1), attrName);
+            handler.startAttribute(attrName, attrType);
             pendingQuote = quote;
             attrValueRunOpen = false;
+            normalizingCurrentAttribute = !"CDATA".equals(attrType);
+            if (normalizingCurrentAttribute) {
+                normalizeBuilder.setLength(0);
+            }
             if (!scanAttributeValueStreaming()) {
                 inAttributeValue = true;
                 return false;
@@ -772,12 +875,24 @@ class Scanner {
         char quote = pendingQuote;
         while (true) {
             int runStart = pos;
+            // Unconditional attribute-value normalisation (XML 3.3.3): a
+            // literal tab/CR/LF is replaced with a single space, always -
+            // not conditional on a DTD being present (that's the type-
+            // dependent non-CDATA collapse below, applied separately). Safe
+            // to substitute in place: this range is buf's own scratch
+            // storage, about to be emitted and then either consumed or
+            // copied per saveBuffers()'s contract - nothing reads the
+            // original raw bytes at this position again.
             while (pos < limit && buf[pos] != quote && buf[pos] != '&' && buf[pos] != '<') {
+                char c = buf[pos];
+                if (c == '\t' || c == '\n' || c == '\r') {
+                    buf[pos] = ' ';
+                }
                 pos++;
             }
             if (pos >= limit) {
                 if (pos > runStart) {
-                    handler.attributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), false);
+                    emitAttributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), false);
                     attrValueRunOpen = true;
                 }
                 return false;
@@ -787,9 +902,9 @@ class Scanner {
             }
             if (buf[pos] == quote) {
                 if (pos > runStart) {
-                    handler.attributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), true);
+                    emitAttributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), true);
                 } else if (attrValueRunOpen) {
-                    handler.attributeValueContent(EMPTY_BUFFER, true);
+                    emitAttributeValueContent(EMPTY_BUFFER, true);
                 }
                 attrValueRunOpen = false;
                 pos++;
@@ -802,7 +917,7 @@ class Scanner {
             // rewind.
             int ampPos = pos;
             if (ampPos > runStart) {
-                handler.attributeValueContent(CharBuffer.wrap(buf, runStart, ampPos - runStart), false);
+                emitAttributeValueContent(CharBuffer.wrap(buf, runStart, ampPos - runStart), false);
                 attrValueRunOpen = true;
             }
             int refStatus = decodeEntityRef();
@@ -823,7 +938,7 @@ class Scanner {
                 decoded = lastDecodedRef;
             }
             boolean atQuote = (pos < limit && buf[pos] == quote);
-            handler.attributeValueContent(decoded, atQuote);
+            emitAttributeValueContent(decoded, atQuote);
             if (atQuote) {
                 attrValueRunOpen = false;
                 pos++;
@@ -832,6 +947,78 @@ class Scanner {
             attrValueRunOpen = true;
             // loop continues, scanning the next run after the entity
         }
+    }
+
+    /** Returns the declared type of {@code attrName} on {@code elementName}
+     *  (the literal ATTLIST keyword text, or {@code "ENUMERATION"} for a
+     *  bare enumeration - see {@link DTDModel.AttDef#type}), or {@code
+     *  "CDATA"} - the SAX2 convention for "no declaration was read for this
+     *  attribute" - if there is no ATTLIST/DTD at all, or the element has
+     *  one but this attribute isn't in it. Used both for {@link
+     *  XMLHandler#startAttribute}'s type parameter and (via {@code
+     *  !"CDATA".equals(...)}) to decide whether the type-dependent collapse
+     *  normalisation (XML 3.3.3) applies - a single map lookup either way,
+     *  no allocation. */
+    private String lookupAttributeType(String elementName, String attrName) {
+        Map<String, DTDModel.AttDef> declared = dtdModel.getAttributes(elementName);
+        if (declared == null) {
+            return "CDATA";
+        }
+        DTDModel.AttDef def = declared.get(attrName);
+        return def == null ? "CDATA" : def.type;
+    }
+
+    /**
+     * Dispatches an attribute value chunk either straight to {@link
+     * XMLHandler#attributeValueContent} (the common case - zero-copy,
+     * streamed as-is) or, when {@link #normalizingCurrentAttribute} is true,
+     * into {@link #normalizeBuilder} instead, flushing the fully collapsed
+     * result as a single call once {@code end} is reached. Type-dependent
+     * collapse (XML 3.3.3) trims leading/trailing whitespace and folds
+     * interior whitespace runs to one space each - distinct from, and
+     * applied on top of, the unconditional literal-tab/CR/LF-to-space
+     * substitution {@link #scanAttributeValueStreaming} already did while
+     * scanning (so by this point every whitespace char still present is
+     * already a plain space).
+     */
+    private void emitAttributeValueContent(CharBuffer chunk, boolean end) throws SAXException {
+        if (!normalizingCurrentAttribute) {
+            handler.attributeValueContent(chunk, end);
+            return;
+        }
+        normalizeBuilder.append(chunk);
+        if (end) {
+            String collapsed = collapseWhitespace(normalizeBuilder);
+            normalizingCurrentAttribute = false;
+            handler.attributeValueContent(CharBuffer.wrap(collapsed), true);
+        }
+    }
+
+    /** XML 3.3.3's type-dependent attribute value normalisation: trim
+     *  leading/trailing whitespace, collapse interior whitespace runs to a
+     *  single space each. Operates on already-tab/CR/LF-normalized text (see
+     *  {@link #scanAttributeValueStreaming}), so only plain spaces need
+     *  collapsing here, but checking {@link #isWs} generically costs nothing
+     *  extra and stays correct regardless of call order. */
+    private static String collapseWhitespace(CharSequence s) {
+        int len = s.length();
+        StringBuilder sb = new StringBuilder(len);
+        boolean pendingSpace = false;
+        for (int i = 0; i < len; i++) {
+            char c = s.charAt(i);
+            if (isWs(c)) {
+                if (sb.length() > 0) {
+                    pendingSpace = true;
+                }
+            } else {
+                if (pendingSpace) {
+                    sb.append(' ');
+                    pendingSpace = false;
+                }
+                sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 
     // ===== End tag =====
@@ -1051,6 +1238,18 @@ class Scanner {
     private static final char[] PUBLIC_MARKER = "PUBLIC".toCharArray();
     private static final char[] NDATA_MARKER = "NDATA".toCharArray();
     private static final char[] ENTITY_MARKER = "<!ENTITY".toCharArray();
+    private static final char[] ATTLIST_MARKER = "<!ATTLIST".toCharArray();
+    private static final char[] ELEMENT_MARKER = "<!ELEMENT".toCharArray();
+    private static final char[] EMPTY_MARKER = "EMPTY".toCharArray();
+    private static final char[] ANY_MARKER = "ANY".toCharArray();
+    private static final char[] PCDATA_MARKER = "#PCDATA".toCharArray();
+    private static final char[] REQUIRED_MARKER = "#REQUIRED".toCharArray();
+    private static final char[] IMPLIED_MARKER = "#IMPLIED".toCharArray();
+    private static final char[] FIXED_MARKER = "#FIXED".toCharArray();
+
+    /** M5: element content types and attribute defaults/types declared in
+     *  the internal DTD subset - see class Javadoc "M5" section. */
+    private final DTDModel dtdModel = new DTDModel();
 
     /** Matches {@code marker} against {@code buf} starting at {@code p}. */
     private int matchKeyword(int p, char[] marker) {
@@ -1217,6 +1416,43 @@ class Scanner {
     }
 
     /**
+     * Parses a quoted literal value (an EntityValue or AttValue - the two
+     * share the same character-reference-expands-now / everything-else-
+     * literal rule) starting at {@code buf[p]} (the opening quote), appending
+     * the decoded text to {@code sb}. Shared by {@link #scanEntityDeclaration}
+     * and {@link #scanAttlistDeclaration}. Returns the position past the
+     * closing quote, or -1 on underflow.
+     */
+    private int scanQuotedLiteralWithCharRefs(int p, StringBuilder sb) throws SAXException {
+        char quote = buf[p];
+        int q = p + 1;
+        while (true) {
+            if (q >= limit) {
+                return -1;
+            }
+            char c = buf[q];
+            if (c == quote) {
+                return q + 1;
+            }
+            if (c == '&' && q + 1 < limit && buf[q + 1] == '#') {
+                int r = decodeCharRefInto(sb, q);
+                if (r < 0) {
+                    return -1;
+                }
+                q = r;
+                continue;
+            }
+            if (c == '&' && q + 1 >= limit) {
+                // Could be the start of "&#..." straddling the buffer
+                // boundary - can't yet tell, must wait for more data.
+                return -1;
+            }
+            sb.append(c);
+            q++;
+        }
+    }
+
+    /**
      * Parses one {@code <!ENTITY ...>} declaration, {@code p} positioned
      * just past the "<!ENTITY" keyword. On success, records the declaration
      * into {@code pendingEntities}/{@code pendingExternalNames} (first
@@ -1262,34 +1498,12 @@ class Scanner {
         }
 
         if (buf[p] == '"' || buf[p] == '\'') {
-            char quote = buf[p];
             StringBuilder sb = new StringBuilder();
-            int q = p + 1;
-            while (true) {
-                if (q >= limit) {
-                    return -1;
-                }
-                char c = buf[q];
-                if (c == quote) {
-                    break;
-                }
-                if (c == '&' && q + 1 < limit && buf[q + 1] == '#') {
-                    int r = decodeCharRefInto(sb, q);
-                    if (r < 0) {
-                        return -1;
-                    }
-                    q = r;
-                    continue;
-                }
-                if (c == '&' && q + 1 >= limit) {
-                    // Could be the start of "&#..." straddling the buffer
-                    // boundary - can't yet tell, must wait for more data.
-                    return -1;
-                }
-                sb.append(c);
-                q++;
+            int q = scanQuotedLiteralWithCharRefs(p, sb);
+            if (q < 0) {
+                return -1;
             }
-            p = q + 1; // past closing quote
+            p = q;
 
             p = skipOptionalWhitespace(p);
             if (p >= limit) {
@@ -1362,12 +1576,329 @@ class Scanner {
         return p;
     }
 
+    /** Skips a flat (non-nested) parenthesised list - a {@code NOTATION}
+     *  type's name list or an enumerated attribute type's Nmtoken list -
+     *  starting at {@code p} (the '('). Neither ever nests further parens,
+     *  unlike an element content model, so this is a simpler scan than
+     *  {@link #scanElementDeclaration}'s. Returns the position past the
+     *  closing ')', or -1 on underflow. */
+    private int skipParenList(int p) throws SAXException {
+        p++;
+        while (true) {
+            if (p >= limit) {
+                return -1;
+            }
+            if (buf[p] == ')') {
+                return p + 1;
+            }
+            p++;
+        }
+    }
+
     /**
-     * Parses {@code <!DOCTYPE ... >}, including an optional external ID
-     * (recognised, not fetched) and an optional internal subset, as one
-     * atomic construct (see class Javadoc). Must appear before the root
-     * element and at most once.
+     * Parses one {@code <!ELEMENT ...>} declaration, {@code p} positioned
+     * just past the "<!ELEMENT" keyword, recording only its top-level {@link
+     * DTDModel.ContentType} - not the full content-model tree (out of scope
+     * for M5's defaulting/normalisation-only goal; see class Javadoc). The
+     * content model's parenthesised structure (if any) still has to be
+     * scanned in full, paren-depth-aware, purely to find where the
+     * declaration ends - {@code (a, (b|c)+, d*)} nests arbitrarily, unlike
+     * an ATTLIST's flat enumeration/NOTATION lists. Returns the position
+     * past the closing '>', or -1 on underflow.
      */
+    private int scanElementDeclaration(int p) throws SAXException {
+        int ws = p;
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == ws) {
+            throw handler.fatalError("Malformed element declaration");
+        }
+
+        int nameStart = p;
+        while (p < limit && isNameChar(buf[p])) {
+            p++;
+        }
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == nameStart) {
+            throw handler.fatalError("Malformed element declaration");
+        }
+        String name = new String(buf, nameStart, p - nameStart);
+
+        int ws2 = p;
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == ws2) {
+            throw handler.fatalError("Malformed element declaration");
+        }
+
+        DTDModel.ContentType type;
+        int em = matchKeyword(p, EMPTY_MARKER);
+        if (em == KW_NEED_MORE) {
+            return -1;
+        }
+        if (em == KW_MATCH) {
+            type = DTDModel.ContentType.EMPTY;
+            p += EMPTY_MARKER.length;
+        } else {
+            int am = matchKeyword(p, ANY_MARKER);
+            if (am == KW_NEED_MORE) {
+                return -1;
+            }
+            if (am == KW_MATCH) {
+                type = DTDModel.ContentType.ANY;
+                p += ANY_MARKER.length;
+            } else {
+                if (p >= limit) {
+                    return -1;
+                }
+                if (buf[p] != '(') {
+                    throw handler.fatalError("Malformed element declaration");
+                }
+                int afterParen = skipOptionalWhitespace(p + 1);
+                if (afterParen >= limit) {
+                    return -1;
+                }
+                int pm = matchKeyword(afterParen, PCDATA_MARKER);
+                if (pm == KW_NEED_MORE) {
+                    return -1;
+                }
+                type = (pm == KW_MATCH) ? DTDModel.ContentType.MIXED : DTDModel.ContentType.ELEMENT;
+
+                int depth = 0;
+                while (true) {
+                    if (p >= limit) {
+                        return -1;
+                    }
+                    char c = buf[p];
+                    p++;
+                    if (c == '(') {
+                        depth++;
+                    } else if (c == ')') {
+                        depth--;
+                        if (depth == 0) {
+                            break;
+                        }
+                    }
+                }
+                if (p >= limit) {
+                    return -1;
+                }
+                if (buf[p] == '?' || buf[p] == '*' || buf[p] == '+') {
+                    p++;
+                }
+            }
+        }
+
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
+            return -1;
+        }
+        if (buf[p] != '>') {
+            throw handler.fatalError("Malformed element declaration");
+        }
+        p++;
+
+        dtdModel.declareContentType(name, type);
+        return p;
+    }
+
+    /**
+     * Parses one {@code <!ATTLIST ...>} declaration (an element name
+     * followed by zero or more AttDefs), {@code p} positioned just past the
+     * "<!ATTLIST" keyword. For each AttDef, only records whether the type is
+     * {@code CDATA} or not (the specific non-CDATA type, and any
+     * enumeration/{@code NOTATION} value list, is recognised syntactically
+     * to skip past correctly but not retained - checking that a value is a
+     * legal member of it is a VC check, out of scope for M5) and the
+     * resolved default (raw at this point - see {@link
+     * #scanDoctypeSubset()}'s finishing step for entity resolution), or null
+     * for {@code #REQUIRED}/{@code #IMPLIED}. Returns the position past the
+     * declaration's closing '>', or -1 on underflow.
+     */
+    private int scanAttlistDeclaration(int p) throws SAXException {
+        int ws = p;
+        p = skipOptionalWhitespace(p);
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == ws) {
+            throw handler.fatalError("Malformed attribute-list declaration");
+        }
+
+        int nameStart = p;
+        while (p < limit && isNameChar(buf[p])) {
+            p++;
+        }
+        if (p >= limit) {
+            return -1;
+        }
+        if (p == nameStart) {
+            throw handler.fatalError("Malformed attribute-list declaration");
+        }
+        String elementName = new String(buf, nameStart, p - nameStart);
+
+        while (true) {
+            int ws2 = p;
+            p = skipOptionalWhitespace(p);
+            if (p >= limit) {
+                return -1;
+            }
+            if (buf[p] == '>') {
+                p++;
+                return p;
+            }
+            if (p == ws2) {
+                throw handler.fatalError("Malformed attribute-list declaration");
+            }
+
+            int attrNameStart = p;
+            while (p < limit && isNameChar(buf[p])) {
+                p++;
+            }
+            if (p >= limit) {
+                return -1;
+            }
+            if (p == attrNameStart) {
+                throw handler.fatalError("Malformed attribute-list declaration");
+            }
+            String attrName = new String(buf, attrNameStart, p - attrNameStart);
+
+            int ws3 = p;
+            p = skipOptionalWhitespace(p);
+            if (p >= limit) {
+                return -1;
+            }
+            if (p == ws3) {
+                throw handler.fatalError("Malformed attribute-list declaration");
+            }
+
+            String type;
+            if (buf[p] == '(') {
+                // A bare enumeration - SAX/the old parser's AttListDeclParser
+                // both report this as the literal type name "ENUMERATION",
+                // not the list of allowed values (which isn't retained here
+                // anyway - see class Javadoc).
+                type = "ENUMERATION";
+                int r = skipParenList(p);
+                if (r < 0) {
+                    return -1;
+                }
+                p = r;
+            } else {
+                int typeStart = p;
+                while (p < limit && isNameChar(buf[p])) {
+                    p++;
+                }
+                if (p >= limit) {
+                    return -1;
+                }
+                if (p == typeStart) {
+                    throw handler.fatalError("Malformed attribute-list declaration");
+                }
+                // The literal keyword text itself is the SAX type string
+                // ("CDATA", "ID", "IDREF", "IDREFS", "ENTITY", "ENTITIES",
+                // "NMTOKEN", "NMTOKENS", or "NOTATION") - not separately
+                // validated as one of those (VC/WFC keyword-legality
+                // checking is out of scope for M5).
+                type = new String(buf, typeStart, p - typeStart);
+                if ("NOTATION".equals(type)) {
+                    int ws3b = p;
+                    p = skipOptionalWhitespace(p);
+                    if (p >= limit) {
+                        return -1;
+                    }
+                    if (p == ws3b) {
+                        throw handler.fatalError("Malformed attribute-list declaration");
+                    }
+                    if (buf[p] != '(') {
+                        throw handler.fatalError("Malformed attribute-list declaration");
+                    }
+                    int r = skipParenList(p);
+                    if (r < 0) {
+                        return -1;
+                    }
+                    p = r;
+                }
+            }
+
+            int ws4 = p;
+            p = skipOptionalWhitespace(p);
+            if (p >= limit) {
+                return -1;
+            }
+            if (p == ws4) {
+                throw handler.fatalError("Malformed attribute-list declaration");
+            }
+
+            String rawDefault;
+            if (buf[p] == '#') {
+                int rm = matchKeyword(p, REQUIRED_MARKER);
+                if (rm == KW_NEED_MORE) {
+                    return -1;
+                }
+                if (rm == KW_MATCH) {
+                    p += REQUIRED_MARKER.length;
+                    rawDefault = null;
+                } else {
+                    int im = matchKeyword(p, IMPLIED_MARKER);
+                    if (im == KW_NEED_MORE) {
+                        return -1;
+                    }
+                    if (im == KW_MATCH) {
+                        p += IMPLIED_MARKER.length;
+                        rawDefault = null;
+                    } else {
+                        int fm = matchKeyword(p, FIXED_MARKER);
+                        if (fm == KW_NEED_MORE) {
+                            return -1;
+                        }
+                        if (fm != KW_MATCH) {
+                            throw handler.fatalError("Malformed attribute-list declaration");
+                        }
+                        p += FIXED_MARKER.length;
+                        int ws5 = p;
+                        p = skipOptionalWhitespace(p);
+                        if (p >= limit) {
+                            return -1;
+                        }
+                        if (p == ws5) {
+                            throw handler.fatalError("Malformed attribute-list declaration");
+                        }
+                        if (buf[p] != '"' && buf[p] != '\'') {
+                            throw handler.fatalError("Malformed attribute-list declaration");
+                        }
+                        StringBuilder sb = new StringBuilder();
+                        int r = scanQuotedLiteralWithCharRefs(p, sb);
+                        if (r < 0) {
+                            return -1;
+                        }
+                        p = r;
+                        rawDefault = sb.toString();
+                    }
+                }
+            } else if (buf[p] == '"' || buf[p] == '\'') {
+                StringBuilder sb = new StringBuilder();
+                int r = scanQuotedLiteralWithCharRefs(p, sb);
+                if (r < 0) {
+                    return -1;
+                }
+                p = r;
+                rawDefault = sb.toString();
+            } else {
+                throw handler.fatalError("Malformed attribute-list declaration");
+            }
+
+            dtdModel.declareAttribute(elementName, attrName, type, rawDefault);
+            // loop continues: another AttDef, or S? '>' to end the declaration
+        }
+    }
+
     /**
      * Parses {@code "<!DOCTYPE" Name (S ExternalID)? S?} - everything up to
      * (but not including) an internal subset or the closing '&gt;', all of
@@ -1545,11 +2076,35 @@ class Scanner {
                             }
                             pos = r;
                         } else {
-                            int r = skipMarkupDeclaration(pos);
-                            if (r < 0) {
+                            int am = matchKeyword(pos, ATTLIST_MARKER);
+                            if (am == KW_NEED_MORE) {
                                 return false;
                             }
-                            pos = r;
+                            if (am == KW_MATCH) {
+                                int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length);
+                                if (r < 0) {
+                                    return false;
+                                }
+                                pos = r;
+                            } else {
+                                int elm = matchKeyword(pos, ELEMENT_MARKER);
+                                if (elm == KW_NEED_MORE) {
+                                    return false;
+                                }
+                                if (elm == KW_MATCH) {
+                                    int r = scanElementDeclaration(pos + ELEMENT_MARKER.length);
+                                    if (r < 0) {
+                                        return false;
+                                    }
+                                    pos = r;
+                                } else {
+                                    int r = skipMarkupDeclaration(pos);
+                                    if (r < 0) {
+                                        return false;
+                                    }
+                                    pos = r;
+                                }
+                            }
                         }
                     }
                 } else {
@@ -1577,6 +2132,7 @@ class Scanner {
 
         generalEntities.putAll(doctypePendingEntities);
         externalEntityNames.addAll(doctypePendingExternalNames);
+        resolveAttlistDefaultsAgainstEntities();
         doctypeSeen = true;
         doctypeName = doctypeNamePending;
         doctypePendingEntities = null;
@@ -1584,6 +2140,22 @@ class Scanner {
         doctypeNamePending = null;
         doctypeSubsetClosed = false;
         return true;
+    }
+
+    /** Resolves entity references embedded in every {@code <!ATTLIST>}
+     *  default value declared so far, now that the whole internal subset -
+     *  and therefore every general entity - is known (see {@link
+     *  #resolveAttlistDefaultValue}). Called once, from this method's own
+     *  finishing step. A no-op (single empty-map check per element) for the
+     *  common case of no ATTLIST declarations at all. */
+    private void resolveAttlistDefaultsAgainstEntities() throws SAXException {
+        for (LinkedHashMap<String, DTDModel.AttDef> attrs : dtdModel.allAttlists().values()) {
+            for (DTDModel.AttDef def : attrs.values()) {
+                if (def.defaultValue != null) {
+                    def.defaultValue = resolveAttlistDefaultValue(def.defaultValue);
+                }
+            }
+        }
     }
 
     /** Validates that {@code name} may be referenced now: declared (as a
@@ -1695,41 +2267,97 @@ class Scanner {
         entityExpansionStack.add(name);
         try {
             char[] rbuf = replacement.toCharArray();
-            int rlen = rbuf.length;
-            StringBuilder sb = new StringBuilder(rlen);
-            int q = 0;
-            while (q < rlen) {
-                char c = rbuf[q];
-                if (c == '<') {
-                    throw handler.fatalError(
-                            "'<' is not allowed in an attribute value (via entity \"" + name + "\")");
-                }
-                if (c != '&') {
-                    sb.append(c);
-                    q++;
-                    continue;
-                }
-                int nameStart = q + 1;
-                int p = nameStart;
-                while (p < rlen && isNameChar(rbuf[p])) {
-                    p++;
-                }
-                if (p >= rlen || rbuf[p] != ';') {
-                    throw handler.fatalError("Malformed entity reference in entity \"" + name + "\"");
-                }
-                CharBuffer predef = matchPredefined(rbuf, nameStart, p - nameStart);
-                if (predef != null) {
-                    predef.rewind();
-                    sb.append(predef);
-                } else {
-                    String refName = new String(rbuf, nameStart, p - nameStart);
-                    sb.append(expandGeneralEntityInAttributeValue(refName));
-                }
-                q = p + 1;
-            }
-            return sb.toString();
+            return resolveAttributeText(rbuf, "entity \"" + name + "\"");
         } finally {
             entityExpansionStack.remove(entityExpansionStack.size() - 1);
+        }
+    }
+
+    /**
+     * Walks {@code text} left to right, expanding predefined and nested
+     * general entity references and rejecting a literal '&lt;' (WFC "No
+     * {@literal <} in Attribute Values") - the shared core of {@link
+     * #expandGeneralEntityInAttributeValue} and (via {@link
+     * #resolveAttlistDefaultValue}) ATTLIST default-value resolution. Both
+     * contexts already have their text fully materialized (an entity's
+     * replacement text; a default value literal), so this never needs to
+     * signal underflow - it always fully resolves in one pass.
+     *
+     * @param context used only in error messages, to say where a WFC
+     *                 violation was found (an entity name, or "an attribute
+     *                 default value")
+     */
+    private String resolveAttributeText(char[] text, String context) throws SAXException {
+        int len = text.length;
+        StringBuilder sb = new StringBuilder(len);
+        int q = 0;
+        while (q < len) {
+            char c = text[q];
+            if (c == '<') {
+                throw handler.fatalError("'<' is not allowed in an attribute value (via " + context + ")");
+            }
+            if (c != '&') {
+                sb.append(c);
+                q++;
+                continue;
+            }
+            int nameStart = q + 1;
+            int p = nameStart;
+            while (p < len && isNameChar(text[p])) {
+                p++;
+            }
+            if (p >= len || text[p] != ';') {
+                throw handler.fatalError("Malformed entity reference in " + context);
+            }
+            CharBuffer predef = matchPredefined(text, nameStart, p - nameStart);
+            if (predef != null) {
+                predef.rewind();
+                sb.append(predef);
+            } else {
+                String refName = new String(text, nameStart, p - nameStart);
+                sb.append(expandGeneralEntityInAttributeValue(refName));
+            }
+            q = p + 1;
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Resolves entity references embedded in an {@code <!ATTLIST>} default
+     * value's raw literal text (predefined and general entity references
+     * kept literal at declaration time, same as an {@code <!ENTITY>}'s own
+     * value - see {@link #scanAttlistDeclaration}). Called once per default,
+     * from {@link #scanDoctypeSubset}'s finishing step, after the whole
+     * internal subset - and therefore every entity - has been parsed, since
+     * a default may reference an entity declared later in the same subset.
+     */
+    private String resolveAttlistDefaultValue(String raw) throws SAXException {
+        return resolveAttributeText(raw.toCharArray(), "an attribute default value");
+    }
+
+    /**
+     * Injects synthetic {@link XMLHandler#startAttribute}/{@link
+     * XMLHandler#attributeValueContent} events for every {@code <!ATTLIST>}-
+     * declared attribute of {@code elementName} that was not specified on
+     * this start tag and has a default value to inject ({@code #FIXED} or a
+     * literal default - not {@code #REQUIRED}/{@code #IMPLIED}, which have
+     * none). Called from {@link #scanAttributesAndTagEnd} immediately before
+     * {@link XMLHandler#endAttributes()}. A no-op (single map lookup) for
+     * the common case of an element with no ATTLIST declaration at all.
+     */
+    private void applyAttributeDefaults(String elementName) throws SAXException {
+        Map<String, DTDModel.AttDef> declared = dtdModel.getAttributes(elementName);
+        if (declared == null) {
+            return;
+        }
+        for (Map.Entry<String, DTDModel.AttDef> entry : declared.entrySet()) {
+            String name = entry.getKey();
+            DTDModel.AttDef def = entry.getValue();
+            if (def.defaultValue == null || seenAttributeNames.contains(name)) {
+                continue;
+            }
+            handler.startAttribute(name, def.type);
+            handler.attributeValueContent(CharBuffer.wrap(def.defaultValue), true);
         }
     }
 

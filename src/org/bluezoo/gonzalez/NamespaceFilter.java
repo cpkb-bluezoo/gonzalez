@@ -117,13 +117,13 @@ class NamespaceFilter implements XMLHandler {
     }
 
     @Override
-    public void startAttribute(String name) throws SAXException {
+    public void startAttribute(String name, String type) throws SAXException {
         currentAttrName = name;
         currentIsNamespaceDecl = "xmlns".equals(name) || name.startsWith("xmlns:");
         if (currentIsNamespaceDecl) {
             valueFirstChunk = true;
         } else {
-            delegate.startAttribute(name);
+            delegate.startAttribute(name, type);
         }
     }
 
@@ -196,6 +196,11 @@ class NamespaceFilter implements XMLHandler {
     @Override
     public void characters(CharBuffer text, boolean end) throws SAXException {
         delegate.characters(text, end);
+    }
+
+    @Override
+    public void ignorableWhitespace(CharBuffer text, boolean end) throws SAXException {
+        delegate.ignorableWhitespace(text, end);
     }
 
     @Override

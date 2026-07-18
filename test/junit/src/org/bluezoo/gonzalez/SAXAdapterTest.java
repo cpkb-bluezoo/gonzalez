@@ -45,7 +45,7 @@ public class SAXAdapterTest {
     /** Convenience for the common single-chunk case: startAttribute() then
      *  one attributeValueContent(value, end=true) call. */
     private static void attr(SAXAdapter adapter, String name, String value) throws Exception {
-        adapter.startAttribute(name);
+        adapter.startAttribute(name, "CDATA");
         adapter.attributeValueContent(cb(value), true);
     }
 
@@ -118,7 +118,7 @@ public class SAXAdapterTest {
 
         adapter.startDocument();
         adapter.startElement("root");
-        adapter.startAttribute("attr");
+        adapter.startAttribute("attr", "CDATA");
         adapter.attributeValueContent(cb("Here is"), false);
         adapter.attributeValueContent(cb(" the value"), true);
         adapter.endAttributes();
@@ -148,7 +148,7 @@ public class SAXAdapterTest {
 
         adapter.startDocument();
         adapter.startElement("root");
-        adapter.startAttribute("attr");
+        adapter.startAttribute("attr", "CDATA");
         adapter.attributeValueContent(cb("value"), false);
         adapter.attributeValueContent(CharBuffer.wrap(new char[0]), true);
         adapter.endAttributes();
@@ -289,7 +289,7 @@ public class SAXAdapterTest {
 
         adapter.startDocument();
         adapter.startElement("root");
-        adapter.startAttribute("attr");
+        adapter.startAttribute("attr", "CDATA");
         adapter.attributeValueContent(cb("part1"), false);
         adapter.saveBuffers();
         adapter.attributeValueContent(cb("part2"), true);

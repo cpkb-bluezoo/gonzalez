@@ -53,7 +53,7 @@ public class NamespaceFilterTest {
 
     /** Single-chunk startAttribute()/attributeValueContent(value, true) pair. */
     private static void attr(NamespaceFilter filter, String name, String value) throws Exception {
-        filter.startAttribute(name);
+        filter.startAttribute(name, "CDATA");
         filter.attributeValueContent(cb(value), true);
     }
 
@@ -113,7 +113,7 @@ public class NamespaceFilterTest {
 
         filter.startDocument();
         filter.startElement("root");
-        filter.startAttribute("xmlns");
+        filter.startAttribute("xmlns", "CDATA");
         filter.attributeValueContent(cb("urn:pa"), false);
         filter.attributeValueContent(cb("rt"), true);
         filter.endAttributes();
@@ -139,7 +139,7 @@ public class NamespaceFilterTest {
 
         filter.startDocument();
         filter.startElement("root");
-        filter.startAttribute("xmlns");
+        filter.startAttribute("xmlns", "CDATA");
         filter.attributeValueContent(cb("urn:x"), false);
         filter.attributeValueContent(CharBuffer.wrap(new char[0]), true);
         filter.endAttributes();
@@ -289,7 +289,7 @@ public class NamespaceFilterTest {
         NamespaceFilter filter = newFilter(sink, false);
         filter.startDocument();
         filter.startElement("root");
-        filter.startAttribute("xmlns");
+        filter.startAttribute("xmlns", "CDATA");
         filter.attributeValueContent(cb("urn:x"), false);
         filter.saveBuffers();
         filter.attributeValueContent(cb("y"), true);

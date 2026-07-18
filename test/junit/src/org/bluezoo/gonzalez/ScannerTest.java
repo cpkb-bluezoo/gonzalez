@@ -523,15 +523,17 @@ public class ScannerTest {
     }
 
     @Test
-    public void testElementAndAttlistDeclarationsSkippedSyntactically() throws Exception {
-        // Default attribute value containing '>' inside quotes must not
-        // terminate the <!ATTLIST...> declaration early.
+    public void testAttlistDefaultValueContainingGreaterThanInsideQuotes() throws Exception {
+        // '>' inside the quoted default value must not terminate the
+        // <!ATTLIST...> declaration early (M4-era concern); now that M5
+        // actually parses ATTLIST (not just skips it), the declared default
+        // is also expected to be injected since "note" is left unspecified.
         String xml = "<!DOCTYPE root [<!ELEMENT root (#PCDATA)>"
                 + "<!ATTLIST root note CDATA \"a > b\">"
                 + "<!ENTITY foo \"bar\">]><root>&foo;</root>";
         assertEquals(Arrays.asList(
                 "startDocument()",
-                "startElement(,root,root,[])",
+                "startElement(,root,root,[ note=a > b(CDATA)])",
                 "characters:bar",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
@@ -544,6 +546,247 @@ public class ScannerTest {
                 "startDocument()",
                 "startElement(,root,root,[])",
                 "characters:text",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    // ===== M5: attribute defaulting, type-aware normalisation, ignorableWhitespace =====
+
+    private static final String M5_SAMPLE_XML = "<!DOCTYPE root [\n"
+            + "<!ELEMENT root (child)*>\n"
+            + "<!ATTLIST root id CDATA \"r1\">\n"
+            + "<!ELEMENT child (#PCDATA)>\n"
+            + "<!ATTLIST child token NMTOKEN #IMPLIED>\n"
+            + "]>\n"
+            + "<root>\n"
+            + "  <child token=\"  a\tb  \">hello</child>\n"
+            + "  <child>world</child>\n"
+            + "</root>\n";
+
+    @Test
+    public void testDifferential_attributeDefaultingNormalizationAndIgnorableWhitespace() throws Exception {
+        byte[] bytes = M5_SAMPLE_XML.getBytes(StandardCharsets.UTF_8);
+        List<String> reference = normalizeM4Reference(runCurrentParser(bytes));
+        assertTrue("reference recording should not be trivially empty", reference.size() > 5);
+
+        char[] chars = M5_SAMPLE_XML.toCharArray();
+        for (int chunkSize : CHUNK_SIZES) {
+            List<String> actual = runScanner(chars, chunkSize);
+            assertEquals("chunk size " + chunkSize, reference, actual);
+        }
+    }
+
+    @Test
+    public void testAttributeDefaultInjectedWhenNotSpecified() throws Exception {
+        String xml = "<!DOCTYPE root [<!ATTLIST root id CDATA \"r1\">]><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ id=r1(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testAttributeDefaultNotInjectedWhenSpecified() throws Exception {
+        String xml = "<!DOCTYPE root [<!ATTLIST root id CDATA \"r1\">]><root id=\"specified\"/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ id=specified(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testFixedAttributeDefaultInjectedWhenAbsent() throws Exception {
+        String xml = "<!DOCTYPE root [<!ATTLIST root ver CDATA #FIXED \"1.0\">]><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ ver=1.0(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testRequiredAndImpliedAttributesHaveNoDefaultToInject() throws Exception {
+        String xml = "<!DOCTYPE root [<!ATTLIST root a CDATA #REQUIRED b CDATA #IMPLIED>]><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testAttributeDefaultValueResolvesForwardReferencedEntity() throws Exception {
+        // The default references &greeting;, declared LATER in the same
+        // internal subset - resolvable because defaults are only resolved
+        // once the whole subset (and therefore every entity) is known.
+        String xml = "<!DOCTYPE root [<!ATTLIST root msg CDATA \"&greeting; world\">"
+                + "<!ENTITY greeting \"hello\">]><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ msg=hello world(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testNonCdataAttributeValueIsCollapsed() throws Exception {
+        String xml = "<!DOCTYPE root [<!ATTLIST root token NMTOKEN #IMPLIED>]>"
+                + "<root token=\"  a\tb  \"/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ token=a b(NMTOKEN)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testCdataAttributeValueIsNotCollapsed() throws Exception {
+        String xml = "<!DOCTYPE root [<!ATTLIST root note CDATA #IMPLIED>]>"
+                + "<root note=\"  a  b  \"/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ note=  a  b  (CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testDeclaredAttributeTypeReportedForSpecifiedValue() throws Exception {
+        // SAX Attributes.getType() must reflect the ATTLIST-declared type,
+        // not always "CDATA" (a bug present from M0 through M5, fixed as a
+        // follow-up: SAXAdapter previously hardcoded "CDATA" regardless of
+        // what the DTD declared - see ASYNC-PIPELINE.md's M5 section).
+        String xml = "<!DOCTYPE root [<!ATTLIST root id ID #IMPLIED>]><root id=\"x1\"/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ id=x1(ID)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testDeclaredAttributeTypeReportedForDefaultedValue() throws Exception {
+        // The type must also be correct for an injected default - a
+        // separate code path (applyAttributeDefaults) from a specified
+        // value's (scanAttributesAndTagEnd).
+        String xml = "<!DOCTYPE root [<!ATTLIST root kind NMTOKEN \"a\">]><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ kind=a(NMTOKEN)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testEnumerationAttributeTypeReportedAsEnumeration() throws Exception {
+        // A bare enumeration "(a|b)" has no keyword of its own - SAX (and
+        // the old parser's AttListDeclParser) both report the literal type
+        // name "ENUMERATION" for it.
+        String xml = "<!DOCTYPE root [<!ATTLIST root kind (a|b) \"a\">]><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ kind=a(ENUMERATION)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testNotationAttributeTypeReportedAsNotation() throws Exception {
+        String xml = "<!DOCTYPE root [<!ATTLIST root kind NOTATION (a|b) \"a\">]><root/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ kind=a(NOTATION)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testUndeclaredAttributeTypeDefaultsToCdata() throws Exception {
+        // No ATTLIST for "extra" at all - SAX convention: "CDATA".
+        String xml = "<!DOCTYPE root [<!ATTLIST root id ID #IMPLIED>]><root extra=\"v\"/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ extra=v(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testUnconditionalAttributeWhitespaceNormalizationAppliesWithoutDtd() throws Exception {
+        String xml = "<root note=\"a\tb\nc\"/>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[ note=a b c(CDATA)])",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testIgnorableWhitespaceForElementOnlyContent() throws Exception {
+        String xml = "<!DOCTYPE root [<!ELEMENT root (child)*><!ELEMENT child EMPTY>]>"
+                + "<root>  <child/>  <child/>  </root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "ignorableWhitespace:  ",
+                "startElement(,child,child,[])",
+                "endElement(,child,child)",
+                "ignorableWhitespace:  ",
+                "startElement(,child,child,[])",
+                "endElement(,child,child)",
+                "ignorableWhitespace:  ",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testWhitespaceIsCharactersForMixedContent() throws Exception {
+        String xml = "<!DOCTYPE root [<!ELEMENT root (#PCDATA|child)*><!ELEMENT child EMPTY>]>"
+                + "<root>  <child/>  </root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:  ",
+                "startElement(,child,child,[])",
+                "endElement(,child,child)",
+                "characters:  ",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testWhitespaceIsCharactersWithNoElementDeclaration() throws Exception {
+        String xml = "<!DOCTYPE root [<!ENTITY foo \"bar\">]><root>  <child/>  </root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "characters:  ",
+                "startElement(,child,child,[])",
+                "endElement(,child,child)",
+                "characters:  ",
+                "endElement(,root,root)",
+                "endDocument()"), runScannerWithDoctype(xml));
+    }
+
+    @Test
+    public void testNonWhitespaceContentInElementOnlyContentStillCharacters() throws Exception {
+        // Leading/trailing whitespace around non-whitespace content, even
+        // within an element-only-content element, still splits into
+        // separate homogeneous runs: ignorableWhitespace() for the
+        // whitespace, ordinary characters() for the non-whitespace between -
+        // matching the spec's per-run (not per-inter-tag-text) granularity
+        // for "which characters constitute whitespace in element content".
+        String xml = "<!DOCTYPE root [<!ELEMENT root (child)*>]><root>  text  <child/></root>";
+        assertEquals(Arrays.asList(
+                "startDocument()",
+                "startElement(,root,root,[])",
+                "ignorableWhitespace:  ",
+                "characters:text",
+                "ignorableWhitespace:  ",
+                "startElement(,child,child,[])",
+                "endElement(,child,child)",
                 "endElement(,root,root)",
                 "endDocument()"), runScannerWithDoctype(xml));
     }

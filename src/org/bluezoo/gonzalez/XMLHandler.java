@@ -36,7 +36,7 @@ import org.xml.sax.SAXException;
  * <li>{@link #startElement(String)} takes the raw qName only; namespace
  * resolution is not forced on every consumer.</li>
  * <li>Attribute values arrive as a stream of {@link #attributeValueContent}
- * calls bracketed by {@link #startAttribute(String)}, rather than as a single
+ * calls bracketed by {@link #startAttribute(String, String)}, rather than as a single
  * {@code Attributes} collection - no "little DOM" of attribute state is built
  * unless a consumer chooses to buffer one. See below for why this is
  * streamed rather than assembled by the scanner.</li>
@@ -135,7 +135,7 @@ interface XMLHandler {
 
     /**
      * Signals the start of an element. Followed by zero or more
-     * {@link #namespace(String, String)}/{@link #startAttribute(String)}
+     * {@link #namespace(String, String)}/{@link #startAttribute(String, String)}
      * (each followed by one or more {@link #attributeValueContent}) calls,
      * then exactly one {@link #endAttributes()} call.
      *
@@ -164,8 +164,15 @@ interface XMLHandler {
      * (see {@link #namespace(String, String)}).
      *
      * @param name the attribute's raw name (may contain a prefix)
+     * @param type the attribute's declared type - the SAX2 convention
+     *             ({@code "CDATA"}, {@code "ID"}, {@code "IDREF"}, {@code
+     *             "IDREFS"}, {@code "ENTITY"}, {@code "ENTITIES"}, {@code
+     *             "NMTOKEN"}, {@code "NMTOKENS"}, {@code "NOTATION"}, or
+     *             {@code "ENUMERATION"} for a bare enumeration); always
+     *             {@code "CDATA"} if there is no DTD, or none declares this
+     *             attribute
      */
-    void startAttribute(String name) throws SAXException;
+    void startAttribute(String name, String type) throws SAXException;
 
     /**
      * Reports a chunk of the current attribute's value (see class Javadoc
@@ -194,6 +201,25 @@ interface XMLHandler {
      * @param end true if this chunk completes the current run of character data
      */
     void characters(CharBuffer text, boolean end) throws SAXException;
+
+    /**
+     * Reports a chunk of whitespace-only character data that a DTD's content
+     * model declares insignificant (an element declared with element-only
+     * content, {@code <!ELEMENT foo (bar,baz)>} - not mixed or {@code ANY}
+     * content). Only fired when an internal DTD subset has declared the
+     * current element's content type; a document with no DTD, or one whose
+     * current element allows mixed/{@code ANY} content, always reports
+     * whitespace via {@link #characters} instead - see Scanner's "M5"
+     * section for the determination and its scope (content coming from a
+     * general entity reference is never routed here, even if
+     * whitespace-only, to keep that determination simple). Same streaming/
+     * {@code end}/buffer-lifetime semantics as {@link #characters}.
+     *
+     * @param text the whitespace chunk; valid only for the duration of this
+     *             call unless retained per {@link #saveBuffers()}'s contract
+     * @param end true if this chunk completes the current run
+     */
+    void ignorableWhitespace(CharBuffer text, boolean end) throws SAXException;
 
     /**
      * Signals the end of the most recently started, still-open element.
