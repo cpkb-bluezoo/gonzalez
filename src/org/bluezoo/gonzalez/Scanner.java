@@ -456,6 +456,21 @@ class Scanner implements ByteDecoderTarget {
     private static final int MAX_ENTITY_EXPANSIONS = 100_000;
     private int entityExpansionCount;
 
+    /** True while the text currently being scanned for markup declarations
+     *  originates from the external DTD subset, or from an external
+     *  parameter entity's own replacement text (nested arbitrarily deep -
+     *  set around {@link #parseExternalSubset} and, within {@link
+     *  #expandParameterEntityReference}, only for an external entity's own
+     *  nested {@link #parseMarkupDeclSeq} call; an internal parameter
+     *  entity's expansion leaves it exactly as inherited from the caller).
+     *  False for the internal subset's own literal source text. Read by
+     *  {@link #splicePEReferenceAt} to decide between WFC "PEs in Internal
+     *  Subset" (a parameter entity reference is simply not allowed within a
+     *  markup declaration's own syntax there) and actually expanding the
+     *  reference (allowed everywhere else, per that WFC's own parenthetical
+     *  exception). */
+    private boolean parsingExternalContent;
+
     /** XML 1.1 vs 1.0 mode, affecting only numeric character reference
      *  legality (see {@link #decodeEntityRef()}) and the lookup tables
      *  content/attribute-value scanning use (see {@link
@@ -2513,15 +2528,22 @@ class Scanner implements ByteDecoderTarget {
      * isEntityValue} selects between the two productions' differing
      * treatment of a literal {@code '%'}: {@code EntityValue}'s grammar
      * (XML 4.1 [9]) excludes a bare {@code '%'} entirely (it must begin a
-     * parameter entity reference, {@code %name;} - validated the same way as
-     * a general entity reference, but expanding a parameter entity mid-value
-     * is not yet supported, so this only confirms the reference's own syntax
-     * is legal, not that it resolves); {@code AttValue}'s grammar (XML 3.1
-     * [10]) has no such restriction - a literal {@code '%'} (for example
-     * {@code "100%"}) is ordinary character data. Returns the position past
-     * the closing quote, or -1 on underflow.
+     * parameter entity reference, {@code %name;} - immediately expanded in
+     * place per XML 4.4.5 "Included in Literal", via {@link
+     * #resolveParameterEntityReferenceAt}, so a value built up out of
+     * further parameter entities - {@code <!ENTITY % e2 "%e1;%e1;">} and
+     * the like, nested arbitrarily - resolves to one flat string exactly
+     * as if it had been typed that way); {@code AttValue}'s grammar (XML
+     * 3.1 [10]) has no such
+     * restriction - a literal {@code '%'} (for example {@code "100%"}) is
+     * ordinary character data. {@code pendingParamEntities}/{@code
+     * pendingParamExternalNames} - see {@link #scanAttlistDeclaration}'s
+     * identical parameters; only ever consulted when {@code isEntityValue}.
+     * Returns the position past the closing quote, or -1 on underflow.
      */
-    private int scanQuotedLiteralWithCharRefs(int p, StringBuilder sb, boolean isEntityValue) throws SAXException {
+    private int scanQuotedLiteralWithCharRefs(int p, StringBuilder sb, boolean isEntityValue,
+            HashMap<String, String> pendingParamEntities, HashMap<String, String[]> pendingParamExternalNames)
+            throws SAXException {
         char quote = buf[p];
         int q = p + 1;
         while (true) {
@@ -2557,11 +2579,28 @@ class Scanner implements ByteDecoderTarget {
                 if (q + 1 >= limit) {
                     return -1;
                 }
-                int r = scanReferenceNameLiteral(q, sb, '%');
-                if (r < 0) {
+                // WFC "PEs in Internal Subset" (checked inside
+                // resolveParameterEntityReferenceAt) applies here exactly
+                // as it does to a reference at a declaration's own token
+                // boundaries (see splicePEReferenceAt) - an EntityValue is
+                // itself the value of an <!ENTITY> declaration, so a %pe;
+                // inside one, in the internal subset, is still "within a
+                // markup declaration" there. Unlike splicePEReferenceAt's
+                // "Included as PE" (XML 4.4.8), this is "Included in
+                // Literal" (XML 4.4.5): the resolved text - already itself
+                // fully resolved, with no PE reference of its own left
+                // un-expanded, per resolveParameterEntityReplacement's own
+                // contract - is appended directly to sb, with no padding
+                // and never touching buf at all, so a quote character
+                // within it can never be mistaken for this literal's own
+                // closing quote the way splicing it into buf could.
+                char[] replacementChars = resolveParameterEntityReferenceAt(q, pendingParamEntities,
+                        pendingParamExternalNames);
+                if (replacementChars == null) {
                     return -1;
                 }
-                q = r;
+                sb.append(replacementChars);
+                q = lastPEReferenceEnd;
                 continue;
             }
             if (!isLegalLiteralChar(c)) {
@@ -2676,7 +2715,7 @@ class Scanner implements ByteDecoderTarget {
 
         if (buf[p] == '"' || buf[p] == '\'') {
             StringBuilder sb = new StringBuilder();
-            int q = scanQuotedLiteralWithCharRefs(p, sb, true);
+            int q = scanQuotedLiteralWithCharRefs(p, sb, true, pendingParamEntities, pendingParamExternalNames);
             if (q < 0) {
                 return -1;
             }
@@ -2864,11 +2903,14 @@ class Scanner implements ByteDecoderTarget {
      * buffered span (this depth-matching scan having already confirmed it
      * never underflows) is re-parsed into a real {@link
      * ElementDeclaration.ContentModel} tree by {@link #parseContentModelGroup}.
-     * Returns the position past the closing '>', or -1 on underflow.
+     * Returns the position past the closing '>', or -1 on underflow. {@code
+     * pendingParamEntities}/{@code pendingParamExternalNames} - see {@link
+     * #scanAttlistDeclaration}'s identical parameters.
      */
-    private int scanElementDeclaration(int p) throws SAXException {
+    private int scanElementDeclaration(int p, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
         int ws = p;
-        p = skipOptionalWhitespace(p);
+        p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
         if (p >= limit) {
             return -1;
         }
@@ -2890,7 +2932,7 @@ class Scanner implements ByteDecoderTarget {
         String name = new String(buf, nameStart, p - nameStart);
 
         int ws2 = p;
-        p = skipOptionalWhitespace(p);
+        p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
         if (p >= limit) {
             return -1;
         }
@@ -2940,6 +2982,21 @@ class Scanner implements ByteDecoderTarget {
                         return -1;
                     }
                     char c = buf[p];
+                    if (c == '%') {
+                        // Splice (or, in the internal subset, reject) right
+                        // here rather than after this depth-matching scan
+                        // completes: a parameter entity's own replacement
+                        // text may itself contain parens that need to
+                        // participate in this very depth count (VC "Proper
+                        // Group/PE Nesting" - not separately checked here,
+                        // but naturally satisfied for the common case since
+                        // splicing happens before, not after, matching).
+                        p = splicePEReferenceAt(p, pendingParamEntities, pendingParamExternalNames);
+                        if (p >= limit) {
+                            return -1;
+                        }
+                        continue;
+                    }
                     p++;
                     if (c == '(') {
                         depth++;
@@ -3224,11 +3281,19 @@ class Scanner implements ByteDecoderTarget {
      * resolved default itself (raw at this point - see {@link
      * #scanDoctypeSubset()}'s finishing step for entity resolution), or null
      * for {@code #REQUIRED}/{@code #IMPLIED}. Returns the position past the
-     * declaration's closing '>', or -1 on underflow.
+     * declaration's closing '>', or -1 on underflow. {@code
+     * pendingParamEntities}/{@code pendingParamExternalNames} are threaded
+     * through purely so a parameter entity reference appearing anywhere
+     * within this declaration's own syntax can be resolved - see {@link
+     * #skipWhitespaceInDeclaration}; ignored entirely unless {@link
+     * #parsingExternalContent} (a reference is never actually reachable
+     * from the internal subset - {@link #splicePEReferenceAt} rejects it
+     * outright there).
      */
-    private int scanAttlistDeclaration(int p) throws SAXException {
+    private int scanAttlistDeclaration(int p, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
         int ws = p;
-        p = skipOptionalWhitespace(p);
+        p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
         if (p >= limit) {
             return -1;
         }
@@ -3251,7 +3316,7 @@ class Scanner implements ByteDecoderTarget {
 
         while (true) {
             int ws2 = p;
-            p = skipOptionalWhitespace(p);
+            p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
             if (p >= limit) {
                 return -1;
             }
@@ -3282,7 +3347,7 @@ class Scanner implements ByteDecoderTarget {
             String attrName = namePool.intern(CharBuffer.wrap(buf, attrNameStart, p - attrNameStart));
 
             int ws3 = p;
-            p = skipOptionalWhitespace(p);
+            p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
             if (p >= limit) {
                 return -1;
             }
@@ -3330,7 +3395,7 @@ class Scanner implements ByteDecoderTarget {
                 }
                 if ("NOTATION".equals(type)) {
                     int ws3b = p;
-                    p = skipOptionalWhitespace(p);
+                    p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
                     if (p >= limit) {
                         return -1;
                     }
@@ -3350,7 +3415,7 @@ class Scanner implements ByteDecoderTarget {
             }
 
             int ws4 = p;
-            p = skipOptionalWhitespace(p);
+            p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
             if (p >= limit) {
                 return -1;
             }
@@ -3388,7 +3453,7 @@ class Scanner implements ByteDecoderTarget {
                         }
                         p += FIXED_MARKER.length;
                         int ws5 = p;
-                        p = skipOptionalWhitespace(p);
+                        p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
                         if (p >= limit) {
                             return -1;
                         }
@@ -3399,7 +3464,7 @@ class Scanner implements ByteDecoderTarget {
                             throw handler.fatalError("Malformed attribute-list declaration");
                         }
                         StringBuilder sb = new StringBuilder();
-                        int r = scanQuotedLiteralWithCharRefs(p, sb, false);
+                        int r = scanQuotedLiteralWithCharRefs(p, sb, false, pendingParamEntities, pendingParamExternalNames);
                         if (r < 0) {
                             return -1;
                         }
@@ -3410,7 +3475,7 @@ class Scanner implements ByteDecoderTarget {
                 }
             } else if (buf[p] == '"' || buf[p] == '\'') {
                 StringBuilder sb = new StringBuilder();
-                int r = scanQuotedLiteralWithCharRefs(p, sb, false);
+                int r = scanQuotedLiteralWithCharRefs(p, sb, false, pendingParamEntities, pendingParamExternalNames);
                 if (r < 0) {
                     return -1;
                 }
@@ -3713,7 +3778,8 @@ class Scanner implements ByteDecoderTarget {
                                 return false;
                             }
                             if (am == KW_MATCH) {
-                                int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length);
+                                int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length,
+                                        doctypePendingParamEntities, doctypePendingParamExternalNames);
                                 if (r < 0) {
                                     return false;
                                 }
@@ -3724,7 +3790,8 @@ class Scanner implements ByteDecoderTarget {
                                     return false;
                                 }
                                 if (elm == KW_MATCH) {
-                                    int r = scanElementDeclaration(pos + ELEMENT_MARKER.length);
+                                    int r = scanElementDeclaration(pos + ELEMENT_MARKER.length,
+                                            doctypePendingParamEntities, doctypePendingParamExternalNames);
                                     if (r < 0) {
                                         return false;
                                     }
@@ -4121,9 +4188,11 @@ class Scanner implements ByteDecoderTarget {
         char[] savedBuf = buf;
         int savedPos = pos;
         int savedLimit = limit;
+        boolean savedParsingExternalContent = parsingExternalContent;
         buf = chars;
         pos = 0;
         limit = chars.length;
+        parsingExternalContent = true;
         try {
             parseMarkupDeclSeq(false, pendingEntities, pendingExternalNames, pendingParamEntities,
                     pendingParamExternalNames);
@@ -4159,6 +4228,7 @@ class Scanner implements ByteDecoderTarget {
             buf = savedBuf;
             pos = savedPos;
             limit = savedLimit;
+            parsingExternalContent = savedParsingExternalContent;
         }
     }
 
@@ -4236,7 +4306,8 @@ class Scanner implements ByteDecoderTarget {
                     } else {
                         int am = matchKeyword(pos, ATTLIST_MARKER);
                         if (am == KW_MATCH) {
-                            int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length);
+                            int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length, pendingParamEntities,
+                                    pendingParamExternalNames);
                             if (r < 0) {
                                 throw handler.fatalError("Malformed attribute-list declaration");
                             }
@@ -4244,7 +4315,8 @@ class Scanner implements ByteDecoderTarget {
                         } else {
                             int elm = matchKeyword(pos, ELEMENT_MARKER);
                             if (elm == KW_MATCH) {
-                                int r = scanElementDeclaration(pos + ELEMENT_MARKER.length);
+                                int r = scanElementDeclaration(pos + ELEMENT_MARKER.length, pendingParamEntities,
+                                        pendingParamExternalNames);
                                 if (r < 0) {
                                     throw handler.fatalError("Malformed element declaration");
                                 }
@@ -4284,7 +4356,12 @@ class Scanner implements ByteDecoderTarget {
             HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
             HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
         pos += 3; // "<!["
-        pos = skipOptionalWhitespace(pos);
+        // The conditionalSect keyword itself may be provided by a
+        // parameter entity reference (a common real-world idiom: "<![
+        // %pe; [ ... ]]>" with pe declared as literally "INCLUDE" or
+        // "IGNORE") - PE-aware for exactly the same reason every markup
+        // declaration's own whitespace-skip points are.
+        pos = skipWhitespaceInDeclaration(pos, pendingParamEntities, pendingParamExternalNames);
         int im = matchKeyword(pos, INCLUDE_MARKER);
         boolean include;
         if (im == KW_MATCH) {
@@ -4379,9 +4456,19 @@ class Scanner implements ByteDecoderTarget {
         parameterEntityExpansionStack.add(name);
         char[] savedBuf = buf;
         int savedLimit = limit;
+        boolean savedParsingExternalContent = parsingExternalContent;
         buf = replacementChars;
         pos = 0;
         limit = buf.length;
+        // WFC "PEs in Internal Subset"'s own exception: a reference that
+        // occurs *in an external parameter entity* is exempt even when the
+        // reference itself was recognized while parsing the internal
+        // subset - only an *internal* parameter entity's expansion stays
+        // subject to the surrounding context's own parsingExternalContent
+        // (inherited unchanged, whichever way it already was).
+        if (lastParamEntityWasExternal) {
+            parsingExternalContent = true;
+        }
         try {
             parseMarkupDeclSeq(false, pendingEntities, pendingExternalNames, pendingParamEntities,
                     pendingParamExternalNames);
@@ -4391,10 +4478,21 @@ class Scanner implements ByteDecoderTarget {
         } finally {
             buf = savedBuf;
             limit = savedLimit;
+            parsingExternalContent = savedParsingExternalContent;
             parameterEntityExpansionStack.remove(parameterEntityExpansionStack.size() - 1);
         }
         pos = resumeAt;
     }
+
+    /** Set by {@link #resolveParameterEntityReplacement} - whether the
+     *  value it just returned came from a freshly-fetched external resource
+     *  (true) or an already-declared literal value (false). Read by {@link
+     *  #expandParameterEntityReference} to decide whether its own nested
+     *  {@link #parseMarkupDeclSeq} call should run with {@link
+     *  #parsingExternalContent} set, per WFC "PEs in Internal Subset"'s own
+     *  "does not apply to references in external parameter entities"
+     *  exception. */
+    private boolean lastParamEntityWasExternal;
 
     /** Resolves {@code name}'s replacement text for {@link
      *  #expandParameterEntityReference}: an already-declared literal value
@@ -4409,6 +4507,7 @@ class Scanner implements ByteDecoderTarget {
             literal = parameterEntities.get(name);
         }
         if (literal != null) {
+            lastParamEntityWasExternal = false;
             return literal.toCharArray();
         }
         String[] externalIds = pendingParamExternalNames.get(name);
@@ -4418,8 +4517,164 @@ class Scanner implements ByteDecoderTarget {
         if (externalIds == null) {
             throw handler.fatalError("Parameter entity \"%" + name + ";\" was not declared");
         }
+        lastParamEntityWasExternal = true;
         char[] fetched = fetchExternalResource("parameter entity \"" + name + "\"", externalIds[0], externalIds[1]);
         return XmlDeclUtil.stripXmlDeclaration(fetched, handler);
+    }
+
+    // ===== Parameter entity references inside a single markup declaration =====
+    //
+    // A PE reference BETWEEN declarations (handled above by {@link
+    // #expandParameterEntityReference}) is comparatively easy: its
+    // replacement text is a self-contained sequence of complete
+    // declarations, fully drained via a nested, ordinary recursive {@link
+    // #parseMarkupDeclSeq} call before control returns to the outer one. A
+    // PE reference INSIDE a declaration's own syntax - possibly providing
+    // only a fragment of a token, or several tokens at once, anywhere from
+    // right after the declaration's own keyword onward - cannot be handled
+    // that way, because there is no self-contained "declaration" to
+    // recursively parse; the declaration's own syntax continues right on
+    // from wherever the reference happened to fall, mid-token or not, and
+    // that continuation has to come from whichever buffer holds it next
+    // (the entity's replacement text, then back to the original source).
+    //
+    // Since a declaration is always parsed from an already-fully-buffered
+    // span (this class's "atomic construct" discipline - see {@link
+    // #scanAttlistDeclaration} and friends), the whole entity's replacement
+    // text can simply be spliced into {@link #buf} in place of the "%name;"
+    // text, in memory, via {@link #spliceIntoBuf} - after which every
+    // existing character-by-character scanning loop in this class continues
+    // reading buf[pos]/buf[p] exactly as before, completely unaware that
+    // anything happened; no new "which buffer am I in" bookkeeping is
+    // needed anywhere else. A further nested PE reference inside the
+    // spliced text is handled by the very same mechanism, with no explicit
+    // recursion: splicing leaves the scan position sitting at the start of
+    // the newly-inserted text, so the caller's own loop re-examines it and
+    // finds - and splices - the nested reference on its own.
+
+    /**
+     * Splices {@code replacement} into {@link #buf} in place of {@code
+     * buf[start, end)}, growing {@link #buf} (and adjusting {@link #limit})
+     * if needed. Returns {@code start} - the position the replacement's own
+     * first character now occupies - purely as a convenience for callers
+     * that want to thread it back into their own cursor variable; {@link
+     * #pos} itself is not touched here (some callers splice ahead of {@link
+     * #pos}, at a local cursor of their own).
+     */
+    private int spliceIntoBuf(int start, int end, String replacement) {
+        int oldSpan = end - start;
+        int newSpan = replacement.length();
+        int delta = newSpan - oldSpan;
+        if (delta > 0 && limit + delta > buf.length) {
+            buf = Arrays.copyOf(buf, Math.max(buf.length * 2, limit + delta));
+        }
+        System.arraycopy(buf, end, buf, start + newSpan, limit - end);
+        replacement.getChars(0, newSpan, buf, start);
+        limit += delta;
+        return start;
+    }
+
+    /**
+     * Resolves and splices the parameter entity reference at {@code
+     * buf[p]} (which must be {@code '%'}) into {@link #buf}, enlarged by a
+     * leading and trailing space per XML 4.4.8's "Included as PE" rule. A
+     * bare {@code '%'} is never legal, literal content anywhere within
+     * markup declaration syntax (only within a quoted literal - handled by
+     * {@link #scanQuotedLiteralWithCharRefs}'s own use of {@link
+     * #resolveParameterEntityReferenceAt} instead, whose "Included in
+     * Literal" rule is different: no padding, and the resolved text is
+     * appended straight to a {@code StringBuilder} rather than spliced
+     * into {@code buf}), so this either splices successfully or throws -
+     * the sole non-throwing exception is genuine underflow (the
+     * reference's own {@code Name}/{@code ';'} is not yet fully buffered),
+     * signalled by returning {@link #limit} so every existing {@code "if (p
+     * >= limit) return -1;"} check downstream already handles it correctly
+     * with no changes of its own. Throws WFC "PEs in Internal Subset"
+     * outright unless {@link #parsingExternalContent}.
+     */
+    private int splicePEReferenceAt(int p, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        char[] replacementChars = resolveParameterEntityReferenceAt(p, pendingParamEntities,
+                pendingParamExternalNames);
+        if (replacementChars == null) {
+            return limit;
+        }
+        String replacement = " " + new String(replacementChars) + " ";
+        return spliceIntoBuf(p, lastPEReferenceEnd, replacement);
+    }
+
+    /** Set by {@link #resolveParameterEntityReferenceAt} - the position
+     *  past the resolved reference's own trailing {@code ';'}, for a
+     *  caller that needs to advance its own cursor past it without
+     *  re-deriving that position itself. */
+    private int lastPEReferenceEnd;
+
+    /**
+     * Validates the parameter entity reference at {@code buf[p]} (which
+     * must be {@code '%'}) and resolves it - without touching {@link #buf}
+     * at all, unlike {@link #splicePEReferenceAt} - leaving {@link
+     * #lastPEReferenceEnd} pointing past its trailing {@code ';'}. Returns
+     * the resolved replacement text, or {@code null} on genuine underflow
+     * (the reference's own {@code Name}/{@code ';'} not yet fully
+     * buffered) - {@link #resolveParameterEntityReplacement} itself never
+     * returns {@code null}, so this is an unambiguous signal. Throws WFC
+     * "PEs in Internal Subset" outright unless {@link
+     * #parsingExternalContent}, same as {@link #splicePEReferenceAt}.
+     */
+    private char[] resolveParameterEntityReferenceAt(int p, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        int nameStart = p + 1;
+        int q = nameStart;
+        while (q < limit && isNameChar(buf[q])) {
+            q++;
+        }
+        if (q >= limit) {
+            return null;
+        }
+        if (q == nameStart || buf[q] != ';') {
+            throw handler.fatalError("Malformed parameter entity reference");
+        }
+        checkNameStartChar(nameStart);
+        if (!parsingExternalContent) {
+            throw handler.fatalError("Well-Formedness Constraint: PEs in Internal Subset (Section 2.8). "
+                    + "A parameter entity reference may not occur within a markup declaration "
+                    + "in the internal DTD subset.");
+        }
+        String name = new String(buf, nameStart, q - nameStart);
+        char[] replacementChars = resolveParameterEntityReplacement(name, pendingParamEntities,
+                pendingParamExternalNames);
+        if (++entityExpansionCount > MAX_ENTITY_EXPANSIONS) {
+            throw handler.fatalError("Entity expansion limit exceeded");
+        }
+        lastPEReferenceEnd = q + 1;
+        return replacementChars;
+    }
+
+    /** {@link #skipOptionalWhitespace}, plus - only when {@link
+     *  #parsingExternalContent} - transparently splicing (see {@link
+     *  #splicePEReferenceAt}) any parameter entity reference found at a
+     *  token boundary, then continuing to skip whitespace/further
+     *  references from there. Used by {@link #scanAttlistDeclaration}/
+     *  {@link #scanElementDeclaration}/{@link #scanEntityDeclaration}/
+     *  {@link #scanNotationDeclaration} in place of the plain {@link
+     *  #skipOptionalWhitespace} everywhere they currently call it, so a PE
+     *  reference sitting at any "S required/optional here" point in their
+     *  own grammar - including one glued directly onto a keyword with no
+     *  real whitespace at all, since the replacement text's own mandatory
+     *  leading space satisfies the "S required" check right after it is
+     *  spliced in - is handled with no other change to their logic. */
+    private int skipWhitespaceInDeclaration(int p, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        while (true) {
+            p = skipOptionalWhitespace(p);
+            if (p >= limit || buf[p] != '%') {
+                return p;
+            }
+            p = splicePEReferenceAt(p, pendingParamEntities, pendingParamExternalNames);
+            if (p >= limit) {
+                return p;
+            }
+        }
     }
 
     /**
