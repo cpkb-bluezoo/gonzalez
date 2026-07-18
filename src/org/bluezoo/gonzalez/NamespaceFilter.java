@@ -30,13 +30,12 @@ import org.xml.sax.SAXException;
  * Stateless {@link XMLHandler} filter that reroutes {@code xmlns}/
  * {@code xmlns:prefix} attributes to {@link XMLHandler#namespace(String,
  * String)} declarations on a delegate handler, and passes every other event
- * straight through unchanged. This is the M3 "namespace-aware pipeline
- * stage" described in ASYNC-PIPELINE.md: {@link Scanner} always reports
- * {@code xmlns} as a plain attribute (matching namespace-unaware behaviour),
- * and this filter is inserted in front of a namespace-aware consumer (such
- * as {@code new SAXAdapter(true)}) to translate. A namespace-unaware
- * pipeline simply omits this filter and feeds the scanner's output straight
- * to the consumer - namespace filtering costs nothing when not wanted.
+ * straight through unchanged. {@link Scanner} always reports {@code xmlns}
+ * as a plain attribute (matching namespace-unaware behaviour), so a
+ * namespace-aware consumer (such as {@code new SAXAdapter(true)}) needs
+ * this filter in front of it to translate; a namespace-unaware pipeline
+ * simply omits this filter and feeds the scanner's output straight to the
+ * consumer - namespace filtering costs nothing when not wanted.
  * <p>
  * "Stateless" here means no buffering of unrelated events and no cross-
  * element state (that lives in the delegate's own {@code NamespaceScopeTracker}
@@ -49,18 +48,17 @@ import org.xml.sax.SAXException;
  * Namespace Constraint validation (reserved URI bindings, the empty-prefix
  * rule, the {@code xml}/{@code xmlns} prefix rules, and the XML 1.1-only
  * prefix-unbinding rule) happens here, mirroring {@code ContentParser
- * .processNamespaceAttribute} in the current parser - this filter is the
- * component that recognises and interprets a namespace declaration, so it
- * is the natural place to reject an invalid one, exactly as it is the
- * natural place to translate a valid one. The downstream {@link
- * #namespace(String, String)} consumer can therefore keep trusting that
- * what it receives is already valid (it already does today -
+ * .processNamespaceAttribute} in the old tokenizer-based pipeline - this
+ * filter is the component that recognises and interprets a namespace
+ * declaration, so it is the natural place to reject an invalid one, exactly
+ * as it is the natural place to translate a valid one. The downstream
+ * {@link #namespace(String, String)} consumer can therefore keep trusting
+ * that what it receives is already valid (it already does today -
  * {@code NamespaceScopeTracker.declarePrefix} performs no NSC validation of
- * its own). The one check the current parser does here that this filter
- * does <em>not</em> replicate is the non-fatal "namespace name should be an
- * absolute URI" advisory (a recoverable warning, not a WFC/NSC fatal error)
- * - {@link XMLHandler} has no non-fatal error-reporting event yet; adding
- * one is a broader question left to the Conformance hardening phase.
+ * its own). The one check the old pipeline does here that this filter does
+ * <em>not</em> replicate is the non-fatal "namespace name should be an
+ * absolute URI" advisory - a recoverable warning, not a WFC/NSC fatal
+ * error, and not yet wired to {@link XMLHandler#error}.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -226,6 +224,11 @@ class NamespaceFilter implements XMLHandler {
     @Override
     public SAXException fatalError(String message) throws SAXException {
         return delegate.fatalError(message);
+    }
+
+    @Override
+    public void error(String message) throws SAXException {
+        delegate.error(message);
     }
 
 }

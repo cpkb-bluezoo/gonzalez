@@ -38,12 +38,12 @@ import org.xml.sax.ext.LexicalHandler;
  * Adapts the internal {@link XMLHandler} event vocabulary to standard SAX2
  * {@link ContentHandler}/{@link LexicalHandler}.
  * <p>
- * This is the conformance anchor for the async pipeline (see
- * ASYNC-PIPELINE.md): differential testing compares its output against the
- * current parser's SAX event stream. It is also the only place namespace
- * resolution (raw qName -&gt; uri/localName, {@code Attributes} assembly)
- * happens - the event source (scanner, or a stateless upstream namespace
- * filter) never resolves names itself.
+ * This is the point where {@link Scanner}'s (or, if namespace-aware, {@link
+ * NamespaceFilter}'s) internal event stream becomes a real SAX {@code
+ * ContentHandler} call sequence, and the only place namespace resolution
+ * (raw qName -&gt; uri/localName, {@code Attributes} assembly) happens - the
+ * event source (scanner, or the stateless namespace filter in front of it)
+ * never resolves names itself.
  * <p>
  * Attributes are buffered from {@link #startElement(String)} to
  * {@link #endAttributes()} into this class's own small pooled {@link Attr}
@@ -492,6 +492,21 @@ class SAXAdapter implements XMLHandler, Attributes2 {
             errorHandler.fatalError(exception);
         }
         return exception;
+    }
+
+    /**
+     * Reports a recoverable VC violation via {@link #errorHandler}'s {@code
+     * error(SAXParseException)} - mirrors {@code
+     * ContentParser.reportValidationError}'s exact shape (build exception,
+     * call {@code errorHandler.error(exception)}, return normally - never
+     * thrown). A no-op if no error handler is set, matching SAX's own
+     * "errors are only reported if someone is listening" convention.
+     */
+    @Override
+    public void error(String message) throws SAXException {
+        if (errorHandler != null) {
+            errorHandler.error(new SAXParseException(message, publicId, systemId, -1, -1));
+        }
     }
 
     // ===== Attributes / Attributes2 =====

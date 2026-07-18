@@ -151,6 +151,7 @@ public class Parser implements XMLReader, PSVIProvider {
     private EntityResolver scannerEntityResolver;
     private LexicalHandler scannerLexicalHandler;
     private boolean scannerNamespaces = true;
+    private boolean scannerValidation;
     private String scannerPublicId;
     private String scannerSystemId;
 
@@ -212,7 +213,7 @@ public class Parser implements XMLReader, PSVIProvider {
         adapter.setPublicId(scannerPublicId);
         adapter.setSystemId(scannerSystemId);
         XMLHandler target = scannerNamespaces ? new NamespaceFilter(adapter, false) : adapter;
-        scanner = new Scanner(target, false, scannerEntityResolver, scannerSystemId);
+        scanner = new Scanner(target, false, scannerEntityResolver, scannerSystemId, scannerValidation);
         decoder = new ExternalEntityDecoder(scanner, scannerPublicId, scannerSystemId, false);
     }
 
@@ -628,11 +629,8 @@ public class Parser implements XMLReader, PSVIProvider {
             if ("http://xml.org/sax/features/namespaces".equals(name)) {
                 return scannerNamespaces;
             }
-            // Honestly false, not thrown - Scanner never validates, so
-            // "is validation happening" always has an honest answer even
-            // though turning it on is accepted (see setFeature).
             if ("http://xml.org/sax/features/validation".equals(name)) {
-                return false;
+                return scannerValidation;
             }
             throw scannerUnsupported(name);
         }
@@ -745,13 +743,12 @@ public class Parser implements XMLReader, PSVIProvider {
                 }
                 return;
             }
-            // Scanner never validates - accepting a request to turn
-            // validation on is a no-op (matches its fixed, already-false
-            // behavior; see getFeature) rather than unsupported. Only
-            // meaningful to reject if it could ever silently mislead a
-            // caller, which returning false from getFeature already
-            // prevents.
             if ("http://xml.org/sax/features/validation".equals(name)) {
+                if (scanner != null && value != scannerValidation) {
+                    throw new SAXNotSupportedException(
+                            "Cannot change " + name + " once parsing has started for Pipeline.SCANNER");
+                }
+                scannerValidation = value;
                 return;
             }
             throw scannerUnsupported(name);

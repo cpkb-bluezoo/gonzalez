@@ -33,7 +33,9 @@ import java.nio.CharBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.xml.sax.EntityResolver;
@@ -41,89 +43,77 @@ import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
 /**
- * M1 hot-path scanner: hand-written, specialized recognition of the common
- * productions (element start/end tags, attributes, text content, char and
- * predefined entity references) plus comments/PI/CDATA, emitting directly
- * into {@link XMLHandler} - no intermediate token stream. See
- * ASYNC-PIPELINE.md for the design rationale.
+ * Hot-path XML scanner: hand-written, specialized recognition of element
+ * start/end tags, attributes, text content, character and entity
+ * references, comments, PIs, CDATA sections, and DOCTYPE declarations
+ * (internal and external subsets), emitting directly into {@link
+ * XMLHandler} - no intermediate token stream.
  * <p>
- * <b>Deliberately out of scope</b> (by design, not oversight - see the
- * milestone list): namespace resolution (xmlns is reported as a regular
- * attribute, matching namespace-unaware behaviour - {@link NamespaceFilter}
- * reroutes it to {@link XMLHandler#namespace} for a namespace-aware
- * pipeline), and location tracking. Duplicate-attribute detection is not
- * performed here either - it is enforced downstream by whatever consumes
- * these events (for the current milestone, {@link SAXAdapter}'s reuse of
- * {@link SAXAttributes}), a deliberate division of responsibility rather
- * than a gap. Line-ending normalisation is likewise not this class's
- * concern - it belongs at the byte-to-char decode stage (ExternalEntityDecoder),
- * done once right at the start of the pipeline, not re-derived here.
+ * <b>Division of responsibility with the rest of the pipeline.</b> Byte-to-
+ * char decoding and line-ending normalisation happen upstream, in {@link
+ * ExternalEntityDecoder} (shared with the old tokenizer-based pipeline via
+ * {@link ByteDecoderTarget}) - by the time a character reaches this class it
+ * is already decoded and normalised. Namespace resolution happens
+ * downstream: this class always reports {@code xmlns}/{@code xmlns:prefix}
+ * as a regular attribute (matching namespace-unaware behaviour); {@link
+ * NamespaceFilter}, inserted in front of a namespace-aware consumer,
+ * reroutes it to {@link XMLHandler#namespace} instead. Duplicate-attribute
+ * detection (WFC "Unique Att Spec") is likewise enforced downstream, by
+ * whatever consumes these events (see {@link SAXAdapter}'s reference-
+ * equality scan against {@link #namePool}-interned names) - this class does
+ * not need to track per-element attribute names itself for that purpose, so
+ * it doesn't.
  * <p>
- * <b>DOCTYPE / internal general entities (M4).</b> {@code <!DOCTYPE ...>} is
- * recognised, including an optional external ID (syntactically consumed,
- * never fetched) and an optional internal subset. Within the internal
- * subset, {@code <!ENTITY Name "value">} (general, internal, quoted-literal
- * only) is fully parsed and expanded lazily at first reference;
- * {@code <!ELEMENT>}/{@code <!ATTLIST>}/{@code <!NOTATION>} declarations are
- * recognised and skipped syntactically without being interpreted (DTD-driven
- * defaulting/validation is a later milestone), so real-world documents that
- * mix entity declarations with element/attribute declarations still work.
- * Parameter entities and external (SYSTEM/PUBLIC) general entities are
- * recognised syntactically but rejected with a clear "not supported" fatal
- * error on reference, rather than silently mishandled. See the "M4" section
- * near the bottom of this class for the implementation, and
- * {@link #expandGeneralEntityInContent}/{@link
- * #expandGeneralEntityInAttributeValue} in particular for how entity
- * expansion reuses this class's own suspend/resume machinery instead of
- * needing new machinery: an entity's replacement text is always fully
- * buffered in memory by the time it can be referenced, so "expanding" it is
- * just swapping {@link #buf}/{@link #pos}/{@link #limit} to a private array
- * and recursively calling {@link #scan()} (for content, which may contain
+ * <b>DOCTYPE, entities, and DTD-driven behaviour.</b> {@code <!DOCTYPE ...>}
+ * is recognised, including an optional external ID and an optional internal
+ * subset; an external subset, if the DOCTYPE names one, is fetched (via an
+ * {@link EntityResolver} if set, otherwise resolved against {@link
+ * #baseSystemId} and opened directly) and parsed the same way once the
+ * internal subset (if any) has committed, giving internal declarations
+ * precedence for a repeated name. Within either subset, {@code <!ENTITY
+ * Name "value">} (general, quoted-literal) is parsed and expanded lazily at
+ * first reference in content or attribute values; an external general
+ * entity ({@code SYSTEM}/{@code PUBLIC}) is fetched the same lazy way.
+ * Parameter entities ({@code <!ENTITY % Name ...>} and {@code %Name;}
+ * references) are supported both between declarations and, in an external
+ * subset, inside conditional sections ({@code <![INCLUDE[...]]>}/
+ * {@code <![IGNORE[...]]>}) - see {@link #expandParameterEntityReference}/
+ * {@link #parseMarkupDeclSeq}. {@code <!ELEMENT>} and {@code <!ATTLIST>}
+ * declarations are parsed into {@link DTDModel}, which drives attribute
+ * defaulting, type-aware attribute value normalisation, content-type-driven
+ * {@link XMLHandler#ignorableWhitespace} determination, and - only when
+ * {@link #validationEnabled} - full content-model and attribute validity
+ * constraint (VC) checking (content-model tree parsing: {@link
+ * #parseContentModelGroup}; per-element validation: {@link
+ * #pushElementValidator}/{@link #popAndValidateElement}; attribute VCs:
+ * {@link #checkAttributeValueVCs}/{@link #checkAttlistDeclarationVCs}). A
+ * VC violation is reported via {@link XMLHandler#error} (recoverable) -
+ * never {@link XMLHandler#fatalError} - since an invalid document may still
+ * be well-formed. See {@link #expandGeneralEntityInContent}/{@link
+ * #expandGeneralEntityInAttributeValue} for how entity expansion reuses
+ * this class's own suspend/resume machinery instead of needing new
+ * machinery: an entity's replacement text is always fully buffered in
+ * memory by the time it can be referenced, so "expanding" it is just
+ * swapping {@link #buf}/{@link #pos}/{@link #limit} to a private array and
+ * recursively calling {@link #scan()} (for content, which may contain
  * markup) or walking it directly (for attribute values, which never do).
- * <p>
- * <b>DTD defaulting/normalisation/ignorableWhitespace (M5)</b> and
- * <b>real name-character classes and character-reference legality
- * (M6)</b>. M5 added {@link DTDModel}-driven attribute defaulting, type-aware
- * attribute value normalisation, and content-type-driven {@link
- * XMLHandler#ignorableWhitespace}, deliberately scoped to just those three
- * (full content-model conformance checking and VC validity checks were
- * surfaced as a much larger, separate tier and deferred - see
- * ASYNC-PIPELINE.md's M5 section). M6 replaced the crude "any non-ASCII
- * character is a legal name character" approximation M1-M5 used with the
- * real Unicode {@link #isNameChar}/{@link #isNameStartChar} ranges (XML 1.0
- * 5th edition's simplified production, identical in XML 1.1), and added
- * real legality checking for numeric character references ({@link
- * #isLegalCharRefCodePoint}, XML-1.1-aware via the {@link #xml11}
- * constructor flag). Both M6 changes were chosen specifically because they
- * add no new hot-path cost: NameChar/NameStartChar checking replaces an
- * existing per-character check in each of this class's ~14 name-scanning
- * call sites rather than adding a new one, and character-reference
- * legality is already cold-path (only reached once {@code &#} has been
- * seen). Three further "M6" items from the milestone's original
- * description - literal-character restricted-char rejection in content/
- * attribute values, the {@code "]]>"} WFC in content, and first-character-
- * must-be-NameStartChar (not just NameChar) enforcement - were deliberately
- * <b>not</b> done this milestone: each would need a genuinely new check
- * inside the hot content/attribute-value scanning loops (not just a more
- * accurate version of an existing one), and this session is currently under
- * a standing "no benchmarking until further along" instruction, so their
- * performance cost can't be measured and verified acceptable right now.
- * Flagged explicitly for the Conformance hardening phase rather than
- * silently skipped. {@code standalone} declaration semantics and NEL/LS
- * line-ending normalisation remain out of scope for the same reasons as
- * before (VC-territory per M5's precedent; ExternalEntityDecoder's job,
- * respectively).
+ * Not yet supported: {@code standalone} declaration semantics, and ENTITY/
+ * ENTITIES attribute values being checked against declared unparsed
+ * entities.
  * <p>
  * <b>Zero allocation.</b> This class's job is to identify contiguous runs
  * and push them downstream as fast as possible - it never assembles a
- * complete value into a buffer of its own before emitting. Literal runs are
- * always zero-copy views directly into the scan buffer. Entity references
- * are backed either by static, invariant, shared buffers (predefined
- * entities - their content never changes, so no copying protocol is
- * needed) or by a single small buffer allocated once per Scanner instance
- * (numeric character references - see {@link #decodeEntityRef()} and
- * {@link XMLHandler#saveBuffers()}). See {@link XMLHandler}'s class Javadoc
- * for the full streaming/{@code end}-flag/{@code saveBuffers()} design this
+ * complete value into a buffer of its own before emitting (validation is
+ * the one deliberate exception: a VC check inherently needs the whole
+ * value, so the non-CDATA-normalisation path that already materializes one
+ * is reused rather than adding a second). Literal runs are otherwise always
+ * zero-copy views directly into the scan buffer. Entity references are
+ * backed either by static, invariant, shared buffers (predefined entities -
+ * their content never changes, so no copying protocol is needed) or by a
+ * single small buffer allocated once per Scanner instance (numeric
+ * character references - see {@link #decodeEntityRef()} and {@link
+ * XMLHandler#saveBuffers()}). See {@link XMLHandler}'s class Javadoc for
+ * the full streaming/{@code end}-flag/{@code saveBuffers()} design this
  * implements.
  * <p>
  * <b>Suspend/resume model.</b> {@link #receive(CharBuffer)} appends into an
@@ -149,22 +139,16 @@ import org.xml.sax.SAXException;
  * itself resumes at exactly the sub-step it left off at, never re-entering
  * already-emitted attributes or already-emitted value chunks.
  * <p>
- * <b>Name interning (M2).</b> Element/attribute names are interned via
- * {@link #namePool} ({@link PackedName}). A first version reused the
- * existing {@link InternedStringPool} directly - measured as a strong net
- * win overall (attrs +20%, multibyte +17%, both heavy-repeated-name-vocabulary
- * docTypes) but with a real, reproduced ~5% regression on whitespace-heavy
- * documents (large text content, comparatively little repeated name
- * vocabulary, where interning's per-call cost isn't recouped as often and
- * competes against an already-cheap TLAB-allocated String). {@link
- * PackedName} replaces the per-character hash-then-compare loop with
- * quad-packed primitive comparison - see its class Javadoc for the design.
- * The WFC element-type-match stack ({@link #elementStack}) stores the
- * interned qName rather than a separate packed handle: since both the
- * pushed start-tag name and the compared end-tag name go through the same
- * pool, a correctly-matched tag pair is the same canonical String instance,
- * and {@code String.equals()}'s own reference-equality fast path already
- * makes that comparison O(1) in the common case.
+ * <b>Name interning.</b> Element/attribute names are interned via {@link
+ * #namePool} ({@link PackedName}), which packs up to 12 characters per
+ * candidate into primitive {@code long}s for quad-packed comparison instead
+ * of a per-character hash-then-compare loop - see its own class Javadoc for
+ * the design. The WFC element-type-match stack ({@link #elementStack})
+ * stores the interned qName rather than a separate packed handle: since
+ * both the pushed start-tag name and the compared end-tag name go through
+ * the same pool, a correctly-matched tag pair is the same canonical String
+ * instance, and {@code String.equals()}'s own reference-equality fast path
+ * already makes that comparison O(1) in the common case.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -191,7 +175,7 @@ class Scanner implements ByteDecoderTarget {
     private char pendingQuote;
     private boolean attrValueRunOpen;
 
-    /** M5: true while the attribute currently being scanned is declared
+    /** True while the attribute currently being scanned is declared
      *  with a non-CDATA type, meaning its value needs the type-dependent
      *  collapse normalisation (XML 3.3.3) applied - see {@link
      *  #emitAttributeValueContent}. Materializing the value defeats the
@@ -201,6 +185,19 @@ class Scanner implements ByteDecoderTarget {
      *  pool, since only one attribute is ever being scanned at a time. */
     private boolean normalizingCurrentAttribute;
     private final StringBuilder normalizeBuilder = new StringBuilder();
+
+    /** The attribute currently being scanned's declaring element/name/type,
+     *  remembered here (not just as locals in {@link
+     *  #scanAttributesAndTagEnd}) because {@link #emitAttributeValueContent}
+     *  needs them at the value's completion point to run VC checks, and that
+     *  completion may happen on a resumed call (via {@link
+     *  #inAttributeValue}) well after the locals that first knew them have
+     *  gone out of scope. Only meaningful while {@link
+     *  #normalizingCurrentAttribute} is true (i.e. only for the non-CDATA
+     *  types VC checking actually applies to). */
+    private String currentAttrElementName;
+    private String currentAttrName;
+    private String currentAttrType;
 
     /** True if the most recent characters() emission for the run currently
      *  in progress had end=false and has not yet been closed with end=true -
@@ -224,7 +221,72 @@ class Scanner implements ByteDecoderTarget {
     /** WFC "Element Type Match" stack of interned qNames. */
     private final ArrayList<String> elementStack = new ArrayList<String>();
 
-    /** M5: names of attributes specified on the start tag currently being
+    /** Content-model validator stack, parallel to {@link #elementStack}
+     *  ({@code validatorStack.get(i)} validates {@code
+     *  elementStack.get(i)}'s content) - null until first needed, so the
+     *  overwhelmingly common (validation disabled) case pays nothing.
+     *  Reuses {@link ContentModelValidator}/{@link ElementDeclaration}
+     *  unchanged from the old tokenizer-based pipeline; see {@link
+     *  DTDModel}'s own Javadoc
+     *  for why there was nothing to port, only to call. */
+    private ArrayList<ContentModelValidator> validatorStack;
+
+    /** Pushes a new validator for {@code qName} (just-opened element),
+     *  first recording {@code qName} as a child of whatever validator was
+     *  already on top (its parent) - both steps only when {@link
+     *  #validationEnabled}, called from {@link #scanStartTag} before {@code
+     *  qName} is pushed onto {@link #elementStack}. An element with no
+     *  {@code <!ELEMENT>} declaration at all is a VC "Element Valid"
+     *  violation, reported once here, then treated as {@code ANY} so
+     *  scanning continues without cascading further errors for its
+     *  (unconstrained) descendants. */
+    private void pushElementValidator(String qName) throws SAXException {
+        if (validatorStack == null) {
+            validatorStack = new ArrayList<ContentModelValidator>();
+        }
+        if (!validatorStack.isEmpty()) {
+            String error = validatorStack.get(validatorStack.size() - 1).addChildElement(qName);
+            if (error != null) {
+                handler.error(error);
+            }
+        }
+        ElementDeclaration decl = dtdModel.getElementDeclaration(qName);
+        if (decl == null) {
+            handler.error("Validity Constraint: Element Valid (Section 3.1). Element \"" + qName
+                    + "\" is not declared in the DTD.");
+            decl = new ElementDeclaration();
+            decl.name = qName;
+            decl.contentType = ElementDeclaration.ContentType.ANY;
+        }
+        validatorStack.add(new ContentModelValidator(decl));
+    }
+
+    /** Pops and validates the completed element's content - called from
+     *  {@link #scanEndTag}/the self-closing branch of {@link
+     *  #scanAttributesAndTagEnd}, only when {@link #validationEnabled}. */
+    private void popAndValidateElement() throws SAXException {
+        ContentModelValidator v = validatorStack.remove(validatorStack.size() - 1);
+        String error = v.validate();
+        if (error != null) {
+            handler.error(error);
+        }
+    }
+
+    /** Records a run of character data against the innermost open
+     *  validator, if {@link #validationEnabled} and at least one element is
+     *  open (never true in the prolog/epilog, where content is restricted
+     *  to whitespace by a WFC {@link #scanContent} already enforces
+     *  unconditionally, independent of validation). */
+    private void recordTextForValidation(String text, boolean isWhitespaceOnly) throws SAXException {
+        if (validatorStack != null && !validatorStack.isEmpty()) {
+            String error = validatorStack.get(validatorStack.size() - 1).addTextContent(text, isWhitespaceOnly);
+            if (error != null) {
+                handler.error(error);
+            }
+        }
+    }
+
+    /** Names of attributes specified on the start tag currently being
      *  scanned, reset once per {@link #scanStartTag} - lets {@link
      *  #applyAttributeDefaults} know which declared attributes were left
      *  unspecified and need a default injected. A small reference-equality
@@ -256,12 +318,11 @@ class Scanner implements ByteDecoderTarget {
     }
 
     /**
-     * Interns element/attribute names: M1 called {@code new String(...)} for
-     * every single occurrence, with no caching at all - for a repeated name
-     * (element/attribute vocabulary is typically small and reused constantly
-     * throughout a document) that is a fresh allocation every single time.
-     * See class Javadoc for the choice of {@link PackedName} over
-     * {@link InternedStringPool}.
+     * Interns element/attribute names, avoiding a fresh {@code new
+     * String(...)} allocation for every single occurrence of a repeated
+     * name - element/attribute vocabulary is typically small and reused
+     * constantly throughout a document. See class Javadoc for the choice of
+     * {@link PackedName} over {@link InternedStringPool}.
      */
     private final PackedName namePool = new PackedName();
 
@@ -295,7 +356,7 @@ class Scanner implements ByteDecoderTarget {
     private final char[] numericRefArray = new char[2];
     private final CharBuffer numericRefBuffer = CharBuffer.wrap(numericRefArray);
 
-    // ===== M4: DOCTYPE / internal general entities (cold path) =====
+    // ===== DOCTYPE / entities (cold path) =====
 
     /** True once the first (root) start tag has been seen - used both to
      *  reject a DOCTYPE appearing after it and to know when to stop
@@ -394,13 +455,13 @@ class Scanner implements ByteDecoderTarget {
     private static final int MAX_ENTITY_EXPANSIONS = 100_000;
     private int entityExpansionCount;
 
-    /** M6: XML 1.1 vs 1.0 mode, affecting only numeric character reference
-     *  legality (see {@link #decodeEntityRef()}) - see class Javadoc "M6"
-     *  section for why nothing else in this class needs it. Either supplied
-     *  by the caller up front (every direct/test construction - the common
-     *  case when the version is already known), or defaulted at
-     *  construction and updated exactly once via {@link #setXml11} - the
-     *  {@link ByteDecoderTarget} interface method {@link
+    /** XML 1.1 vs 1.0 mode, affecting only numeric character reference
+     *  legality (see {@link #decodeEntityRef()}) and the lookup tables
+     *  content/attribute-value scanning use (see {@link
+     *  #CONTENT_STOP_XML10}). Either supplied by the caller up front (every
+     *  direct/test construction, when the version is already known), or
+     *  defaulted at construction and updated exactly once via {@link
+     *  #setXml11} - the {@link ByteDecoderTarget} interface method {@link
      *  ExternalEntityDecoder} calls once it has resolved the XML/text
      *  declaration's version directly from the raw bytes, strictly before
      *  any real document content reaches this Scanner (the same timing
@@ -412,17 +473,24 @@ class Scanner implements ByteDecoderTarget {
     private boolean xml11;
 
     /** Resolves external entity/DTD identifiers to actual bytes - see
-     *  "external entity/DTD fetching" below. Null (the common case, and
-     *  every caller before this capability existed) means "no external
-     *  fetching capability at all": an external SYSTEM/PUBLIC identifier
+     *  "external entity/DTD fetching" below. Null means no external
+     *  fetching capability at all: an external SYSTEM/PUBLIC identifier
      *  will still be recognised syntactically, but referencing it is
      *  rejected the same way an unresolvable one would be. */
     private final EntityResolver entityResolver;
 
     /** The document's own system identifier, for resolving a relative
-     *  SYSTEM identifier against - see {@link #resolveAndOpen}. Null if
+     *  SYSTEM identifier against - see {@link #resolveSystemId}. Null if
      *  unknown (e.g. parsing from an in-memory string with no URI at all). */
     private final String baseSystemId;
+
+    /** True if DTD validity constraint (VC) checking is enabled. When
+     *  false (the default), no content-model tree is built and no {@link
+     *  XMLHandler#error} call is ever made. A VC violation is always
+     *  reported via {@link XMLHandler#error} (recoverable), never
+     *  {@link XMLHandler#fatalError} - an invalid document may still be
+     *  well-formed. */
+    private final boolean validationEnabled;
 
     /** Convenience constructor for XML 1.0 with no external fetching
      *  capability (the common case, and every caller before this
@@ -436,12 +504,19 @@ class Scanner implements ByteDecoderTarget {
         this(handler, xml11, null, null);
     }
 
+    /** Convenience constructor with no DTD validation. */
     Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String baseSystemId)
             throws SAXException {
+        this(handler, xml11, entityResolver, baseSystemId, false);
+    }
+
+    Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String baseSystemId,
+            boolean validationEnabled) throws SAXException {
         this.handler = handler;
         this.xml11 = xml11;
         this.entityResolver = entityResolver;
         this.baseSystemId = baseSystemId;
+        this.validationEnabled = validationEnabled;
         this.buf = new char[INITIAL_CAPACITY];
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
@@ -483,6 +558,9 @@ class Scanner implements ByteDecoderTarget {
         }
         if (!rootStarted) {
             throw handler.fatalError("Document must contain a root element");
+        }
+        if (validationEnabled) {
+            checkPendingIdrefs();
         }
         handler.endDocument();
     }
@@ -684,20 +762,15 @@ class Scanner implements ByteDecoderTarget {
     }
 
     /**
-     * XML NameChar (M6): {@code NameStartChar | "-" | "." | [0-9] | #xB7 |
+     * XML NameChar: {@code NameStartChar | "-" | "." | [0-9] | #xB7 |
      * [#x0300-#x036F] | [#x203F-#x2040]} - the modern, simplified production
      * from XML 1.0 5th edition / XML 1.1 (identical in both - see {@link
-     * #isNameStartChar}). Replaces M1-M5's cruder "any non-ASCII is legal"
-     * approximation with the real Unicode ranges, at zero additional
-     * hot-path cost: every one of this method's ~14 call sites already
-     * calls it once per character in a name-scanning loop, so making the
-     * check itself more accurate doesn't add a new check anywhere, only
-     * corrects an existing one. {@code CharClass.java} (the old parser's
-     * classifier) additionally accepts a much larger legacy table of
-     * pre-5th-edition {@code CombiningChar}/{@code Extender} ranges beyond
-     * what the current spec text requires; not ported here - see class
-     * Javadoc "M6" section for the full list of what's deliberately still
-     * deferred to the Conformance hardening phase.
+     * #isNameStartChar}), the real Unicode ranges rather than a cruder "any
+     * non-ASCII is legal" approximation. {@code CharClass.java} (the old
+     * tokenizer-based pipeline's classifier) additionally accepts a much
+     * larger legacy table of pre-5th-edition {@code CombiningChar}/{@code
+     * Extender} ranges beyond what the current spec text requires; not
+     * ported here, since it isn't required.
      */
     private static boolean isNameChar(char c) {
         return NAME_CHAR_TABLE[c];
@@ -798,9 +871,7 @@ class Scanner implements ByteDecoderTarget {
      *  xmlconf Conformance hardening (multiple not-wf tests specifically
      *  target a name starting with a digit). Cold path everywhere this is
      *  called (comments/PI/entity-ref/DOCTYPE-adjacent names, or - for
-     *  element/attribute names - only once per name, not per character), so
-     *  this carries none of the hot-path cost concern that motivated
-     *  deferring it during M6 itself. */
+     *  element/attribute names - only once per name, not per character). */
     private void checkNameStartChar(int nameStart) throws SAXException {
         if (!isNameStartChar(buf[nameStart])) {
             throw handler.fatalError("Names must begin with a legal NameStartChar");
@@ -891,7 +962,7 @@ class Scanner implements ByteDecoderTarget {
      */
     private boolean scanContent() throws SAXException {
         boolean insideDocument = !elementStack.isEmpty();
-        // M5: an element declared with element-only content (no #PCDATA at
+        // An element declared with element-only content (no #PCDATA at
         // all) reports whitespace-only text via ignorableWhitespace()
         // instead of characters() - see emitContentRun(). Determined once
         // per call (a single map lookup), not per character.
@@ -985,7 +1056,9 @@ class Scanner implements ByteDecoderTarget {
             // the two "resolved" branches; when decodeEntityRef needed more
             // data, pos was rewound to ampPos (past this text) having never
             // emitted it, silently losing it on the next receive() call's
-            // compaction. Found via the M4 chunk-fuzzing differential test.
+            // compaction. Found via chunk-fuzzing differential testing
+            // (feeding the same document through in many different chunk
+            // sizes and comparing output).
             int ampPos = pos;
             if (insideDocument && ampPos > runStart) {
                 emitContentRun(CharBuffer.wrap(buf, runStart, ampPos - runStart), false, runIsWhitespace);
@@ -1021,8 +1094,21 @@ class Scanner implements ByteDecoderTarget {
             if (insideDocument) {
                 // Entity-produced content is never routed through
                 // ignorableWhitespace(), even if it happens to be all
-                // whitespace - a deliberate M5 scope simplification (see
-                // class Javadoc), not an oversight.
+                // whitespace - deliberately, not an oversight: it did not
+                // come from the document's own literal source text, so the
+                // "declared element-only content, so whitespace is
+                // insignificant" determination doesn't apply the same way.
+                // For the same reason, a
+                // character/numeric reference's decoded character always
+                // counts as real (non-whitespace-only) character data for
+                // validation too, regardless of which character it actually
+                // decoded to - matching VC "No Character Data"'s own intent
+                // (a reference expanding to character data is what's
+                // disallowed in element-only content, not specifically
+                // non-whitespace data).
+                if (validationEnabled) {
+                    recordTextForValidation(decoded.toString(), false);
+                }
                 handler.characters(decoded, atMarkup);
                 contentRunOpen = !atMarkup;
                 contentRunIsWhitespace = false;
@@ -1035,15 +1121,15 @@ class Scanner implements ByteDecoderTarget {
     }
 
     /** True if the current (innermost open) element's declared content type
-     *  is element-only ({@link DTDModel.ContentType#ELEMENT} - no {@code
-     *  #PCDATA} at all), the only case where whitespace-only text is
+     *  is element-only ({@link ElementDeclaration.ContentType#ELEMENT} - no
+     *  {@code #PCDATA} at all), the only case where whitespace-only text is
      *  reported via {@link XMLHandler#ignorableWhitespace} rather than
      *  {@link XMLHandler#characters}. False for {@code MIXED}/{@code ANY}/
      *  {@code EMPTY} content types and for an element with no {@code
      *  <!ELEMENT>} declaration at all (including the common no-DTD case). */
     private boolean isCurrentElementContentElementOnly() {
         String currentElement = elementStack.get(elementStack.size() - 1);
-        return dtdModel.getContentType(currentElement) == DTDModel.ContentType.ELEMENT;
+        return dtdModel.getContentType(currentElement) == ElementDeclaration.ContentType.ELEMENT;
     }
 
     /** True if the most recently opened run - tracked via {@link
@@ -1055,6 +1141,14 @@ class Scanner implements ByteDecoderTarget {
     private boolean contentRunIsWhitespace;
 
     private void emitContentRun(CharBuffer text, boolean end, boolean isWhitespace) throws SAXException {
+        if (validationEnabled) {
+            // A chunked run may call this - and so recordTextForValidation -
+            // more than once; harmless beyond a possible duplicate error
+            // report for one logical violation, since text.toString() is
+            // only ever a small allocation on this already-validating-only
+            // path (never on the hot no-validation path).
+            recordTextForValidation(text.toString(), isWhitespace);
+        }
         if (isWhitespace) {
             handler.ignorableWhitespace(text, end);
         } else {
@@ -1247,11 +1341,16 @@ class Scanner implements ByteDecoderTarget {
         if (!rootStarted) {
             // The root element's name matching the DOCTYPE's Name is VC
             // "Root Element Type" (XML 1.0 SS3.2), not a WFC - a non-
-            // validating processor must not reject a mismatch here. Found
-            // via xmlconf Conformance hardening: this had been incorrectly
-            // enforced as fatal since M4. Real enforcement belongs with
-            // validation support (a recoverable error, not fatalError).
+            // validating processor must not reject a mismatch here, so this
+            // is a recoverable error() call, not fatalError().
             rootStarted = true;
+            if (validationEnabled && doctypeName != null && !doctypeName.equals(qName)) {
+                handler.error("Validity Constraint: Root Element Type (Section 3.2). Document root element \""
+                        + qName + "\" does not match DOCTYPE name \"" + doctypeName + "\".");
+            }
+        }
+        if (validationEnabled) {
+            pushElementValidator(qName);
         }
         pos = p;
         elementStack.add(qName);
@@ -1300,6 +1399,9 @@ class Scanner implements ByteDecoderTarget {
                 }
                 pos += 2;
                 applyAttributeDefaults(elementStack.get(elementStack.size() - 1));
+                if (validationEnabled) {
+                    popAndValidateElement();
+                }
                 elementStack.remove(elementStack.size() - 1);
                 rootEnded = elementStack.isEmpty();
                 handler.endAttributes();
@@ -1354,6 +1456,11 @@ class Scanner implements ByteDecoderTarget {
             normalizingCurrentAttribute = !"CDATA".equals(attrType);
             if (normalizingCurrentAttribute) {
                 normalizeBuilder.setLength(0);
+                if (validationEnabled) {
+                    currentAttrElementName = elementStack.get(elementStack.size() - 1);
+                    currentAttrName = attrName;
+                    currentAttrType = attrType;
+                }
             }
             if (!scanAttributeValueStreaming()) {
                 inAttributeValue = true;
@@ -1517,6 +1624,9 @@ class Scanner implements ByteDecoderTarget {
         if (end) {
             String collapsed = collapseWhitespace(normalizeBuilder);
             normalizingCurrentAttribute = false;
+            if (validationEnabled) {
+                checkAttributeValueVCs(currentAttrElementName, currentAttrName, currentAttrType, collapsed);
+            }
             handler.attributeValueContent(CharBuffer.wrap(collapsed), true);
         }
     }
@@ -1589,6 +1699,9 @@ class Scanner implements ByteDecoderTarget {
         if (!rangeEquals(buf, nameStart, nameLen, expected)) {
             throw handler.fatalError("Mismatched end tag: expected </" + expected + "> but found </"
                     + new String(buf, nameStart, nameLen) + ">");
+        }
+        if (validationEnabled) {
+            popAndValidateElement();
         }
         rootEnded = elementStack.isEmpty();
 
@@ -1686,6 +1799,13 @@ class Scanner implements ByteDecoderTarget {
             }
             if (buf[p + 1] == ']' && buf[p + 2] == '>') {
                 if (p > contentStart) {
+                    if (validationEnabled) {
+                        boolean allWs = true;
+                        for (int i = contentStart; i < p && allWs; i++) {
+                            allWs = isWs(buf[i]);
+                        }
+                        recordTextForValidation(new String(buf, contentStart, p - contentStart), allWs);
+                    }
                     handler.characters(CharBuffer.wrap(buf, contentStart, p - contentStart), true);
                 }
                 pos = p + 3;
@@ -1744,13 +1864,13 @@ class Scanner implements ByteDecoderTarget {
         }
     }
 
-    // ===== M4: DOCTYPE / internal general entities (cold path) =====
+    // ===== DOCTYPE / entities (cold path) =====
     //
     // Scope, deliberately narrow (see class Javadoc): the internal subset's
     // <!ENTITY Name "value"> declarations (general, internal, quoted-literal
-    // only) are fully parsed; <!ELEMENT>/<!ATTLIST>/<!NOTATION> declarations
-    // are recognised and skipped syntactically (their content is opaque to
-    // this milestone - DTD-driven defaulting/validation is M5's job), so
+    // only) are fully parsed; <!ELEMENT>/<!ATTLIST> declarations are parsed
+    // into DTDModel (content model, attribute types/defaults/VCs), and
+    // <!NOTATION> declarations are recognised and skipped syntactically, so
     // documents that mix entity declarations with element/attribute
     // declarations (common in the wild) still work. Parameter entities and
     // external (SYSTEM/PUBLIC) general entities are recognised but rejected
@@ -1786,8 +1906,8 @@ class Scanner implements ByteDecoderTarget {
     private static final char[] INCLUDE_MARKER = "INCLUDE".toCharArray();
     private static final char[] IGNORE_MARKER = "IGNORE".toCharArray();
 
-    /** M5: element content types and attribute defaults/types declared in
-     *  the internal DTD subset - see class Javadoc "M5" section. */
+    /** Element content types/models and attribute defaults/types/VCs
+     *  declared in the internal DTD subset. */
     private final DTDModel dtdModel = new DTDModel();
 
     /** Matches {@code marker} against {@code buf} starting at {@code p}. */
@@ -1975,10 +2095,9 @@ class Scanner implements ByteDecoderTarget {
      * Legal code point for a numeric character reference ({@code &#NN;}/
      * {@code &#xNN;}), matching the old parser's {@code
      * Tokenizer.isLegalXMLChar(int)} exactly. Deliberately more permissive
-     * than literal-character legality would be (not enforced in this
-     * milestone - see class Javadoc "M6" section): XML 1.1 allows
-     * referencing C0/C1 control characters via character reference even
-     * though they may not appear literally.
+     * than literal-character legality (which this scanner does not check):
+     * XML 1.1 allows referencing C0/C1 control characters via character
+     * reference even though they may not appear literally.
      */
     private static boolean isLegalCharRefCodePoint(int codePoint, boolean xml11) {
         if (xml11) {
@@ -2180,35 +2299,79 @@ class Scanner implements ByteDecoderTarget {
         return p;
     }
 
-    /** Skips a flat (non-nested) parenthesised list - a {@code NOTATION}
-     *  type's name list or an enumerated attribute type's Nmtoken list -
-     *  starting at {@code p} (the '('). Neither ever nests further parens,
-     *  unlike an element content model, so this is a simpler scan than
-     *  {@link #scanElementDeclaration}'s. Returns the position past the
-     *  closing ')', or -1 on underflow. */
-    private int skipParenList(int p) throws SAXException {
-        p++;
+    /** Set by {@link #scanEnumerationList} - the parsed values, in
+     *  declaration order. Only assigned once that method has fully
+     *  succeeded (never on a retried-after-underflow partial attempt),
+     *  matching every other "commit only at the very end" construct in this
+     *  class. */
+    private List<String> lastEnumerationValues;
+
+    /**
+     * Parses a flat (non-nested) parenthesised Nmtoken/Name list - a
+     * {@code NOTATION} type's Name list, or a bare enumerated attribute
+     * type's Nmtoken list - starting at {@code buf[p]} (the '('), capturing
+     * the actual values into {@link #lastEnumerationValues} for VC
+     * "Enumeration"/"Notation Attributes" membership checking. Neither list
+     * ever nests further parens, unlike an element content model, so this is
+     * a simpler scan than {@link #scanElementDeclaration}'s. {@code
+     * requireNameStartChar} selects between the two productions' differing
+     * first-character rule - true for a NOTATION list ({@code Name}, so a
+     * leading digit/hyphen/etc. is illegal), false for a bare enumeration
+     * ({@code Nmtoken}, which has no such restriction). Returns the position
+     * past the closing ')', or -1 on underflow.
+     */
+    private int scanEnumerationList(int p, boolean requireNameStartChar) throws SAXException {
+        ArrayList<String> values = new ArrayList<String>();
+        int q = p + 1;
         while (true) {
-            if (p >= limit) {
+            q = skipOptionalWhitespace(q);
+            if (q >= limit) {
                 return -1;
             }
-            if (buf[p] == ')') {
-                return p + 1;
+            int tokenStart = q;
+            while (q < limit && isNameChar(buf[q])) {
+                q++;
             }
-            p++;
+            if (q >= limit) {
+                return -1;
+            }
+            if (q == tokenStart) {
+                throw handler.fatalError("Malformed enumeration");
+            }
+            if (requireNameStartChar) {
+                checkNameStartChar(tokenStart);
+            }
+            values.add(new String(buf, tokenStart, q - tokenStart));
+            q = skipOptionalWhitespace(q);
+            if (q >= limit) {
+                return -1;
+            }
+            if (buf[q] == '|') {
+                q++;
+                continue;
+            }
+            if (buf[q] == ')') {
+                q++;
+                break;
+            }
+            throw handler.fatalError("Malformed enumeration");
         }
+        lastEnumerationValues = values;
+        return q;
     }
 
     /**
      * Parses one {@code <!ELEMENT ...>} declaration, {@code p} positioned
-     * just past the "<!ELEMENT" keyword, recording only its top-level {@link
-     * DTDModel.ContentType} - not the full content-model tree (out of scope
-     * for M5's defaulting/normalisation-only goal; see class Javadoc). The
-     * content model's parenthesised structure (if any) still has to be
-     * scanned in full, paren-depth-aware, purely to find where the
-     * declaration ends - {@code (a, (b|c)+, d*)} nests arbitrarily, unlike
-     * an ATTLIST's flat enumeration/NOTATION lists. Returns the position
-     * past the closing '>', or -1 on underflow.
+     * just past the "<!ELEMENT" keyword. The content model's parenthesised
+     * structure (if any) is scanned in full, paren-depth-aware, to find
+     * where the declaration ends - {@code (a, (b|c)+, d*)} nests
+     * arbitrarily, unlike an ATTLIST's flat enumeration/NOTATION lists -
+     * and, only when {@link #validationEnabled} (VC checking has a real
+     * cost only worth paying when asked for), the same already-fully-
+     * buffered span (this depth-matching scan having already confirmed it
+     * never underflows) is re-parsed into a real {@link
+     * ElementDeclaration.ContentModel} tree by {@link #parseContentModelGroup}.
+     * Returns the position past the closing '>', or -1 on underflow.
      */
     private int scanElementDeclaration(int p) throws SAXException {
         int ws = p;
@@ -2242,13 +2405,14 @@ class Scanner implements ByteDecoderTarget {
             throw handler.fatalError("Malformed element declaration");
         }
 
-        DTDModel.ContentType type;
+        ElementDeclaration.ContentType type;
+        ElementDeclaration.ContentModel model = null;
         int em = matchKeyword(p, EMPTY_MARKER);
         if (em == KW_NEED_MORE) {
             return -1;
         }
         if (em == KW_MATCH) {
-            type = DTDModel.ContentType.EMPTY;
+            type = ElementDeclaration.ContentType.EMPTY;
             p += EMPTY_MARKER.length;
         } else {
             int am = matchKeyword(p, ANY_MARKER);
@@ -2256,7 +2420,7 @@ class Scanner implements ByteDecoderTarget {
                 return -1;
             }
             if (am == KW_MATCH) {
-                type = DTDModel.ContentType.ANY;
+                type = ElementDeclaration.ContentType.ANY;
                 p += ANY_MARKER.length;
             } else {
                 if (p >= limit) {
@@ -2265,6 +2429,7 @@ class Scanner implements ByteDecoderTarget {
                 if (buf[p] != '(') {
                     throw handler.fatalError("Malformed element declaration");
                 }
+                int modelStart = p;
                 int afterParen = skipOptionalWhitespace(p + 1);
                 if (afterParen >= limit) {
                     return -1;
@@ -2273,7 +2438,8 @@ class Scanner implements ByteDecoderTarget {
                 if (pm == KW_NEED_MORE) {
                     return -1;
                 }
-                type = (pm == KW_MATCH) ? DTDModel.ContentType.MIXED : DTDModel.ContentType.ELEMENT;
+                type = (pm == KW_MATCH) ? ElementDeclaration.ContentType.MIXED
+                        : ElementDeclaration.ContentType.ELEMENT;
 
                 int depth = 0;
                 while (true) {
@@ -2297,6 +2463,11 @@ class Scanner implements ByteDecoderTarget {
                 if (buf[p] == '?' || buf[p] == '*' || buf[p] == '+') {
                     p++;
                 }
+                if (validationEnabled) {
+                    cmPos = modelStart;
+                    cmEnd = p;
+                    model = parseContentModelGroup();
+                }
             }
         }
 
@@ -2309,19 +2480,199 @@ class Scanner implements ByteDecoderTarget {
         }
         p++;
 
-        dtdModel.declareContentType(name, type);
+        ElementDeclaration decl = new ElementDeclaration();
+        decl.name = name;
+        decl.contentType = type;
+        decl.contentModel = model;
+        dtdModel.declareElement(name, decl);
         return p;
+    }
+
+    // ===== Content-model tree parsing (validation only) =====
+    //
+    // Only ever called on a span the caller (scanElementDeclaration) has
+    // already confirmed is fully buffered (its own paren-depth-matching
+    // scan reached the closing ')' without underflowing) - so, unlike
+    // every other parse* method in this class, cmPos/cmEnd need no
+    // underflow/resumability handling at all: a plain recursive-descent
+    // parse over already-available characters. Kept as its own cursor pair
+    // rather than reusing pos/limit, since this parse happens synchronously
+    // nested inside scanElementDeclaration's own use of those fields.
+
+    private int cmPos;
+    private int cmEnd;
+
+    private int skipCmWhitespace(int p) {
+        while (p < cmEnd && isWs(buf[p])) {
+            p++;
+        }
+        return p;
+    }
+
+    /** Reads a trailing {@code '?'}/{@code '*'}/{@code '+'} occurrence
+     *  indicator at {@link #cmPos}, if present, consuming it. */
+    private ElementDeclaration.ContentModel.Occurrence readCmOccurrence() {
+        if (cmPos < cmEnd) {
+            char c = buf[cmPos];
+            if (c == '?') {
+                cmPos++;
+                return ElementDeclaration.ContentModel.Occurrence.OPTIONAL;
+            }
+            if (c == '*') {
+                cmPos++;
+                return ElementDeclaration.ContentModel.Occurrence.ZERO_OR_MORE;
+            }
+            if (c == '+') {
+                cmPos++;
+                return ElementDeclaration.ContentModel.Occurrence.ONE_OR_MORE;
+            }
+        }
+        return ElementDeclaration.ContentModel.Occurrence.ONCE;
+    }
+
+    /** Parses one particle (cp): either a bare element name, or a nested
+     *  parenthesised group, each with its own optional occurrence
+     *  indicator. {@link #cmPos} positioned at the particle's first
+     *  character on entry, and left just past whatever it consumed on
+     *  return - the same "shared cursor threaded through recursive calls"
+     *  discipline {@link #pos} uses for the rest of this class, {@link
+     *  #cmEnd} playing {@link #limit}'s role (a fixed bound, not itself
+     *  advanced). */
+    private ElementDeclaration.ContentModel parseContentModelParticle() throws SAXException {
+        cmPos = skipCmWhitespace(cmPos);
+        if (cmPos < cmEnd && buf[cmPos] == '(') {
+            return parseContentModelGroup();
+        }
+        int nameStart = cmPos;
+        while (cmPos < cmEnd && isNameChar(buf[cmPos])) {
+            cmPos++;
+        }
+        if (cmPos == nameStart) {
+            throw handler.fatalError("Malformed content model");
+        }
+        checkNameStartChar(nameStart);
+        String elementName = new String(buf, nameStart, cmPos - nameStart);
+        ElementDeclaration.ContentModel.Occurrence occ = readCmOccurrence();
+        return new ElementDeclaration.ContentModel(ElementDeclaration.ContentModel.NodeType.ELEMENT, elementName,
+                occ);
+    }
+
+    /**
+     * Parses one parenthesised group - either mixed content ({@code
+     * (#PCDATA|a|b)*} or {@code (#PCDATA)}) or element content (a sequence
+     * {@code (a, b, c)} or choice {@code (a | b | c)} of particles,
+     * possibly nested) - {@link #cmPos} positioned at the opening '(' on
+     * entry (whether this is the outermost call from {@link
+     * #scanElementDeclaration} or a recursive one from {@link
+     * #parseContentModelParticle}), left just past this group's own
+     * closing ')' plus any trailing occurrence indicator on return. {@link
+     * #cmEnd} is fixed for the whole recursive-descent parse (harmless for
+     * an inner group to see a bound that extends past its own closing
+     * paren - it only ever reads up to whichever comes first, its own
+     * matching ')' or {@link #cmEnd}).
+     */
+    private ElementDeclaration.ContentModel parseContentModelGroup() throws SAXException {
+        cmPos++; // consume '('
+        {
+            cmPos = skipCmWhitespace(cmPos);
+            int pm = matchKeyword(cmPos, PCDATA_MARKER);
+            if (pm == KW_MATCH) {
+                cmPos += PCDATA_MARKER.length;
+                ArrayList<ElementDeclaration.ContentModel> children =
+                        new ArrayList<ElementDeclaration.ContentModel>();
+                children.add(new ElementDeclaration.ContentModel(ElementDeclaration.ContentModel.NodeType.PCDATA,
+                        (String) null, ElementDeclaration.ContentModel.Occurrence.ONCE));
+                cmPos = skipCmWhitespace(cmPos);
+                while (cmPos < cmEnd && buf[cmPos] == '|') {
+                    cmPos++;
+                    cmPos = skipCmWhitespace(cmPos);
+                    int nameStart = cmPos;
+                    while (cmPos < cmEnd && isNameChar(buf[cmPos])) {
+                        cmPos++;
+                    }
+                    if (cmPos == nameStart) {
+                        throw handler.fatalError("Malformed content model");
+                    }
+                    checkNameStartChar(nameStart);
+                    children.add(new ElementDeclaration.ContentModel(ElementDeclaration.ContentModel.NodeType.ELEMENT,
+                            new String(buf, nameStart, cmPos - nameStart),
+                            ElementDeclaration.ContentModel.Occurrence.ONCE));
+                    cmPos = skipCmWhitespace(cmPos);
+                }
+                if (cmPos >= cmEnd || buf[cmPos] != ')') {
+                    throw handler.fatalError("Malformed content model");
+                }
+                cmPos++;
+                ElementDeclaration.ContentModel.Occurrence occ = readCmOccurrence();
+                return new ElementDeclaration.ContentModel(ElementDeclaration.ContentModel.NodeType.CHOICE, children,
+                        occ);
+            }
+
+            ArrayList<ElementDeclaration.ContentModel> children = new ArrayList<ElementDeclaration.ContentModel>();
+            children.add(parseContentModelParticle());
+            cmPos = skipCmWhitespace(cmPos);
+            char separator = 0;
+            while (cmPos < cmEnd && (buf[cmPos] == ',' || buf[cmPos] == '|')) {
+                char sep = buf[cmPos];
+                if (separator == 0) {
+                    separator = sep;
+                } else if (separator != sep) {
+                    throw handler.fatalError(
+                            "Cannot mix ',' and '|' within the same content model group");
+                }
+                cmPos++;
+                cmPos = skipCmWhitespace(cmPos);
+                children.add(parseContentModelParticle());
+                cmPos = skipCmWhitespace(cmPos);
+            }
+            if (cmPos >= cmEnd || buf[cmPos] != ')') {
+                throw handler.fatalError("Malformed content model");
+            }
+            cmPos++;
+            ElementDeclaration.ContentModel.Occurrence groupOcc = readCmOccurrence();
+            ElementDeclaration.ContentModel.NodeType groupType = (separator == '|')
+                    ? ElementDeclaration.ContentModel.NodeType.CHOICE
+                    : ElementDeclaration.ContentModel.NodeType.SEQUENCE;
+            return new ElementDeclaration.ContentModel(groupType, children, groupOcc);
+        }
+    }
+
+    /**
+     * Declaration-time attribute VCs, checked (only when {@link
+     * #validationEnabled}) just before {@link #scanAttlistDeclaration}
+     * commits a new AttDef: VC "ID Attribute Default" (Section 3.3.1) - an
+     * {@code ID}-typed attribute must be {@code #IMPLIED} or {@code
+     * #REQUIRED}, never {@code #FIXED} or a plain literal default, since an
+     * ID's whole purpose (uniquely identifying its element) is defeated by
+     * a shared default value - and VC "One ID per Element Type"/"One
+     * Notation Per Element Type" (Section 3.3.1) - an element type may not
+     * declare more than one attribute of either type.
+     */
+    private void checkAttlistDeclarationVCs(String elementName, String attrName, String type, DTDModel.Mode mode)
+            throws SAXException {
+        if ("ID".equals(type)) {
+            if (mode != DTDModel.Mode.REQUIRED && mode != DTDModel.Mode.IMPLIED) {
+                handler.error("Validity Constraint: ID Attribute Default (Section 3.3.1). "
+                        + "ID attribute \"" + attrName + "\" on element \"" + elementName
+                        + "\" must be declared #IMPLIED or #REQUIRED.");
+            }
+            if (dtdModel.hasAttributeOfType(elementName, "ID", attrName)) {
+                handler.error("Validity Constraint: One ID per Element Type (Section 3.3.1). "
+                        + "Element \"" + elementName + "\" already has an ID attribute declared.");
+            }
+        } else if ("NOTATION".equals(type) && dtdModel.hasAttributeOfType(elementName, "NOTATION", attrName)) {
+            handler.error("Validity Constraint: One Notation Per Element Type (Section 3.3.1). "
+                    + "Element \"" + elementName + "\" already has a NOTATION attribute declared.");
+        }
     }
 
     /**
      * Parses one {@code <!ATTLIST ...>} declaration (an element name
      * followed by zero or more AttDefs), {@code p} positioned just past the
-     * "<!ATTLIST" keyword. For each AttDef, only records whether the type is
-     * {@code CDATA} or not (the specific non-CDATA type, and any
-     * enumeration/{@code NOTATION} value list, is recognised syntactically
-     * to skip past correctly but not retained - checking that a value is a
-     * legal member of it is a VC check, out of scope for M5) and the
-     * resolved default (raw at this point - see {@link
+     * "<!ATTLIST" keyword. The declared type, default mode ({@code
+     * #REQUIRED}/{@code #IMPLIED}/{@code #FIXED}/plain), and any
+     * enumeration/{@code NOTATION} value list are all retained, plus the
+     * resolved default itself (raw at this point - see {@link
      * #scanDoctypeSubset()}'s finishing step for entity resolution), or null
      * for {@code #REQUIRED}/{@code #IMPLIED}. Returns the position past the
      * declaration's closing '>', or -1 on underflow.
@@ -2391,17 +2742,18 @@ class Scanner implements ByteDecoderTarget {
             }
 
             String type;
+            List<String> enumeration = null;
             if (buf[p] == '(') {
                 // A bare enumeration - SAX/the old parser's AttListDeclParser
                 // both report this as the literal type name "ENUMERATION",
-                // not the list of allowed values (which isn't retained here
-                // anyway - see class Javadoc).
+                // not the list of allowed values.
                 type = "ENUMERATION";
-                int r = skipParenList(p);
+                int r = scanEnumerationList(p, false);
                 if (r < 0) {
                     return -1;
                 }
                 p = r;
+                enumeration = lastEnumerationValues;
             } else {
                 int typeStart = p;
                 while (p < limit && isNameChar(buf[p])) {
@@ -2416,8 +2768,8 @@ class Scanner implements ByteDecoderTarget {
                 // The literal keyword text itself is the SAX type string
                 // ("CDATA", "ID", "IDREF", "IDREFS", "ENTITY", "ENTITIES",
                 // "NMTOKEN", "NMTOKENS", or "NOTATION") - not separately
-                // validated as one of those (VC/WFC keyword-legality
-                // checking is out of scope for M5).
+                // checked against that keyword set; an unrecognised word
+                // here is simply reported as that type's literal text.
                 type = new String(buf, typeStart, p - typeStart);
                 if ("NOTATION".equals(type)) {
                     int ws3b = p;
@@ -2431,11 +2783,12 @@ class Scanner implements ByteDecoderTarget {
                     if (buf[p] != '(') {
                         throw handler.fatalError("Malformed attribute-list declaration");
                     }
-                    int r = skipParenList(p);
+                    int r = scanEnumerationList(p, true);
                     if (r < 0) {
                         return -1;
                     }
                     p = r;
+                    enumeration = lastEnumerationValues;
                 }
             }
 
@@ -2449,6 +2802,7 @@ class Scanner implements ByteDecoderTarget {
             }
 
             String rawDefault;
+            DTDModel.Mode mode;
             if (buf[p] == '#') {
                 int rm = matchKeyword(p, REQUIRED_MARKER);
                 if (rm == KW_NEED_MORE) {
@@ -2457,6 +2811,7 @@ class Scanner implements ByteDecoderTarget {
                 if (rm == KW_MATCH) {
                     p += REQUIRED_MARKER.length;
                     rawDefault = null;
+                    mode = DTDModel.Mode.REQUIRED;
                 } else {
                     int im = matchKeyword(p, IMPLIED_MARKER);
                     if (im == KW_NEED_MORE) {
@@ -2465,6 +2820,7 @@ class Scanner implements ByteDecoderTarget {
                     if (im == KW_MATCH) {
                         p += IMPLIED_MARKER.length;
                         rawDefault = null;
+                        mode = DTDModel.Mode.IMPLIED;
                     } else {
                         int fm = matchKeyword(p, FIXED_MARKER);
                         if (fm == KW_NEED_MORE) {
@@ -2492,6 +2848,7 @@ class Scanner implements ByteDecoderTarget {
                         }
                         p = r;
                         rawDefault = sb.toString();
+                        mode = DTDModel.Mode.FIXED;
                     }
                 }
             } else if (buf[p] == '"' || buf[p] == '\'') {
@@ -2502,11 +2859,15 @@ class Scanner implements ByteDecoderTarget {
                 }
                 p = r;
                 rawDefault = sb.toString();
+                mode = DTDModel.Mode.NONE;
             } else {
                 throw handler.fatalError("Malformed attribute-list declaration");
             }
 
-            dtdModel.declareAttribute(elementName, attrName, type, rawDefault);
+            if (validationEnabled) {
+                checkAttlistDeclarationVCs(elementName, attrName, type, mode);
+            }
+            dtdModel.declareAttribute(elementName, attrName, type, mode, rawDefault, enumeration);
             // loop continues: another AttDef, or S? '>' to end the declaration
         }
     }
@@ -3031,10 +3392,10 @@ class Scanner implements ByteDecoderTarget {
     // resolving systemId against baseSystemId and opening it directly
     // (matching the old parser's own ContentParser.processExternalEntity
     // fallback); decode the fetched bytes with the same BOM/declared-
-    // encoding detection ScannerXMLReader uses for the main document
-    // (XmlDeclUtil, factored out once needed in both places). Both call
-    // sites strip a leading declaration themselves afterward (Scanner does
-    // not parse declarations - see class Javadoc "M6" section).
+    // encoding detection used for the main document, but as a one-shot,
+    // fully-buffered decode rather than a streaming one (see XmlDeclUtil).
+    // Both call sites strip a leading declaration themselves afterward -
+    // Scanner never parses a declaration itself; see XmlDeclUtil.stripXmlDeclaration.
 
     /** Fetches and decodes {@code publicId}/{@code systemId} - the shared
      *  core of external entity and external DTD subset fetching. {@code
@@ -3440,11 +3801,180 @@ class Scanner implements ByteDecoderTarget {
         for (Map.Entry<String, DTDModel.AttDef> entry : declared.entrySet()) {
             String name = entry.getKey();
             DTDModel.AttDef def = entry.getValue();
-            if (def.defaultValue == null || wasAttributeSeen(name)) {
+            if (wasAttributeSeen(name)) {
+                continue;
+            }
+            if (validationEnabled && def.mode == DTDModel.Mode.REQUIRED) {
+                handler.error("Validity Constraint: Required Attribute (Section 3.3.2). Attribute \"" + name
+                        + "\" is required on element \"" + elementName + "\" but was not specified.");
+            }
+            if (def.defaultValue == null) {
                 continue;
             }
             handler.startAttribute(name, def.type);
             handler.attributeValueContent(CharBuffer.wrap(def.defaultValue), true);
+        }
+    }
+
+    // ===== Runtime attribute VC checks =====
+    //
+    // Reached only for non-CDATA types (see emitAttributeValueContent),
+    // only when validationEnabled, with the attribute's full final value
+    // already in hand (normalizeBuilder's collapse already materializes it
+    // for exactly these types - nothing extra to buffer).
+
+    /** ID uniqueness tracking (VC "ID", Section 3.3.1) - every ID-typed
+     *  attribute value seen, document-wide. Lazily allocated (validation-
+     *  only). */
+    private HashSet<String> declaredIds;
+
+    /** IDREF/IDREFS values seen, document-wide, checked against {@link
+     *  #declaredIds} once the whole document is known (VC "IDREF", Section
+     *  3.3.1 - forward references are legal, so this can't be checked
+     *  incrementally). Lazily allocated. */
+    private ArrayList<String> pendingIdrefs;
+
+    private void checkAttributeValueVCs(String elementName, String attrName, String type, String value)
+            throws SAXException {
+        switch (type) {
+            case "ID":
+                checkNameProduction(attrName, value, "ID");
+                if (declaredIds == null) {
+                    declaredIds = new HashSet<String>();
+                }
+                if (!declaredIds.add(value)) {
+                    handler.error("Validity Constraint: ID (Section 3.3.1). ID value \"" + value
+                            + "\" appears more than once in the document.");
+                }
+                break;
+            case "IDREF":
+                checkNameProduction(attrName, value, "IDREF");
+                recordPendingIdref(value);
+                break;
+            case "IDREFS":
+                for (String token : splitTokens(value)) {
+                    checkNameProduction(attrName, token, "IDREFS");
+                    recordPendingIdref(token);
+                }
+                break;
+            case "NMTOKEN":
+                checkNmtokenProduction(attrName, value, "NMTOKEN");
+                break;
+            case "NMTOKENS":
+                for (String token : splitTokens(value)) {
+                    checkNmtokenProduction(attrName, token, "NMTOKENS");
+                }
+                break;
+            case "ENUMERATION":
+            case "NOTATION":
+                checkEnumerationMembership(elementName, attrName, type, value);
+                break;
+            default:
+                // CDATA never reaches here; ENTITY/ENTITIES (must name a
+                // declared unparsed entity) not yet checked - a smaller,
+                // separate capability (Scanner doesn't track which general
+                // entities are unparsed yet).
+                break;
+        }
+        checkFixedValue(elementName, attrName, value);
+    }
+
+    private void recordPendingIdref(String value) {
+        if (pendingIdrefs == null) {
+            pendingIdrefs = new ArrayList<String>();
+        }
+        pendingIdrefs.add(value);
+    }
+
+    /** Splits an already-collapsed (single-space-separated, trimmed) IDREFS/
+     *  NMTOKENS value into its individual tokens. */
+    private static List<String> splitTokens(String value) {
+        if (value.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        ArrayList<String> tokens = new ArrayList<String>();
+        int start = 0;
+        for (int i = 0; i <= value.length(); i++) {
+            if (i == value.length() || value.charAt(i) == ' ') {
+                if (i > start) {
+                    tokens.add(value.substring(start, i));
+                }
+                start = i + 1;
+            }
+        }
+        return tokens;
+    }
+
+    private void checkNameProduction(String attrName, String value, String typeLabel) throws SAXException {
+        if (value.isEmpty() || !isNameStartChar(value.charAt(0))) {
+            reportBadAttributeValueFormat(attrName, value, typeLabel, "Name");
+            return;
+        }
+        for (int i = 1; i < value.length(); i++) {
+            if (!isNameChar(value.charAt(i))) {
+                reportBadAttributeValueFormat(attrName, value, typeLabel, "Name");
+                return;
+            }
+        }
+    }
+
+    private void checkNmtokenProduction(String attrName, String value, String typeLabel) throws SAXException {
+        if (value.isEmpty()) {
+            reportBadAttributeValueFormat(attrName, value, typeLabel, "Nmtoken");
+            return;
+        }
+        for (int i = 0; i < value.length(); i++) {
+            if (!isNameChar(value.charAt(i))) {
+                reportBadAttributeValueFormat(attrName, value, typeLabel, "Nmtoken");
+                return;
+            }
+        }
+    }
+
+    private void reportBadAttributeValueFormat(String attrName, String value, String typeLabel, String production)
+            throws SAXException {
+        handler.error("Validity Constraint: Attribute Value Type (Section 3.3.1). Value \"" + value + "\" of "
+                + typeLabel + " attribute \"" + attrName + "\" does not match the " + production + " production.");
+    }
+
+    private void checkEnumerationMembership(String elementName, String attrName, String type, String value)
+            throws SAXException {
+        DTDModel.AttDef def = attributeDefOf(elementName, attrName);
+        if (def == null || def.enumeration == null || def.enumeration.contains(value)) {
+            return;
+        }
+        handler.error("Validity Constraint: " + ("NOTATION".equals(type) ? "Notation Attributes" : "Enumeration")
+                + " (Section 3.3.1). Value \"" + value + "\" of attribute \"" + attrName
+                + "\" is not one of the declared values for element \"" + elementName + "\".");
+    }
+
+    private void checkFixedValue(String elementName, String attrName, String value) throws SAXException {
+        DTDModel.AttDef def = attributeDefOf(elementName, attrName);
+        if (def != null && def.mode == DTDModel.Mode.FIXED && !value.equals(def.defaultValue)) {
+            handler.error("Validity Constraint: Fixed Attribute Default (Section 3.3.2). Value \"" + value
+                    + "\" of attribute \"" + attrName + "\" does not match its declared #FIXED value \""
+                    + def.defaultValue + "\".");
+        }
+    }
+
+    private DTDModel.AttDef attributeDefOf(String elementName, String attrName) {
+        Map<String, DTDModel.AttDef> attrs = dtdModel.getAttributes(elementName);
+        return attrs == null ? null : attrs.get(attrName);
+    }
+
+    /** Checked from {@link #close()} once the whole document is known - VC
+     *  "IDREF" (Section 3.3.1): every IDREF/IDREFS value must match the
+     *  value of some ID attribute somewhere in the document (forward
+     *  references are legal, so this can only be checked at the end). */
+    private void checkPendingIdrefs() throws SAXException {
+        if (pendingIdrefs == null) {
+            return;
+        }
+        for (String value : pendingIdrefs) {
+            if (declaredIds == null || !declaredIds.contains(value)) {
+                handler.error("Validity Constraint: IDREF (Section 3.3.1). IDREF value \"" + value
+                        + "\" does not match the value of any ID attribute in the document.");
+            }
         }
     }
 

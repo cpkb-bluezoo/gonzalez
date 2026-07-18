@@ -23,48 +23,53 @@ package org.bluezoo.gonzalez;
 
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
- * Minimal DTD model for M5's deliberately narrow scope: attribute
- * defaulting, type-aware attribute value normalisation, and content-type-
- * driven {@code ignorableWhitespace} determination - not full content-model
- * conformance checking or validity (VC) constraint checking, which are out
- * of scope for this milestone (see ASYNC-PIPELINE.md). Populated entirely by
- * {@link Scanner} while it parses an internal DTD subset; queried by
- * {@link Scanner} itself (there is no separate downstream pipeline stage for
- * this - see Scanner's "M5" section for why).
+ * DTD model for {@link Scanner}: element content models/types and attribute
+ * declarations, used for attribute defaulting, type-aware attribute value
+ * normalisation, content-type-driven {@code ignorableWhitespace}
+ * determination, and - when {@link Scanner}'s validation is enabled -
+ * content-model and attribute validity constraint (VC) checking. Populated
+ * entirely by {@link Scanner} while it parses a DTD subset (internal or
+ * external); queried by {@link Scanner} itself, since there is no separate
+ * downstream pipeline stage for DTD-driven behaviour in this pipeline.
  * <p>
- * {@code <!ELEMENT>} declarations are reduced to just their top-level {@link
- * ContentType} (EMPTY/ANY/MIXED/ELEMENT) - enough to know whether
- * whitespace-only text is ignorable, but not enough to validate actual
- * children against the declared model (no content-model tree is built at
- * all). {@code <!ATTLIST>} declarations are reduced to, per attribute, its
- * declared type name (the literal keyword text - {@code "CDATA"}, {@code
- * "ID"}, {@code "IDREF"}, ..., {@code "NOTATION"}, or {@code "ENUMERATION"}
- * for a bare enumeration, matching the type strings the old parser's
- * {@code AttListDeclParser} uses and therefore what SAX's {@code
- * Attributes.getType()} should report) and its resolved default value, if
- * any (null for {@code #REQUIRED}/{@code #IMPLIED} - no default to inject;
- * the "required" distinction itself is not tracked, since enforcing it is a
- * VC check, out of scope here). Enumerated/NOTATION value lists are
- * recognised syntactically (to skip past them) but their actual allowed
- * values are not retained - checking that a specified value is a legal
- * enumeration member is a VC check, also out of scope.
+ * {@code <!ELEMENT>} declarations are stored as a full {@link
+ * ElementDeclaration}: its top-level {@link ElementDeclaration.ContentType}
+ * (EMPTY/ANY/MIXED/ELEMENT, always known - enough on its own to know whether
+ * whitespace-only text is ignorable) plus, only when validation is enabled,
+ * the parsed content-model tree needed to actually validate children against
+ * it. {@code <!ATTLIST>} declarations are stored as an {@link AttDef} per
+ * attribute: its declared type name (the literal keyword text - {@code
+ * "CDATA"}, {@code "ID"}, {@code "IDREF"}, ..., {@code "NOTATION"}, or
+ * {@code "ENUMERATION"} for a bare enumeration - matching what SAX's
+ * {@code Attributes.getType()} should report), its {@link Mode} ({@code
+ * #REQUIRED}/{@code #IMPLIED}/{@code #FIXED}/plain default), its resolved
+ * default value if any, and - for {@code ENUMERATION}/{@code NOTATION} - the
+ * declared list of legal values.
  * <p>
  * First declaration wins for a repeated name, matching {@code <!ENTITY>}'s
  * XML 4.2 rule and applied here for consistency (the spec doesn't actually
  * mandate this for element/attribute declarations the way it does for
  * entities, but silently accepting the first and ignoring later duplicates
- * is a reasonable, safe default for a non-validating milestone that isn't
- * checking for the "no duplicate declaration" VC anyway).
+ * is a reasonable, safe default).
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
 class DTDModel {
 
-    enum ContentType {
-        EMPTY, ANY, MIXED, ELEMENT
+    /** The {@code #REQUIRED}/{@code #IMPLIED}/{@code #FIXED}/(plain literal
+     *  default) distinction, needed for VC "Required Attribute"/"Fixed
+     *  Attribute Default"/"ID Attribute Default" (an ID-typed attribute may
+     *  only be {@code REQUIRED} or {@code IMPLIED}, never {@code FIXED} or a
+     *  plain default). {@code NONE} means a plain literal default (mutually
+     *  exclusive with {@code defaultValue == null}, except that {@code
+     *  REQUIRED}/{@code IMPLIED} also always have a null {@code
+     *  defaultValue} - there's simply nothing to inject for either). */
+    enum Mode {
+        NONE, REQUIRED, IMPLIED, FIXED
     }
 
     static final class AttDef {
@@ -73,6 +78,8 @@ class DTDModel {
          *  with a null type; see Scanner.lookupAttributeType for the
          *  undeclared-defaults-to-"CDATA" SAX convention). */
         final String type;
+        /** See {@link Mode}. */
+        final Mode mode;
         /** Resolved (entity-expanded) default value, or null if this
          *  attribute has no default to inject ({@code #REQUIRED}/{@code
          *  #IMPLIED}). Mutable: stored as raw literal text at parse time,
@@ -81,10 +88,16 @@ class DTDModel {
          *  finishing step), since a default value may reference an entity
          *  declared later in the same internal subset. */
         String defaultValue;
+        /** For {@code type} {@code "ENUMERATION"} or {@code "NOTATION"}, the
+         *  declared list of legal values (VC "Enumeration"/"Notation
+         *  Attributes") - null for every other type. */
+        final List<String> enumeration;
 
-        AttDef(String type, String defaultValue) {
+        AttDef(String type, Mode mode, String defaultValue, List<String> enumeration) {
             this.type = type;
+            this.mode = mode;
             this.defaultValue = defaultValue;
+            this.enumeration = enumeration;
         }
 
         /** True if the type is CDATA - the type-dependent collapse
@@ -94,37 +107,71 @@ class DTDModel {
         }
     }
 
-    private final Map<String, ContentType> contentTypes = new HashMap<String, ContentType>();
+    /** Element declarations, keyed by name - the content-model tree is only
+     *  present when validation was enabled at declaration time (see {@link
+     *  Scanner#scanElementDeclaration}). Reuses {@link ElementDeclaration}
+     *  unchanged from the old tokenizer-based pipeline: it and {@link
+     *  ContentModelValidator} are framework-independent already, with no
+     *  {@code Tokenizer}/{@code ContentParser} coupling to work around. */
+    private final Map<String, ElementDeclaration> elements = new HashMap<String, ElementDeclaration>();
     private final Map<String, LinkedHashMap<String, AttDef>> attlists =
             new HashMap<String, LinkedHashMap<String, AttDef>>();
 
-    void declareContentType(String element, ContentType type) {
-        if (!contentTypes.containsKey(element)) {
-            contentTypes.put(element, type);
+    void declareElement(String element, ElementDeclaration decl) {
+        if (!elements.containsKey(element)) {
+            elements.put(element, decl);
         }
     }
 
-    void declareAttribute(String element, String attrName, String type, String rawDefault) {
+    void declareAttribute(String element, String attrName, String type, Mode mode, String rawDefault,
+            List<String> enumeration) {
         LinkedHashMap<String, AttDef> attrs = attlists.get(element);
         if (attrs == null) {
             attrs = new LinkedHashMap<String, AttDef>();
             attlists.put(element, attrs);
         }
         if (!attrs.containsKey(attrName)) {
-            attrs.put(attrName, new AttDef(type, rawDefault));
+            attrs.put(attrName, new AttDef(type, mode, rawDefault, enumeration));
         }
     }
 
     /** Returns the declared content type for {@code element}, or null if
      *  no {@code <!ELEMENT>} declaration was seen for it. */
-    ContentType getContentType(String element) {
-        return contentTypes.get(element);
+    ElementDeclaration.ContentType getContentType(String element) {
+        ElementDeclaration decl = elements.get(element);
+        return decl == null ? null : decl.contentType;
+    }
+
+    /** Returns the full element declaration (content-model tree included)
+     *  for {@code element}, or null if none was seen - used only by VC
+     *  validation (see {@link ContentModelValidator}); everything else
+     *  keeps using the cheaper {@link #getContentType}. */
+    ElementDeclaration getElementDeclaration(String element) {
+        return elements.get(element);
     }
 
     /** Returns the declared attributes for {@code element} in declaration
      *  order, or null if no {@code <!ATTLIST>} declaration was seen for it. */
     Map<String, AttDef> getAttributes(String element) {
         return attlists.get(element);
+    }
+
+    /** True if {@code element} already has an attribute of {@code type}
+     *  declared under a different name than {@code excludeName} - used for
+     *  VC "One ID per Element Type"/"One Notation Per Element Type"
+     *  (Section 3.3.1), checked by {@link Scanner} just before declaring a
+     *  new attribute of that same type. */
+    boolean hasAttributeOfType(String element, String type, String excludeName) {
+        LinkedHashMap<String, AttDef> attrs = attlists.get(element);
+        if (attrs == null) {
+            return false;
+        }
+        for (Map.Entry<String, AttDef> entry : attrs.entrySet()) {
+            if (!entry.getKey().equals(excludeName) && type.equals(entry.getValue().type)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** True if any attribute of any element has a non-null default value -

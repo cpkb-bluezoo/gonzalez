@@ -30,14 +30,13 @@ import org.xml.sax.SAXException;
 
 /**
  * Byte-to-char decoding (BOM detection, then declared-encoding sniffing) and
- * XML/text declaration handling, shared between {@link ScannerXMLReader}
- * (the main document) and {@link Scanner}'s external entity/DTD subset
- * fetching (see {@link Scanner}'s "external entity/DTD fetching" section) -
- * factored out once the same logic was needed in both places. This is a
- * simplified, one-shot (not streaming) version of what {@code
- * ExternalEntityDecoder} does for the old pipeline; see {@code
- * ScannerXMLReader}'s class Javadoc for why a separate, simpler
- * implementation was written rather than reusing that class directly.
+ * XML/text declaration handling for {@link Scanner}'s external entity/DTD
+ * subset fetching (see {@link Scanner}'s "external entity/DTD fetching"
+ * section) - a fetched external resource is always small and fully in
+ * memory already, so this is a simplified, one-shot (not streaming)
+ * decode, unlike the main document's own streaming byte-to-char pipeline
+ * (see {@link ExternalEntityDecoder}, which drives both {@link Tokenizer}
+ * and {@link Scanner} for the main document via {@link ByteDecoderTarget}).
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -161,9 +160,9 @@ final class XmlDeclUtil {
      * Strips a leading {@code <?xml ...?>} declaration (an XML declaration
      * on the main document, or a text declaration on an external entity/DTD
      * subset - both share the same {@code '<?xml' ... '?>'} shape for this
-     * purpose) - {@link Scanner} does not parse it itself (see its class
-     * Javadoc "M6" section: this is a separate, earlier pipeline concern).
-     * Throws if a declaration-looking prefix ({@code "<?xml"}) never finds
+     * purpose) - {@link Scanner} never parses a declaration itself; that is
+     * always this earlier, separate pipeline stage's job. Throws if a
+     * declaration-looking prefix ({@code "<?xml"}) never finds
      * its closing {@code "?>"} - a real, if malformed, not-wf document, not
      * something to silently treat as having no declaration at all.
      */

@@ -26,8 +26,9 @@ import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 
 /**
- * Internal structural event vocabulary for the async scanning pipeline.
- * See ASYNC-PIPELINE.md for the design rationale.
+ * Internal structural event vocabulary that {@link Scanner} emits, adapted
+ * to standard SAX2 by {@link SAXAdapter} (optionally preceded by {@link
+ * NamespaceFilter}).
  * <p>
  * This deliberately differs from {@link org.xml.sax.ContentHandler} in ways
  * that let it stay cheap for consumers that don't need namespace resolution
@@ -209,11 +210,10 @@ interface XMLHandler {
      * content). Only fired when an internal DTD subset has declared the
      * current element's content type; a document with no DTD, or one whose
      * current element allows mixed/{@code ANY} content, always reports
-     * whitespace via {@link #characters} instead - see Scanner's "M5"
-     * section for the determination and its scope (content coming from a
-     * general entity reference is never routed here, even if
-     * whitespace-only, to keep that determination simple). Same streaming/
-     * {@code end}/buffer-lifetime semantics as {@link #characters}.
+     * whitespace via {@link #characters} instead (content coming from a
+     * general entity reference is never routed here, even if whitespace-
+     * only, to keep that determination simple). Same streaming/{@code end}/
+     * buffer-lifetime semantics as {@link #characters}.
      *
      * @param text the whitespace chunk; valid only for the duration of this
      *             call unless retained per {@link #saveBuffers()}'s contract
@@ -256,5 +256,20 @@ interface XMLHandler {
      * @return the SAXException to throw
      */
     SAXException fatalError(String message) throws SAXException;
+
+    /**
+     * Reports a recoverable validity constraint (VC) violation - unlike
+     * {@link #fatalError}, this does not stop parsing; the caller continues
+     * immediately after reporting. Mirrors {@code ContentParser.
+     * reportValidationError}'s SAX contract: routes to {@code
+     * ErrorHandler.error(SAXParseException)}, not {@code fatalError}, since
+     * a VC violation (unlike a WFC violation) means the document is not
+     * valid but may still be well-formed. Only ever called when validation
+     * is actually enabled - see {@code Scanner}'s own validation-enabled
+     * flag.
+     *
+     * @param message the error message
+     */
+    void error(String message) throws SAXException;
 
 }

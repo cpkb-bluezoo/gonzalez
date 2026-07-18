@@ -10,8 +10,8 @@
  * provider instead of downloading anything.
  *
  * In package org.bluezoo.gonzalez only to reach the package-private
- * ScannerXMLReader/Scanner classes - not part of the gonzalez source tree
- * itself (lives under benchmark/external-compare, compiled ad hoc).
+ * Parser/Scanner classes - not part of the gonzalez source tree itself
+ * (lives under benchmark/external-compare, compiled ad hoc).
  */
 package org.bluezoo.gonzalez;
 
