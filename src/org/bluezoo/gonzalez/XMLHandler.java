@@ -60,39 +60,51 @@ import org.xml.sax.SAXException;
  * {@code endElement(uri, localName, qName)}) maintains its own stack keyed
  * off the {@link #startElement(String)}/{@link #endAttributes()} pair it
  * already received, popped 1:1 per {@link #endElement()} call.</li>
+ * <li>{@link #piData} arrives as a stream bracketed by {@link #piTarget},
+ * the same shape {@link #attributeValueContent}/{@link #startAttribute} use
+ * - a processing instruction's data is scanned as a single opaque run, so it
+ * gets the same treatment as an attribute value rather than being buffered
+ * whole before reporting (see below).</li>
  * <li>Text content ({@link #attributeValueContent}, {@link #characters},
- * {@link #comment(CharBuffer)}) is delivered as {@link CharBuffer}
- * throughout, converted to {@code char[]}/offset/length only at the eventual
- * SAX boundary, so native consumers can work with buffers directly.</li>
+ * {@link #piData}, {@link #comment(CharBuffer)}) is delivered as {@link
+ * CharBuffer} throughout, converted to {@code char[]}/offset/length only at
+ * the eventual SAX boundary, so native consumers can work with buffers
+ * directly.</li>
  * </ul>
  * <p>
- * <b>Streaming content and attribute values, with an explicit "end" flag.</b>
- * The scanner's job is to identify contiguous runs and push them downstream
- * as fast as possible - it never assembles a complete value/run into its own
- * buffer before emitting (no allocation for that purpose at all). A single
- * logical run (text between two tags, or one attribute's value) may
- * therefore arrive as one call or several, exactly as SAX's own
- * {@code characters()} already tolerates being split. Both
- * {@link #characters(CharBuffer, boolean)} and {@link #attributeValueContent}
- * carry an explicit {@code end} flag - true on the call that completes the
- * run - rather than requiring a downstream consumer to infer completion from
- * the next event's type. This matters because it lets a consumer that needs
- * to coalesce chunks into one value (a DOM builder, the SAX adapter
- * assembling an {@code Attributes} value) take a zero-allocation fast path
- * in the common case: if the very first call for a run already has
- * {@code end=true}, there is nothing to accumulate - it can be handed
- * straight through. Only the rarer multi-chunk case (a run interrupted by an
- * entity reference, or split across a {@link #saveBuffers()} boundary) needs
- * to buffer. The scanner can only assert {@code end=true} once it has
- * actually confirmed completion (seen the terminator - the closing quote, or
- * markup's {@code '<'}) within currently-available data; if a
+ * <b>Streaming content, attribute values, and PI data, with an explicit
+ * "end" flag.</b> The scanner's job is to identify contiguous runs and push
+ * them downstream as fast as possible - it never assembles a complete
+ * value/run into its own buffer before emitting (no allocation for that
+ * purpose at all). A single logical run (text between two tags, one
+ * attribute's value, or one processing instruction's data) may therefore
+ * arrive as one call or several, exactly as SAX's own {@code characters()}
+ * already tolerates being split. {@link #characters(CharBuffer, boolean,
+ * boolean)}, {@link #attributeValueContent}, and {@link #piData} all carry
+ * an explicit {@code end} flag - true on the call that completes the run -
+ * rather than requiring a downstream consumer to infer completion from the
+ * next event's type. This matters because it lets a consumer that needs to
+ * coalesce chunks into one value (a DOM builder, the SAX adapter assembling
+ * an {@code Attributes} value) take a zero-allocation fast path in the
+ * common case: if the very first call for a run already has {@code
+ * end=true}, there is nothing to accumulate - it can be handed straight
+ * through. Only the rarer multi-chunk case (a run interrupted by an entity
+ * reference, or split across a {@link #saveBuffers()} boundary) needs to
+ * buffer. The scanner can only assert {@code end=true} once it has actually
+ * confirmed completion (seen the terminator - the closing quote, markup's
+ * {@code '<'}, or a PI's {@code "?>"}) within currently-available data; if a
  * {@code receive()} call runs out of buffer before the terminator is
  * visible, the last chunk goes out with {@code end=false}, and if that
  * chunk later turns out to have in fact been the last one, the scanner
  * follows up with an empty {@code end=true} call purely to close out the
  * sequence (mirroring an HTTP/2 DATA frame's empty closing frame with
  * END_STREAM set) - a rare edge case that costs one extra call only when a
- * buffer boundary happens to land exactly on the terminator.
+ * buffer boundary happens to land exactly on the terminator. {@link
+ * #piData} alone always fires at least this one closing call even when a PI
+ * has no data at all, since - unlike {@link #attributeValueContent}, which
+ * has {@link #endAttributes()} as an unambiguous terminator regardless of
+ * how many value chunks preceded it - a PI has no separate "end" event of
+ * its own to fall back on.
  * <p>
  * <b>Entity references and {@link #saveBuffers()}.</b> Predefined entities
  * ({@code &amp;}, {@code &lt;}, {@code &gt;}, {@code &apos;}, {@code &quot;})
@@ -199,27 +211,25 @@ interface XMLHandler {
      *
      * @param text the character data chunk; valid only for the duration of
      *             this call unless retained per {@link #saveBuffers()}'s contract
+     * @param ignorable true if this is whitespace-only character data that a
+     *             DTD's content model declares insignificant (an element
+     *             declared with element-only content, {@code <!ELEMENT foo
+     *             (bar,baz)>} - not mixed or {@code ANY} content), to be
+     *             routed to SAX's {@code ignorableWhitespace} rather than
+     *             {@code characters} - see {@link SAXAdapter}. Only ever true
+     *             when an internal DTD subset has declared the current
+     *             element's content type; a document with no DTD, or one
+     *             whose current element allows mixed/{@code ANY} content,
+     *             always reports whitespace with {@code ignorable=false}
+     *             instead (content coming from a general entity reference is
+     *             never reported as ignorable, even if whitespace-only, to
+     *             keep that determination simple). Fixed for the whole run:
+     *             a caller must not change it between chunks of the same run
+     *             (the run's whitespace-only-ness is determined once, before
+     *             the first chunk is reported - see {@link Scanner}).
      * @param end true if this chunk completes the current run of character data
      */
-    void characters(CharBuffer text, boolean end) throws SAXException;
-
-    /**
-     * Reports a chunk of whitespace-only character data that a DTD's content
-     * model declares insignificant (an element declared with element-only
-     * content, {@code <!ELEMENT foo (bar,baz)>} - not mixed or {@code ANY}
-     * content). Only fired when an internal DTD subset has declared the
-     * current element's content type; a document with no DTD, or one whose
-     * current element allows mixed/{@code ANY} content, always reports
-     * whitespace via {@link #characters} instead (content coming from a
-     * general entity reference is never routed here, even if whitespace-
-     * only, to keep that determination simple). Same streaming/{@code end}/
-     * buffer-lifetime semantics as {@link #characters}.
-     *
-     * @param text the whitespace chunk; valid only for the duration of this
-     *             call unless retained per {@link #saveBuffers()}'s contract
-     * @param end true if this chunk completes the current run
-     */
-    void ignorableWhitespace(CharBuffer text, boolean end) throws SAXException;
+    void characters(CharBuffer text, boolean ignorable, boolean end) throws SAXException;
 
     /**
      * Signals the end of the most recently started, still-open element.
@@ -234,13 +244,29 @@ interface XMLHandler {
     void comment(CharBuffer text) throws SAXException;
 
     /**
-     * Reports a processing instruction.
+     * Signals the start of a processing instruction, reporting its target.
+     * Followed by one or more {@link #piData} calls for its data (mirroring
+     * {@link #startAttribute}/{@link #attributeValueContent}'s streaming
+     * shape - a PI's data, like an attribute value, is scanned as a single
+     * opaque run with no internal markup) - unlike an attribute value,
+     * though, at least one {@code piData} call always follows, even for a
+     * data-less PI ({@code <?target?>}), since there is no separate "end of
+     * PI" event; {@code piData}'s own {@code end=true} is the only signal
+     * that this processing instruction is complete.
      *
      * @param target the PI target
-     * @param data the PI data; valid only for the duration of this call, or
-     *             null if there was none
      */
-    void processingInstruction(String target, CharBuffer data) throws SAXException;
+    void piTarget(String target) throws SAXException;
+
+    /**
+     * Reports a chunk of the current processing instruction's data (see
+     * {@link #piTarget}).
+     *
+     * @param data the data chunk; valid only for the duration of this call
+     *             unless retained per {@link #saveBuffers()}'s contract
+     * @param end true if this chunk completes the PI's data
+     */
+    void piData(CharBuffer data, boolean end) throws SAXException;
 
     /**
      * Signals that any buffer-backed data delivered by a prior event and not

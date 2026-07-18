@@ -59,7 +59,7 @@ public class SAXAdapterTest {
         adapter.startElement("root");
         attr(adapter, "attr", "val");
         adapter.endAttributes();
-        adapter.characters(cb("text"), true);
+        adapter.characters(cb("text"), false, true);
         adapter.endElement();
         adapter.endDocument();
 
@@ -87,7 +87,7 @@ public class SAXAdapterTest {
         adapter.endElement();
         adapter.startElement("sibling");
         adapter.endAttributes();
-        adapter.characters(cb("x"), true);
+        adapter.characters(cb("x"), false, true);
         adapter.endElement();
         adapter.endElement();
         adapter.endDocument();
@@ -122,8 +122,8 @@ public class SAXAdapterTest {
         adapter.attributeValueContent(cb("Here is"), false);
         adapter.attributeValueContent(cb(" the value"), true);
         adapter.endAttributes();
-        adapter.characters(cb("hello "), false);
-        adapter.characters(cb("world"), true);
+        adapter.characters(cb("hello "), false, false);
+        adapter.characters(cb("world"), false, true);
         adapter.endElement();
         adapter.endDocument();
 
@@ -152,8 +152,8 @@ public class SAXAdapterTest {
         adapter.attributeValueContent(cb("value"), false);
         adapter.attributeValueContent(CharBuffer.wrap(new char[0]), true);
         adapter.endAttributes();
-        adapter.characters(cb("text"), false);
-        adapter.characters(CharBuffer.wrap(new char[0]), true);
+        adapter.characters(cb("text"), false, false);
+        adapter.characters(CharBuffer.wrap(new char[0]), false, true);
         adapter.endElement();
         adapter.endDocument();
 
@@ -245,7 +245,8 @@ public class SAXAdapterTest {
 
         adapter.startDocument();
         adapter.comment(cb(" a comment "));
-        adapter.processingInstruction("target", cb("pi data"));
+        adapter.piTarget("target");
+        adapter.piData(cb("pi data"), true);
         adapter.startElement("root");
         adapter.endAttributes();
         adapter.endElement();
@@ -262,13 +263,17 @@ public class SAXAdapterTest {
     }
 
     @Test
-    public void testProcessingInstructionWithNullData() throws Exception {
+    public void testProcessingInstructionWithNoData() throws Exception {
+        // A data-less PI ("<?target?>") still gets exactly one piData() call
+        // - with an empty buffer, end=true - since piData's end flag is the
+        // only completion signal (see XMLHandler#piTarget's Javadoc).
         SAXAdapter adapter = new SAXAdapter(false);
         RecordingSaxHandler sink = new RecordingSaxHandler();
         adapter.setContentHandler(sink);
 
         adapter.startDocument();
-        adapter.processingInstruction("target", null);
+        adapter.piTarget("target");
+        adapter.piData(CharBuffer.wrap(new char[0]), true);
         adapter.endDocument();
 
         List<String> expected = Arrays.asList(

@@ -138,6 +138,16 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     private boolean attributeValueFirstChunk;
     private final StringBuilder attributeValueBuilder = new StringBuilder();
 
+    // Current processing instruction being assembled from piTarget()/
+    // piData() calls - the same first-chunk-fast-path/StringBuilder-only-
+    // for-the-rarer-multi-chunk-case shape as the attribute value fields
+    // just above, needed here because SAX's own ContentHandler.
+    // processingInstruction(String, String) has no streaming form of its
+    // own to forward chunks to directly.
+    private String currentPITarget;
+    private boolean piDataFirstChunk;
+    private final StringBuilder piDataBuilder = new StringBuilder();
+
     /**
      * Creates a new adapter.
      *
@@ -376,34 +386,31 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     }
 
     @Override
-    public void characters(CharBuffer text, boolean end) throws SAXException {
-        // end is unused here: SAX's own characters() already tolerates being
-        // split across calls exactly like this event does, so there is
-        // nothing to coalesce - each chunk passes straight through as its
-        // own characters() call, synchronously, within this method.
+    public void characters(CharBuffer text, boolean ignorable, boolean end) throws SAXException {
+        // end is unused here: SAX's own characters()/ignorableWhitespace()
+        // already tolerate being split across calls exactly like this event
+        // does, so there is nothing to coalesce - each chunk passes straight
+        // through as its own call, synchronously, within this method.
         if (contentHandler == null) {
             return;
         }
         if (text.hasArray()) {
-            contentHandler.characters(text.array(), text.arrayOffset() + text.position(), text.remaining());
+            char[] array = text.array();
+            int offset = text.arrayOffset() + text.position();
+            int length = text.remaining();
+            if (ignorable) {
+                contentHandler.ignorableWhitespace(array, offset, length);
+            } else {
+                contentHandler.characters(array, offset, length);
+            }
         } else {
             char[] chars = new char[text.remaining()];
             text.get(chars);
-            contentHandler.characters(chars, 0, chars.length);
-        }
-    }
-
-    @Override
-    public void ignorableWhitespace(CharBuffer text, boolean end) throws SAXException {
-        if (contentHandler == null) {
-            return;
-        }
-        if (text.hasArray()) {
-            contentHandler.ignorableWhitespace(text.array(), text.arrayOffset() + text.position(), text.remaining());
-        } else {
-            char[] chars = new char[text.remaining()];
-            text.get(chars);
-            contentHandler.ignorableWhitespace(chars, 0, chars.length);
+            if (ignorable) {
+                contentHandler.ignorableWhitespace(chars, 0, chars.length);
+            } else {
+                contentHandler.characters(chars, 0, chars.length);
+            }
         }
     }
 
@@ -455,11 +462,31 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     }
 
     @Override
-    public void processingInstruction(String target, CharBuffer data) throws SAXException {
+    public void piTarget(String target) throws SAXException {
+        currentPITarget = target;
+        piDataFirstChunk = true;
+    }
+
+    @Override
+    public void piData(CharBuffer data, boolean end) throws SAXException {
         if (contentHandler == null) {
             return;
         }
-        contentHandler.processingInstruction(target, (data == null) ? "" : data.toString());
+        if (piDataFirstChunk && end) {
+            // Common case: exactly one chunk (or none at all - a zero-length
+            // CharBuffer for a data-less PI) - hand it straight through, no
+            // accumulation, no StringBuilder touched at all.
+            contentHandler.processingInstruction(currentPITarget, data.toString());
+            return;
+        }
+        if (piDataFirstChunk) {
+            piDataBuilder.setLength(0);
+            piDataFirstChunk = false;
+        }
+        piDataBuilder.append(data);
+        if (end) {
+            contentHandler.processingInstruction(currentPITarget, piDataBuilder.toString());
+        }
     }
 
     @Override

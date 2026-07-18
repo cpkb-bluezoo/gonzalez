@@ -81,7 +81,8 @@ import org.xml.sax.SAXException;
  * {@link #parseMarkupDeclSeq}. {@code <!ELEMENT>} and {@code <!ATTLIST>}
  * declarations are parsed into {@link DTDModel}, which drives attribute
  * defaulting, type-aware attribute value normalisation, content-type-driven
- * {@link XMLHandler#ignorableWhitespace} determination, and - only when
+ * ignorable-whitespace determination (see {@link XMLHandler#characters}),
+ * and - only when
  * {@link #validationEnabled} - full content-model and attribute validity
  * constraint (VC) checking (content-model tree parsing: {@link
  * #parseContentModelGroup}; per-element validation: {@link
@@ -913,6 +914,13 @@ class Scanner implements ByteDecoderTarget {
 
     private void scan() throws SAXException {
         while (true) {
+            if (inPI) {
+                if (!scanPIData()) {
+                    return;
+                }
+                inPI = false;
+                continue;
+            }
             if (inAttributeValue) {
                 if (!scanAttributeValueStreaming()) {
                     return;
@@ -1126,7 +1134,7 @@ class Scanner implements ByteDecoderTarget {
                 if (validationEnabled) {
                     recordTextForValidation(decoded.toString(), false);
                 }
-                handler.characters(decoded, atMarkup);
+                handler.characters(decoded, false, atMarkup);
                 contentRunOpen = !atMarkup;
                 contentRunIsWhitespace = false;
             }
@@ -1140,9 +1148,9 @@ class Scanner implements ByteDecoderTarget {
     /** True if the current (innermost open) element's declared content type
      *  is element-only ({@link ElementDeclaration.ContentType#ELEMENT} - no
      *  {@code #PCDATA} at all), the only case where whitespace-only text is
-     *  reported via {@link XMLHandler#ignorableWhitespace} rather than
-     *  {@link XMLHandler#characters}. False for {@code MIXED}/{@code ANY}/
-     *  {@code EMPTY} content types and for an element with no {@code
+     *  reported via {@link XMLHandler#characters} with {@code ignorable=true}
+     *  rather than {@code ignorable=false}. False for {@code MIXED}/{@code
+     *  ANY}/{@code EMPTY} content types and for an element with no {@code
      *  <!ELEMENT>} declaration at all (including the common no-DTD case). */
     private boolean isCurrentElementContentElementOnly() {
         String currentElement = elementStack.get(elementStack.size() - 1);
@@ -1150,10 +1158,9 @@ class Scanner implements ByteDecoderTarget {
     }
 
     /** True if the most recently opened run - tracked via {@link
-     *  #contentRunOpen} - was routed through {@link
-     *  XMLHandler#ignorableWhitespace} rather than {@link
-     *  XMLHandler#characters}, so a later empty-closing-frame call (see
-     *  {@link #scanContent()}) closes it out via the same event type it was
+     *  #contentRunOpen} - was reported via {@link XMLHandler#characters}
+     *  with {@code ignorable=true}, so a later empty-closing-frame call (see
+     *  {@link #scanContent()}) closes it out with the same flag it was
      *  opened with. */
     private boolean contentRunIsWhitespace;
 
@@ -1166,11 +1173,7 @@ class Scanner implements ByteDecoderTarget {
             // path (never on the hot no-validation path).
             recordTextForValidation(text.toString(), isWhitespace);
         }
-        if (isWhitespace) {
-            handler.ignorableWhitespace(text, end);
-        } else {
-            handler.characters(text, end);
-        }
+        handler.characters(text, isWhitespace, end);
     }
 
     private static final int REF_NEED_MORE = 0;
@@ -1831,7 +1834,7 @@ class Scanner implements ByteDecoderTarget {
                         }
                         recordTextForValidation(new String(buf, contentStart, p - contentStart), allWs);
                     }
-                    handler.characters(CharBuffer.wrap(buf, contentStart, p - contentStart), true);
+                    handler.characters(CharBuffer.wrap(buf, contentStart, p - contentStart), false, true);
                 }
                 pos = p + 3;
                 return true;
@@ -1842,6 +1845,29 @@ class Scanner implements ByteDecoderTarget {
 
     // ===== Processing instruction =====
 
+    /** Coarse resumable mode, mirroring {@link #inAttributeValue}: {@link
+     *  XMLHandler#piTarget} has fired for the PI currently being scanned and
+     *  its data is being streamed via {@link #scanPIData()}; a caller that
+     *  can re-enter mid-construct (this class's own {@link #scan()} main
+     *  loop, and {@link #scanDoctypeSubset()} for a PI nested in a DOCTYPE's
+     *  internal subset) must check this and resume {@link #scanPIData()}
+     *  directly rather than re-dispatching from {@link #pos} as if it were
+     *  the start of a fresh construct. Set only when {@link #scanPIData()}
+     *  itself returns false (needs more data) - never touched by {@link
+     *  #scanPIData()}; cleared by whichever caller successfully resumes it. */
+    private boolean inPI;
+
+    /**
+     * Parses a {@code <?target ...?>} processing instruction's target,
+     * {@code tagStart} positioned at the '&lt;'. The target name is atomic
+     * (on underflow, {@link #pos} rewinds to {@code tagStart} and nothing is
+     * reported yet) - but once {@link XMLHandler#piTarget} has fired, this
+     * is committed: {@link #scanPIData()} handles its own resumption via
+     * {@link #inPI} instead of rewinding, since data chunks may already have
+     * been streamed out. Returns true once the PI's closing {@code "?>"} has
+     * been consumed, false if more data is needed (with {@link #inPI} left
+     * true in that case, once the target itself is past).
+     */
     private boolean scanPI(int tagStart) throws SAXException {
         int p = tagStart + 2;
         int targetStart = p;
@@ -1863,30 +1889,63 @@ class Scanner implements ByteDecoderTarget {
                 && (target.charAt(2) == 'l' || target.charAt(2) == 'L')) {
             throw handler.fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
         }
-        if (p < limit && isWs(buf[p])) {
-            p++;
+        if (p >= limit) {
+            pos = tagStart;
+            return false;
         }
-        int dataStart = p;
+        if (isWs(buf[p])) {
+            p++;
+        } else if (buf[p] != '?') {
+            // Production 16: PI ::= '<?' PITarget (S (Char* - (Char* '?>'
+            // Char*)))? '?>' - S is required before any data; "?" here means
+            // there is no data at all (straight to the closing "?>"), the
+            // production's optional second group not present.
+            throw handler.fatalError(
+                    "White space is required between a processing instruction's target and its data");
+        }
+        handler.piTarget(target);
+        pos = p;
+        if (!scanPIData()) {
+            inPI = true;
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Streams a processing instruction's data, {@link #pos} positioned just
+     * past its target (and separating whitespace, if any). Resumable like
+     * {@link #scanAttributeValueStreaming()}: on underflow, whatever has
+     * been confirmed so far is emitted via {@link XMLHandler#piData} with
+     * {@code end=false} and {@link #pos} stays exactly where scanning
+     * stopped (never rewound), so a later resumed call picks up right there.
+     * Reports exactly one or more {@link XMLHandler#piData} calls, the last
+     * of which has {@code end=true} - unlike {@link
+     * #scanAttributeValueStreaming()}'s attributeValueContent (which may
+     * fire zero times for an empty value), a data-less PI ({@code
+     * <?target?>}) still gets exactly one {@code piData} call with an empty
+     * buffer, since {@code piData}'s {@code end=true} is this construct's
+     * only completion signal - there is no separate "end of PI" event.
+     */
+    private boolean scanPIData() throws SAXException {
         while (true) {
-            while (p < limit && buf[p] != '?') {
-                p++;
+            int dataStart = pos;
+            while (pos < limit && buf[pos] != '?') {
+                pos++;
             }
-            if (p >= limit) {
-                pos = tagStart;
+            checkLiteralCharSpan(dataStart, pos);
+            if (pos >= limit || pos + 1 >= limit) {
+                if (pos > dataStart) {
+                    handler.piData(CharBuffer.wrap(buf, dataStart, pos - dataStart), false);
+                }
                 return false;
             }
-            if (p + 1 >= limit) {
-                pos = tagStart;
-                return false;
-            }
-            if (buf[p + 1] == '>') {
-                checkLiteralCharSpan(dataStart, p);
-                CharBuffer data = (p > dataStart) ? CharBuffer.wrap(buf, dataStart, p - dataStart) : null;
-                handler.processingInstruction(target, data);
-                pos = p + 2;
+            if (buf[pos + 1] == '>') {
+                handler.piData(CharBuffer.wrap(buf, dataStart, pos - dataStart), true);
+                pos += 2;
                 return true;
             }
-            p++;
+            pos++;
         }
     }
 
@@ -3046,9 +3105,9 @@ class Scanner implements ByteDecoderTarget {
 
         if (buf[p] == '[') {
             // From here on, the internal subset may call scanComment()/
-            // scanPI() - real, irreversible handler.comment()/
-            // processingInstruction() calls - so this can no longer be an
-            // atomic whole-retry construct: a later underflow deeper in the
+            // scanPI() - real, irreversible handler.comment()/piTarget()/
+            // piData() calls - so this can no longer be an atomic whole-
+            // retry construct: a later underflow deeper in the
             // subset must not cause an already-fired comment/PI to fire
             // again. Hand off to the properly resumable scanDoctypeSubset(),
             // which - like scanAttributesAndTagEnd()/inStartTag - tracks its
@@ -3111,16 +3170,18 @@ class Scanner implements ByteDecoderTarget {
      * {@link #scan()}'s main loop whenever {@link #inDoctype} is still true
      * at the start of a {@link #receive(CharBuffer)} call. Unlike every
      * other atomic construct in this class, this cannot simply rewind to a
-     * fixed start point on underflow, because {@code <!--comment-->} and
-     * {@code <?PI?>} declarations within the subset are not atomic
-     * themselves from this method's point of view - they call
-     * {@link #scanComment}/{@link #scanPI}, which fire real {@link
-     * XMLHandler#comment}/{@link XMLHandler#processingInstruction} events as
-     * a side effect. Instead, {@link #pos} only ever advances past a
-     * declaration once it has been fully, successfully processed (comment/PI
-     * emitted, entity recorded, or other declaration skipped) - exactly the
-     * same "confirmed progress, resume from here, never rewind past it"
-     * discipline {@link #scanContent()}/{@link
+     * fixed start point on underflow: {@code <!--comment-->} fires a real
+     * {@link XMLHandler#comment} event as a side effect (though the comment
+     * scan itself, via {@link #scanComment}, is still atomic - either the
+     * whole thing is found or nothing is committed), and {@code <?PI?>} is
+     * both a side effect (once {@link XMLHandler#piTarget} has fired) and,
+     * for a data span too large for one buffer, itself resumable via {@link
+     * #scanPI}/{@link #scanPIData} - this method checks {@link #inPI} at the
+     * top of its own loop for exactly that reason. Instead, {@link #pos}
+     * only ever advances past a declaration once it has been fully,
+     * successfully processed (comment/PI emitted, entity recorded, or other
+     * declaration skipped) - the same "confirmed progress, resume from here,
+     * never rewind past it" discipline {@link #scanContent()}/{@link
      * #scanAttributeValueStreaming()} use for the same reason. {@link
      * #doctypePendingEntities}/{@link #doctypePendingExternalNames} (promoted
      * to fields rather than locals, precisely so a resumed call picks up
@@ -3131,6 +3192,20 @@ class Scanner implements ByteDecoderTarget {
     private boolean scanDoctypeSubset() throws SAXException {
         if (!doctypeSubsetClosed) {
             while (true) {
+                if (inPI) {
+                    // A PI nested in the internal subset (markupdecl includes
+                    // PI) suspended mid-data on a prior call - resume it
+                    // directly, exactly like scan()'s own main loop does,
+                    // rather than falling through to skipOptionalWhitespace/
+                    // buf[pos] below, which would misinterpret pos sitting
+                    // in the middle of the PI's own data as the start of a
+                    // fresh declaration.
+                    if (!scanPIData()) {
+                        return false;
+                    }
+                    inPI = false;
+                    continue;
+                }
                 pos = skipOptionalWhitespace(pos);
                 if (pos >= limit) {
                     return false;
@@ -3379,12 +3454,14 @@ class Scanner implements ByteDecoderTarget {
                         + "element boundaries must nest within entity boundaries");
             }
             if (contentRunOpen) {
-                // The replacement text's final characters() run ended
-                // exactly at the entity's own boundary (not a receive()
-                // underflow - there is no more data coming for this buffer,
-                // ever) - close it out, mirroring the same empty-closing-
-                // event pattern scanContent() uses at a markup boundary.
-                handler.characters(EMPTY_BUFFER, true);
+                // The replacement text's final characters()/ignorableWhitespace()
+                // run ended exactly at the entity's own boundary (not a
+                // receive() underflow - there is no more data coming for this
+                // buffer, ever) - close it out via the same helper (and so
+                // the same contentRunIsWhitespace-routing) scanContent() uses
+                // for its own empty-closing-event pattern at a markup
+                // boundary.
+                emitContentRun(EMPTY_BUFFER, true, contentRunIsWhitespace);
             }
         } finally {
             buf = savedBuf;

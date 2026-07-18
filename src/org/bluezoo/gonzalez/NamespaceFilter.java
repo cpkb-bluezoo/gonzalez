@@ -192,13 +192,8 @@ class NamespaceFilter implements XMLHandler {
     }
 
     @Override
-    public void characters(CharBuffer text, boolean end) throws SAXException {
-        delegate.characters(text, end);
-    }
-
-    @Override
-    public void ignorableWhitespace(CharBuffer text, boolean end) throws SAXException {
-        delegate.ignorableWhitespace(text, end);
+    public void characters(CharBuffer text, boolean ignorable, boolean end) throws SAXException {
+        delegate.characters(text, ignorable, end);
     }
 
     @Override
@@ -212,8 +207,13 @@ class NamespaceFilter implements XMLHandler {
     }
 
     @Override
-    public void processingInstruction(String target, CharBuffer data) throws SAXException {
-        delegate.processingInstruction(target, data);
+    public void piTarget(String target) throws SAXException {
+        delegate.piTarget(target);
+    }
+
+    @Override
+    public void piData(CharBuffer data, boolean end) throws SAXException {
+        delegate.piData(data, end);
     }
 
     @Override

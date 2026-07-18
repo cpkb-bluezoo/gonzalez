@@ -167,7 +167,7 @@ public class NamespaceFilterTest {
         filter.startElement("root");
         attr(filter, "a", "1");
         filter.endAttributes();
-        filter.characters(cb("x"), true);
+        filter.characters(cb("x"), false, true);
         filter.endElement();
         filter.endDocument();
 
