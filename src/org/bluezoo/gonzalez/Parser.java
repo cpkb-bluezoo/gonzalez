@@ -257,9 +257,39 @@ public class Parser implements XMLReader, PSVIProvider {
 
         // Get the input stream
         InputStream inputStream = input.getByteStream();
+        // Track whether we opened the stream ourselves so we can close it.
+        boolean closeInputStream = false;
         if (inputStream == null) {
-            // Try character stream - would need conversion (not implemented yet)
-            throw new SAXException("InputSource must have a byte stream");
+            // No byte stream supplied. A character stream would need charset
+            // conversion, which the byte-oriented decoder does not do, so it
+            // is still unsupported. But a system ID alone is a valid SAX
+            // InputSource: resolve it to a byte stream, matching the behaviour
+            // of parse(String) and standard SAX XMLReaders.
+            if (input.getCharacterStream() != null) {
+                throw new SAXException(
+                        "InputSource character streams are not supported; "
+                        + "provide a byte stream or system ID");
+            }
+            String resolveId = input.getSystemId();
+            if (resolveId == null) {
+                throw new SAXException(
+                        "InputSource must have a byte stream or system ID");
+            }
+            InputSource resolved = null;
+            EntityResolver resolver = getEntityResolver();
+            if (resolver != null) {
+                resolved = resolver.resolveEntity(input.getPublicId(), resolveId);
+            }
+            if (resolved == null || resolved.getByteStream() == null) {
+                resolved = new DefaultEntityResolver()
+                        .resolveEntity(input.getPublicId(), resolveId);
+            }
+            if (resolved == null || resolved.getByteStream() == null) {
+                throw new SAXException(
+                        "Could not open system ID: " + resolveId);
+            }
+            inputStream = resolved.getByteStream();
+            closeInputStream = true;
         }
 
         // Bridge pattern: read from InputStream and feed to decoder
@@ -273,30 +303,42 @@ public class Parser implements XMLReader, PSVIProvider {
         byte[] array = byteBuffer.array();
         int bytesRead;
         
-        // Buffer is in write mode: position indicates end of any unprocessed data
-        while (true) {
-            // Read into the buffer's backing array starting at current position
-            bytesRead = inputStream.read(array, byteBuffer.position(), byteBuffer.remaining());
-            
-            if (bytesRead > 0) {
-                // Advance position to account for bytes read
-                byteBuffer.position(byteBuffer.position() + bytesRead);
+        try {
+            // Buffer is in write mode: position indicates end of any unprocessed data
+            while (true) {
+                // Read into the buffer's backing array starting at current position
+                bytesRead = inputStream.read(array, byteBuffer.position(), byteBuffer.remaining());
+
+                if (bytesRead > 0) {
+                    // Advance position to account for bytes read
+                    byteBuffer.position(byteBuffer.position() + bytesRead);
+                }
+
+                // If we have data in buffer, process it
+                if (byteBuffer.position() > 0) {
+                    byteBuffer.flip();  // Switch to read mode
+                    receive(byteBuffer);
+                    byteBuffer.compact();  // Compact unprocessed bytes for next cycle
+                }
+
+                // Exit loop on EOF. Note: this breaks even if bytes remain in the
+                // buffer (e.g. an incomplete trailing multi-byte character) -
+                // once the stream reports -1, no more bytes will ever arrive, so
+                // waiting for the buffer to fully drain would loop forever.
+                // close() below reports a proper error if undecoded bytes remain.
+                if (bytesRead == -1) {
+                    break;
+                }
             }
-            
-            // If we have data in buffer, process it
-            if (byteBuffer.position() > 0) {
-                byteBuffer.flip();  // Switch to read mode
-                receive(byteBuffer);
-                byteBuffer.compact();  // Compact unprocessed bytes for next cycle
-            }
-            
-            // Exit loop on EOF. Note: this breaks even if bytes remain in the
-            // buffer (e.g. an incomplete trailing multi-byte character) -
-            // once the stream reports -1, no more bytes will ever arrive, so
-            // waiting for the buffer to fully drain would loop forever.
-            // close() below reports a proper error if undecoded bytes remain.
-            if (bytesRead == -1) {
-                break;
+        } finally {
+            // Only close streams we opened ourselves from a system ID; streams
+            // supplied by the caller remain the caller's responsibility.
+            if (closeInputStream) {
+                try {
+                    inputStream.close();
+                } catch (IOException ignored) {
+                    // Nothing useful to do if closing the resolved stream fails.
+                }
             }
         }
 
