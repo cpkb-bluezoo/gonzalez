@@ -33,7 +33,7 @@
   <property name='jsonparser.jar' value='jsonparser-1.3.jar'/>
   
   <!-- Gonzalez version -->
-  <property name='version' value='1.2'/>
+  <property name='version' value='1.2.0'/>
   <property name='gonzalez.jar' location='${dist}/gonzalez-${version}.jar'/>
   <property name='gonzalez.core.jar' location='${dist}/gonzalez-core-${version}.jar'/>
   <property name='gonzalez.xslt.jar' location='${dist}/gonzalez-xslt-${version}.jar'/>
@@ -68,7 +68,7 @@
   <!-- Download external parsing library dependencies from GitHub Releases -->
   <target name='resolve-deps' description='Download external dependencies'>
     <mkdir dir='${lib}'/>
-    <get src='https://github.com/cpkb-bluezoo/jsonparser/releases/download/v1.2/jsonparser-1.2.jar'
+    <get src='https://github.com/cpkb-bluezoo/jsonparser/releases/download/v1.3/jsonparser-1.3.jar'
          dest='${lib}/${jsonparser.jar}' skipexisting='true'/>
   </target>
 

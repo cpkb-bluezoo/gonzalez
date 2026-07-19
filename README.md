@@ -385,19 +385,19 @@ This produces three jar files in the `dist` directory:
 
 | JAR | Contents | Dependencies |
 |-----|----------|--------------|
-| `gonzalez-core-1.2.jar` | Scanner-based parser and XMLWriter | None |
-| `gonzalez-xslt-1.2.jar` | XSLT transformer, schema (~1.7 MB) | gonzalez-core, jsonparser |
-| `gonzalez-1.2.jar` | Combined (fat jar) (~1.9 MB) | jsonparser |
+| `gonzalez-core-1.2.0.jar` | Scanner-based parser and XMLWriter | None |
+| `gonzalez-xslt-1.2.0.jar` | XSLT transformer, schema (~1.7 MB) | gonzalez-core, jsonparser |
+| `gonzalez-1.2.0.jar` | Combined (fat jar) (~1.9 MB) | jsonparser |
 
 **When to use which:**
 - **Core only** — Use `gonzalez-core` if you only need XML parsing/serialization (e.g. Gumdrop, Netty pipelines). Zero external dependencies.
 - **XSLT** — Use `gonzalez-xslt` (plus `gonzalez-core` and jsonparser) for XSLT transformation.
-- **Fat jar** — Use `gonzalez-1.2.jar` for backward compatibility or when you want everything in one artifact.
+- **Fat jar** — Use `gonzalez-1.2.0.jar` for backward compatibility or when you want everything in one artifact.
 
 **Download from GitHub Releases:**
-- [gonzalez-core-1.2.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2/gonzalez-core-1.2.jar)
-- [gonzalez-xslt-1.2.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2/gonzalez-xslt-1.2.jar)
-- [gonzalez-1.2.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2/gonzalez-1.2.jar)
+- [gonzalez-core-1.2.0.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2.0/gonzalez-core-1.2.0.jar)
+- [gonzalez-xslt-1.2.0.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2.0/gonzalez-xslt-1.2.0.jar)
+- [gonzalez-1.2.0.jar](https://github.com/cpkb-bluezoo/gonzalez/releases/download/v1.2.0/gonzalez-1.2.0.jar)
 
 The build downloads the jsonparser library automatically (see Dependencies below).
 
