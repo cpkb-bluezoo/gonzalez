@@ -214,7 +214,8 @@ public class Parser implements XMLReader, PSVIProvider {
         adapter.setPublicId(scannerPublicId);
         adapter.setSystemId(scannerSystemId);
         XMLHandler target = scannerNamespaces ? new NamespaceFilter(adapter, false) : adapter;
-        scanner = new Scanner(target, false, scannerEntityResolver, scannerSystemId, scannerValidation);
+        scanner = new Scanner(target, false, scannerEntityResolver, scannerSystemId, scannerValidation,
+                scannerNamespaces);
         decoder = new ExternalEntityDecoder(scanner, scannerPublicId, scannerSystemId, false);
     }
 

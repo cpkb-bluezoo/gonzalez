@@ -148,12 +148,43 @@ final class XmlDeclUtil {
         return end < 0 ? null : decl.substring(p, end);
     }
 
-    /** True if a leading {@code <?xml ...?>}/{@code <?xml ...?>} (text)
-     *  declaration declares {@code version="1.1"} (or {@code '1.1'}). */
-    static boolean declaresXml11(char[] chars) {
+    /** Extracts the {@code version="..."} pseudo-attribute value from a
+     *  leading {@code <?xml ...?>} declaration (XML or text), or null if
+     *  there is no such declaration or it has no {@code version}
+     *  pseudo-attribute. Used to enforce XML 1.1 Section 4.3.4's rule that a
+     *  document may not reference an external entity or subset whose own
+     *  declared version is incompatible with the referring document's. */
+    static String extractVersionNum(char[] chars) {
         int limit = Math.min(chars.length, 200);
         String prefix = new String(chars, 0, limit);
-        return prefix.contains("version=\"1.1\"") || prefix.contains("version='1.1'");
+        if (!prefix.startsWith("<?xml")) {
+            return null;
+        }
+        int declEnd = prefix.indexOf("?>");
+        String decl = declEnd < 0 ? prefix : prefix.substring(0, declEnd);
+        char[] declChars = decl.toCharArray();
+        int idx = indexOfPseudoAttribute(declChars, 0, declChars.length, "version");
+        if (idx < 0) {
+            return null;
+        }
+        int eq = decl.indexOf('=', idx);
+        if (eq < 0) {
+            return null;
+        }
+        int p = eq + 1;
+        while (p < decl.length() && Character.isWhitespace(decl.charAt(p))) {
+            p++;
+        }
+        if (p >= decl.length()) {
+            return null;
+        }
+        char quote = decl.charAt(p);
+        if (quote != '"' && quote != '\'') {
+            return null;
+        }
+        p++;
+        int end = decl.indexOf(quote, p);
+        return end < 0 ? null : decl.substring(p, end);
     }
 
     /**

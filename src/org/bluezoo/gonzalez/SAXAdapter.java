@@ -207,6 +207,12 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     }
 
     @Override
+    public void setXml11(boolean xml11) {
+        // No XML-version-dependent behavior of its own - see XMLHandler#setXml11's
+        // no-op carve-out; this event exists for consumers like NamespaceFilter.
+    }
+
+    @Override
     public void startDocument() throws SAXException {
         if (contentHandler != null) {
             contentHandler.startDocument();

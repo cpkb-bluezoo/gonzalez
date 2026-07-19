@@ -508,6 +508,20 @@ class Scanner implements ByteDecoderTarget {
      *  well-formed. */
     private final boolean validationEnabled;
 
+    /** True when namespace processing is active downstream (a {@link
+     *  NamespaceFilter} sits between this class and the ultimate consumer -
+     *  see {@code Parser#ensureScannerReady}). Scanner itself stays
+     *  namespace-<em>unaware</em> either way (it always reports {@code
+     *  xmlns} as a plain attribute, per {@link NamespaceFilter}'s own class
+     *  Javadoc), but a handful of WFCs from Namespaces in XML - a colon is
+     *  forbidden in a PI target, entity name, or notation name, none of
+     *  which are ever exposed to {@link NamespaceFilter} as their own event
+     *  (unlike element/attribute qNames) - can only be checked here, at the
+     *  point Scanner itself parses that name, mirroring the old pipeline's
+     *  {@code ContentParser}'s own {@code namespacesEnabled}-gated checks
+     *  ({@code handlePITarget}, {@code DTDParser.validateNameInNamespaceMode}). */
+    private final boolean namespaceAware;
+
     /** Convenience constructor for XML 1.0 with no external fetching
      *  capability (the common case, and every caller before this
      *  milestone). */
@@ -526,13 +540,21 @@ class Scanner implements ByteDecoderTarget {
         this(handler, xml11, entityResolver, baseSystemId, false);
     }
 
+    /** Convenience constructor with namespace processing assumed off (see
+     *  {@link #namespaceAware}) - every caller before this milestone. */
     Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String baseSystemId,
             boolean validationEnabled) throws SAXException {
+        this(handler, xml11, entityResolver, baseSystemId, validationEnabled, false);
+    }
+
+    Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String baseSystemId,
+            boolean validationEnabled, boolean namespaceAware) throws SAXException {
         this.handler = handler;
         this.xml11 = xml11;
         this.entityResolver = entityResolver;
         this.baseSystemId = baseSystemId;
         this.validationEnabled = validationEnabled;
+        this.namespaceAware = namespaceAware;
         this.buf = new char[INITIAL_CAPACITY];
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
@@ -577,8 +599,26 @@ class Scanner implements ByteDecoderTarget {
         }
         if (validationEnabled) {
             checkPendingIdrefs();
+            checkUnparsedEntityNotationsDeclared();
         }
         handler.endDocument();
+    }
+
+    /** VC "Notation Declared" (Section 4.2.2): every {@code NDATA}
+     *  annotation's notation name must match a declared {@code
+     *  <!NOTATION>} - checked once the whole DTD (internal and external
+     *  subset) is known, the same deferred-to-the-end timing {@link
+     *  #checkPendingIdrefs} uses, since the notation may legally be
+     *  declared anywhere in the DTD, not necessarily before the entity
+     *  that names it. */
+    private void checkUnparsedEntityNotationsDeclared() throws SAXException {
+        for (Map.Entry<String, String[]> entry : externalEntityNames.entrySet()) {
+            String notationName = entry.getValue()[2];
+            if (notationName != null && !declaredNotations.contains(notationName)) {
+                handler.error("Validity Constraint: Notation Declared (Section 4.2.2). Entity \"" + entry.getKey()
+                        + "\" names undeclared notation \"" + notationName + "\".");
+            }
+        }
     }
 
     @Override
@@ -597,6 +637,7 @@ class Scanner implements ByteDecoderTarget {
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
         this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
+        handler.setXml11(xml11);
     }
 
     private void append(CharBuffer data) {
@@ -645,10 +686,51 @@ class Scanner implements ByteDecoderTarget {
 
     private static boolean isLegalLiteralCharXml11(char c) {
         if (c >= 0x1 && c <= 0xD7FF) {
-            return !((c >= 0x7F && c <= 0x84) || (c >= 0x86 && c <= 0x9F));
+            return !isRestrictedCharXml11(c);
         }
         return (c >= 0xE000 && c <= 0xFFFD) || (c >= 0xD800 && c <= 0xDFFF);
     }
+
+    /** XML 1.1 Section 2.2 {@code RestrictedChar}: {@code [#x1-#x8] |
+     *  [#xB-#xC] | [#xE-#x1F] | [#x7F-#x84] | [#x86-#x9F]} - legal
+     *  {@code Char}-wise (so still accepted by {@link
+     *  #isLegalCharRefCodePoint}), but may only appear via character
+     *  reference, never as a literal character - except within content
+     *  that came from an entity whose own declared value already resolved
+     *  one via character reference (see {@link #restrictedCharEntities}). */
+    private static boolean isRestrictedCharXml11(char c) {
+        return (c >= 0x1 && c <= 0x8) || (c >= 0xB && c <= 0xC) || (c >= 0xE && c <= 0x1F)
+                || (c >= 0x7F && c <= 0x84) || (c >= 0x86 && c <= 0x9F);
+    }
+
+    /** Set by {@link #scanQuotedLiteralWithCharRefs} - whether the
+     *  EntityValue literal it just scanned contained a character reference
+     *  that resolved to an XML 1.1 RestrictedChar. Read by {@link
+     *  #scanEntityDeclaration} to populate {@link #restrictedCharEntities}. */
+    private boolean lastLiteralContainedRestrictedChar;
+
+    /** Names of general entities (XML 1.1 only) whose declared value
+     *  contained a character reference resolving to a RestrictedChar (see
+     *  {@link #isRestrictedCharXml11}) - mirrors the old pipeline's {@code
+     *  EntityDeclaration.containsRestrictedCharFromCharRef}. Such a
+     *  character is legal Char-wise but may not appear as a literal,
+     *  un-escaped byte in content; however, once it has been legitimately
+     *  produced by resolving a character reference in the entity's own
+     *  declaration, XML 1.1 test suite rmt-054 establishes that the
+     *  resulting entity replacement text remains valid content even though,
+     *  by the time {@link #expandGeneralEntityInContent} re-scans it, the
+     *  character is indistinguishable from one written raw - so instead
+     *  this per-entity flag, set at declaration time, is consulted at
+     *  re-scan time via {@link #allowRestrictedCharInContent} to suppress
+     *  the rejection for that entity's replacement text specifically. */
+    private final HashSet<String> restrictedCharEntities = new HashSet<String>();
+
+    /** True while {@link #scanContent}/{@link #scanContentRunFast} are
+     *  scanning a general entity's replacement text whose declared value is
+     *  in {@link #restrictedCharEntities} - see that field's Javadoc. Saved
+     *  and restored around each {@link #expandGeneralEntityInContent} call,
+     *  like {@link #parsingExternalContent}. */
+    private boolean allowRestrictedCharInContent;
 
     /**
      * Precomputed per-character stop tables for the hot bulk-scan loops in
@@ -728,7 +810,7 @@ class Scanner implements ByteDecoderTarget {
      *  call per character keeps this to a single branch-cluster in the hot
      *  loop rather than two separate passes. */
     private void checkContentChar(char c) throws SAXException {
-        if (!isLegalLiteralChar(c)) {
+        if (!isLegalLiteralChar(c) && !(allowRestrictedCharInContent && xml11 && isRestrictedCharXml11(c))) {
             throw illegalCharError(c);
         }
         if (c == ']') {
@@ -790,6 +872,11 @@ class Scanner implements ByteDecoderTarget {
                 continue;
             }
             // Only remaining reason contentStopTable[c] could be true.
+            if (allowRestrictedCharInContent && xml11 && isRestrictedCharXml11(c)) {
+                contentBracketRun = 0;
+                pos++;
+                continue;
+            }
             throw illegalCharError(c);
         }
     }
@@ -865,9 +952,18 @@ class Scanner implements ByteDecoderTarget {
         if (c >= 0xFDF0 && c <= 0xFFFD) {
             return true;
         }
-        // Surrogate pairs (U+10000-U+EFFFF): accept both halves, matching
-        // the char-at-a-time scanning model used throughout this class.
-        return c >= 0xD800 && c <= 0xDFFF;
+        // Surrogate pairs (U+10000-U+EFFFF): accept both halves individually,
+        // matching the char-at-a-time scanning model used throughout this
+        // class - except that a high surrogate alone already determines
+        // which plane the pair falls in, regardless of the paired low
+        // surrogate, so #xDB80-#xDBFF (which can only pair to form
+        // #xF0000-#x10FFFF - beyond the legal NameStartChar astral range,
+        // which stops at #xEFFFF) must be rejected here, not just accepted
+        // and left for a codepoint-level check that this class never does.
+        if (c >= 0xD800 && c <= 0xDBFF) {
+            return c <= 0xDB7F;
+        }
+        return c >= 0xDC00 && c <= 0xDFFF;
     }
 
     /** Precomputed per-character lookup tables for {@link #isNameChar}/
@@ -1604,7 +1700,13 @@ class Scanner implements ByteDecoderTarget {
             if (buf[pos] == quote) {
                 if (pos > runStart) {
                     emitAttributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), true);
-                } else if (attrValueRunOpen) {
+                } else {
+                    // Fires at least once even for a value that is empty
+                    // from the very start (attrValueRunOpen still false, no
+                    // prior chunk ever emitted) - a consumer such as {@link
+                    // NamespaceFilter} depends on attributeValueContent
+                    // actually being called to notice the attribute at all,
+                    // not just on the final accumulated value being correct.
                     emitAttributeValueContent(EMPTY_BUFFER, true);
                 }
                 attrValueRunOpen = false;
@@ -2019,6 +2121,13 @@ class Scanner implements ByteDecoderTarget {
                 && (target.charAt(2) == 'l' || target.charAt(2) == 'L')) {
             throw handler.fatalError("Processing instruction target matching [Xx][Mm][Ll] is reserved");
         }
+        if (namespaceAware && target.indexOf(':') >= 0) {
+            // Namespaces in XML 1.0 Section 6: a PITarget is not itself a
+            // QName, but a colon is still forbidden in it under namespace
+            // processing.
+            throw handler.fatalError("Processing instruction target \"" + target
+                    + "\" must not contain a colon (Namespaces in XML, Section 6)");
+        }
         if (p >= limit) {
             pos = tagStart;
             return false;
@@ -2366,6 +2475,7 @@ class Scanner implements ByteDecoderTarget {
         }
         checkNameStartChar(nameStart);
         String name = new String(buf, nameStart, p - nameStart);
+        checkNoColonInNamespaceMode(name, "Notation");
 
         int ws2 = p;
         p = skipOptionalWhitespace(p);
@@ -2490,9 +2600,16 @@ class Scanner implements ByteDecoderTarget {
         if (!isLegalCharRefCodePoint(codePoint, xml11)) {
             throw handler.fatalError("Character reference out of range: " + codePoint);
         }
+        lastCharRefCodePoint = codePoint;
         sb.appendCodePoint(codePoint);
         return p + 1;
     }
+
+    /** Set by {@link #decodeCharRefInto} - the codepoint it just resolved.
+     *  Read by {@link #scanQuotedLiteralWithCharRefs} to track whether an
+     *  EntityValue's character references produced an XML 1.1 RestrictedChar
+     *  (see {@link #restrictedCharEntities}). */
+    private int lastCharRefCodePoint;
 
     /**
      * Legal code point for a numeric character reference ({@code &#NN;}/
@@ -2546,6 +2663,7 @@ class Scanner implements ByteDecoderTarget {
             throws SAXException {
         char quote = buf[p];
         int q = p + 1;
+        lastLiteralContainedRestrictedChar = false;
         while (true) {
             if (q >= limit) {
                 return -1;
@@ -2558,6 +2676,10 @@ class Scanner implements ByteDecoderTarget {
                 int r = decodeCharRefInto(sb, q);
                 if (r < 0) {
                     return -1;
+                }
+                if (isEntityValue && xml11 && lastCharRefCodePoint <= 0xFFFF
+                        && isRestrictedCharXml11((char) lastCharRefCodePoint)) {
+                    lastLiteralContainedRestrictedChar = true;
                 }
                 q = r;
                 continue;
@@ -2703,6 +2825,7 @@ class Scanner implements ByteDecoderTarget {
         }
         checkNameStartChar(nameStart);
         String name = new String(buf, nameStart, p - nameStart);
+        checkNoColonInNamespaceMode(name, "Entity");
 
         int ws2 = p;
         p = skipOptionalWhitespace(p);
@@ -2736,6 +2859,9 @@ class Scanner implements ByteDecoderTarget {
                 }
             } else if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
                 pendingEntities.put(name, sb.toString());
+                if (lastLiteralContainedRestrictedChar) {
+                    restrictedCharEntities.add(name);
+                }
             }
             return p;
         }
@@ -3956,12 +4082,14 @@ class Scanner implements ByteDecoderTarget {
         int savedPos = pos;
         int savedLimit = limit;
         boolean savedContentRunOpen = contentRunOpen;
+        boolean savedAllowRestrictedCharInContent = allowRestrictedCharInContent;
         int stackDepthAtEntry = elementStack.size();
 
         buf = replacementChars;
         pos = 0;
         limit = buf.length;
         contentRunOpen = false;
+        allowRestrictedCharInContent = restrictedCharEntities.contains(name);
         try {
             scan();
             if (pos != limit || inStartTag || inAttributeValue) {
@@ -3987,6 +4115,7 @@ class Scanner implements ByteDecoderTarget {
             pos = savedPos;
             limit = savedLimit;
             contentRunOpen = savedContentRunOpen;
+            allowRestrictedCharInContent = savedAllowRestrictedCharInContent;
             entityExpansionStack.remove(entityExpansionStack.size() - 1);
         }
     }
@@ -4117,10 +4246,33 @@ class Scanner implements ByteDecoderTarget {
                 encodingHint = null;
             }
             byte[] bytes = readAllExternalBytes(in);
-            return XmlDeclUtil.decodeBytes(bytes, encodingHint);
+            char[] chars = XmlDeclUtil.decodeBytes(bytes, encodingHint);
+            checkVersionCompatibility(chars, what);
+            return chars;
         } catch (IOException e) {
             throw handler.fatalError("Failed to fetch " + what + " (" + systemId + "): " + e.getMessage());
         }
+    }
+
+    /** XML 1.1 Section 4.3.4: a document may not reference an external
+     *  entity or DTD subset whose own leading declaration declares a
+     *  version number incompatible with the referring document's - a 1.0
+     *  document may not pull in anything declaring a version other than
+     *  1.0, and (since 1.1 is the highest version currently defined) a 1.1
+     *  document may not pull in anything declaring a version other than 1.0
+     *  or 1.1. Checked once, here, at the single choke point every external
+     *  fetch (general entity, parameter entity, external DTD subset) already
+     *  passes through - this also naturally covers indirect references
+     *  (an entity fetched from within another entity's own replacement
+     *  text), since the comparison is always against this field's fixed,
+     *  document-wide {@link #xml11} value, never the immediate caller's. */
+    private void checkVersionCompatibility(char[] chars, String what) throws SAXException {
+        String v = XmlDeclUtil.extractVersionNum(chars);
+        if (v == null || v.equals("1.0") || (xml11 && v.equals("1.1"))) {
+            return;
+        }
+        throw handler.fatalError("XML 1.1 Section 4.3.4: " + what + " declares version \"" + v
+                + "\", which is not compatible with this document's own version (" + (xml11 ? "1.1" : "1.0") + ")");
     }
 
     private char[] fetchExternalEntity(String name, String publicId, String systemId) throws SAXException {
@@ -4733,6 +4885,7 @@ class Scanner implements ByteDecoderTarget {
         switch (type) {
             case "ID":
                 checkNameProduction(attrName, value, "ID");
+                checkNoColon(attrName, value, "ID");
                 if (declaredIds == null) {
                     declaredIds = new HashSet<String>();
                 }
@@ -4743,11 +4896,13 @@ class Scanner implements ByteDecoderTarget {
                 break;
             case "IDREF":
                 checkNameProduction(attrName, value, "IDREF");
+                checkNoColon(attrName, value, "IDREF");
                 recordPendingIdref(value);
                 break;
             case "IDREFS":
                 for (String token : splitTokens(value)) {
                     checkNameProduction(attrName, token, "IDREFS");
+                    checkNoColon(attrName, token, "IDREFS");
                     recordPendingIdref(token);
                 }
                 break;
@@ -4763,14 +4918,37 @@ class Scanner implements ByteDecoderTarget {
             case "NOTATION":
                 checkEnumerationMembership(elementName, attrName, type, value);
                 break;
+            case "ENTITY":
+                checkNameProduction(attrName, value, "ENTITY");
+                checkUnparsedEntityName(attrName, value);
+                break;
+            case "ENTITIES":
+                for (String token : splitTokens(value)) {
+                    checkNameProduction(attrName, token, "ENTITIES");
+                    checkUnparsedEntityName(attrName, token);
+                }
+                break;
             default:
-                // CDATA never reaches here; ENTITY/ENTITIES (must name a
-                // declared unparsed entity) not yet checked - a smaller,
-                // separate capability (Scanner doesn't track which general
-                // entities are unparsed yet).
+                // CDATA never reaches here.
                 break;
         }
         checkFixedValue(elementName, attrName, value);
+    }
+
+    /** VC "Entity Name" (Section 3.3.1): an {@code ENTITY}/{@code ENTITIES}-
+     *  typed attribute's value(s) must each name a declared <em>unparsed</em>
+     *  entity - a general entity declared with an {@code NDATA} annotation
+     *  (see {@link #externalEntityNames}'s third array element, populated
+     *  from {@link #scanEntityDeclaration}'s own {@code ndataName} capture).
+     *  A general entity that exists but is ordinary (parsed, or internal)
+     *  fails this the same as one that doesn't exist at all - only the
+     *  unparsed ones are legal {@code ENTITY}/{@code ENTITIES} values. */
+    private void checkUnparsedEntityName(String attrName, String value) throws SAXException {
+        String[] ids = externalEntityNames.get(value);
+        if (ids == null || ids[2] == null) {
+            handler.error("Validity Constraint: Entity Name (Section 3.3.1). Value \"" + value + "\" of attribute \""
+                    + attrName + "\" does not name a declared unparsed entity.");
+        }
     }
 
     private void recordPendingIdref(String value) {
@@ -4832,6 +5010,34 @@ class Scanner implements ByteDecoderTarget {
     private void checkNmtokenProduction(String attrName, String value, String typeLabel) throws SAXException {
         if (!matchesNmtokenProduction(value)) {
             reportBadAttributeValueFormat(attrName, value, typeLabel, "Nmtoken");
+        }
+    }
+
+    /** Namespaces in XML restricts ID/IDREF values (each a {@code Name})
+     *  from containing a colon, mirroring the old pipeline's {@code
+     *  AttributeValidator.validateId}/{@code validateIdref} - applied
+     *  unconditionally (whenever validation is on), not gated on namespace
+     *  processing actually being enabled, matching that established
+     *  behavior exactly. */
+    private void checkNoColon(String attrName, String value, String typeLabel) throws SAXException {
+        if (value.indexOf(':') >= 0) {
+            handler.error("Validity Constraint: " + typeLabel + " Attribute (Section 3.3.1). Value \"" + value
+                    + "\" of attribute \"" + attrName + "\" must not contain a colon (Namespaces in XML).");
+        }
+    }
+
+    /** WFC (Namespaces in XML): an entity or notation name must not contain
+     *  a colon when namespace processing is enabled - mirrors the old
+     *  pipeline's {@code DTDParser.validateNameInNamespaceMode}, called from
+     *  both {@link #scanEntityDeclaration} (general and parameter alike,
+     *  matching that method's own two identical call sites) and {@link
+     *  #scanNotationDeclaration}. Unlike {@link #checkNoColon}, this is a
+     *  fatal error, not a recoverable one - matching the old pipeline and
+     *  the {@code not-wf} expectation these constructs are tested against. */
+    private void checkNoColonInNamespaceMode(String name, String what) throws SAXException {
+        if (namespaceAware && name.indexOf(':') >= 0) {
+            throw handler.fatalError(
+                    "WFC (Namespaces in XML): " + what + " name \"" + name + "\" must not contain a colon");
         }
     }
 

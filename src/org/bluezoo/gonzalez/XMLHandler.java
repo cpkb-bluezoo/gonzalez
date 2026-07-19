@@ -139,6 +139,20 @@ interface XMLHandler {
     void setLocator(Locator locator);
 
     /**
+     * Reports the document's actual declared XML version, once known (from
+     * its {@code XMLDecl}, or an enclosing external entity/DTD subset's own
+     * {@code TextDecl}) - called strictly before any real document content,
+     * mirroring {@link ByteDecoderTarget#setXml11}'s own timing guarantee
+     * (see {@link Scanner#setXml11}, which both maintains its own derived
+     * state from this and relays it on to this method). A consumer with no
+     * XML-version-dependent behavior of its own (most of them) can safely
+     * make this a no-op.
+     *
+     * @param xml11 true if the document is XML 1.1, false for XML 1.0
+     */
+    void setXml11(boolean xml11);
+
+    /**
      * Signals the start of the document.
      */
     void startDocument() throws SAXException;

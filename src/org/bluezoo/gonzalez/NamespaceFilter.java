@@ -55,17 +55,16 @@ import org.xml.sax.SAXException;
  * {@link #namespace(String, String)} consumer can therefore keep trusting
  * that what it receives is already valid (it already does today -
  * {@code NamespaceScopeTracker.declarePrefix} performs no NSC validation of
- * its own). The one check the old pipeline does here that this filter does
- * <em>not</em> replicate is the non-fatal "namespace name should be an
- * absolute URI" advisory - a recoverable warning, not a WFC/NSC fatal
- * error, and not yet wired to {@link XMLHandler#error}.
+ * its own), including the non-fatal "namespace name should be an absolute
+ * URI" advisory ({@link #validateNamespaceURI}) - a recoverable warning via
+ * {@link XMLHandler#error}, not a WFC/NSC fatal error.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
 class NamespaceFilter implements XMLHandler {
 
     private final XMLHandler delegate;
-    private final boolean xml11;
+    private boolean xml11;
 
     // Set by startAttribute(), consulted by attributeValueContent() for the
     // duration of the current attribute only.
@@ -89,6 +88,17 @@ class NamespaceFilter implements XMLHandler {
     @Override
     public void setLocator(Locator locator) {
         delegate.setLocator(locator);
+    }
+
+    /** Updates {@link #xml11} from the actual declared document version
+     *  (see {@code Scanner}'s constructor-time value passed to this class's
+     *  own constructor, which is only ever the initial default - this is
+     *  what keeps it current once the real {@code XMLDecl} is parsed), and
+     *  relays it on downstream. */
+    @Override
+    public void setXml11(boolean xml11) {
+        this.xml11 = xml11;
+        delegate.setXml11(xml11);
     }
 
     @Override
@@ -155,6 +165,7 @@ class NamespaceFilter implements XMLHandler {
                 throw delegate.fatalError(
                         "Cannot bind default namespace to reserved xmlns namespace URI");
             }
+            validateNamespaceURI(uri);
             delegate.namespace("", uri);
             return;
         }
@@ -183,7 +194,61 @@ class NamespaceFilter implements XMLHandler {
             throw delegate.fatalError(
                     "Cannot bind prefix '" + prefix + "' to reserved xmlns namespace URI");
         }
+        validateNamespaceURI(uri);
         delegate.namespace(prefix, uri);
+    }
+
+    /**
+     * Validates a namespace name per Namespaces in XML, mirroring {@code
+     * ContentParser.validateNamespaceURI} in the old tokenizer-based
+     * pipeline exactly (both checks are recoverable {@link
+     * XMLHandler#error}s, not fatal - Namespaces 1.0 Third Edition merely
+     * deprecates a relative reference as a namespace name, and notes that
+     * non-ASCII IRIs are not universally interoperable, rather than
+     * outlawing either outright). An empty {@code uri} (prefix unbinding)
+     * is never validated - there is no namespace name to judge.
+     */
+    private void validateNamespaceURI(String uri) throws SAXException {
+        if (uri.isEmpty()) {
+            return;
+        }
+        if (!xml11 && !isAsciiOnly(uri)) {
+            delegate.error("Namespace name '" + uri + "' is an IRI, not a URI (Namespaces in XML 1.0 \u00a72)");
+        }
+        if (!isAbsoluteURI(uri)) {
+            delegate.error("Namespace name '" + uri
+                    + "' is not an absolute URI (Namespaces in XML 1.0 \u00a72, deprecated)");
+        }
+    }
+
+    /** Per RFC 3986, an absolute URI has a scheme ({@code [a-zA-Z]
+     *  [a-zA-Z0-9+.-]*}) followed by {@code ':'}. */
+    private static boolean isAbsoluteURI(String uri) {
+        int colonIndex = uri.indexOf(':');
+        if (colonIndex <= 0) {
+            return false;
+        }
+        char first = uri.charAt(0);
+        if (!((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z'))) {
+            return false;
+        }
+        for (int i = 1; i < colonIndex; i++) {
+            char c = uri.charAt(i);
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+'
+                    || c == '-' || c == '.')) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isAsciiOnly(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            if (s.charAt(i) > 0x7F) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Override
