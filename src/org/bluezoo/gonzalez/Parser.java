@@ -635,9 +635,9 @@ public class Parser implements XMLReader, PSVIProvider {
      * <tr><td>{@code http://xml.org/sax/features/validation}</td>
      *     <td>false</td><td>Validate against DTD</td></tr>
      * <tr><td>{@code http://xml.org/sax/features/external-general-entities}</td>
-     *     <td>true</td><td>Include external general entities</td></tr>
+     *     <td>false</td><td>Include external general entities</td></tr>
      * <tr><td>{@code http://xml.org/sax/features/external-parameter-entities}</td>
-     *     <td>true</td><td>Include external parameter entities</td></tr>
+     *     <td>false</td><td>Include external parameter entities</td></tr>
      * <tr><td>{@code http://apache.org/xml/features/disallow-doctype-decl}</td>
      *     <td>false</td><td>Reject any document containing a DOCTYPE declaration
      *     (defense against XXE and entity-expansion attacks)</td></tr>
@@ -834,6 +834,14 @@ public class Parser implements XMLReader, PSVIProvider {
      * <tr><td>{@code http://xml.org/sax/properties/declaration-handler}</td>
      *     <td>{@link org.xml.sax.ext.DeclHandler}</td>
      *     <td>Handler for DTD declaration events (element, attribute, entity declarations)</td></tr>
+     * <tr><td>{@code http://javax.xml.XMLConstants/property/accessExternalDTD}</td>
+     *     <td>{@link String}</td>
+     *     <td>Comma-separated allow-list of protocols for external DTD and entity
+     *     access; empty by default (no external access)</td></tr>
+     * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/entity-expansion-limit}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Maximum entity expansions per document; 64,000 by default and
+     *     zero for unlimited</td></tr>
      * </tbody>
      * </table>
      *

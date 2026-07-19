@@ -102,9 +102,9 @@ import org.xml.sax.ext.Locator2;
  * swapping {@link #buf}/{@link #pos}/{@link #limit} to a private array and
  * recursively calling {@link #scan()} (for content, which may contain
  * markup) or walking it directly (for attribute values, which never do).
- * Not yet supported: {@code standalone} declaration semantics, and ENTITY/
- * ENTITIES attribute values being checked against declared unparsed
- * entities.
+ * Standalone-document validity constraints and ENTITY/ENTITIES values
+ * against declared unparsed entities are enforced when validation is
+ * enabled.
  * <p>
  * <b>Zero allocation.</b> This class's job is to identify contiguous runs
  * and push them downstream as fast as possible - it never assembles a
