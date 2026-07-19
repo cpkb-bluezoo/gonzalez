@@ -81,10 +81,10 @@ class ExternalEntityDecoder {
 
     /**
      * True when the resolved charset treats bytes below 0x80 as plain ASCII
-     * (UTF-8, US-ASCII, ISO-8859-1), enabling decodeAndTokenize()'s ASCII fast
-     * path to widen those bytes directly instead of going through the
-     * CharsetDecoder state machine. Set once per document/entity in
-     * {@link #setupCharsetDecoder}.
+     * (UTF-8, US-ASCII, ISO-8859-1), so a decoded U+000D can only come from
+     * a literal 0x0D byte - lets decodeAndTokenize() prove a chunk CR-free
+     * with one byte-level scan and skip normalizeLineEndings()'s per-char
+     * scan. Set once per document/entity in {@link #setupCharsetDecoder}.
      */
     private boolean asciiFastPathEligible;
     
@@ -594,18 +594,13 @@ class ExternalEntityDecoder {
         // buffers and never disturbs the buffer's position.
         boolean crFree = !xml11 && asciiFastPathEligible && !containsCarriageReturnByte(data);
 
-        // Process in chunks - decode, tokenize, compact, repeat
+        // Process in chunks - decode, tokenize, compact, repeat. No manual
+        // ASCII fast path here: the JDK's own decoders (UTF-8 in
+        // particular) bulk-decode ASCII runs via the intrinsified,
+        // vectorized JavaLangAccess.decodeASCII, which measured
+        // consistently faster than a scalar byte-by-byte widening loop in
+        // front of it.
         while (data.hasRemaining()) {
-            // Opportunistically widen a leading run of plain-ASCII bytes directly,
-            // bypassing the CharsetDecoder state machine - XML documents are
-            // typically dominated by ASCII content (markup, whitespace, common
-            // Latin text). Only touches bytes it's certain are valid ASCII;
-            // whatever's left (a non-ASCII byte, or charBuffer full) falls
-            // through to the decoder below exactly as before.
-            if (asciiFastPathEligible) {
-                widenAsciiRun(data);
-            }
-
             // Decode into charBuffer (from current position to limit)
             CoderResult result = decoder.decode(data, charBuffer, false);
 
@@ -646,51 +641,6 @@ class ExternalEntityDecoder {
         }
 
         hasPendingIncompleteBytes = data.hasRemaining();
-    }
-
-    /**
-     * Widens a leading run of plain-ASCII bytes (below 0x80) from {@code data}
-     * directly into {@code charBuffer}, advancing both buffers' positions by the
-     * same amount. Only applies when both buffers expose a directly-accessible
-     * backing array (true for charBuffer always, since it's heap-allocated; true
-     * for data only when the caller supplied a heap ByteBuffer rather than a
-     * direct one) - falls through to a no-op otherwise, leaving the normal
-     * CharsetDecoder path to handle everything.
-     *
-     * <p>Stops at the first byte with its high bit set (0x80-0xFF): those start
-     * multi-byte UTF-8 sequences or need charset-specific handling, so they -
-     * along with the CharsetDecoder's malformed/unmappable-input detection -
-     * still go through the real decoder unchanged.
-     */
-    private void widenAsciiRun(ByteBuffer data) {
-        if (!data.hasArray() || data.isReadOnly() || !charBuffer.hasArray()) {
-            return;
-        }
-
-        byte[] src = data.array();
-        int srcPos = data.arrayOffset() + data.position();
-        int srcLimit = data.arrayOffset() + data.limit();
-
-        char[] dst = charBuffer.array();
-        int dstPos = charBuffer.arrayOffset() + charBuffer.position();
-        int dstLimit = charBuffer.arrayOffset() + charBuffer.limit();
-
-        int startSrcPos = srcPos;
-        while (srcPos < srcLimit && dstPos < dstLimit) {
-            byte b = src[srcPos];
-            if (b < 0) {
-                // High bit set (byte value >= 0x80) - defer to the real decoder
-                break;
-            }
-            dst[dstPos++] = (char) b;
-            srcPos++;
-        }
-
-        int widened = srcPos - startSrcPos;
-        if (widened > 0) {
-            data.position(data.position() + widened);
-            charBuffer.position(charBuffer.position() + widened);
-        }
     }
 
     /**

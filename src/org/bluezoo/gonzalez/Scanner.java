@@ -668,6 +668,7 @@ class Scanner implements Locator2 {
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
         this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
+        this.legalLiteralTable = xml11 ? LEGAL_LITERAL_XML11 : LEGAL_LITERAL_XML10;
         if (!deferDocumentStartUntilEncoding) {
             startDocument();
         }
@@ -722,6 +723,7 @@ class Scanner implements Locator2 {
     private boolean[] contentStopTable;
     private boolean[] quotAttrStopTable;
     private boolean[] aposAttrStopTable;
+    private boolean[] legalLiteralTable;
 
     /**
      * Feeds more decoded character data to the scanner. May be called
@@ -872,6 +874,7 @@ class Scanner implements Locator2 {
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
         this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
+        this.legalLiteralTable = xml11 ? LEGAL_LITERAL_XML11 : LEGAL_LITERAL_XML10;
         handler.setXml11(xml11);
     }
 
@@ -1087,11 +1090,25 @@ class Scanner implements Locator2 {
     private static final boolean[] APOS_ATTR_STOP_XML10 = new boolean[0x10000];
     private static final boolean[] APOS_ATTR_STOP_XML11 = new boolean[0x10000];
 
+    /** Plain {@link #isLegalLiteralChar} as a table, for the comment/PI/
+     *  CDATA terminator scans ({@link #scanCommentData}, {@link
+     *  #scanPIData}, {@link #scanCDATAContent}), which fold the legality
+     *  check into their own terminator loop - one table read per character
+     *  in the same pass - rather than re-walking the accumulated span with
+     *  a per-character method call the way the old {@code
+     *  checkLiteralCharSpan} second pass did (re-checked from the span's
+     *  start after every false-alarm terminator character, quadratic on
+     *  hyphen/bracket/question-mark-dense data). */
+    private static final boolean[] LEGAL_LITERAL_XML10 = new boolean[0x10000];
+    private static final boolean[] LEGAL_LITERAL_XML11 = new boolean[0x10000];
+
     static {
         for (int i = 0; i < 0x10000; i++) {
             char c = (char) i;
             boolean legal10 = isLegalLiteralCharXml10(c);
             boolean legal11 = isLegalLiteralCharXml11(c);
+            LEGAL_LITERAL_XML10[i] = legal10;
+            LEGAL_LITERAL_XML11[i] = legal11;
             boolean contentStructural = (c == '<' || c == '&' || c == ']' || c == '>');
             CONTENT_STOP_XML10[i] = contentStructural || !legal10;
             CONTENT_STOP_XML11[i] = contentStructural || !legal11;
@@ -1108,23 +1125,6 @@ class Scanner implements Locator2 {
     private SAXException illegalCharError(char c) throws SAXException {
         return handler.fatalError(
                 "Character U+" + String.format("%04X", (int) c) + " is not a legal XML character");
-    }
-
-    /** Legal-{@code Char} check for a whole already-fully-scanned span
-     *  (comment text, PI data, a CDATA section, or a quoted-literal entity
-     *  value) - constructs whose own terminator scan (looking for {@code
-     *  "-->"}, {@code "?>"}, {@code "]]>"}, or the closing quote) does not
-     *  itself reject any particular character, unlike {@link #scanContent}'s
-     *  hot loop, which folds the check into its own per-character stop
-     *  table. Called only once the terminator has actually been found (never
-     *  on a retried-after-underflow partial span), matching every other
-     *  "commit only at the very end" construct in this class. */
-    private void checkLiteralCharSpan(int start, int end) throws SAXException {
-        for (int i = start; i < end; i++) {
-            if (!isLegalLiteralChar(buf[i])) {
-                throw illegalCharError(buf[i]);
-            }
-        }
     }
 
     /** Combined per-character check for {@link #scanContent()}'s literal
@@ -1858,7 +1858,7 @@ class Scanner implements Locator2 {
             // allowed) - a second start tag once the first has fully closed.
             throw handler.fatalError("A document may contain only one root element");
         }
-        String qName = namePool.intern(CharBuffer.wrap(buf, nameStart, p - nameStart));
+        String qName = namePool.internRange(buf, nameStart, p - nameStart);
         if (!rootStarted) {
             // A document with no DOCTYPE at all may still be given an
             // external subset by an EntityResolver2 - asked for here, at
@@ -1956,6 +1956,12 @@ class Scanner implements Locator2 {
      * value content may already have been emitted.
      */
     private boolean scanAttributesAndTagEnd() throws SAXException {
+        // Fixed for the duration of this start tag (including resumed
+        // calls - the element is only popped by this method itself), so
+        // resolved once rather than per attribute: the element's name and
+        // its declared-attribute map (null in the common no-DTD case).
+        String currentElementName = elementStack.get(elementStack.size() - 1);
+        Map<String, DTDModel.AttDef> declaredAttrs = dtdModel.getAttributes(currentElementName);
         while (true) {
             int attrStart = pos;
             while (pos < limit && isWs(buf[pos])) {
@@ -1977,7 +1983,7 @@ class Scanner implements Locator2 {
             }
             if (c == '>') {
                 pos++;
-                applyAttributeDefaults(elementStack.get(elementStack.size() - 1));
+                applyAttributeDefaults(currentElementName);
                 handler.endAttributes();
                 return true;
             }
@@ -1990,7 +1996,7 @@ class Scanner implements Locator2 {
                     throw handler.fatalError("Malformed start tag");
                 }
                 pos += 2;
-                applyAttributeDefaults(elementStack.get(elementStack.size() - 1));
+                applyAttributeDefaults(currentElementName);
                 if (validationEnabled) {
                     popAndValidateElement();
                 }
@@ -2013,7 +2019,7 @@ class Scanner implements Locator2 {
                 throw handler.fatalError("Malformed start tag");
             }
             checkNameStartChar(nameStart);
-            String attrName = namePool.intern(CharBuffer.wrap(buf, nameStart, pos - nameStart));
+            String attrName = namePool.internRange(buf, nameStart, pos - nameStart);
             recordSeenAttributeName(attrName);
 
             while (pos < limit && isWs(buf[pos])) {
@@ -2041,11 +2047,9 @@ class Scanner implements Locator2 {
             }
             pos++;
 
-            String currentElementName = elementStack.get(elementStack.size() - 1);
-            DTDModel.AttDef attrDef = attributeDefOf(currentElementName, attrName);
+            DTDModel.AttDef attrDef = declaredAttrs == null ? null : declaredAttrs.get(attrName);
             String attrType = attrDef == null ? "CDATA" : attrDef.type;
-            if (validationEnabled && dtdModel.getAttributes(currentElementName) != null
-                    && attributeDefOf(currentElementName, attrName) == null) {
+            if (validationEnabled && attrDef == null && declaredAttrs != null) {
                 handler.error("Validity Constraint: Attribute Value Type (Section 3.3.1). Attribute \"" + attrName
                         + "\" is not declared for element \"" + currentElementName + "\".");
             }
@@ -2064,8 +2068,7 @@ class Scanner implements Locator2 {
                 }
                 if (validationEnabled) {
                     if (standalone && collapseCurrentAttrValue) {
-                        DTDModel.AttDef def = attributeDefOf(currentElementName, attrName);
-                        if (def != null && def.declaredExternally) {
+                        if (attrDef != null && attrDef.declaredExternally) {
                             handler.error("Validity Constraint: Standalone Document Declaration (Section 2.9). "
                                     + "Document has standalone=\"yes\" but external markup declares attribute \""
                                     + attrName + "\" of element \"" + currentElementName + "\" with type \""
@@ -2444,11 +2447,19 @@ class Scanner implements Locator2 {
         // that turns out not to start "-->" must not reset the pending
         // span's start.
         int p = pos;
+        // Legal-Char rejection is folded into the terminator scan itself -
+        // one legalLiteralTable read per character in the same pass, instead
+        // of a separate re-walk of the pending span (which would re-check
+        // from the span's start after every literal '-' that turns out not
+        // to begin "-->").
+        boolean[] legal = legalLiteralTable;
         while (true) {
             while (p < limit && buf[p] != '-') {
+                if (!legal[buf[p]]) {
+                    throw illegalCharError(buf[p]);
+                }
                 p++;
             }
-            checkLiteralCharSpan(pos, p);
             if (p >= limit || p + 2 >= limit) {
                 if (p > pos) {
                     handler.commentData(CharBuffer.wrap(buf, pos, p - pos), false);
@@ -2537,11 +2548,15 @@ class Scanner implements Locator2 {
         // "]]") that turns out not to start "]]>" must not reset the
         // pending span's start.
         int p = pos;
+        // Legality folded into the terminator scan - see scanCommentData.
+        boolean[] legal = legalLiteralTable;
         while (true) {
             while (p < limit && buf[p] != ']') {
+                if (!legal[buf[p]]) {
+                    throw illegalCharError(buf[p]);
+                }
                 p++;
             }
-            checkLiteralCharSpan(pos, p);
             if (p >= limit || p + 2 >= limit) {
                 if (p > pos) {
                     emitCDATAChunk(pos, p, false);
@@ -2616,7 +2631,7 @@ class Scanner implements Locator2 {
             throw handler.fatalError("Malformed processing instruction");
         }
         checkNameStartChar(targetStart);
-        String target = namePool.intern(CharBuffer.wrap(buf, targetStart, p - targetStart));
+        String target = namePool.internRange(buf, targetStart, p - targetStart);
         if (target.length() == 3
                 && (target.charAt(0) == 'x' || target.charAt(0) == 'X')
                 && (target.charAt(1) == 'm' || target.charAt(1) == 'M')
@@ -2682,11 +2697,15 @@ class Scanner implements Locator2 {
         // including that '?' when pos was (wrongly) advanced past it here
         // without first emitting.
         int p = pos;
+        // Legality folded into the terminator scan - see scanCommentData.
+        boolean[] legal = legalLiteralTable;
         while (true) {
             while (p < limit && buf[p] != '?') {
+                if (!legal[buf[p]]) {
+                    throw illegalCharError(buf[p]);
+                }
                 p++;
             }
-            checkLiteralCharSpan(pos, p);
             if (p >= limit || p + 1 >= limit) {
                 if (p > pos) {
                     handler.piData(CharBuffer.wrap(buf, pos, p - pos), false);
@@ -4052,7 +4071,7 @@ class Scanner implements Locator2 {
             // so applyAttributeDefaults()'s wasAttributeSeen() check - a
             // reference-equality linear scan, not a HashSet - works
             // correctly against DTDModel's stored declaration names too.
-            String attrName = namePool.intern(CharBuffer.wrap(buf, attrNameStart, p - attrNameStart));
+            String attrName = namePool.internRange(buf, attrNameStart, p - attrNameStart);
 
             int ws3 = p;
             p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);

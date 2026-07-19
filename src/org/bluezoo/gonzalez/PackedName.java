@@ -96,7 +96,14 @@ class PackedName {
         return internRange(copy, 0, len);
     }
 
-    private String internRange(char[] buf, int start, int len) {
+    /**
+     * Interns a name directly from a char-array range - same contract as
+     * {@link #intern(CharBuffer)} minus the window unwrapping, for callers
+     * that already hold the backing array (the {@link Scanner} hot paths,
+     * which would otherwise allocate a throwaway {@code CharBuffer.wrap}
+     * per name just to pass the range in).
+     */
+    String internRange(char[] buf, int start, int len) {
         long p0 = 0;
         long p1 = 0;
         long p2 = 0;
