@@ -24,17 +24,15 @@ package org.bluezoo.gonzalez.transform.ast;
 import org.bluezoo.gonzalez.Parser;
 import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.SecureGonzalezParser;
 import org.bluezoo.gonzalez.transform.runtime.StreamingContext;
 import org.bluezoo.gonzalez.transform.runtime.StreamingTransformHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
-import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
-import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
 import java.net.URL;
 
 /**
@@ -127,11 +125,14 @@ public final class StreamNode implements XSLTNode {
             );
 
             // Parse the external document in streaming mode
-            Parser parser = new Parser();
-            parser.setContentHandler(handler);
+            Parser parser = SecureGonzalezParser.create(handler);
             
-            InputSource inputSource = createInputSource(resolvedHref);
-            parser.parse(inputSource);
+            URL url = new URL(resolvedHref);
+            try (InputStream is = url.openStream()) {
+                InputSource inputSource = new InputSource(is);
+                inputSource.setSystemId(resolvedHref);
+                parser.parse(inputSource);
+            }
 
         } catch (IOException e) {
             throw new SAXException("Error streaming document: " + resolvedHref, e);
@@ -145,17 +146,6 @@ public final class StreamNode implements XSLTNode {
         // For now, return the href as-is
         // TODO: Resolve relative to stylesheet base URI
         return href;
-    }
-
-    /**
-     * Creates an InputSource for the given URI.
-     */
-    private InputSource createInputSource(String uri) throws IOException {
-        URL url = new URL(uri);
-        InputStream is = url.openStream();
-        InputSource source = new InputSource(is);
-        source.setSystemId(uri);
-        return source;
     }
 
     @Override

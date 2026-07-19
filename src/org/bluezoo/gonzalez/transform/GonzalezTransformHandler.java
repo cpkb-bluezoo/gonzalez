@@ -134,21 +134,8 @@ public class GonzalezTransformHandler extends DefaultHandler
     private StringBuilder textBuffer = new StringBuilder();
     private Locator documentLocator;
 
-    private static final class NativeAttribute {
-        String qName;
-        String type;
-        String value;
-        String uri;
-        String localName;
-        String prefix;
-    }
-
+    private final NativeAttributeBuffer nativeAttributes = new NativeAttributeBuffer();
     private String nativeElementQName;
-    private final List<NativeAttribute> nativeAttributePool = new ArrayList<>();
-    private int nativeAttributeCount;
-    private NativeAttribute currentNativeAttribute;
-    private boolean nativeAttributeValueFirstChunk;
-    private final StringBuilder nativeAttributeValueBuffer = new StringBuilder();
     private String nativePITarget;
     private boolean nativePIDataFirstChunk;
     private final StringBuilder nativePIDataBuffer = new StringBuilder();
@@ -381,7 +368,7 @@ public class GonzalezTransformHandler extends DefaultHandler
     public void startElement(String qName) throws SAXException {
         flushTextBuffer();
         nativeElementQName = qName;
-        nativeAttributeCount = 0;
+        nativeAttributes.clear();
     }
 
     @Override
@@ -392,36 +379,13 @@ public class GonzalezTransformHandler extends DefaultHandler
     @Override
     public void startAttribute(String name, String type, boolean declared,
             boolean specified) throws SAXException {
-        NativeAttribute attr;
-        if (nativeAttributeCount < nativeAttributePool.size()) {
-            attr = nativeAttributePool.get(nativeAttributeCount);
-        } else {
-            attr = new NativeAttribute();
-            nativeAttributePool.add(attr);
-        }
-        attr.qName = name;
-        attr.type = type;
-        attr.value = null;
-        currentNativeAttribute = attr;
-        nativeAttributeValueFirstChunk = true;
-        nativeAttributeCount++;
+        nativeAttributes.startAttribute(name, type);
     }
 
     @Override
     public void attributeValueContent(CharBuffer value, boolean end)
             throws SAXException {
-        if (nativeAttributeValueFirstChunk && end) {
-            currentNativeAttribute.value = value.toString();
-            return;
-        }
-        if (nativeAttributeValueFirstChunk) {
-            nativeAttributeValueBuffer.setLength(0);
-            nativeAttributeValueFirstChunk = false;
-        }
-        nativeAttributeValueBuffer.append(value);
-        if (end) {
-            currentNativeAttribute.value = nativeAttributeValueBuffer.toString();
-        }
+        nativeAttributes.attributeValueContent(value, end);
     }
 
     @Override
@@ -433,38 +397,21 @@ public class GonzalezTransformHandler extends DefaultHandler
         reusableNsBindings.putAll(pendingNamespaces);
         pendingNamespaces.clear();
 
-        String elementPrefix = extractPrefix(nativeElementQName);
-        String elementLocalName = extractLocalName(nativeElementQName);
-        String elementUri = resolveNamespaceURI(elementPrefix, false,
-                reusableNsBindings);
+        String elementPrefix = NativeExpandedNames.extractPrefix(nativeElementQName);
+        String elementLocalName = NativeExpandedNames.extractLocalName(nativeElementQName);
+        String elementUri = NativeExpandedNames.resolveNamespaceURI(
+                elementPrefix, false, reusableNsBindings);
+        nativeAttributes.resolveAndCheckDuplicates(reusableNsBindings);
         StreamingNode element = StreamingNode.createElement(
                 elementUri, elementLocalName, elementPrefix, null,
                 reusableNsBindings, currentNode, documentOrderCounter);
 
         int nsCount = element.getNamespaceNodeCount();
         int emittedAttributeCount = 0;
-        for (int i = 0; i < nativeAttributeCount; i++) {
-            NativeAttribute attr = nativeAttributePool.get(i);
-            if ("xmlns".equals(attr.qName) || attr.qName.startsWith("xmlns:")) {
-                // Namespace declarations become namespace nodes in the XPath
-                // data model, never ordinary attribute nodes.
+        for (int i = 0; i < nativeAttributes.size(); i++) {
+            NativeAttributeBuffer.Attr attr = nativeAttributes.get(i);
+            if (NativeExpandedNames.isNamespaceDeclaration(attr.qName)) {
                 continue;
-            }
-            attr.prefix = extractPrefix(attr.qName);
-            attr.localName = extractLocalName(attr.qName);
-            attr.uri = resolveNamespaceURI(attr.prefix, true,
-                    reusableNsBindings);
-            for (int j = 0; j < i; j++) {
-                NativeAttribute other = nativeAttributePool.get(j);
-                if ("xmlns".equals(other.qName)
-                        || other.qName.startsWith("xmlns:")) {
-                    continue;
-                }
-                if (attr.uri.equals(other.uri)
-                        && attr.localName.equals(other.localName)) {
-                    throw fatalError("Duplicate attribute by expanded name: {"
-                            + attr.uri + "}" + attr.localName);
-                }
             }
             long attrOrder = documentOrderCounter + nsCount
                     + emittedAttributeCount + 1;
@@ -477,35 +424,6 @@ public class GonzalezTransformHandler extends DefaultHandler
         documentOrderCounter += nsCount + emittedAttributeCount + 1;
         setEntityBaseURIIfNeeded(element);
         currentNode = element;
-    }
-
-    private String resolveNamespaceURI(String prefix, boolean attribute,
-            Map<String, String> namespaceBindings) throws SAXException {
-        String uri;
-        if (prefix == null || prefix.isEmpty()) {
-            uri = attribute ? "" : namespaceBindings.get("");
-            if (uri == null) {
-                uri = "";
-            }
-        } else if ("xml".equals(prefix)) {
-            uri = "http://www.w3.org/XML/1998/namespace";
-        } else {
-            uri = namespaceBindings.get(prefix);
-            if (uri == null || uri.isEmpty()) {
-                throw fatalError("Unbound namespace prefix: " + prefix);
-            }
-        }
-        return uri;
-    }
-
-    private static String extractPrefix(String qName) {
-        int colon = qName.indexOf(':');
-        return colon > 0 ? qName.substring(0, colon) : null;
-    }
-
-    private static String extractLocalName(String qName) {
-        int colon = qName.indexOf(':');
-        return colon > 0 ? qName.substring(colon + 1) : qName;
     }
 
     @Override
