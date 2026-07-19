@@ -403,7 +403,7 @@ The build downloads the jsonparser library automatically (see Dependencies below
 
 ## Implementation Status
 
-The Scanner-based architecture supports:
+Gonzalez supports the entire XML specification:
 - XML declaration with all charsets supported by Java
 - DOCTYPE with internal and external subsets
 - Elements with attributes
@@ -411,13 +411,13 @@ The Scanner-based architecture supports:
 - Entity references (character, internal, external)
 - Processing instructions
 - Comments
-- Namespaces
+- XML Namespaces
 - Validation using DTD
 - XML 1.1
 
 ## Performance
 
-The current Scanner implementation was compared with the SAX parser bundled
+The current XML parser implementation was compared with the SAX parser bundled
 with JDK 21 (Xerces) and
 [aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.1-SNAPSHOT. All paths
 ran namespace-aware with an empty handler. The raw Gonzalez path is
@@ -432,23 +432,51 @@ Aalto's lower-level StAX cursor is included as an additional reference point,
 but is not directly equivalent to SAX callback delivery.
 
 The figures below are median throughput across five fresh JVM runs. Each run
-used 20 warm-up parses followed by 30 measured parses of the large corpus
-documents in `benchmark/resources`.
+used 20 warm-up parses followed by 30 measured parses. The original five
+documents are in `benchmark/resources`; `BenchmarkCorpora` deterministically
+generates three additional substantial documents:
+
+- the same 4,000-article Japanese document encoded as BOM-marked UTF-16LE and
+  EUC-JP, isolating the two decoder paths as far as practical;
+- a 1,500-article XHTML-shaped document with a self-contained internal subset
+  declaring 33 elements, common and element-specific attributes, content
+  models, and character entities. It has no public or system identifier, so
+  no external subset is fetched.
+
+**Aalto is not a validating or DTD-processing parser.** Its SAX factory rejects
+validating mode, and its own `Attributes2` implementation states that DTD
+processing is absent. For the XHTML corpus, Aalto recognizes the DOCTYPE and
+emits `startDTD`/`endDTD`, but skips the internal declarations: it does not
+apply declared attribute types or defaults and cannot expand the declared
+general entities. Gonzalez and JDK Xerces parse and apply those declarations.
+The XHTML row is therefore included to expose this capability and cost
+difference, not as a like-for-like throughput comparison.
 
 | Corpus | Size | Gonzalez XMLHandler | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |
 |--------|-----:|--------------------:|-------------:|----------------:|----------:|------------------:|
-| Plain | 1.02 MiB | **878 MB/s** | 630 MB/s | 487 MB/s | 1,138 MB/s | 1,189 MB/s |
-| Attribute-heavy | 1.28 MiB | **494 MB/s** | 342 MB/s | 256 MB/s | 976 MB/s | 981 MB/s |
-| Whitespace-heavy | 0.94 MiB | **1,084 MB/s** | 835 MB/s | 658 MB/s | 1,310 MB/s | 1,550 MB/s |
-| Markup-heavy | 0.96 MiB | **708 MB/s** | 653 MB/s | 372 MB/s | 886 MB/s | 1,402 MB/s |
-| Multibyte UTF-8 | 0.49 MiB | **444 MB/s** | 366 MB/s | 317 MB/s | 688 MB/s | 758 MB/s |
+| Plain UTF-8 | 1.02 MiB | **864 MB/s** | 550 MB/s | 507 MB/s | 1,124 MB/s | 1,197 MB/s |
+| Attribute-heavy UTF-8 | 1.28 MiB | **501 MB/s** | 337 MB/s | 247 MB/s | 955 MB/s | 957 MB/s |
+| Whitespace-heavy UTF-8 | 0.94 MiB | **1,028 MB/s** | 779 MB/s | 647 MB/s | 1,294 MB/s | 1,528 MB/s |
+| Markup-heavy UTF-8 | 0.96 MiB | **688 MB/s** | 565 MB/s | 364 MB/s | 1,337 MB/s | 1,577 MB/s |
+| Multibyte UTF-8 | 0.49 MiB | **496 MB/s** | 310 MB/s | 307 MB/s | 702 MB/s | 775 MB/s |
+| Japanese UTF-16LE | 1.50 MiB | **715 MB/s** | 557 MB/s | 753 MB/s | 879 MB/s | 841 MB/s |
+| Japanese EUC-JP | 1.28 MiB | **554 MB/s** | 428 MB/s | 416 MB/s | 630 MB/s | 608 MB/s |
+| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **305 MB/s** | 235 MB/s | 131 MB/s | 716 MB/s | 735 MB/s |
 
-SAX adaptation reduces Gonzalez throughput by about 8–31% on these corpora;
-the largest cost appears on attribute-heavy input, where Attributes2 assembly
-and namespace/name processing do the most work. Even through SAXAdapter,
-Gonzalez is 1.15–1.76 times faster than JDK Xerces on this workload. Aalto
-remains faster in raw in-memory parsing, particularly for attribute-heavy
-input.
+The non-UTF results differ materially from the original UTF-8 cases. JDK
+Xerces SAX is about 35% faster than Gonzalez SAX on UTF-16LE, while Gonzalez
+SAX is about 3% faster on EUC-JP. Aalto SAX is roughly 1.6 and 1.5 times as
+fast as Gonzalez SAX on those two encoding cases. Throughput is measured from
+encoded byte size, so UTF-16's MB/s also reflects that it uses more bytes for
+the same logical Japanese document.
+
+The DTD behavior was verified from SAX events using
+`benchmark/external-compare/DtdProbe.java`: Gonzalez and JDK Xerces report
+`id` attributes with declared type `ID` and inject the DTD-defaulted,
+non-specified `type="text"` attribute on `<input>`. Aalto reports `id` as
+`CDATA` and omits the defaulted attribute. Its higher number on this row must
+not be interpreted as faster DTD processing, because it does not perform that
+processing.
 
 These are microbenchmarks, not application-level latency guarantees. Results
 depend on the JDK, hardware, handlers and document shape. Gonzalez's primary

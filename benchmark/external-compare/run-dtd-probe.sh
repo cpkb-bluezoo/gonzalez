@@ -1,12 +1,8 @@
 #!/bin/bash
-# Compiles and runs ExternalCompare.java: a throughput comparison of
-# Gonzalez's raw XMLHandler and SAXAdapter paths against the JDK's bundled
-# Xerces implementation (no download needed) and a locally-built aalto-xml
-# (built from ~/github/aalto-xml via its own Maven build).
-#
-# Deliberately not wired into build.xml or ant - a standalone script, no new
-# project dependency. Run from the repo root, or this script will cd there
-# itself.
+# Compiles and runs DtdProbe.java: inspects the SAX events each parser emits
+# for the XHTML internal-subset corpus to establish whether the internal DTD
+# subset is actually processed (see DtdProbe.java for the specific facts
+# checked). Shares the aalto-xml/stax2 discovery logic with run.sh.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -37,11 +33,11 @@ mkdir -p "$WORK"
 
 CP="build/core:$AALTO_JAR:$STAX2_JAR"
 
-echo "Compiling ExternalCompare.java..."
+echo "Compiling DtdProbe.java..."
 javac -cp "$CP" -d "$WORK" \
     benchmark/external-compare/BenchmarkCorpora.java \
-    benchmark/external-compare/ExternalCompare.java
+    benchmark/external-compare/DtdProbe.java
 
-echo "Running comparison (this takes a minute or two)..."
+echo "Running DTD probe..."
 echo
-java -cp "$WORK:$CP" org.bluezoo.gonzalez.ExternalCompare
+java -cp "$WORK:$CP" org.bluezoo.gonzalez.DtdProbe

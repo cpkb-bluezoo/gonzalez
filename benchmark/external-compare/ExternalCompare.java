@@ -3,8 +3,8 @@
  *
  * Standalone (non-JMH, non-ant-managed) throughput comparison of Gonzalez's
  * raw namespace-aware XMLHandler path and SAXAdapter path against the JDK's
- * bundled Xerces and a locally-built aalto-xml, over the same
- * benchmark/resources corpus ScannerPipelineBenchmark uses. See
+ * bundled Xerces and a locally-built aalto-xml, over the file-backed
+ * benchmark/resources corpus plus generated encoding and DTD cases. See
  * benchmark/external-compare/run.sh for how this is compiled/run -
  * deliberately kept out of build.xml (no new project dependency), pointed at
  * a locally-built ~/github/aalto-xml jar and the JDK's own default JAXP
@@ -21,7 +21,6 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.file.Files;
-import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -46,12 +45,15 @@ public class ExternalCompare {
     private static final XMLHandler EMPTY_XML_HANDLER = new EmptyXMLHandler();
 
     public static void main(String[] args) throws Exception {
-        Map<String, Path> corpus = new LinkedHashMap<String, Path>();
-        corpus.put("plain", Paths.get("benchmark/resources/large.xml"));
-        corpus.put("attrs", Paths.get("benchmark/resources/attrs-large.xml"));
-        corpus.put("whitespace", Paths.get("benchmark/resources/whitespace-large.xml"));
-        corpus.put("markup", Paths.get("benchmark/resources/markup-large.xml"));
-        corpus.put("multibyte", Paths.get("benchmark/resources/multibyte-large.xml"));
+        Map<String, byte[]> corpus = new LinkedHashMap<String, byte[]>();
+        corpus.put("plain", Files.readAllBytes(Paths.get("benchmark/resources/large.xml")));
+        corpus.put("attrs", Files.readAllBytes(Paths.get("benchmark/resources/attrs-large.xml")));
+        corpus.put("whitespace", Files.readAllBytes(Paths.get("benchmark/resources/whitespace-large.xml")));
+        corpus.put("markup", Files.readAllBytes(Paths.get("benchmark/resources/markup-large.xml")));
+        corpus.put("multibyte", Files.readAllBytes(Paths.get("benchmark/resources/multibyte-large.xml")));
+        corpus.put("utf16", BenchmarkCorpora.japaneseUtf16());
+        corpus.put("euc-jp", BenchmarkCorpora.japaneseEucJp());
+        corpus.put("xhtml-dtd", BenchmarkCorpora.xhtmlInternalSubset());
 
         // Namespace-aware=true across the board (aalto's SAX wrapper does not
         // implement non-namespace-aware mode at all, and namespace-aware is
@@ -72,9 +74,9 @@ public class ExternalCompare {
         System.out.printf("%-12s %-24s %10s %10s%n", "docType", "parser", "avg ms", "MB/s");
         System.out.println("---------------------------------------------------------------");
 
-        for (Map.Entry<String, Path> entry : corpus.entrySet()) {
+        for (Map.Entry<String, byte[]> entry : corpus.entrySet()) {
             String docType = entry.getKey();
-            byte[] bytes = Files.readAllBytes(entry.getValue());
+            byte[] bytes = entry.getValue();
             double mb = bytes.length / (1024.0 * 1024.0);
 
             time(docType, "gonzalez-xmlhandler", bytes, mb, () -> {
