@@ -38,6 +38,8 @@ import javax.xml.transform.ErrorListener;
 import javax.xml.transform.Source;
 import javax.xml.transform.Templates;
 import javax.xml.transform.Transformer;
+
+import org.bluezoo.gonzalez.Parser;
 import javax.xml.transform.TransformerConfigurationException;
 import javax.xml.transform.URIResolver;
 import javax.xml.transform.dom.DOMSource;
@@ -209,7 +211,7 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         if (source instanceof StreamSource) {
             StreamSource ss = (StreamSource) source;
             XMLReader reader = createXMLReader();
-            reader.setContentHandler(compiler);
+            attachStylesheetHandler(reader, compiler);
             
             InputSource inputSource = new InputSource();
             if (ss.getInputStream() != null) {
@@ -233,8 +235,11 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
             XMLReader reader = saxSource.getXMLReader();
             if (reader == null) {
                 reader = createXMLReader();
+                attachStylesheetHandler(reader, compiler);
+            } else {
+                // Caller-supplied XMLReader: stay on the SAX boundary.
+                reader.setContentHandler(compiler);
             }
-            reader.setContentHandler(compiler);
             
             InputSource inputSource = saxSource.getInputSource();
             if (inputSource == null) {
@@ -330,6 +335,19 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         }
         
         return reader;
+    }
+
+    /**
+     * Attaches a stylesheet compiler using Gonzalez's native event path when
+     * the reader is a Gonzalez {@link Parser}; otherwise uses SAX.
+     */
+    private static void attachStylesheetHandler(XMLReader reader,
+            StylesheetCompiler compiler) throws SAXException {
+        if (reader instanceof Parser) {
+            ((Parser) reader).setXMLHandler(compiler);
+        } else {
+            reader.setContentHandler(compiler);
+        }
     }
 
     /**

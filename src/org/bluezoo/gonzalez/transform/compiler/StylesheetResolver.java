@@ -33,6 +33,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import org.bluezoo.gonzalez.Parser;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import javax.xml.transform.Source;
@@ -282,11 +283,15 @@ public class StylesheetResolver {
             
             // Parse the stylesheet
             XMLReader reader = createXMLReader();
-            ContentHandler handler = compiler;
             if (fragmentId != null && !fragmentId.isEmpty()) {
-                handler = new EmbeddedStylesheetFilter(fragmentId, compiler);
+                // Fragment selection still requires a SAX ContentHandler filter.
+                reader.setContentHandler(
+                        new EmbeddedStylesheetFilter(fragmentId, compiler));
+            } else if (reader instanceof Parser) {
+                ((Parser) reader).setXMLHandler(compiler);
+            } else {
+                reader.setContentHandler(compiler);
             }
-            reader.setContentHandler(handler);
             reader.parse(inputSource);
             
             try {
@@ -466,6 +471,8 @@ public class StylesheetResolver {
         // Configure entity processing based on accessExternalDTD setting
         boolean allowDTD = accessExternalDTD != null && !accessExternalDTD.isEmpty();
         try {
+            reader.setFeature("http://xml.org/sax/features/namespaces", true);
+            reader.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
             reader.setFeature("http://xml.org/sax/features/external-general-entities", allowDTD);
             reader.setFeature("http://xml.org/sax/features/external-parameter-entities", allowDTD);
         } catch (SAXException e) {

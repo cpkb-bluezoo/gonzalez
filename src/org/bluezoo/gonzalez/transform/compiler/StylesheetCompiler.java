@@ -49,10 +49,16 @@ import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 import org.xml.sax.helpers.AttributesImpl;
 import org.xml.sax.helpers.DefaultHandler;
 
+import java.nio.CharBuffer;
+
 import org.bluezoo.gonzalez.QName;
+import org.bluezoo.gonzalez.XMLHandler;
+import org.bluezoo.gonzalez.transform.runtime.NativeAttributeBuffer;
+import org.bluezoo.gonzalez.transform.runtime.NativeExpandedNames;
 import org.bluezoo.gonzalez.schema.xsd.XSDComplexType;
 import org.bluezoo.gonzalez.schema.xsd.XSDElement;
 import org.bluezoo.gonzalez.schema.xsd.XSDParticle;
@@ -168,25 +174,26 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathDateTime;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
- * Compiles XSLT stylesheets from SAX events.
+ * Compiles XSLT stylesheets from SAX or Gonzalez-native XMLHandler events.
  *
- * <p>The stylesheet compiler receives SAX events from an XML parser and builds
- * a compiled stylesheet ready for execution. This enables stylesheets to be
- * read from any source that can produce SAX events, including the Gonzalez
- * push parser.
+ * <p>When driven by {@code Parser.setXMLHandler}, streamed attributes and
+ * namespace declarations are assembled at {@code endAttributes()} and then
+ * funneled into the existing SAX compilation methods so XSLT semantics
+ * ({@code use-when}, AVTs, namespace aliases) stay in one place.
  *
  * <p>Usage:
  * <pre>
  * StylesheetCompiler compiler = new StylesheetCompiler();
- * XMLReader reader = XMLReaderFactory.createXMLReader();
- * reader.setContentHandler(compiler);
- * reader.parse(stylesheetSource);
+ * Parser parser = new Parser();
+ * parser.setXMLHandler(compiler);
+ * parser.parse(stylesheetSource);
  * CompiledStylesheet stylesheet = compiler.getCompiledStylesheet();
  * </pre>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public class StylesheetCompiler extends DefaultHandler implements XPathParser.NamespaceResolver {
+public class StylesheetCompiler extends DefaultHandler
+        implements XPathParser.NamespaceResolver, XMLHandler {
 
     /** XSLT namespace URI. */
     public static final String XSLT_NS = "http://www.w3.org/1999/XSL/Transform";
@@ -677,6 +684,10 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     public void startDocument() throws SAXException {
         elementStack.clear();
         namespaces.clear();
+        nativeElementStack.clear();
+        nativeAttributes.clear();
+        nativeDeclaredPrefixes.clear();
+        nativePendingBindings.clear();
         
         // Set base URI from the locator's system ID
         if (locator != null && locator.getSystemId() != null) {
@@ -800,6 +811,29 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     
     // Temporary storage for previous namespace values before startElement is called
     private Map<String, String> pendingPreviousNamespaces;
+
+    // Native XMLHandler start-tag assembly (funnels into SAX startElement/endElement)
+    private static final class NativeElementFrame {
+        final String uri;
+        final String localName;
+        final String qName;
+        final List<String> declaredPrefixes;
+
+        NativeElementFrame(String uri, String localName, String qName,
+                List<String> declaredPrefixes) {
+            this.uri = uri;
+            this.localName = localName;
+            this.qName = qName;
+            this.declaredPrefixes = declaredPrefixes;
+        }
+    }
+
+    private final NativeAttributeBuffer nativeAttributes = new NativeAttributeBuffer();
+    private final AttributesImpl reusableNativeAttributes = new AttributesImpl();
+    private final Deque<NativeElementFrame> nativeElementStack = new ArrayDeque<>();
+    private final List<String> nativeDeclaredPrefixes = new ArrayList<>();
+    private final Map<String, String> nativePendingBindings = new HashMap<>();
+    private String nativeElementQName;
 
     /**
      * Called when an element starts.
@@ -1496,6 +1530,166 @@ public class StylesheetCompiler extends DefaultHandler implements XPathParser.Na
     @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
         characterBuffer.append(ch, start, length);
+    }
+
+    // ========================================================================
+    // Gonzalez-native XMLHandler input (assembles then delegates to SAX face)
+    // ========================================================================
+
+    @Override
+    public void setLocator(Locator locator) {
+        setDocumentLocator(locator);
+    }
+
+    @Override
+    public void setXml11(boolean xml11) {
+        // Stylesheet compilation has no XML-version-dependent behavior.
+    }
+
+    @Override
+    public void startElement(String qName) throws SAXException {
+        nativeElementQName = qName;
+        nativeAttributes.clear();
+        nativeDeclaredPrefixes.clear();
+        nativePendingBindings.clear();
+    }
+
+    @Override
+    public void namespace(String prefix, String uri) throws SAXException {
+        String p = prefix != null ? prefix : "";
+        String u = uri != null ? uri : "";
+        nativePendingBindings.put(p, u);
+        nativeDeclaredPrefixes.add(p);
+        // Install into the compiler's namespace tables immediately so
+        // startElement() sees the same state SAX startPrefixMapping provides.
+        startPrefixMapping(p, u);
+    }
+
+    @Override
+    public void startAttribute(String name, String type, boolean declared,
+            boolean specified) throws SAXException {
+        nativeAttributes.startAttribute(name, type);
+    }
+
+    @Override
+    public void attributeValueContent(CharBuffer value, boolean end)
+            throws SAXException {
+        nativeAttributes.attributeValueContent(value, end);
+    }
+
+    @Override
+    public void endAttributes() throws SAXException {
+        Map<String, String> bindings = new HashMap<>(namespaces);
+        bindings.putAll(nativePendingBindings);
+
+        String elementPrefix = NativeExpandedNames.extractPrefix(nativeElementQName);
+        String elementLocalName = NativeExpandedNames.extractLocalName(nativeElementQName);
+        String elementUri = NativeExpandedNames.resolveNamespaceURI(
+                elementPrefix, false, bindings);
+        nativeAttributes.resolveAndCheckDuplicates(bindings);
+
+        reusableNativeAttributes.clear();
+        for (int i = 0; i < nativeAttributes.size(); i++) {
+            NativeAttributeBuffer.Attr attr = nativeAttributes.get(i);
+            if (NativeExpandedNames.isNamespaceDeclaration(attr.qName)) {
+                continue;
+            }
+            String type = attr.type != null ? attr.type : "CDATA";
+            reusableNativeAttributes.addAttribute(
+                    attr.uri, attr.localName, attr.qName, type, attr.value);
+        }
+
+        List<String> prefixes = new ArrayList<>(nativeDeclaredPrefixes);
+        nativeElementStack.push(new NativeElementFrame(
+                elementUri, elementLocalName, nativeElementQName, prefixes));
+        startElement(elementUri, elementLocalName, nativeElementQName,
+                reusableNativeAttributes);
+    }
+
+    @Override
+    public void characters(CharBuffer text, boolean ignorable, boolean end)
+            throws SAXException {
+        if (!ignorable) {
+            characterBuffer.append(text);
+        }
+    }
+
+    @Override
+    public void endElement() throws SAXException {
+        if (nativeElementStack.isEmpty()) {
+            throw fatalError("endElement without matching startElement");
+        }
+        NativeElementFrame frame = nativeElementStack.pop();
+        endElement(frame.uri, frame.localName, frame.qName);
+        // Reverse order, matching SAXAdapter / ContentParser.
+        for (int i = frame.declaredPrefixes.size() - 1; i >= 0; i--) {
+            endPrefixMapping(frame.declaredPrefixes.get(i));
+        }
+    }
+
+    @Override
+    public void startComment() {
+    }
+
+    @Override
+    public void commentData(CharBuffer text, boolean end) {
+        // Stylesheet comments are ignored (same as DefaultHandler / no LexicalHandler).
+    }
+
+    @Override
+    public void startCDATA() {
+    }
+
+    @Override
+    public void endCDATA() {
+    }
+
+    @Override
+    public void startDTD(String name, String publicId, String systemId) {
+    }
+
+    @Override
+    public void endDTD() {
+    }
+
+    @Override
+    public void startEntity(String name) {
+    }
+
+    @Override
+    public void endEntity(String name) {
+    }
+
+    @Override
+    public void notationDecl(String name, String publicId, String systemId) {
+    }
+
+    @Override
+    public void unparsedEntityDecl(String name, String publicId, String systemId,
+            String notationName) {
+    }
+
+    @Override
+    public void piTarget(String target) {
+    }
+
+    @Override
+    public void piData(CharBuffer data, boolean end) {
+        // Processing instructions in stylesheets are ignored.
+    }
+
+    @Override
+    public void saveBuffers() {
+    }
+
+    @Override
+    public SAXException fatalError(String message) {
+        return new SAXParseException(message, locator);
+    }
+
+    @Override
+    public void error(String message) throws SAXException {
+        // Recoverable validity/NSC advisories: continue compilation.
     }
 
     boolean isWhitespace(String text) {
