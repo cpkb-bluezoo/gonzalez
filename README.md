@@ -1,5 +1,9 @@
 # Gonzalez
 
+<p align="center">
+  <img src="web/hero.svg" alt="Gonzalez — non-blocking streaming XML for the JVM" width="800"/>
+</p>
+
 Non-blocking streaming XML parser and serializer for event-driven I/O
 
 This is Gonzalez, a data-driven XML parser and serializer using non-blocking,
