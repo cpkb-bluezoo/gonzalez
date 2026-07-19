@@ -32,13 +32,13 @@ import org.xml.sax.SAXException;
  * ExternalEntityDecoder} instance can drive either, chosen by {@link
  * Parser.Pipeline}. Deliberately minimal: {@code ExternalEntityDecoder}'s
  * richer, Tokenizer-specific bookkeeping (location tracking, {@code
- * standalone}/{@code documentVersion} storage, {@code publicId}/{@code
- * systemId} fields) stays as direct {@code Tokenizer}-typed access, guarded
- * by an {@code instanceof} check, rather than being forced into this
- * interface - {@link Scanner} doesn't support any of that yet (a known,
- * documented gap; see its class Javadoc), so widening this interface to
- * cover it would mean either fake no-op methods on {@code Scanner} or a
- * pile of default methods nothing meaningfully implements twice.
+ * documentVersion} storage, {@code publicId}/{@code systemId} fields) stays
+ * as direct {@code Tokenizer}-typed access, guarded by an {@code
+ * instanceof} check, rather than being forced into this interface - {@link
+ * Scanner} doesn't support any of that yet (a known, documented gap; see
+ * its class Javadoc), so widening this interface to cover it would mean
+ * either fake no-op methods on {@code Scanner} or a pile of default methods
+ * nothing meaningfully implements twice.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -57,5 +57,16 @@ interface ByteDecoderTarget {
      *  derived per-character lookup tables need to stay in sync) can react
      *  too. */
     void setXml11(boolean xml11);
+
+    /** Called once the XML declaration's {@code standalone} pseudo-
+     *  attribute has been resolved (document entity only - a {@code
+     *  TextDecl} has no {@code SDDecl} production at all, so this is never
+     *  called for an external entity/subset), before any character reaches
+     *  this target. {@code standalone} is true only for an explicit {@code
+     *  standalone="yes"} - absent or {@code "no"} are indistinguishable to
+     *  every consumer of this flag (VC "Standalone Document Declaration",
+     *  WFC "Entity Declared"'s standalone-specific clause), so there is no
+     *  three-state distinction to preserve here. */
+    void setStandalone(boolean standalone);
 
 }

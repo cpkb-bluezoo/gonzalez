@@ -495,9 +495,11 @@ class ExternalEntityDecoder {
                         }
                     }
 
-                    // Handle standalone (document entity only)
-                    if (declStandalone != null && tokenizerTarget != null) {
-                        tokenizerTarget.standalone = declStandalone;
+                    // Handle standalone (document entity only - a TextDecl's
+                    // grammar has no SDDecl production at all, so declStandalone
+                    // is always null when isExternalEntity is true)
+                    if (declStandalone != null) {
+                        target.setStandalone(declStandalone.booleanValue());
                     }
 
                     // Setup charset decoder with declared encoding

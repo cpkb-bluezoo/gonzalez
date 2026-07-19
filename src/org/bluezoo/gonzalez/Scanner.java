@@ -640,6 +640,19 @@ class Scanner implements ByteDecoderTarget {
         handler.setXml11(xml11);
     }
 
+    /** True only for an explicit {@code standalone="yes"} XML declaration -
+     *  see {@link ByteDecoderTarget#setStandalone}. Gates VC "Standalone
+     *  Document Declaration" (Section 2.9) and WFC "Entity Declared"'s
+     *  standalone-specific clause (Section 4.1); see {@link
+     *  #declaredExternally} for how a declaration's own external-vs-internal
+     *  provenance is tracked to support those checks. */
+    private boolean standalone;
+
+    @Override
+    public void setStandalone(boolean standalone) {
+        this.standalone = standalone;
+    }
+
     private void append(CharBuffer data) {
         int needed = data.remaining();
         if (pos > 0) {
@@ -724,6 +737,15 @@ class Scanner implements ByteDecoderTarget {
      *  re-scan time via {@link #allowRestrictedCharInContent} to suppress
      *  the rejection for that entity's replacement text specifically. */
     private final HashSet<String> restrictedCharEntities = new HashSet<String>();
+
+    /** Names of general entities (literal or external) whose {@code
+     *  <!ENTITY>} declaration itself was parsed while {@link
+     *  #parsingExternalContent} was true (the external DTD subset, or an
+     *  external parameter entity's own replacement text) - read by {@link
+     *  #checkEntityReferenceable} for WFC "Entity Declared" (Section 4.1)'s
+     *  standalone-specific clause: a {@code standalone="yes"} document may
+     *  not reference an entity declared in external markup. */
+    private final HashSet<String> externallyDeclaredGeneralEntities = new HashSet<String>();
 
     /** True while {@link #scanContent}/{@link #scanContentRunFast} are
      *  scanning a general entity's replacement text whose declared value is
@@ -1142,6 +1164,13 @@ class Scanner implements ByteDecoderTarget {
                 scanContentRunFast();
             }
             boolean runIsWhitespace = elementOnlyContent && pos > runStart && isWs(buf[runStart]);
+            if (runIsWhitespace && standalone && validationEnabled && isCurrentElementDeclaredExternally()) {
+                String currentElement = elementStack.get(elementStack.size() - 1);
+                handler.error("Validity Constraint: Standalone Document Declaration (Section 2.9). "
+                        + "Document has standalone=\"yes\" but external DTD subset declares element \""
+                        + currentElement + "\" with element-only content, "
+                        + "and white space occurs directly within its content.");
+            }
             if (!insideDocument && pos > runStart) {
                 // Misc* (prolog/epilog): only whitespace, Comment, and PI
                 // are legal - non-whitespace character data is a WFC
@@ -1280,6 +1309,17 @@ class Scanner implements ByteDecoderTarget {
     private boolean isCurrentElementContentElementOnly() {
         String currentElement = elementStack.get(elementStack.size() - 1);
         return dtdModel.getContentType(currentElement) == ElementDeclaration.ContentType.ELEMENT;
+    }
+
+    /** True if the current (innermost open) element's {@code <!ELEMENT>}
+     *  declaration was itself parsed from external markup (see {@link
+     *  ElementDeclaration#fromExternalSubset}) - used only for VC
+     *  "Standalone Document Declaration" (Section 2.9), alongside {@link
+     *  #isCurrentElementContentElementOnly}. */
+    private boolean isCurrentElementDeclaredExternally() {
+        String currentElement = elementStack.get(elementStack.size() - 1);
+        ElementDeclaration decl = dtdModel.getElementDeclaration(currentElement);
+        return decl != null && decl.fromExternalSubset;
     }
 
     /** True if the most recently opened run - tracked via {@link
@@ -1623,6 +1663,15 @@ class Scanner implements ByteDecoderTarget {
                     currentAttrElementName = currentElementName;
                     currentAttrName = attrName;
                     currentAttrType = attrType;
+                    if (standalone) {
+                        DTDModel.AttDef def = attributeDefOf(currentElementName, attrName);
+                        if (def != null && def.declaredExternally) {
+                            handler.error("Validity Constraint: Standalone Document Declaration (Section 2.9). "
+                                    + "Document has standalone=\"yes\" but external markup declares attribute \""
+                                    + attrName + "\" of element \"" + currentElementName + "\" with type \""
+                                    + attrType + "\", which normalizes this specified value differently.");
+                        }
+                    }
                 }
             }
             if (!scanAttributeValueStreaming()) {
@@ -2862,6 +2911,9 @@ class Scanner implements ByteDecoderTarget {
                 if (lastLiteralContainedRestrictedChar) {
                     restrictedCharEntities.add(name);
                 }
+                if (parsingExternalContent) {
+                    externallyDeclaredGeneralEntities.add(name);
+                }
             }
             return p;
         }
@@ -2948,6 +3000,9 @@ class Scanner implements ByteDecoderTarget {
             // (null for an ordinary, parsed external entity) - see {@link
             // #unparsedEntityDecl} firing at this map's eventual merge point.
             pendingExternalNames.put(name, new String[] { extPublicId, extSystemId, ndataName });
+            if (parsingExternalContent) {
+                externallyDeclaredGeneralEntities.add(name);
+            }
         }
         return p;
     }
@@ -3169,6 +3224,7 @@ class Scanner implements ByteDecoderTarget {
         decl.name = name;
         decl.contentType = type;
         decl.contentModel = model;
+        decl.fromExternalSubset = parsingExternalContent;
         dtdModel.declareElement(name, decl);
         return p;
     }
@@ -3615,7 +3671,8 @@ class Scanner implements ByteDecoderTarget {
             if (validationEnabled) {
                 checkAttlistDeclarationVCs(elementName, attrName, type, mode);
             }
-            dtdModel.declareAttribute(elementName, attrName, type, mode, rawDefault, enumeration);
+            dtdModel.declareAttribute(elementName, attrName, type, mode, rawDefault, enumeration,
+                    parsingExternalContent);
             // loop continues: another AttDef, or S? '>' to end the declaration
         }
     }
@@ -4017,6 +4074,11 @@ class Scanner implements ByteDecoderTarget {
         if (isExternal && !allowExternal) {
             throw handler.fatalError(
                     "External entity \"" + name + "\" may not be referenced in an attribute value");
+        }
+        if (standalone && externallyDeclaredGeneralEntities.contains(name)) {
+            throw handler.fatalError("Well-Formedness Constraint: Entity Declared (Section 4.1). "
+                    + "Document has standalone=\"yes\" but entity \"" + name
+                    + "\" is declared in external markup, and is referenced.");
         }
         if (entityExpansionStack.contains(name)) {
             throw handler.fatalError("Recursive entity reference: &" + name + ";");
@@ -4856,6 +4918,12 @@ class Scanner implements ByteDecoderTarget {
             }
             if (def.defaultValue == null) {
                 continue;
+            }
+            if (validationEnabled && standalone && def.declaredExternally) {
+                handler.error("Validity Constraint: Standalone Document Declaration (Section 2.9). "
+                        + "Document has standalone=\"yes\" but attribute \"" + name + "\" of element \""
+                        + elementName + "\" has a default value declared in external markup, "
+                        + "and was not specified.");
             }
             handler.startAttribute(name, def.type);
             handler.attributeValueContent(CharBuffer.wrap(def.defaultValue), true);

@@ -92,12 +92,21 @@ class DTDModel {
          *  declared list of legal values (VC "Enumeration"/"Notation
          *  Attributes") - null for every other type. */
         final List<String> enumeration;
+        /** True if this attribute's own {@code AttDef} (within the
+         *  {@code <!ATTLIST>}) was declared in external markup (the
+         *  external DTD subset, or an external parameter entity's own
+         *  replacement text) - used for VC "Standalone Document
+         *  Declaration" (Section 2.9), mirroring {@link
+         *  ElementDeclaration#fromExternalSubset}'s equivalent role for
+         *  element declarations. */
+        final boolean declaredExternally;
 
-        AttDef(String type, Mode mode, String defaultValue, List<String> enumeration) {
+        AttDef(String type, Mode mode, String defaultValue, List<String> enumeration, boolean declaredExternally) {
             this.type = type;
             this.mode = mode;
             this.defaultValue = defaultValue;
             this.enumeration = enumeration;
+            this.declaredExternally = declaredExternally;
         }
 
         /** True if the type is CDATA - the type-dependent collapse
@@ -124,14 +133,14 @@ class DTDModel {
     }
 
     void declareAttribute(String element, String attrName, String type, Mode mode, String rawDefault,
-            List<String> enumeration) {
+            List<String> enumeration, boolean declaredExternally) {
         LinkedHashMap<String, AttDef> attrs = attlists.get(element);
         if (attrs == null) {
             attrs = new LinkedHashMap<String, AttDef>();
             attlists.put(element, attrs);
         }
         if (!attrs.containsKey(attrName)) {
-            attrs.put(attrName, new AttDef(type, mode, rawDefault, enumeration));
+            attrs.put(attrName, new AttDef(type, mode, rawDefault, enumeration, declaredExternally));
         }
     }
 

@@ -1708,6 +1708,14 @@ class Tokenizer implements Locator2, ByteDecoderTarget {
         this.xml11 = xml11;
     }
 
+    /** {@link ByteDecoderTarget#setStandalone} - {@link ExternalEntityDecoder}
+     *  used to write {@link #standalone} as a direct field assignment; this
+     *  is that same assignment via the shared interface method. */
+    @Override
+    public void setStandalone(boolean standalone) {
+        this.standalone = standalone;
+    }
+
     @Override
     public String toString() {
         String name = getName();
