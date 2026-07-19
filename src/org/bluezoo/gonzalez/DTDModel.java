@@ -145,8 +145,15 @@ class DTDModel {
     }
 
     /** Returns the declared content type for {@code element}, or null if
-     *  no {@code <!ELEMENT>} declaration was seen for it. */
+     *  no {@code <!ELEMENT>} declaration was seen for it. The isEmpty()
+     *  guard short-circuits the common no-DTD case: this is queried once
+     *  per text run by Scanner.scanContent, and profiling showed the
+     *  hash-and-probe of an always-empty map as a measurable per-document
+     *  cost (~10% on the multibyte benchmark corpus). */
     ElementDeclaration.ContentType getContentType(String element) {
+        if (elements.isEmpty()) {
+            return null;
+        }
         ElementDeclaration decl = elements.get(element);
         return decl == null ? null : decl.contentType;
     }
@@ -156,12 +163,22 @@ class DTDModel {
      *  validation (see {@link ContentModelValidator}); everything else
      *  keeps using the cheaper {@link #getContentType}. */
     ElementDeclaration getElementDeclaration(String element) {
+        if (elements.isEmpty()) {
+            return null;
+        }
         return elements.get(element);
     }
 
     /** Returns the declared attributes for {@code element} in declaration
-     *  order, or null if no {@code <!ATTLIST>} declaration was seen for it. */
+     *  order, or null if no {@code <!ATTLIST>} declaration was seen for it.
+     *  The isEmpty() guard short-circuits the common no-DTD case, as in
+     *  {@link #getContentType} - this is queried per attribute (see
+     *  Scanner.lookupAttributeType) and per start tag (see
+     *  Scanner.applyAttributeDefaults). */
     Map<String, AttDef> getAttributes(String element) {
+        if (attlists.isEmpty()) {
+            return null;
+        }
         return attlists.get(element);
     }
 

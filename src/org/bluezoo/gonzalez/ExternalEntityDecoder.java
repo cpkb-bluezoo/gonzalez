@@ -654,7 +654,22 @@ class ExternalEntityDecoder {
         if (charBuffer == null) {
             charBuffer = CharBuffer.allocate(MAX_CHAR_BUFFER);
         }
-        
+
+        // One pass over the raw bytes up front to learn whether this call's
+        // input can produce any '\r' at all: for the ASCII-transparent
+        // charsets (UTF-8/US-ASCII/ISO-8859-1) a decoded U+000D can only
+        // come from a literal 0x0D byte (UTF-8 continuation bytes are all
+        // >= 0x80), so if none is present, normalizeLineEndings() can skip
+        // its own per-chunk scan of every decoded char entirely. XML 1.1
+        // additionally normalizes NEL/LS, whose encoded bytes are ordinary
+        // continuation-byte values that would false-positive constantly on
+        // multibyte text, so the XML 1.1 case keeps the per-chunk char scan.
+        // The SWAR long-stride scan reads 8 bytes per step, making this
+        // cheaper than the per-char scan it replaces even when it doesn't
+        // hit; absolute getLong() works identically for heap and direct
+        // buffers and never disturbs the buffer's position.
+        boolean crFree = !xml11 && asciiFastPathEligible && !containsCarriageReturnByte(data);
+
         // Process in chunks - decode, tokenize, compact, repeat
         while (data.hasRemaining()) {
             // Opportunistically widen a leading run of plain-ASCII bytes directly,
@@ -682,7 +697,7 @@ class ExternalEntityDecoder {
             }
 
             // Normalize line endings
-            normalizeLineEndings();
+            normalizeLineEndings(crFree);
 
             // Flip to read mode before passing to tokenizer
             charBuffer.flip();
@@ -755,6 +770,31 @@ class ExternalEntityDecoder {
     }
 
     /**
+     * True if any byte in {@code data}'s remaining range is 0x0D (CR).
+     * Long-stride SWAR scan - 8 bytes per step via the classic
+     * zero-byte-in-a-word test - with a plain byte loop for the tail.
+     * Reads via absolute accessors only; {@code data}'s position and limit
+     * are untouched. Byte order is irrelevant: the test only asks whether
+     * any of the 8 lanes is zero after XORing with the CR pattern.
+     */
+    private static boolean containsCarriageReturnByte(ByteBuffer data) {
+        int i = data.position();
+        int limit = data.limit();
+        for (int longEnd = limit - 7; i < longEnd; i += 8) {
+            long v = data.getLong(i) ^ 0x0D0D0D0D0D0D0D0DL;
+            if (((v - 0x0101010101010101L) & ~v & 0x8080808080808080L) != 0L) {
+                return true;
+            }
+        }
+        for (; i < limit; i++) {
+            if (data.get(i) == 0x0D) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Normalizes line endings in the character buffer according to XML spec.
      * 
      * <p>XML line ending normalization rules:
@@ -769,14 +809,26 @@ class ExternalEntityDecoder {
      * <p>This implementation uses a single-pass O(n) algorithm with separate
      * read and write positions, avoiding the O(n^2) cost of shifting data
      * for each CRLF encountered.
+     *
+     * @param crFree true when the caller has already proven (by byte-level
+     *         scan - see {@link #containsCarriageReturnByte}) that no '\r'
+     *         can be present in this chunk and XML 1.1's NEL/LS rules do
+     *         not apply, so the per-char scan below is skipped. {@link
+     *         #lastChar} still matters: a '\r' that ended the previous
+     *         receive() call must swallow a leading '\n' in this one.
      */
-    private void normalizeLineEndings() {
+    private void normalizeLineEndings(boolean crFree) {
         int end = charBuffer.position();
         if (end == 0) {
             return;
         }
 
         char[] array = charBuffer.array();
+
+        if (crFree && lastChar != '\r') {
+            lastChar = array[end - 1];
+            return;
+        }
 
         // Fast scan: check if normalization is needed at all
         boolean needsNormalization = (lastChar == '\r');

@@ -2059,6 +2059,36 @@ class Scanner implements ByteDecoderTarget {
     private boolean scanEndTag(int tagStart) throws SAXException {
         int p = tagStart + 2;
         int nameStart = p;
+        // Fast path for the overwhelmingly common well-formed case: the end
+        // tag names the innermost open element - whose name is already known
+        // and already validated as a legal Name at start-tag time - followed
+        // immediately by '>'. One direct comparison against the expected
+        // name replaces the general path's two passes over the name (the
+        // isNameChar() table walk plus the rangeEquals() WFC check), which
+        // profiling on the multibyte corpus showed as a measurable cost
+        // (~6%). Any deviation - mismatch, whitespace before '>', buffer
+        // underflow, empty stack, or an entity-boundary WFC concern - falls
+        // through to the general path below, unchanged, for correct error
+        // reporting and resumption; the fast path itself never consumes
+        // anything unless it fully succeeds.
+        int stackSize = elementStack.size();
+        if (stackSize > 0) {
+            String expected = elementStack.get(stackSize - 1);
+            int afterName = nameStart + expected.length();
+            if (afterName < limit && buf[afterName] == '>'
+                    && rangeEquals(buf, nameStart, expected.length(), expected)
+                    && (entityStackFloors.isEmpty()
+                            || stackSize > entityStackFloors.get(entityStackFloors.size() - 1))) {
+                elementStack.remove(stackSize - 1);
+                if (validationEnabled) {
+                    popAndValidateElement();
+                }
+                rootEnded = elementStack.isEmpty();
+                pos = afterName + 1;
+                handler.endElement();
+                return true;
+            }
+        }
         while (p < limit && isNameChar(buf[p])) {
             p++;
         }

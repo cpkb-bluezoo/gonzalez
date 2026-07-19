@@ -28,10 +28,11 @@ import java.nio.ByteBuffer;
  * sequence that is merely incomplete (more bytes may still arrive) from one
  * that is conclusively invalid (no amount of additional input can fix it).
  * <p>
- * Used by {@link FastUtf8CharsetDecoder} to decode UTF-8 in bulk, faster
- * than the JDK's generic {@code java.nio.charset.CharsetDecoder} machinery,
- * while feeding the same char-based {@code Tokenizer} the legacy pipeline
- * always has (see FAST-UTF8-DECODER.md).
+ * Retained for the prospective byte-domain scanner (see {@link
+ * CharClass#classifyCodePoint}); its previous consumer, the
+ * FastUtf8CharsetDecoder experiment, was removed after benchmarking showed
+ * the JDK's own UTF-8 {@code CharsetDecoder} to be faster on
+ * multibyte-dense input.
  * <p>
  * {@link #decode(byte[], int, int)} returns a single {@code int} packing both
  * the decoded code point and the number of bytes consumed, to avoid
@@ -41,9 +42,7 @@ import java.nio.ByteBuffer;
  * <p>
  * {@link #decode(ByteBuffer, int, int)} is the same decoder for a caller
  * that only has a non-array-backed {@link ByteBuffer} (e.g. a direct
- * buffer) - {@link FastUtf8CharsetDecoder} uses the array overload when its
- * input buffer exposes a backing array, and this one otherwise, so a direct
- * buffer is scanned in place rather than copied.
+ * buffer), so a direct buffer is scanned in place rather than copied.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
