@@ -3024,6 +3024,7 @@ class Scanner implements ByteDecoderTarget {
     private int scanEntityDeclaration(int p, HashMap<String, String> pendingEntities,
             HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
             HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        sawSpliceSinceDeclarationStart = false;
         int ws = p;
         p = skipOptionalWhitespace(p);
         if (p >= limit) {
@@ -3084,6 +3085,7 @@ class Scanner implements ByteDecoderTarget {
             if (buf[p] != '>') {
                 throw handler.fatalError("Malformed entity declaration");
             }
+            checkNotFromPESplice(p, "an <!ENTITY> declaration");
             p++;
 
             if (isParam) {
@@ -3173,6 +3175,7 @@ class Scanner implements ByteDecoderTarget {
                 throw handler.fatalError("Malformed entity declaration");
             }
         }
+        checkNotFromPESplice(p, "an <!ENTITY> declaration");
         p++;
 
         if (isParam) {
@@ -3281,6 +3284,7 @@ class Scanner implements ByteDecoderTarget {
      */
     private int scanElementDeclaration(int p, HashMap<String, String> pendingParamEntities,
             HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        sawSpliceSinceDeclarationStart = false;
         int ws = p;
         p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
         if (p >= limit) {
@@ -3404,13 +3408,14 @@ class Scanner implements ByteDecoderTarget {
             }
         }
 
-        p = skipOptionalWhitespace(p);
+        p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
         if (p >= limit) {
             return -1;
         }
         if (buf[p] != '>') {
             throw handler.fatalError("Malformed element declaration");
         }
+        checkNotFromPESplice(p, "an <!ELEMENT> declaration");
         p++;
 
         if (validationEnabled && dtdModel.getElementDeclaration(name) != null) {
@@ -3702,6 +3707,7 @@ class Scanner implements ByteDecoderTarget {
     private int scanAttlistDeclaration(int p, HashMap<String, String> pendingEntities,
             HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
             HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        sawSpliceSinceDeclarationStart = false;
         int ws = p;
         p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
         if (p >= limit) {
@@ -3731,6 +3737,7 @@ class Scanner implements ByteDecoderTarget {
                 return -1;
             }
             if (buf[p] == '>') {
+                checkNotFromPESplice(p, "an <!ATTLIST> declaration");
                 p++;
                 return p;
             }
@@ -4743,7 +4750,7 @@ class Scanner implements ByteDecoderTarget {
         limit = chars.length;
         parsingExternalContent = true;
         try {
-            parseMarkupDeclSeq(false, pendingEntities, pendingExternalNames, pendingParamEntities,
+            parseMarkupDeclSeq(false, false, pendingEntities, pendingExternalNames, pendingParamEntities,
                     pendingParamExternalNames);
             for (Map.Entry<String, String> entry : pendingEntities.entrySet()) {
                 if (!generalEntities.containsKey(entry.getKey())
@@ -4801,14 +4808,26 @@ class Scanner implements ByteDecoderTarget {
      * @param stopAtSectionEnd true when parsing an INCLUDE section's content:
      *         stop at (and consume) a {@code "]]>"} rather than requiring
      *         end-of-buffer
+     * @param sectionOpenerFromSplice only meaningful when {@code
+     *         stopAtSectionEnd} - whether the conditional section's own
+     *         opening delimiter came from a parameter entity splice (see
+     *         {@link #parseConditionalSection}'s own capture of it) - VC
+     *         "Proper Conditional Section/PE Nesting" requires the closing
+     *         {@code "]]>"} found below to agree.
      */
-    private void parseMarkupDeclSeq(boolean stopAtSectionEnd, HashMap<String, String> pendingEntities,
-            HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
-            HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+    private void parseMarkupDeclSeq(boolean stopAtSectionEnd, boolean sectionOpenerFromSplice,
+            HashMap<String, String> pendingEntities, HashMap<String, String[]> pendingExternalNames,
+            HashMap<String, String> pendingParamEntities, HashMap<String, String[]> pendingParamExternalNames)
+            throws SAXException {
         while (true) {
             pos = skipOptionalWhitespace(pos);
             if (stopAtSectionEnd && pos + 2 < limit && buf[pos] == ']' && buf[pos + 1] == ']'
                     && buf[pos + 2] == '>') {
+                if ((pos < lastSpliceEnd) != sectionOpenerFromSplice) {
+                    handler.error("Validity Constraint: Proper Conditional Section/PE Nesting (Section 3.4). "
+                            + "A conditional section's opening and closing delimiters must be contained in "
+                            + "the same parameter entity replacement text (or both be literal).");
+                }
                 pos += 3;
                 return;
             }
@@ -4928,9 +4947,20 @@ class Scanner implements ByteDecoderTarget {
         if (pos >= limit || buf[pos] != '[') {
             throw handler.fatalError("Malformed conditional section");
         }
+        // VC "Proper Conditional Section/PE Nesting" (Section 3.4):
+        // unlike a markup declaration's own opening delimiter (always
+        // literal, by construction - see checkNotFromPESplice's own
+        // Javadoc), a conditional section's own "INCLUDE["/"IGNORE["
+        // opener may itself come from a parameter entity (a common real-
+        // world idiom, see the comment above) - so this end needs an
+        // explicit before/after comparison instead of assuming one side
+        // is always literal. Captured here, at the '[' itself, and
+        // compared against the closing "]]>" in parseMarkupDeclSeq's own
+        // stopAtSectionEnd branch.
+        boolean openerFromSplice = pos < lastSpliceEnd;
         pos++;
         if (include) {
-            parseMarkupDeclSeq(true, pendingEntities, pendingExternalNames, pendingParamEntities,
+            parseMarkupDeclSeq(true, openerFromSplice, pendingEntities, pendingExternalNames, pendingParamEntities,
                     pendingParamExternalNames);
         } else {
             skipIgnoredSection();
@@ -5040,7 +5070,7 @@ class Scanner implements ByteDecoderTarget {
             baseSystemId = lastResolvedSystemId;
         }
         try {
-            parseMarkupDeclSeq(false, pendingEntities, pendingExternalNames, pendingParamEntities,
+            parseMarkupDeclSeq(false, false, pendingEntities, pendingExternalNames, pendingParamEntities,
                     pendingParamExternalNames);
             if (pos != limit) {
                 throw handler.fatalError("Parameter entity \"" + name + "\" replacement text is not well-formed");
@@ -5154,6 +5184,9 @@ class Scanner implements ByteDecoderTarget {
         System.arraycopy(buf, end, buf, start + newSpan, limit - end);
         replacement.getChars(0, newSpan, buf, start);
         limit += delta;
+        // See lastSpliceEnd's own Javadoc.
+        lastSpliceEnd = start + newSpan;
+        sawSpliceSinceDeclarationStart = true;
         return start;
     }
 
@@ -5228,6 +5261,57 @@ class Scanner implements ByteDecoderTarget {
             handler.error("Validity Constraint: Proper Group/PE Nesting (Section 3.2.1). "
                     + "A parameter entity's replacement text must contain both parentheses of any "
                     + "choice/seq/Mixed group it contributes one of.");
+        }
+    }
+
+    /** The absolute end position (exclusive) of the most recent {@link
+     *  #spliceIntoBuf} call's own inserted text - i.e. everything in {@code
+     *  [start, lastSpliceEnd)} right after that splice came from a
+     *  parameter entity's replacement text (plus the "Included as PE"
+     *  padding spaces), not literal source. Stays valid (monotonically
+     *  increasing positions, never retroactively invalidated) as long as no
+     *  further splice happens - each subsequent splice only ever occurs at
+     *  or after the current parse position, which by construction is
+     *  already {@code >=} wherever the previous splice ended, so it never
+     *  shifts anything at or before that point. Combined with {@link
+     *  #sawSpliceSinceDeclarationStart} (which guards against a stale value
+     *  surviving from an unrelated, already-finished declaration - {@link
+     *  #buf} is a self-compacting ring, per this class's own Javadoc, so
+     *  raw positions alone are not reliably comparable across a
+     *  compaction) by {@link #checkNotFromPESplice}. */
+    private int lastSpliceEnd = -1;
+
+    /** Reset to false at the start of each markup declaration
+     *  (scanEntityDeclaration/scanElementDeclaration/scanAttlistDeclaration/
+     *  scanNotationDeclaration) and each conditional section
+     *  (parseConditionalSection), set true by {@link #spliceIntoBuf} - see
+     *  {@link #lastSpliceEnd}'s own Javadoc for why both together, not
+     *  {@link #lastSpliceEnd} alone, are needed to safely detect "did the
+     *  construct currently being parsed splice in a parameter entity
+     *  anywhere within itself." */
+    private boolean sawSpliceSinceDeclarationStart;
+
+    /** VC "Proper Declaration/PE Nesting" (Section 3.2.1, generalized by VC
+     *  "Proper Conditional Section/PE Nesting" for {@code <![...]]>} too):
+     *  "if either the first or last character of a markup declaration
+     *  (respectively, of the {@code <![}/{@code ]}/{@code ]]>} delimiters
+     *  of a conditional section) is contained in the replacement text for a
+     *  parameter entity, both must be." The construct's own opening
+     *  delimiter is - by construction of how {@link #scanMarkup}/{@link
+     *  #parseConditionalSection} dispatch (only ever reached via a literal
+     *  keyword match in {@link #buf}, never itself produced by a splice) -
+     *  always literal, so this need only check the <em>closing</em>
+     *  delimiter's own last character, found at {@code p}: if a splice
+     *  happened anywhere within this construct's own parse and {@code p}
+     *  still falls inside that splice's own contributed span, the closing
+     *  delimiter came from a parameter entity while the opening one did
+     *  not - straddling the boundary. */
+    private void checkNotFromPESplice(int p, String what) throws SAXException {
+        if (sawSpliceSinceDeclarationStart && p < lastSpliceEnd) {
+            handler.error("Validity Constraint: Proper Declaration/PE Nesting (Section 3.2.1). "
+                    + "The closing delimiter of " + what
+                    + " must be contained in the same parameter entity replacement text as its opening "
+                    + "delimiter (here, the opening delimiter is literal, not from a parameter entity).");
         }
     }
 
