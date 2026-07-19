@@ -26,9 +26,15 @@ import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 
 /**
- * Internal structural event vocabulary that {@link Scanner} emits, adapted
- * to standard SAX2 by {@link SAXAdapter} (optionally preceded by {@link
+ * Gonzalez's native structural event vocabulary. {@link Scanner} emits this
+ * vocabulary directly; it is adapted to standard SAX2 by {@link SAXAdapter}
+ * when a SAX consumer is configured (optionally preceded by {@link
  * NamespaceFilter}).
+ * <p>
+ * This is a Gonzalez-specific service-provider interface, exposed so other
+ * Gonzalez modules can consume scanner events without paying for a SAX
+ * adaptation. It is not a standards interface and may evolve between
+ * Gonzalez releases as native consumers require additional information.
  * <p>
  * This deliberately differs from {@link org.xml.sax.ContentHandler} in ways
  * that let it stay cheap for consumers that don't need namespace resolution
@@ -128,7 +134,7 @@ import org.xml.sax.SAXException;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-interface XMLHandler {
+public interface XMLHandler {
 
     /**
      * Sets the document locator for reporting position information.

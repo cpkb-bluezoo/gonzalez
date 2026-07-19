@@ -118,6 +118,7 @@ public class Parser implements XMLReader, PSVIProvider {
     private EntityResolver scannerEntityResolver;
     private LexicalHandler scannerLexicalHandler;
     private DeclHandler scannerDeclHandler;
+    private XMLHandler scannerXMLHandler;
     private boolean scannerNamespaces = true;
     private boolean scannerNamespacePrefixes;
     private boolean scannerValidation;
@@ -168,19 +169,22 @@ public class Parser implements XMLReader, PSVIProvider {
         if (scanner != null) {
             return;
         }
-        SAXAdapter adapter = new SAXAdapter(scannerNamespaces);
-        adapter.setContentHandler(scannerContentHandler);
-        adapter.setLexicalHandler(scannerLexicalHandler);
-        adapter.setDeclHandler(scannerDeclHandler);
-        adapter.setDTDHandler(scannerDtdHandler);
-        adapter.setErrorHandler(scannerErrorHandler);
-        adapter.setXmlnsUris(scannerXmlnsUris);
-        adapter.setPublicId(scannerPublicId);
-        adapter.setSystemId(scannerSystemId);
-        scannerAdapter = adapter;
-        XMLHandler target = adapter;
+        XMLHandler target = scannerXMLHandler;
+        if (target == null) {
+            SAXAdapter adapter = new SAXAdapter(scannerNamespaces);
+            adapter.setContentHandler(scannerContentHandler);
+            adapter.setLexicalHandler(scannerLexicalHandler);
+            adapter.setDeclHandler(scannerDeclHandler);
+            adapter.setDTDHandler(scannerDtdHandler);
+            adapter.setErrorHandler(scannerErrorHandler);
+            adapter.setXmlnsUris(scannerXmlnsUris);
+            adapter.setPublicId(scannerPublicId);
+            adapter.setSystemId(scannerSystemId);
+            scannerAdapter = adapter;
+            target = adapter;
+        }
         if (scannerNamespaces) {
-            NamespaceFilter filter = new NamespaceFilter(adapter, false);
+            NamespaceFilter filter = new NamespaceFilter(target, false);
             filter.setNamespacePrefixes(scannerNamespacePrefixes);
             filter.setXmlnsUris(scannerXmlnsUris);
             target = filter;
@@ -447,6 +451,40 @@ public class Parser implements XMLReader, PSVIProvider {
         if (scannerAdapter != null) {
             scannerAdapter.setContentHandler(handler);
         }
+    }
+
+    /**
+     * Returns the Gonzalez-native event handler, if one is configured.
+     *
+     * @return the native handler, or {@code null} when events are adapted to SAX
+     */
+    public XMLHandler getXMLHandler() {
+        return scannerXMLHandler;
+    }
+
+    /**
+     * Selects Gonzalez's native event path for subsequent parses.
+     *
+     * <p>When non-null, scanner events are sent directly to this handler
+     * (through the namespace filter when namespaces are enabled) and no
+     * {@link SAXAdapter} is created. SAX content, DTD, lexical, declaration,
+     * and error handlers are therefore not called; the native handler receives
+     * the corresponding events and owns native error reporting. Passing
+     * {@code null} restores the standard SAX path.
+     *
+     * <p>This setting, like namespace awareness and validation, cannot be
+     * changed after parsing a document has started. It is retained by
+     * {@link #reset()} for parser reuse.
+     *
+     * @param handler the native handler, or {@code null} to use SAX
+     * @throws SAXNotSupportedException if parsing has already started
+     */
+    public void setXMLHandler(XMLHandler handler) throws SAXNotSupportedException {
+        if (scanner != null && handler != scannerXMLHandler) {
+            throw new SAXNotSupportedException(
+                    "Cannot change XMLHandler once parsing has started");
+        }
+        scannerXMLHandler = handler;
     }
 
     /**

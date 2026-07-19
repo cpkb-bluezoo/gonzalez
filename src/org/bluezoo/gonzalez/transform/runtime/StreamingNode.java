@@ -178,6 +178,35 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     }
 
     /**
+     * Adds an attribute received through Gonzalez's native XML event path.
+     *
+     * <p>The caller supplies the final document order because namespace
+     * nodes precede attribute nodes in the XPath data model. This avoids
+     * constructing a transient SAX {@link Attributes} collection merely to
+     * create the permanent attribute node.
+     */
+    public void addNativeAttribute(String namespaceURI, String localName,
+            String prefix, String value, String attributeType,
+            TypedValue typedValue, long attributeDocumentOrder) {
+        if (nodeType != NodeType.ELEMENT) {
+            throw new IllegalStateException("Attributes can only be added to elements");
+        }
+        StreamingNode attr = new StreamingNode(
+            NodeType.ATTRIBUTE,
+            namespaceURI,
+            localName,
+            prefix,
+            value,
+            this,
+            Collections.emptyMap(),
+            attributeDocumentOrder,
+            attributeType,
+            typedValue
+        );
+        attributes.add(attr);
+    }
+
+    /**
      * Creates a text node.
      *
      * @param text the text content
