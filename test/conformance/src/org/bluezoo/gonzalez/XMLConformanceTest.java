@@ -385,6 +385,9 @@ public class XMLConformanceTest {
                 testCase.id.equals("pr-xml-little") ||
                 testCase.id.equals("pr-xml-utf-16") ||
                 testCase.id.equals("pr-xml-utf-8") ||
+                testCase.id.equals("pr-xml-euc-jp") ||
+                testCase.id.equals("pr-xml-iso-2022-jp") ||
+                testCase.id.equals("pr-xml-shift_jis") ||
                 testCase.id.equals("weekly-euc-jp") ||
                 testCase.id.equals("weekly-iso-2022-jp") ||
                 testCase.id.equals("weekly-shift_jis"))) {
