@@ -1,8 +1,8 @@
 /*
  * ExternalCompare.java
  *
- * Standalone (non-JMH, non-ant-managed) throughput comparison of Gonzalez's
- * two pipelines against the JDK's bundled Xerces and a locally-built
+ * Standalone (non-JMH, non-ant-managed) throughput comparison of Gonzalez
+ * against the JDK's bundled Xerces and a locally-built
  * aalto-xml, over the same benchmark/resources corpus ScannerPipelineBenchmark
  * uses. See benchmark/external-compare/run.sh for how this is compiled/run -
  * deliberately kept out of build.xml (no new project dependency), pointed at
@@ -17,7 +17,6 @@ package org.bluezoo.gonzalez;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -50,7 +49,7 @@ public class ExternalCompare {
 
         // Namespace-aware=true across the board (aalto's SAX wrapper does not
         // implement non-namespace-aware mode at all, and namespace-aware is
-        // the SAX2/StAX default anyway) so all five contestants are doing
+        // the SAX2/StAX default anyway) so all contestants are doing
         // the same amount of work.
         SAXParserFactory jdkFactory = SAXParserFactory.newInstance();
         jdkFactory.setNamespaceAware(true);
@@ -72,16 +71,8 @@ public class ExternalCompare {
             byte[] bytes = Files.readAllBytes(entry.getValue());
             double mb = bytes.length / (1024.0 * 1024.0);
 
-            time(docType, "gonzalez-legacy", bytes, mb, () -> {
-                Parser parser = new Parser();
-                parser.setFeature("http://xml.org/sax/features/namespaces", true);
-                parser.setContentHandler(EMPTY_HANDLER);
-                parser.receive(ByteBuffer.wrap(bytes));
-                parser.close();
-            });
-
-            time(docType, "gonzalez-scanner", bytes, mb, () -> {
-                XMLReader reader = new Parser(Parser.Pipeline.SCANNER);
+            time(docType, "gonzalez", bytes, mb, () -> {
+                XMLReader reader = new Parser();
                 reader.setFeature("http://xml.org/sax/features/namespaces", true);
                 reader.setContentHandler(EMPTY_HANDLER);
                 reader.parse(new InputSource(new ByteArrayInputStream(bytes)));

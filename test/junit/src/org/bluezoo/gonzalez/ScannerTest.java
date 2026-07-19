@@ -18,7 +18,6 @@
 
 package org.bluezoo.gonzalez;
 
-import java.io.ByteArrayInputStream;
 import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -28,22 +27,19 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.junit.Test;
-import org.xml.sax.InputSource;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 /**
- * M1 verification for {@link Scanner}. Two kinds of check:
+ * Verification for {@link Scanner}. Two kinds of check:
  * <ul>
  * <li>Hand-crafted cases exercising specific productions (entities, comments,
  * PI, CDATA) directly.</li>
- * <li>Differential testing against the current parser on the real benchmark
- * corpus (none of which use DOCTYPE or general entities, both out of scope
- * for M1 - see Scanner's class Javadoc), at a range of chunk sizes. This
- * doubles as the suspend/resume ("chunk-fuzzing") proof the milestone plan
- * calls for: a passing result at every chunk size means the coarse resumable
- * mode never double-emits or drops a sub-token at a buffer-straddling split.
+ * <li>Chunk-size self-consistency on the real benchmark corpus: compare
+ * Scanner event lists across chunk sizes. A passing result at every chunk
+ * size means the coarse resumable mode never double-emits or drops a
+ * sub-token at a buffer-straddling split.
  * </ul>
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
@@ -72,15 +68,6 @@ public class ScannerTest {
         return sink.getEvents();
     }
 
-    private static List<String> runCurrentParser(byte[] bytes) throws Exception {
-        RecordingSaxHandler sink = new RecordingSaxHandler();
-        Parser parser = new Parser();
-        parser.setFeature("http://xml.org/sax/features/namespaces", false);
-        parser.setContentHandler(sink);
-        parser.setProperty("http://xml.org/sax/properties/lexical-handler", sink);
-        parser.parse(new InputSource(new ByteArrayInputStream(bytes)));
-        return sink.getEvents();
-    }
 
     /** Strips a leading XML declaration - out of Scanner's scope (see class Javadoc). */
     private static char[] decodeAndStripDecl(byte[] bytes) {
@@ -102,51 +89,17 @@ public class ScannerTest {
         return result;
     }
 
-    /**
-     * Drops startCDATA()/endCDATA() boundary markers from a recorded event
-     * list and re-coalesces the now-adjacent characters() entries, exactly
-     * as RecordingSaxHandler itself would have if those markers had never
-     * been interposed. Scanner reports these markers directly now (matching
-     * the old pipeline), so this is unneeded by any differential test that
-     * compares both sides' raw recordings directly - kept only for the
-     * handful of fixtures/callers below that still route through it
-     * (typically a no-op, since their content has no CDATA sections).
-     */
-    private static List<String> stripCDATABoundariesAndRecoalesce(List<String> events) {
-        java.util.ArrayList<String> result = new java.util.ArrayList<String>();
-        StringBuilder pendingChars = null;
-        for (String event : events) {
-            if (event.equals("startCDATA()") || event.equals("endCDATA()")) {
-                continue;
-            }
-            if (event.startsWith("characters:")) {
-                String text = event.substring("characters:".length());
-                if (pendingChars == null) {
-                    pendingChars = new StringBuilder(text);
-                } else {
-                    pendingChars.append(text);
-                }
-            } else {
-                if (pendingChars != null) {
-                    result.add("characters:" + pendingChars);
-                    pendingChars = null;
-                }
-                result.add(event);
-            }
-        }
-        if (pendingChars != null) {
-            result.add("characters:" + pendingChars);
-        }
-        return result;
-    }
 
-    private void assertDifferential(String resourcePath) throws Exception {
+    private void assertChunkConsistency(String resourcePath) throws Exception {
         byte[] bytes = Files.readAllBytes(Paths.get(resourcePath));
-        List<String> reference = runCurrentParser(bytes);
+        char[] chars = decodeAndStripDecl(bytes);
+        List<String> reference = runScanner(chars, 0);
         assertTrue("reference recording should not be trivially empty", reference.size() > 5);
 
-        char[] chars = decodeAndStripDecl(bytes);
         for (int chunkSize : CHUNK_SIZES) {
+            if (chunkSize == 0) {
+                continue;
+            }
             List<String> actual = runScanner(chars, chunkSize);
             assertEquals(resourcePath + " chunk size " + chunkSize, reference, actual);
         }
@@ -154,29 +107,29 @@ public class ScannerTest {
 
     @Test
     public void testDifferential_plain() throws Exception {
-        assertDifferential("benchmark/resources/large.xml");
+        assertChunkConsistency("benchmark/resources/large.xml");
     }
 
     @Test
     public void testDifferential_attrs() throws Exception {
-        assertDifferential("benchmark/resources/attrs-large.xml");
+        assertChunkConsistency("benchmark/resources/attrs-large.xml");
     }
 
     @Test
     public void testDifferential_markup() throws Exception {
         // Comments, non-xmldecl PIs, CDATA-adjacent constructs.
-        assertDifferential("benchmark/resources/markup-large.xml");
+        assertChunkConsistency("benchmark/resources/markup-large.xml");
     }
 
     @Test
     public void testDifferential_whitespace() throws Exception {
-        assertDifferential("benchmark/resources/whitespace-large.xml");
+        assertChunkConsistency("benchmark/resources/whitespace-large.xml");
     }
 
     @Test
     public void testDifferential_multibyte() throws Exception {
         // Non-ASCII element/attribute names and content.
-        assertDifferential("benchmark/resources/multibyte-large.xml");
+        assertChunkConsistency("benchmark/resources/multibyte-large.xml");
     }
 
     @Test
@@ -184,7 +137,7 @@ public class ScannerTest {
         // xmlns-heavy document, parsed in namespace-UNAWARE mode on both
         // sides - xmlns/prefixed names must be reported as plain attributes
         // and opaque qNames on both, with no resolution.
-        assertDifferential("benchmark/resources/large-ns.xml");
+        assertChunkConsistency("benchmark/resources/large-ns.xml");
     }
 
     // ===== M3: namespace-aware differential (Scanner -> NamespaceFilter -> SAXAdapter(true)) =====
@@ -210,68 +163,35 @@ public class ScannerTest {
         return sink.getEvents();
     }
 
-    private static List<String> runCurrentParserNamespaceAware(byte[] bytes) throws Exception {
-        RecordingSaxHandler sink = new RecordingSaxHandler();
-        Parser parser = new Parser();
-        parser.setFeature("http://xml.org/sax/features/namespaces", true);
-        parser.setContentHandler(sink);
-        parser.setProperty("http://xml.org/sax/properties/lexical-handler", sink);
-        parser.parse(new InputSource(new ByteArrayInputStream(bytes)));
-        return sink.getEvents();
-    }
 
     @Test
     public void testDifferential_namespaceAwareMode() throws Exception {
         // Same corpus as the unaware-mode test above, this time resolved:
         // xmlns declarations become namespace()/startPrefixMapping events,
-        // not plain attributes, and prefixed names resolve to uri/localName
-        // on both sides.
+        // not plain attributes, and prefixed names resolve to uri/localName.
         byte[] bytes = Files.readAllBytes(Paths.get("benchmark/resources/large-ns.xml"));
-        List<String> reference = stripCDATABoundariesAndRecoalesce(runCurrentParserNamespaceAware(bytes));
+        char[] chars = decodeAndStripDecl(bytes);
+        List<String> reference = runScannerNamespaceAware(chars, 0);
         assertTrue("reference recording should not be trivially empty", reference.size() > 5);
 
-        char[] chars = decodeAndStripDecl(bytes);
         for (int chunkSize : CHUNK_SIZES) {
+            if (chunkSize == 0) {
+                continue;
+            }
             List<String> actual = runScannerNamespaceAware(chars, chunkSize);
             assertEquals("chunk size " + chunkSize, reference, actual);
         }
     }
 
-    // ===== DOCTYPE / internal general entities differential =====
+    // ===== DOCTYPE / internal general entities chunk consistency =====
     //
     // None of the benchmark corpus files use DOCTYPE, so this is a
-    // hand-written sample rather than a corpus file. Only one normalization
-    // is needed: this Scanner fires startDocument() at construction, before
-    // any DOCTYPE scanning, whereas the old parser fires the internal
-    // subset's comment()/processingInstruction() events *before*
-    // startDocument() - a startDocument-vs-DTD-scan ordering difference, not
-    // a content one, so those events are moved to just after startDocument()
-    // in the reference before comparing. startDTD()/endDTD()/startEntity()/
-    // endEntity() are otherwise compared directly, unnormalized.
-
-    private static List<String> normalizeM4Reference(List<String> events) {
-        java.util.ArrayList<String> filtered = new java.util.ArrayList<String>(events);
-        int docIdx = filtered.indexOf("startDocument()");
-        if (docIdx > 0) {
-            java.util.ArrayList<String> reordered = new java.util.ArrayList<String>();
-            reordered.add("startDocument()");
-            reordered.addAll(filtered.subList(0, docIdx));
-            reordered.addAll(filtered.subList(docIdx + 1, filtered.size()));
-            filtered = reordered;
-        }
-        return stripCDATABoundariesAndRecoalesce(filtered);
-    }
+    // hand-written sample rather than a corpus file.
 
     private static final String M4_SAMPLE_XML = "<!DOCTYPE root [\n"
             + "<!-- a comment in the internal subset -->\n"
             + "<!ATTLIST root id CDATA #IMPLIED>\n"
-            // No PI data here deliberately: the old parser's DTDParser-level PI
-            // handling keeps the target/data separator whitespace as part of
-            // the data (unlike its own top-level PI handling, and unlike this
-            // Scanner's single scanPI() used consistently in both contexts) -
-            // a pre-existing old-parser inconsistency between contexts, not
-            // something M4 needs to replicate; sidestepped by not exercising
-            // PI data here.
+            // No PI data here deliberately - keep the subset PI target-only.
             + "<?subset-pi?>\n"
             + "<!ENTITY a \"Alice\">\n"
             + "<!ENTITY b \"&a; and Bob\">\n"
@@ -285,12 +205,14 @@ public class ScannerTest {
 
     @Test
     public void testDifferential_internalGeneralEntities() throws Exception {
-        byte[] bytes = M4_SAMPLE_XML.getBytes(StandardCharsets.UTF_8);
-        List<String> reference = normalizeM4Reference(runCurrentParser(bytes));
+        char[] chars = M4_SAMPLE_XML.toCharArray();
+        List<String> reference = runScanner(chars, 0);
         assertTrue("reference recording should not be trivially empty", reference.size() > 5);
 
-        char[] chars = M4_SAMPLE_XML.toCharArray();
         for (int chunkSize : CHUNK_SIZES) {
+            if (chunkSize == 0) {
+                continue;
+            }
             List<String> actual = runScanner(chars, chunkSize);
             assertEquals("chunk size " + chunkSize, reference, actual);
         }
@@ -298,15 +220,10 @@ public class ScannerTest {
 
     @Test(timeout = 5000)
     public void testDoctypeAndEntitiesSplitAcrossReceiveBoundary_chunkSize1() throws Exception {
-        // The DOCTYPE/internal-subset scanning added in M4 is entirely new
-        // atomic-retry-on-underflow logic (see Scanner's "M4" section) -
-        // unlike M1's constructs, it had no prior chunk-fuzzing coverage at
-        // all. chunkSize=1 delivers one character at a time, exercising
-        // every possible split point through the DOCTYPE keyword, the
-        // internal subset's declarations, and the entity references
-        // themselves.
-        List<String> reference = normalizeM4Reference(
-                runCurrentParser(M4_SAMPLE_XML.getBytes(StandardCharsets.UTF_8)));
+        // chunkSize=1 delivers one character at a time, exercising every
+        // possible split point through the DOCTYPE keyword, the internal
+        // subset's declarations, and the entity references themselves.
+        List<String> reference = runScanner(M4_SAMPLE_XML.toCharArray(), 0);
         List<String> actual = runScanner(M4_SAMPLE_XML.toCharArray(), 1);
         assertEquals(reference, actual);
     }
@@ -769,12 +686,14 @@ public class ScannerTest {
 
     @Test
     public void testDifferential_attributeDefaultingNormalizationAndIgnorableWhitespace() throws Exception {
-        byte[] bytes = M5_SAMPLE_XML.getBytes(StandardCharsets.UTF_8);
-        List<String> reference = normalizeM4Reference(runCurrentParser(bytes));
+        char[] chars = M5_SAMPLE_XML.toCharArray();
+        List<String> reference = runScanner(chars, 0);
         assertTrue("reference recording should not be trivially empty", reference.size() > 5);
 
-        char[] chars = M5_SAMPLE_XML.toCharArray();
         for (int chunkSize : CHUNK_SIZES) {
+            if (chunkSize == 0) {
+                continue;
+            }
             List<String> actual = runScanner(chars, chunkSize);
             assertEquals("chunk size " + chunkSize, reference, actual);
         }

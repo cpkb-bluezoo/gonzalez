@@ -132,7 +132,7 @@ interface XMLHandler {
 
     /**
      * Sets the document locator for reporting position information.
-     * Called before any other event, mirroring {@link TokenConsumer#setLocator}.
+     * Called before any other event.
      *
      * @param locator the document locator
      */
@@ -142,8 +142,8 @@ interface XMLHandler {
      * Reports the document's actual declared XML version, once known (from
      * its {@code XMLDecl}, or an enclosing external entity/DTD subset's own
      * {@code TextDecl}) - called strictly before any real document content,
-     * mirroring {@link ByteDecoderTarget#setXml11}'s own timing guarantee
-     * (see {@link Scanner#setXml11}, which both maintains its own derived
+     * mirroring {@link Scanner#setXml11}'s own timing guarantee
+     * (which both maintains its own derived
      * state from this and relays it on to this method). A consumer with no
      * XML-version-dependent behavior of its own (most of them) can safely
      * make this a no-op.
@@ -201,7 +201,20 @@ interface XMLHandler {
      *             {@code "CDATA"} if there is no DTD, or none declares this
      *             attribute
      */
-    void startAttribute(String name, String type) throws SAXException;
+    default void startAttribute(String name, String type) throws SAXException {
+        startAttribute(name, type, false, true);
+    }
+
+    /**
+     * Signals the start of an attribute together with SAX2 Attributes2
+     * declaration/specification metadata.
+     *
+     * @param declared true if the DTD declares this attribute
+     * @param specified true if the attribute was present in the start tag
+     */
+    default void startAttribute(String name, String type, boolean declared, boolean specified)
+            throws SAXException {
+    }
 
     /**
      * Reports a chunk of the current attribute's value (see class Javadoc
@@ -379,6 +392,27 @@ interface XMLHandler {
     void unparsedEntityDecl(String name, String publicId, String systemId, String notationName)
             throws SAXException;
 
+    /** Reports an element declaration to a SAX declaration handler. */
+    default void elementDecl(String name, String model) throws SAXException {
+    }
+
+    /** Reports an attribute declaration to a SAX declaration handler. */
+    default void attributeDecl(String eName, String aName, String type, String mode, String value)
+            throws SAXException {
+    }
+
+    /** Reports an internal entity declaration to a SAX declaration handler. */
+    default void internalEntityDecl(String name, String value) throws SAXException {
+    }
+
+    /** Reports a parsed external entity declaration to a SAX declaration handler. */
+    default void externalEntityDecl(String name, String publicId, String systemId) throws SAXException {
+    }
+
+    /** Reports an entity reference that was not expanded. */
+    default void skippedEntity(String name) throws SAXException {
+    }
+
     /**
      * Signals the start of a processing instruction, reporting its target.
      * Followed by one or more {@link #piData} calls for its data (mirroring
@@ -412,7 +446,7 @@ interface XMLHandler {
     void saveBuffers() throws SAXException;
 
     /**
-     * Reports a fatal error, mirroring {@link TokenConsumer#fatalError}.
+     * Reports a fatal error.
      *
      * @param message the error message
      * @return the SAXException to throw
@@ -422,7 +456,7 @@ interface XMLHandler {
     /**
      * Reports a recoverable error - unlike {@link #fatalError}, this does
      * not stop parsing; the caller continues immediately after reporting.
-     * Mirrors {@code ContentParser.reportValidationError}'s SAX contract:
+     * Reports a non-fatal validation error using the SAX ErrorHandler contract:
      * routes to {@code ErrorHandler.error(SAXParseException)}, not {@code
      * fatalError}. Almost always a recoverable validity constraint (VC)
      * violation - meaning the document is not valid but may still be

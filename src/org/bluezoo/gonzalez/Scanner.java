@@ -22,9 +22,11 @@
 package org.bluezoo.gonzalez;
 
 import java.io.ByteArrayOutputStream;
+import java.io.CharArrayWriter;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Reader;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -40,7 +42,10 @@ import java.util.Map;
 
 import org.xml.sax.EntityResolver;
 import org.xml.sax.InputSource;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.ext.EntityResolver2;
+import org.xml.sax.ext.Locator2;
 
 /**
  * Hot-path XML scanner: hand-written, specialized recognition of element
@@ -51,8 +56,7 @@ import org.xml.sax.SAXException;
  * <p>
  * <b>Division of responsibility with the rest of the pipeline.</b> Byte-to-
  * char decoding and line-ending normalisation happen upstream, in {@link
- * ExternalEntityDecoder} (shared with the old tokenizer-based pipeline via
- * {@link ByteDecoderTarget}) - by the time a character reaches this class it
+ * ExternalEntityDecoder} - by the time a character reaches this class it
  * is already decoded and normalised. Namespace resolution happens
  * downstream: this class always reports {@code xmlns}/{@code xmlns:prefix}
  * as a regular attribute (matching namespace-unaware behaviour); {@link
@@ -153,11 +157,16 @@ import org.xml.sax.SAXException;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class Scanner implements ByteDecoderTarget {
+class Scanner implements Locator2 {
 
     private static final int INITIAL_CAPACITY = 8192;
 
     private final XMLHandler handler;
+    private final String locatorPublicId;
+    private final String locatorSystemId;
+    private String encoding;
+    private boolean documentStarted;
+    private final boolean deferDocumentStartUntilEncoding;
 
     private char[] buf;
     private int pos;
@@ -410,7 +419,24 @@ class Scanner implements ByteDecoderTarget {
      *  #scanDoctype}'s and {@link #scanDoctypeSubset}'s completion paths.
      *  Null (the common case) means no external subset to fetch. */
     private String doctypeExternalPublicId;
+
+    /** An application-supplied external subset for a DOCTYPE that declared
+     *  no external ID of its own - obtained from {@link
+     *  EntityResolver2#getExternalSubset} in {@link #scanDoctype} (see
+     *  {@link #requestExternalSubset}) and consumed, in place of a fetch,
+     *  by {@link #finishDoctypeExternalSubset}. */
+    private InputSource doctypeExternalSubsetSource;
     private String doctypeExternalSystemId;
+
+    /** Durable copies of the DOCTYPE declaration's own declared external ID,
+     *  captured alongside {@link #doctypeExternalPublicId}/{@link
+     *  #doctypeExternalSystemId} in {@link #scanDoctype} but never cleared
+     *  by {@link #finishDoctypeExternalSubset}. Unlike that
+     *  pair, these are never overwritten by an {@link
+     *  EntityResolver2#getExternalSubset}-supplied source's identifiers:
+     *  they record only what the document itself declared. */
+    private String doctypePublicId;
+    private String doctypeSystemId;
 
     /** Internal general entities declared in the DOCTYPE's internal subset:
      *  name -> raw replacement text. Character references in the text are
@@ -481,8 +507,19 @@ class Scanner implements ByteDecoderTarget {
      *  depth change is zero even though a boundary was still crossed). */
     private final ArrayList<Integer> entityStackFloors = new ArrayList<Integer>();
 
-    private static final int MAX_ENTITY_EXPANSIONS = 100_000;
     private int entityExpansionCount;
+
+    /** Counts one entity expansion (general or parameter) against {@link
+     *  ScannerSettings#entityExpansionLimit}, which - matching {@link
+     *  EntityStack#setExpansionLimit}'s contract for the old pipeline - is
+     *  unlimited when zero or negative. */
+    private void checkEntityExpansionLimit() throws SAXException {
+        entityExpansionCount++;
+        int expansionLimit = settings.entityExpansionLimit;
+        if (expansionLimit > 0 && entityExpansionCount > expansionLimit) {
+            throw handler.fatalError("Entity expansion limit (" + expansionLimit + ") exceeded");
+        }
+    }
 
     /** True while the text currently being scanned for markup declarations
      *  originates from the external DTD subset, or from an external
@@ -505,15 +542,12 @@ class Scanner implements ByteDecoderTarget {
      *  #CONTENT_STOP_XML10}). Either supplied by the caller up front (every
      *  direct/test construction, when the version is already known), or
      *  defaulted at construction and updated exactly once via {@link
-     *  #setXml11} - the {@link ByteDecoderTarget} interface method {@link
-     *  ExternalEntityDecoder} calls once it has resolved the XML/text
-     *  declaration's version directly from the raw bytes, strictly before
-     *  any real document content reaches this Scanner (the same timing
-     *  {@code ExternalEntityDecoder} already uses for {@code Tokenizer};
-     *  see {@code Parser.Pipeline}). Not final for that reason - {@link
-     *  #setXml11} keeps {@link #contentStopTable}/{@link
-     *  #quotAttrStopTable}/{@link #aposAttrStopTable} in sync whenever it
-     *  changes. */
+     *  #setXml11} - which {@link ExternalEntityDecoder} calls once it has
+     *  resolved the XML/text declaration's version directly from the raw
+     *  bytes, strictly before any real document content reaches this
+     *  Scanner. Not final for that reason - {@link #setXml11} keeps {@link
+     *  #contentStopTable}/{@link #quotAttrStopTable}/{@link
+     *  #aposAttrStopTable} in sync whenever it changes. */
     private boolean xml11;
 
     /** Resolves external entity/DTD identifiers to actual bytes - see
@@ -562,10 +596,15 @@ class Scanner implements ByteDecoderTarget {
      *  forbidden in a PI target, entity name, or notation name, none of
      *  which are ever exposed to {@link NamespaceFilter} as their own event
      *  (unlike element/attribute qNames) - can only be checked here, at the
-     *  point Scanner itself parses that name, mirroring the old pipeline's
-     *  {@code ContentParser}'s own {@code namespacesEnabled}-gated checks
-     *  ({@code handlePITarget}, {@code DTDParser.validateNameInNamespaceMode}). */
+     *  point Scanner itself parses that name. */
     private final boolean namespaceAware;
+
+    /** Security/entity configuration this scanner was constructed with -
+     *  see {@link ScannerSettings}. Enforced for external-entity fetch
+     *  gating, DOCTYPE rejection, and expansion limiting; {@link
+     *  ScannerSettings#PERMISSIVE} preserves current behaviour for every
+     *  caller not going through {@code Parser}. */
+    private final ScannerSettings settings;
 
     /** Convenience constructor for XML 1.0 with no external fetching
      *  capability (the common case, and every caller before this
@@ -592,19 +631,89 @@ class Scanner implements ByteDecoderTarget {
         this(handler, xml11, entityResolver, baseSystemId, validationEnabled, false);
     }
 
+    /** Convenience constructor with permissive {@link ScannerSettings} -
+     *  every direct/test caller before this milestone. */
     Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String baseSystemId,
             boolean validationEnabled, boolean namespaceAware) throws SAXException {
+        this(handler, xml11, entityResolver, baseSystemId, validationEnabled, namespaceAware,
+                ScannerSettings.PERMISSIVE);
+    }
+
+    Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String baseSystemId,
+            boolean validationEnabled, boolean namespaceAware, ScannerSettings settings)
+            throws SAXException {
+        this(handler, xml11, entityResolver, null, baseSystemId, validationEnabled, namespaceAware, settings);
+    }
+
+    Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String publicId, String baseSystemId,
+            boolean validationEnabled, boolean namespaceAware, ScannerSettings settings)
+            throws SAXException {
+        this(handler, xml11, entityResolver, publicId, baseSystemId, validationEnabled, namespaceAware, settings, false);
+    }
+
+    Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String publicId, String baseSystemId,
+            boolean validationEnabled, boolean namespaceAware, ScannerSettings settings,
+            boolean deferDocumentStartUntilEncoding) throws SAXException {
         this.handler = handler;
+        this.locatorPublicId = publicId;
+        this.locatorSystemId = baseSystemId;
         this.xml11 = xml11;
         this.entityResolver = entityResolver;
         this.baseSystemId = baseSystemId;
         this.validationEnabled = validationEnabled;
         this.namespaceAware = namespaceAware;
+        this.settings = settings;
+        this.deferDocumentStartUntilEncoding = deferDocumentStartUntilEncoding;
         this.buf = new char[INITIAL_CAPACITY];
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
         this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
+        if (!deferDocumentStartUntilEncoding) {
+            startDocument();
+        }
+    }
+
+    @Override
+    public String getPublicId() {
+        return locatorPublicId;
+    }
+
+    @Override
+    public String getSystemId() {
+        return locatorSystemId;
+    }
+
+    @Override
+    public int getLineNumber() {
+        return -1;
+    }
+
+    @Override
+    public int getColumnNumber() {
+        return -1;
+    }
+
+    @Override
+    public String getXMLVersion() {
+        return xml11 ? "1.1" : "1.0";
+    }
+
+    @Override
+    public String getEncoding() {
+        return encoding;
+    }
+
+    public void setEncoding(String encoding) throws SAXException {
+        this.encoding = encoding;
+        if (deferDocumentStartUntilEncoding && !documentStarted) {
+            startDocument();
+        }
+    }
+
+    private void startDocument() throws SAXException {
+        handler.setLocator(this);
         handler.startDocument();
+        documentStarted = true;
     }
 
     /** Resolved from {@link #xml11} at construction, and re-resolved by
@@ -623,7 +732,6 @@ class Scanner implements ByteDecoderTarget {
      * be compacted/reused before the next call - see XMLHandler's class
      * Javadoc.
      */
-    @Override
     public void receive(CharBuffer data) throws SAXException {
         append(data);
         scan();
@@ -634,8 +742,10 @@ class Scanner implements ByteDecoderTarget {
      * Signals end of input. Reports a fatal error if the document ends
      * mid-construct or with unclosed elements.
      */
-    @Override
     public void close() throws SAXException {
+        if (!documentStarted) {
+            startDocument();
+        }
         if (inStartTag || inAttributeValue || inDoctype || !elementStack.isEmpty()) {
             throw handler.fatalError("Document ended unexpectedly (unclosed element or tag)");
         }
@@ -746,17 +856,17 @@ class Scanner implements ByteDecoderTarget {
         }
     }
 
-    @Override
     public SAXException fatalError(String message) throws SAXException {
         return handler.fatalError(message);
     }
 
-    /** {@link ByteDecoderTarget#setXml11} - see {@link #xml11}'s own
-     *  Javadoc for the timing guarantee this relies on (called strictly
-     *  before any real document content, so the mid-flight state this
-     *  mutates - the three derived lookup tables - is never observed in an
-     *  inconsistent state by a concurrently-in-progress scan). */
-    @Override
+    /** Called by {@link ExternalEntityDecoder} once the XML/text
+     *  declaration's version has been resolved from the raw bytes - see
+     *  {@link #xml11}'s own Javadoc for the timing guarantee this relies on
+     *  (called strictly before any real document content, so the mid-flight
+     *  state this mutates - the three derived lookup tables - is never
+     *  observed in an inconsistent state by a concurrently-in-progress
+     *  scan). */
     public void setXml11(boolean xml11) {
         this.xml11 = xml11;
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
@@ -765,17 +875,83 @@ class Scanner implements ByteDecoderTarget {
         handler.setXml11(xml11);
     }
 
-    /** True only for an explicit {@code standalone="yes"} XML declaration -
-     *  see {@link ByteDecoderTarget#setStandalone}. Gates VC "Standalone
-     *  Document Declaration" (Section 2.9) and WFC "Entity Declared"'s
-     *  standalone-specific clause (Section 4.1); see {@link
-     *  #declaredExternally} for how a declaration's own external-vs-internal
-     *  provenance is tracked to support those checks. */
+    /** True only for an explicit {@code standalone="yes"} XML declaration.
+     *  Gates VC "Standalone Document Declaration" (Section 2.9) and WFC
+     *  "Entity Declared"'s standalone-specific clause (Section 4.1); see
+     *  {@link #declaredExternally} for how a declaration's own
+     *  external-vs-internal provenance is tracked to support those checks.
+     *  Called by {@link ExternalEntityDecoder} for the document entity only
+     *  (a {@code TextDecl} has no {@code SDDecl} production). {@code
+     *  standalone} is true only for an explicit {@code standalone="yes"} -
+     *  absent or {@code "no"} are indistinguishable to every consumer of
+     *  this flag, so there is no three-state distinction to preserve. */
     private boolean standalone;
 
-    @Override
     public void setStandalone(boolean standalone) {
         this.standalone = standalone;
+    }
+
+    /** Read by {@code Parser.getFeature} for the SAX {@code is-standalone}
+     *  feature. */
+    boolean isStandalone() {
+        return standalone;
+    }
+
+    // ===== Introspection accessors (after the DOCTYPE has committed -
+    // see hasDoctype()) =====
+
+    /** True once a DOCTYPE declaration (or a synthesized external subset -
+     *  see {@link #synthesizeExternalSubsetBeforeRoot}) has fully committed.
+     *  Read by {@code Parser.getValidationSource()}. */
+    boolean hasDoctype() {
+        return doctypeSeen;
+    }
+
+    String getDoctypeName() {
+        return doctypeName;
+    }
+
+    /** The DOCTYPE declaration's own declared public identifier, or null. */
+    String getDoctypePublicId() {
+        return doctypePublicId;
+    }
+
+    /** The DOCTYPE declaration's own declared system identifier, or null. */
+    String getDoctypeSystemId() {
+        return doctypeSystemId;
+    }
+
+    DTDModel getDTDModel() {
+        return dtdModel;
+    }
+
+    /** Internal general entities: name -> raw replacement text (nested
+     *  general/predefined references still literal {@code &name;} text -
+     *  see the field's own Javadoc). */
+    Map<String, String> getGeneralEntities() {
+        return generalEntities;
+    }
+
+    /** External general entities: name -> {@code {publicId, systemId,
+     *  ndataNotationName-or-null}}. */
+    Map<String, String[]> getExternalEntityNames() {
+        return externalEntityNames;
+    }
+
+    /** Internal parameter entities: name -> replacement text. */
+    Map<String, String> getParameterEntities() {
+        return parameterEntities;
+    }
+
+    /** External parameter entities: name -> {@code {publicId, systemId,
+     *  declarationBaseSystemId}}. */
+    Map<String, String[]> getParameterEntityExternalIds() {
+        return parameterEntityExternalIds;
+    }
+
+    /** Declared notations: name -> external identifier. */
+    Map<String, ExternalID> getNotationExternalIds() {
+        return notationExternalIds;
     }
 
     private void append(CharBuffer data) {
@@ -1684,6 +1860,14 @@ class Scanner implements ByteDecoderTarget {
         }
         String qName = namePool.intern(CharBuffer.wrap(buf, nameStart, p - nameStart));
         if (!rootStarted) {
+            // A document with no DOCTYPE at all may still be given an
+            // external subset by an EntityResolver2 - asked for here, at
+            // the last point it can still be reported before the root
+            // element, once the root's name (getExternalSubset's argument)
+            // is known. This point is already committed (no underflow
+            // rewind can re-reach it - see below), so the synthesized
+            // startDTD/.../endDTD fires exactly once.
+            synthesizeExternalSubsetBeforeRoot(qName);
             // The root element's name matching the DOCTYPE's Name is VC
             // "Root Element Type" (XML 1.0 SS3.2), not a WFC - a non-
             // validating processor must not reject a mismatch here, so this
@@ -1703,6 +1887,60 @@ class Scanner implements ByteDecoderTarget {
         handler.startElement(qName);
         inStartTag = true;
         return true;
+    }
+
+    /** {@link EntityResolver2#getExternalSubset} integration for a document
+     *  with no DOCTYPE declaration at all: called from {@link #scanStartTag}
+     *  once the root element's name is known but before its {@link
+     *  XMLHandler#startElement} fires. If the resolver supplies a subset, a
+     *  full {@link XMLHandler#startDTD}/{@code "[dtd]"} parse/{@link
+     *  XMLHandler#endDTD} sequence is synthesized right here, as if the
+     *  document had carried an equivalent DOCTYPE - the same reporting
+     *  {@link EntityResolver2}'s own contract describes. Skipped whenever a
+     *  real DOCTYPE was seen (that path asks via {@link
+     *  #requestExternalSubset} instead), when external-parameter-entities
+     *  is off, when disallow-doctype-decl would have rejected a real
+     *  DOCTYPE, or when the resolver isn't an {@link EntityResolver2}. */
+    private void synthesizeExternalSubsetBeforeRoot(String rootQName) throws SAXException {
+        if (doctypeSeen || settings.disallowDoctypeDecl || !settings.externalParameterEntities
+                || !(entityResolver instanceof EntityResolver2)) {
+            return;
+        }
+        String what = "the external DTD subset for \"" + rootQName + "\"";
+        InputSource source;
+        try {
+            source = resolutionHelper().getExternalSubset(rootQName);
+        } catch (IOException e) {
+            throw handler.fatalError("Failed to resolve " + what + ": " + e.getMessage());
+        }
+        if (source == null) {
+            return;
+        }
+        handler.startDTD(rootQName, source.getPublicId(), source.getSystemId());
+        handler.startEntity("[dtd]");
+        char[] chars;
+        try {
+            chars = readExternalSource(source, what, source.getSystemId());
+            checkVersionCompatibility(chars, what);
+        } catch (IOException e) {
+            throw handler.fatalError("Failed to fetch " + what + " (" + source.getSystemId() + "): "
+                    + e.getMessage());
+        }
+        String savedBaseSystemId = baseSystemId;
+        baseSystemId = lastResolvedSystemId;
+        try {
+            parseExternalSubset(chars);
+        } finally {
+            baseSystemId = savedBaseSystemId;
+        }
+        handler.endEntity("[dtd]");
+        resolveAttlistDefaultsAgainstEntities();
+        if (validationEnabled) {
+            checkAttlistDefaultsLegal();
+        }
+        handler.endDTD();
+        doctypeSeen = true;
+        doctypeName = rootQName;
     }
 
     /**
@@ -1804,13 +2042,14 @@ class Scanner implements ByteDecoderTarget {
             pos++;
 
             String currentElementName = elementStack.get(elementStack.size() - 1);
-            String attrType = lookupAttributeType(currentElementName, attrName);
+            DTDModel.AttDef attrDef = attributeDefOf(currentElementName, attrName);
+            String attrType = attrDef == null ? "CDATA" : attrDef.type;
             if (validationEnabled && dtdModel.getAttributes(currentElementName) != null
                     && attributeDefOf(currentElementName, attrName) == null) {
                 handler.error("Validity Constraint: Attribute Value Type (Section 3.3.1). Attribute \"" + attrName
                         + "\" is not declared for element \"" + currentElementName + "\".");
             }
-            handler.startAttribute(attrName, attrType);
+            handler.startAttribute(attrName, attrType, attrDef != null, true);
             pendingQuote = quote;
             attrValueRunOpen = false;
             collapseCurrentAttrValue = !"CDATA".equals(attrType);
@@ -2700,6 +2939,13 @@ class Scanner implements ByteDecoderTarget {
      *  {@link #scanComment}/{@link #scanPI} already use mid-subset. */
     private final HashSet<String> declaredNotations = new HashSet<String>();
 
+    /** External identifiers of the winning ("first declaration wins")
+     *  {@code <!NOTATION>} declaration for each name in {@link
+     *  #declaredNotations} - kept for post-DOCTYPE introspection; nothing
+     *  on the scanning path itself ever looks a notation's identifiers
+     *  back up. */
+    private final HashMap<String, ExternalID> notationExternalIds = new HashMap<String, ExternalID>();
+
     /**
      * Parses one {@code <!NOTATION ...>} declaration ({@code Name S
      * (ExternalID | PublicID)}), {@code p} positioned just past the
@@ -2819,6 +3065,7 @@ class Scanner implements ByteDecoderTarget {
             checkSystemLiteralNoFragment(systemId);
         }
         if (declaredNotations.add(name)) {
+            notationExternalIds.put(name, new ExternalID(publicId, systemId));
             handler.notationDecl(name, publicId, systemId);
         }
         return p;
@@ -3119,11 +3366,17 @@ class Scanner implements ByteDecoderTarget {
             p++;
 
             if (isParam) {
-                if (!pendingParamEntities.containsKey(name) && !parameterEntities.containsKey(name)) {
-                    pendingParamEntities.put(name, sb.toString());
+                if (!pendingParamEntities.containsKey(name) && !pendingParamExternalNames.containsKey(name)
+                        && !parameterEntities.containsKey(name) && !parameterEntityExternalIds.containsKey(name)) {
+                    String value = sb.toString();
+                    pendingParamEntities.put(name, value);
+                    handler.internalEntityDecl("%" + name, value);
                 }
-            } else if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
-                pendingEntities.put(name, sb.toString());
+            } else if (!pendingEntities.containsKey(name) && !pendingExternalNames.containsKey(name)
+                    && !generalEntities.containsKey(name) && !externalEntityNames.containsKey(name)) {
+                String value = sb.toString();
+                pendingEntities.put(name, value);
+                handler.internalEntityDecl(name, value);
                 if (lastLiteralContainedRestrictedChar) {
                     restrictedCharEntities.add(name);
                 }
@@ -3209,7 +3462,8 @@ class Scanner implements ByteDecoderTarget {
         p++;
 
         if (isParam) {
-            if (!pendingParamEntities.containsKey(name) && !parameterEntities.containsKey(name)) {
+            if (!pendingParamEntities.containsKey(name) && !pendingParamExternalNames.containsKey(name)
+                    && !parameterEntities.containsKey(name) && !parameterEntityExternalIds.containsKey(name)) {
                 // The third element is baseSystemId's own value right now -
                 // this declaration's own location - captured because this
                 // entity may not actually be expanded until much later, from
@@ -3218,12 +3472,17 @@ class Scanner implements ByteDecoderTarget {
                 // extSystemId against this captured value, never whatever
                 // baseSystemId happens to be at expansion time.
                 pendingParamExternalNames.put(name, new String[] { extPublicId, extSystemId, baseSystemId });
+                handler.externalEntityDecl("%" + name, extPublicId, extSystemId);
             }
-        } else if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
+        } else if (!pendingEntities.containsKey(name) && !pendingExternalNames.containsKey(name)
+                && !generalEntities.containsKey(name) && !externalEntityNames.containsKey(name)) {
             // The optional third element is the NDATA-declared notation name
             // (null for an ordinary, parsed external entity) - see {@link
             // #unparsedEntityDecl} firing at this map's eventual merge point.
             pendingExternalNames.put(name, new String[] { extPublicId, extSystemId, ndataName });
+            if (ndataName == null) {
+                handler.externalEntityDecl(name, extPublicId, extSystemId);
+            }
             if (parsingExternalContent) {
                 externallyDeclaredGeneralEntities.add(name);
             }
@@ -3457,7 +3716,9 @@ class Scanner implements ByteDecoderTarget {
         decl.contentType = type;
         decl.contentModel = model;
         decl.fromExternalSubset = parsingExternalContent;
-        dtdModel.declareElement(name, decl);
+        if (dtdModel.declareElement(name, decl)) {
+            handler.elementDecl(name, model == null ? type.name() : model.toString());
+        }
         return p;
     }
 
@@ -3939,9 +4200,43 @@ class Scanner implements ByteDecoderTarget {
             if (validationEnabled) {
                 checkAttlistDeclarationVCs(elementName, attrName, type, mode);
             }
-            dtdModel.declareAttribute(elementName, attrName, type, mode, rawDefault, enumeration,
-                    parsingExternalContent);
+            if (dtdModel.declareAttribute(elementName, attrName, type, mode, rawDefault, enumeration,
+                    parsingExternalContent)) {
+                handler.attributeDecl(elementName, attrName, formatAttributeDeclType(type, enumeration),
+                        formatAttributeDeclMode(mode), rawDefault);
+            }
             // loop continues: another AttDef, or S? '>' to end the declaration
+        }
+    }
+
+    private static String formatAttributeDeclType(String type, List<String> enumeration) {
+        if (enumeration == null || enumeration.isEmpty()) {
+            return type;
+        }
+        StringBuilder sb = new StringBuilder();
+        if ("NOTATION".equals(type)) {
+            sb.append("NOTATION ");
+        }
+        sb.append('(');
+        for (int i = 0; i < enumeration.size(); i++) {
+            if (i > 0) {
+                sb.append('|');
+            }
+            sb.append(enumeration.get(i));
+        }
+        return sb.append(')').toString();
+    }
+
+    private static String formatAttributeDeclMode(DTDModel.Mode mode) {
+        switch (mode) {
+            case REQUIRED:
+                return "#REQUIRED";
+            case IMPLIED:
+                return "#IMPLIED";
+            case FIXED:
+                return "#FIXED";
+            default:
+                return null;
         }
     }
 
@@ -3970,6 +4265,14 @@ class Scanner implements ByteDecoderTarget {
         }
         if (doctypeSeen) {
             throw handler.fatalError("Only one DOCTYPE declaration is allowed");
+        }
+        // Reject any DOCTYPE outright when disallow-doctype-decl is set,
+        // before any DTD processing (parameter entities, external subset
+        // fetch, etc.) begins - matching ContentParser.
+        if (settings.disallowDoctypeDecl) {
+            throw handler.fatalError(
+                    "DOCTYPE is disallowed when the feature "
+                    + "\"http://apache.org/xml/features/disallow-doctype-decl\" is set to true");
         }
 
         int p = tagStart + DOCTYPE_MARKER.length;
@@ -4015,6 +4318,8 @@ class Scanner implements ByteDecoderTarget {
             // scanDoctypeSubset() path below takes over.
             doctypeExternalPublicId = lastExternalIdPublicId;
             doctypeExternalSystemId = lastExternalIdSystemId;
+            doctypePublicId = lastExternalIdPublicId;
+            doctypeSystemId = lastExternalIdSystemId;
             p = r;
             p = skipOptionalWhitespace(p);
             if (p >= limit) {
@@ -4041,6 +4346,7 @@ class Scanner implements ByteDecoderTarget {
             // internal (and, later, external) subset produces is correctly
             // bracketed between it and the matching handler.endDTD() at
             // scanDoctypeSubset()'s own completion.
+            requestExternalSubset(name);
             handler.startDTD(name, doctypeExternalPublicId, doctypeExternalSystemId);
             doctypeNamePending = name;
             doctypePendingEntities = new HashMap<String, String>();
@@ -4066,12 +4372,47 @@ class Scanner implements ByteDecoderTarget {
         }
         p++;
         pos = p;
+        requestExternalSubset(name);
         handler.startDTD(name, doctypeExternalPublicId, doctypeExternalSystemId);
         finishDoctypeExternalSubset(name);
         handler.endDTD();
         doctypeSeen = true;
         doctypeName = name;
         return true;
+    }
+
+    /** {@link EntityResolver2#getExternalSubset} integration for a DOCTYPE
+     *  that declares no external ID of its own: called from {@link
+     *  #scanDoctype}'s two committed branches, right before {@link
+     *  XMLHandler#startDTD} fires (and therefore, per that method's
+     *  EntityResolver2 contract, before any internal subset data is
+     *  reported), so a subset the application supplies is reported exactly
+     *  as if the document had declared it - startDTD carries the {@link
+     *  InputSource}'s own IDs, and the source itself is parsed where the
+     *  declared external subset otherwise would be, by {@link
+     *  #finishDoctypeExternalSubset}, after the internal subset (if any)
+     *  has committed. Not consulted when the DOCTYPE already has an
+     *  external ID, or when external-parameter-entities is off (the
+     *  supplied subset would be skipped exactly like a declared one, so
+     *  don't ask for it at all). */
+    private void requestExternalSubset(String rootName) throws SAXException {
+        if (doctypeExternalSystemId != null || doctypeExternalPublicId != null
+                || !settings.externalParameterEntities
+                || !(entityResolver instanceof EntityResolver2)) {
+            return;
+        }
+        InputSource source;
+        try {
+            source = resolutionHelper().getExternalSubset(rootName);
+        } catch (IOException e) {
+            throw handler.fatalError("Failed to resolve the external DTD subset for \"" + rootName
+                    + "\": " + e.getMessage());
+        }
+        if (source != null) {
+            doctypeExternalSubsetSource = source;
+            doctypeExternalPublicId = source.getPublicId();
+            doctypeExternalSystemId = source.getSystemId();
+        }
     }
 
     /** Shared by both of {@link #scanDoctype}'s/{@link #scanDoctypeSubset}'s
@@ -4086,26 +4427,48 @@ class Scanner implements ByteDecoderTarget {
      *  purpose - nested inside the {@link XMLHandler#startDTD}/{@link
      *  XMLHandler#endDTD} pair both callers fire around this method. */
     private void finishDoctypeExternalSubset(String rootName) throws SAXException {
-        if (doctypeExternalSystemId != null) {
+        if (doctypeExternalSystemId != null || doctypeExternalSubsetSource != null) {
+            // The "[dtd]" bracket fires even when external-parameter-
+            // entities is off and the fetch itself is skipped - matching
+            // the old pipeline, where DTDParser fires the pair around a
+            // processExternalEntity call that returns without fetching.
             handler.startEntity("[dtd]");
-            char[] chars = fetchExternalResource("the external DTD subset for \"" + rootName + "\"",
-                    doctypeExternalPublicId, doctypeExternalSystemId);
-            // See baseSystemId's own Javadoc: for the duration of parsing
-            // the external subset, the current base becomes its own
-            // resolved location, so a parameter entity declared directly
-            // within it (not via another parameter entity) captures the
-            // right declaration-time base.
-            String savedBaseSystemId = baseSystemId;
-            baseSystemId = lastResolvedSystemId;
-            try {
-                parseExternalSubset(chars);
-            } finally {
-                baseSystemId = savedBaseSystemId;
+            if (settings.externalParameterEntities) {
+                char[] chars;
+                String what = "the external DTD subset for \"" + rootName + "\"";
+                if (doctypeExternalSubsetSource != null) {
+                    // Supplied by EntityResolver2.getExternalSubset for a
+                    // DOCTYPE with no external ID - see scanDoctype.
+                    try {
+                        chars = readExternalSource(doctypeExternalSubsetSource, what,
+                                doctypeExternalSystemId);
+                        checkVersionCompatibility(chars, what);
+                    } catch (IOException e) {
+                        throw handler.fatalError("Failed to fetch " + what + " ("
+                                + doctypeExternalSystemId + "): " + e.getMessage());
+                    }
+                } else {
+                    chars = fetchExternalResource("[dtd]", what,
+                            doctypeExternalPublicId, doctypeExternalSystemId);
+                }
+                // See baseSystemId's own Javadoc: for the duration of parsing
+                // the external subset, the current base becomes its own
+                // resolved location, so a parameter entity declared directly
+                // within it (not via another parameter entity) captures the
+                // right declaration-time base.
+                String savedBaseSystemId = baseSystemId;
+                baseSystemId = lastResolvedSystemId;
+                try {
+                    parseExternalSubset(chars);
+                } finally {
+                    baseSystemId = savedBaseSystemId;
+                }
             }
             handler.endEntity("[dtd]");
         }
         doctypeExternalPublicId = null;
         doctypeExternalSystemId = null;
+        doctypeExternalSubsetSource = null;
         resolveAttlistDefaultsAgainstEntities();
         if (validationEnabled) {
             checkAttlistDefaultsLegal();
@@ -4374,6 +4737,10 @@ class Scanner implements ByteDecoderTarget {
             throw handler.fatalError(
                     "External entity \"" + name + "\" may not be referenced in an attribute value");
         }
+        if (isExternal && externalEntityNames.get(name)[2] != null) {
+            throw handler.fatalError("Well-Formedness Constraint: Parsed Entity (Section 4.1). "
+                    + "Entity reference \"&" + name + ";\" names an unparsed entity.");
+        }
         if (standalone && externallyDeclaredGeneralEntities.contains(name)) {
             throw handler.fatalError("Well-Formedness Constraint: Entity Declared (Section 4.1). "
                     + "Document has standalone=\"yes\" but entity \"" + name
@@ -4382,9 +4749,7 @@ class Scanner implements ByteDecoderTarget {
         if (entityExpansionStack.contains(name)) {
             throw handler.fatalError("Recursive entity reference: &" + name + ";");
         }
-        if (++entityExpansionCount > MAX_ENTITY_EXPANSIONS) {
-            throw handler.fatalError("Entity expansion limit exceeded");
-        }
+        checkEntityExpansionLimit();
         return true;
     }
 
@@ -4433,12 +4798,18 @@ class Scanner implements ByteDecoderTarget {
         if (externalIds != null) {
             // External general entity: fetched lazily, right here, at first
             // reference - matching how internal entities are also only
-            // resolved lazily. A fetched entity's content may begin with an
-            // optional text declaration (same '<?xml ...?>' shape as the
-            // main document's XML declaration, but version is optional and
-            // it's never followed by 'standalone' - close enough to reuse
-            // the same strip logic; Scanner does not parse declarations
-            // itself either way, per its established boundary).
+            // resolved lazily. When external-general-entities is off
+            // (secure default), skip the fetch silently like ContentParser.
+            if (!settings.externalGeneralEntities) {
+                handler.endEntity(name);
+                return;
+            }
+            // A fetched entity's content may begin with an optional text
+            // declaration (same '<?xml ...?>' shape as the main document's
+            // XML declaration, but version is optional and it's never
+            // followed by 'standalone' - close enough to reuse the same
+            // strip logic; Scanner does not parse declarations itself either
+            // way, per its established boundary).
             replacementChars = XmlDeclUtil.stripXmlDeclaration(
                     fetchExternalEntity(name, externalIds[0], externalIds[1]), handler);
         } else {
@@ -4461,11 +4832,12 @@ class Scanner implements ByteDecoderTarget {
         entityStackFloors.add(stackDepthAtEntry);
         try {
             scan();
-            if (pos != limit || inStartTag || inAttributeValue) {
+            if (pos != limit || inStartTag || inAttributeValue || inPI || inComment || inCDATA || inDoctype) {
                 throw handler.fatalError("Entity \"" + name + "\" replacement text is not well-formed");
             }
             if (elementStack.size() != stackDepthAtEntry) {
-                throw handler.fatalError("Entity \"" + name + "\" replacement text is not well-formed: "
+                throw handler.fatalError("Well-Formedness Constraint: Parsed Entity (Section 4.1). Entity \""
+                        + name + "\" replacement text is not well-formed: "
                         + "element boundaries must nest within entity boundaries");
             }
             if (contentRunOpen) {
@@ -4543,6 +4915,11 @@ class Scanner implements ByteDecoderTarget {
             char c = text[q];
             if (c == '<') {
                 throw handler.fatalError("'<' is not allowed in an attribute value (via " + context + ")");
+            }
+            if (isWs(c)) {
+                sb.append(' ');
+                q++;
+                continue;
             }
             if (c != '&') {
                 sb.append(c);
@@ -4647,38 +5024,115 @@ class Scanner implements ByteDecoderTarget {
     // Both call sites strip a leading declaration themselves afterward -
     // Scanner never parses a declaration itself; see XmlDeclUtil.stripXmlDeclaration.
 
+    /** A {@link Locator} view of {@link #baseSystemId} (which changes while
+     *  parsing an external subset or external parameter entity), so {@link
+     *  EntityResolutionHelper} - written against the old pipeline's
+     *  Locator-carrying {@code ContentParser} - always sees the current
+     *  base URI. */
+    private final Locator baseSystemIdLocator = new Locator() {
+        public String getPublicId() {
+            return null;
+        }
+        public String getSystemId() {
+            return baseSystemId;
+        }
+        public int getLineNumber() {
+            return -1;
+        }
+        public int getColumnNumber() {
+            return -1;
+        }
+    };
+
+    /** Builds the {@link EntityResolutionHelper} used for every external
+     *  fetch: {@link EntityResolver2#resolveEntity(String, String, String,
+     *  String)} (with the entity name - {@code "%name"} for a parameter
+     *  entity, {@code "[dtd]"} for the external subset) when the resolver
+     *  supports it, plain SAX1 {@link EntityResolver#resolveEntity} as the
+     *  fallback, relative-URI resolution against {@link #baseSystemId}
+     *  gated on {@link ScannerSettings#resolveDTDURIs}. Constructed on
+     *  demand (it is stateless apart from the fields it wraps). */
+    private EntityResolutionHelper resolutionHelper() {
+        return new EntityResolutionHelper(entityResolver, baseSystemIdLocator, settings.resolveDTDURIs);
+    }
+
     /** Fetches and decodes {@code publicId}/{@code systemId} - the shared
      *  core of external entity and external DTD subset fetching. {@code
-     *  what} is used only in error messages. */
-    private char[] fetchExternalResource(String what, String publicId, String systemId) throws SAXException {
+     *  name} identifies the entity for {@link EntityResolver2}-style
+     *  resolution ({@code "name"}, {@code "%name"} or {@code "[dtd]"});
+     *  {@code what} is used only in error messages. */
+    private char[] fetchExternalResource(String name, String what, String publicId, String systemId)
+            throws SAXException {
+        // Defense-in-depth: JAXP accessExternalDTD gate (empty = none).
+        // Feature flags that disable external loading skip this method
+        // entirely; reaching here with an empty allow-list is a hard deny.
+        // The protocol is checked on the resolved absolute URI where
+        // resolve-dtd-uris permits resolving one, so a relative systemId
+        // inherits (and is checked against) its base's protocol.
+        if (systemId != null) {
+            String checkId = settings.resolveDTDURIs ? resolveSystemId(systemId) : systemId;
+            if (checkId == null) {
+                checkId = systemId;
+            }
+            if (settings.accessExternalDTD.isEmpty()) {
+                throw handler.fatalError(
+                        "Access to external entity denied by accessExternalDTD property "
+                        + "(no protocols allowed): " + checkId);
+            }
+            if (!DefaultEntityResolver.isProtocolAllowed(checkId, settings.accessExternalDTD)) {
+                throw handler.fatalError(
+                        "Access to external entity denied by accessExternalDTD property: " + checkId);
+            }
+        }
         try {
             InputSource resolved = null;
             if (entityResolver != null) {
-                resolved = entityResolver.resolveEntity(publicId, systemId);
+                resolved = resolutionHelper().resolveEntity(name, publicId, systemId);
             }
-            InputStream in;
-            String encodingHint;
-            if (resolved != null && resolved.getByteStream() != null) {
-                in = resolved.getByteStream();
-                encodingHint = resolved.getEncoding();
-                lastResolvedSystemId = resolved.getSystemId() != null ? resolved.getSystemId()
-                        : resolveSystemId(systemId);
-            } else {
-                String resolvedSystemId = resolveSystemId(systemId);
+            if (resolved == null) {
+                // No resolver, or it declined: open the systemId directly,
+                // resolved against the current base only when
+                // resolve-dtd-uris says to.
+                String resolvedSystemId = settings.resolveDTDURIs ? resolveSystemId(systemId) : systemId;
                 if (resolvedSystemId == null) {
                     throw handler.fatalError("Cannot resolve " + what + ": no system identifier");
                 }
-                in = openStream(resolvedSystemId);
-                encodingHint = null;
-                lastResolvedSystemId = resolvedSystemId;
+                resolved = new InputSource(resolvedSystemId);
             }
-            byte[] bytes = readAllExternalBytes(in);
-            char[] chars = XmlDeclUtil.decodeBytes(bytes, encodingHint);
+            char[] chars = readExternalSource(resolved, what, systemId);
             checkVersionCompatibility(chars, what);
             return chars;
         } catch (IOException e) {
             throw handler.fatalError("Failed to fetch " + what + " (" + systemId + "): " + e.getMessage());
         }
+    }
+
+    /** Drains {@code source} to a char array - byte stream (decoded with
+     *  the same BOM/declared-encoding detection as the main document),
+     *  character stream, or, failing both, a fresh stream opened from its
+     *  system identifier. Sets {@link #lastResolvedSystemId} to the
+     *  location actually read, falling back to {@code originalSystemId}
+     *  resolved against the current base for a stream-only source that
+     *  carries no location of its own. */
+    private char[] readExternalSource(InputSource source, String what, String originalSystemId)
+            throws SAXException, IOException {
+        String sourceSystemId = source.getSystemId() != null ? source.getSystemId()
+                : resolveSystemId(originalSystemId);
+        InputStream in = source.getByteStream();
+        if (in != null) {
+            lastResolvedSystemId = sourceSystemId;
+            return XmlDeclUtil.decodeBytes(readAllExternalBytes(in), source.getEncoding());
+        }
+        Reader reader = source.getCharacterStream();
+        if (reader != null) {
+            lastResolvedSystemId = sourceSystemId;
+            return readAllExternalChars(reader);
+        }
+        if (sourceSystemId == null) {
+            throw handler.fatalError("Cannot resolve " + what + ": no system identifier");
+        }
+        lastResolvedSystemId = sourceSystemId;
+        return XmlDeclUtil.decodeBytes(readAllExternalBytes(openStream(sourceSystemId)), source.getEncoding());
     }
 
     /** Set by {@link #fetchExternalResource} - the fully-resolved (absolute,
@@ -4710,7 +5164,7 @@ class Scanner implements ByteDecoderTarget {
     }
 
     private char[] fetchExternalEntity(String name, String publicId, String systemId) throws SAXException {
-        return fetchExternalResource("entity \"" + name + "\"", publicId, systemId);
+        return fetchExternalResource(name, "entity \"" + name + "\"", publicId, systemId);
     }
 
     private String resolveSystemId(String systemId) {
@@ -4743,6 +5197,20 @@ class Scanner implements ByteDecoderTarget {
             return out.toByteArray();
         } finally {
             in.close();
+        }
+    }
+
+    private static char[] readAllExternalChars(Reader reader) throws IOException {
+        try {
+            CharArrayWriter out = new CharArrayWriter();
+            char[] chunk = new char[8192];
+            int n;
+            while ((n = reader.read(chunk)) != -1) {
+                out.write(chunk, 0, n);
+            }
+            return out.toCharArray();
+        } finally {
+            reader.close();
         }
     }
 
@@ -5070,9 +5538,7 @@ class Scanner implements ByteDecoderTarget {
         if (parameterEntityExpansionStack.contains(name)) {
             throw handler.fatalError("Recursive parameter entity reference: %" + name + ";");
         }
-        if (++entityExpansionCount > MAX_ENTITY_EXPANSIONS) {
-            throw handler.fatalError("Entity expansion limit exceeded");
-        }
+        checkEntityExpansionLimit();
         parameterEntityExpansionStack.add(name);
         char[] savedBuf = buf;
         int savedLimit = limit;
@@ -5148,6 +5614,11 @@ class Scanner implements ByteDecoderTarget {
         if (externalIds == null) {
             throw handler.fatalError("Parameter entity \"%" + name + ";\" was not declared");
         }
+        if (!settings.externalParameterEntities) {
+            // Secure default: do not fetch external parameter entities.
+            lastParamEntityWasExternal = true;
+            return new char[0];
+        }
         lastParamEntityWasExternal = true;
         // Resolve externalIds[1] against this entity's own declaration-time
         // base (externalIds[2]), never baseSystemId's current value here -
@@ -5158,7 +5629,8 @@ class Scanner implements ByteDecoderTarget {
         }
         char[] fetched;
         try {
-            fetched = fetchExternalResource("parameter entity \"" + name + "\"", externalIds[0], externalIds[1]);
+            fetched = fetchExternalResource("%" + name, "parameter entity \"" + name + "\"",
+                    externalIds[0], externalIds[1]);
         } finally {
             baseSystemId = savedBaseSystemId;
         }
@@ -5385,9 +5857,7 @@ class Scanner implements ByteDecoderTarget {
         String name = new String(buf, nameStart, q - nameStart);
         char[] replacementChars = resolveParameterEntityReplacement(name, pendingParamEntities,
                 pendingParamExternalNames);
-        if (++entityExpansionCount > MAX_ENTITY_EXPANSIONS) {
-            throw handler.fatalError("Entity expansion limit exceeded");
-        }
+        checkEntityExpansionLimit();
         lastPEReferenceEnd = q + 1;
         return replacementChars;
     }
@@ -5467,7 +5937,7 @@ class Scanner implements ByteDecoderTarget {
                         + elementName + "\" has a default value declared in external markup, "
                         + "and was not specified.");
             }
-            handler.startAttribute(name, def.type);
+            handler.startAttribute(name, def.type, true, false);
             handler.attributeValueContent(CharBuffer.wrap(def.defaultValue), true);
         }
     }
@@ -5650,13 +6120,11 @@ class Scanner implements ByteDecoderTarget {
     }
 
     /** WFC (Namespaces in XML): an entity or notation name must not contain
-     *  a colon when namespace processing is enabled - mirrors the old
-     *  pipeline's {@code DTDParser.validateNameInNamespaceMode}, called from
+     *  a colon when namespace processing is enabled. Called from
      *  both {@link #scanEntityDeclaration} (general and parameter alike,
      *  matching that method's own two identical call sites) and {@link
      *  #scanNotationDeclaration}. Unlike {@link #checkNoColon}, this is a
-     *  fatal error, not a recoverable one - matching the old pipeline and
-     *  the {@code not-wf} expectation these constructs are tested against. */
+     *  fatal error, not a recoverable one. */
     private void checkNoColonInNamespaceMode(String name, String what) throws SAXException {
         if (namespaceAware && name.indexOf(':') >= 0) {
             throw handler.fatalError(

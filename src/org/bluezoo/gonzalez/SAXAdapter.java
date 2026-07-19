@@ -33,6 +33,7 @@ import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 import org.xml.sax.ext.Attributes2;
+import org.xml.sax.ext.DeclHandler;
 import org.xml.sax.ext.LexicalHandler;
 
 /**
@@ -93,11 +94,13 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         String qName;
         String type;
         String value;
+        boolean declared;
         boolean specified;
     }
 
     private ContentHandler contentHandler;
     private LexicalHandler lexicalHandler;
+    private DeclHandler declHandler;
     private DTDHandler dtdHandler;
     private ErrorHandler errorHandler;
     private String publicId;
@@ -137,6 +140,8 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     // or concurrent.
     private String currentAttributeName;
     private String currentAttributeType;
+    private boolean currentAttributeDeclared;
+    private boolean currentAttributeSpecified;
     private boolean attributeValueFirstChunk;
     private final StringBuilder attributeValueBuilder = new StringBuilder();
 
@@ -156,6 +161,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     // form of its own.
     private boolean commentDataFirstChunk;
     private final StringBuilder commentDataBuilder = new StringBuilder();
+    private boolean xmlnsUris;
 
     /**
      * Creates a new adapter.
@@ -181,6 +187,18 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     void setLexicalHandler(LexicalHandler handler) {
         this.lexicalHandler = handler;
+    }
+
+    void setDeclHandler(DeclHandler handler) {
+        this.declHandler = handler;
+    }
+
+    DeclHandler getDeclHandler() {
+        return declHandler;
+    }
+
+    void setXmlnsUris(boolean xmlnsUris) {
+        this.xmlnsUris = xmlnsUris;
     }
 
     void setDTDHandler(DTDHandler handler) {
@@ -251,8 +269,16 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     @Override
     public void startAttribute(String name, String type) throws SAXException {
+        startAttribute(name, type, false, true);
+    }
+
+    @Override
+    public void startAttribute(String name, String type, boolean declared, boolean specified)
+            throws SAXException {
         currentAttributeName = name;
         currentAttributeType = type;
+        currentAttributeDeclared = declared;
+        currentAttributeSpecified = specified;
         attributeValueFirstChunk = true;
     }
 
@@ -318,7 +344,14 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         attr.qName = qName;
         attr.type = currentAttributeType;
         attr.value = valueStr;
-        attr.specified = true;
+        attr.declared = currentAttributeDeclared;
+        attr.specified = currentAttributeSpecified;
+        if (namespaceAware && xmlnsUris
+                && ("xmlns".equals(qName) || qName.startsWith("xmlns:"))) {
+            attr.uri = NamespaceScopeTracker.XMLNS_NAMESPACE_URI;
+            int colon = qName.indexOf(':');
+            attr.localName = colon < 0 ? "xmlns" : qName.substring(colon + 1);
+        }
         attrCount++;
         if (qName.indexOf(':') >= 0) {
             hasPrefixedAttributes = true;
@@ -560,6 +593,42 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     }
 
     @Override
+    public void elementDecl(String name, String model) throws SAXException {
+        if (declHandler != null) {
+            declHandler.elementDecl(name, model);
+        }
+    }
+
+    @Override
+    public void attributeDecl(String eName, String aName, String type, String mode, String value)
+            throws SAXException {
+        if (declHandler != null) {
+            declHandler.attributeDecl(eName, aName, type, mode, value);
+        }
+    }
+
+    @Override
+    public void internalEntityDecl(String name, String value) throws SAXException {
+        if (declHandler != null) {
+            declHandler.internalEntityDecl(name, value);
+        }
+    }
+
+    @Override
+    public void externalEntityDecl(String name, String publicId, String systemId) throws SAXException {
+        if (declHandler != null) {
+            declHandler.externalEntityDecl(name, publicId, systemId);
+        }
+    }
+
+    @Override
+    public void skippedEntity(String name) throws SAXException {
+        if (contentHandler != null) {
+            contentHandler.skippedEntity(name);
+        }
+    }
+
+    @Override
     public void piTarget(String target) throws SAXException {
         currentPITarget = target;
         piDataFirstChunk = true;
@@ -727,35 +796,30 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         return i < 0 ? null : attrPool.get(i).value;
     }
 
-    // Attributes2 - no DTD-declaration introspection wired here yet (see
-    // this section's header comment), so isDeclared() is always false
-    // rather than performing a lazy DTD lookup; isSpecified() is always
-    // true, matching this pipeline's existing behaviour (every attribute
-    // reaching addCurrentAttribute, defaulted or explicit, is recorded the
-    // same way - see Scanner.applyAttributeDefaults).
-
     @Override
     public boolean isDeclared(int index) {
         if (index < 0 || index >= attrCount) {
             throw new ArrayIndexOutOfBoundsException(index);
         }
-        return false;
+        return attrPool.get(index).declared;
     }
 
     @Override
     public boolean isDeclared(String qName) {
-        if (findIndexByQName(qName) < 0) {
+        int i = findIndexByQName(qName);
+        if (i < 0) {
             throw new IllegalArgumentException("Unknown attribute: " + qName);
         }
-        return false;
+        return attrPool.get(i).declared;
     }
 
     @Override
     public boolean isDeclared(String uri, String localName) {
-        if (findIndexByExpandedName(uri, localName) < 0) {
+        int i = findIndexByExpandedName(uri, localName);
+        if (i < 0) {
             throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
         }
-        return false;
+        return attrPool.get(i).declared;
     }
 
     @Override

@@ -53,38 +53,28 @@ pipeline like Gumdrop or Netty, receiving ByteBuffer chunks from network channel
 
 ![Gonzalez NIO Event Pipeline](event-pipeline.svg)
 
-### Tokenizer and EED (external entity decoder)
+### Scanner and EED (external entity decoder)
 
 Gonzalez treats the source document being processed itself as an external
-entity, as well as external identities that are potentially referenced
+entity, as well as external entities that are potentially referenced
 inside it. The job of the EED is to convert byte data into character data,
 and it will use the XML declaration and text declarations (if any) as well
 as BOMs in the byte data to determine the character set decoding process to
 be used via NIO.
 
-The tokenizer processes the character data to produce token events using
-a state trie to predictably decide on token types and boundaries.
-When the tokenizer emits tokens, it passes them to a token consumer via
-the latters receive(Token, CharBuffer) interface, so character data
-associated with the token is exposed via the NIO CharBuffer interface.
+The Scanner processes the character data directly against the XML grammar,
+emitting events through an internal XMLHandler. A SAXAdapter converts those
+events to the configured SAX2 handlers (ContentHandler, LexicalHandler,
+DeclHandler, DTDHandler).
 
-### Content Parser
+### DTD handling
 
-The content parser is a type of token consumer which handles the main XML
-content grammar: elements, attributes, PI, comments etc. It reports events
-to the configured SAX ContentHandler.
-
-### DTD Parser
-
-Most XML documents in practice are standalone documents without DTDs. To
-minimize memory overhead for the common case, the DTD parser is a separate
-component that is loaded only when a DOCTYPE declaration is encountered.
-
-The DTD parser uses the same token consumer interface as the content parser.
-It receives DTD content via `receive(Token, CharBuffer)` and reports
-declarations through the standard SAX interfaces: DTDHandler for notations
-and unparsed entities, DeclHandler for element and attribute declarations,
-and LexicalHandler for comments and entity boundaries.
+Most XML documents in practice are standalone documents without DTDs. When a
+DOCTYPE is present, the Scanner parses the internal and external subsets
+inline and reports declarations through the standard SAX interfaces:
+DTDHandler for notations and unparsed entities, DeclHandler for element and
+attribute declarations, and LexicalHandler for comments and entity
+boundaries.
 
 ### External Entity Resolution
 

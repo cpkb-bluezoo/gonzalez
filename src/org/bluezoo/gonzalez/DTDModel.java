@@ -118,21 +118,21 @@ class DTDModel {
 
     /** Element declarations, keyed by name - the content-model tree is only
      *  present when validation was enabled at declaration time (see {@link
-     *  Scanner#scanElementDeclaration}). Reuses {@link ElementDeclaration}
-     *  unchanged from the old tokenizer-based pipeline: it and {@link
-     *  ContentModelValidator} are framework-independent already, with no
-     *  {@code Tokenizer}/{@code ContentParser} coupling to work around. */
+     *  Scanner#scanElementDeclaration}). Shared with {@link
+     *  ContentModelValidator} for VC content-model checking. */
     private final Map<String, ElementDeclaration> elements = new HashMap<String, ElementDeclaration>();
     private final Map<String, LinkedHashMap<String, AttDef>> attlists =
             new HashMap<String, LinkedHashMap<String, AttDef>>();
 
-    void declareElement(String element, ElementDeclaration decl) {
+    boolean declareElement(String element, ElementDeclaration decl) {
         if (!elements.containsKey(element)) {
             elements.put(element, decl);
+            return true;
         }
+        return false;
     }
 
-    void declareAttribute(String element, String attrName, String type, Mode mode, String rawDefault,
+    boolean declareAttribute(String element, String attrName, String type, Mode mode, String rawDefault,
             List<String> enumeration, boolean declaredExternally) {
         LinkedHashMap<String, AttDef> attrs = attlists.get(element);
         if (attrs == null) {
@@ -141,7 +141,9 @@ class DTDModel {
         }
         if (!attrs.containsKey(attrName)) {
             attrs.put(attrName, new AttDef(type, mode, rawDefault, enumeration, declaredExternally));
+            return true;
         }
+        return false;
     }
 
     /** Returns the declared content type for {@code element}, or null if

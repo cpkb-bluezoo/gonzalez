@@ -144,7 +144,7 @@ public class AllocationProfiler {
         System.out.println("  Parsing (receive+close): " + reuseParseAlloc + " B (" + (reuseParseAlloc / 1024) + " KB)");
         System.out.println();
 
-        // === Test 5: Null handler (pure tokenizer + ContentParser overhead, no SAX callbacks) ===
+        // === Test 5: Null handler (pure Scanner overhead, no SAX callbacks) ===
         Parser nullHandler = new Parser();
         nullHandler.setFeature("http://xml.org/sax/features/namespaces", false);
         // No setContentHandler - leave it null

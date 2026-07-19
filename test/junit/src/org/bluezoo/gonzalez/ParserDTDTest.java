@@ -48,8 +48,6 @@ import static org.junit.Assert.*;
  */
 public class ParserDTDTest {
 
-    private static final String DTD_PARSER_PROPERTY = "http://www.nongnu.org/gonzalez/properties/dtd-parser";
-
     private Parser createParser(ContentHandler contentHandler, LexicalHandler lexicalHandler,
             DeclHandler declHandler, DTDHandler dtdHandler) throws SAXException {
         Parser parser = new Parser();
@@ -164,23 +162,15 @@ public class ParserDTDTest {
                      "]>\n" +
                      "<root><title>Test</title><body><para>Hello</para></body></root>";
 
-        ContentHandler contentHandler = new MinimalContentHandler();
-        LexicalHandler lexicalHandler = new MinimalLexicalHandler();
-        Parser parser = createParser(contentHandler, lexicalHandler, null, null);
+        DeclCapture decls = new DeclCapture();
+        Parser parser = createParser(new MinimalContentHandler(), new MinimalLexicalHandler(), decls, null);
         parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes())));
 
-        DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-        assertNotNull("DTDParser not available", dtdParser);
-
-        ElementDeclaration rootDecl = dtdParser.getElementDeclaration("root");
-        assertNotNull("root element declaration not found", rootDecl);
-
-        ElementDeclaration titleDecl = dtdParser.getElementDeclaration("title");
-        assertNotNull("title element declaration not found", titleDecl);
-        assertEquals("title should be MIXED", ElementDeclaration.ContentType.MIXED, titleDecl.contentType);
-
-        ElementDeclaration bodyDecl = dtdParser.getElementDeclaration("body");
-        assertNotNull("body element declaration not found", bodyDecl);
+        assertTrue("root element declaration not found", decls.elements.containsKey("root"));
+        assertTrue("title element declaration not found", decls.elements.containsKey("title"));
+        assertEquals("(#PCDATA)", decls.elements.get("title"));
+        assertTrue("body element declaration not found", decls.elements.containsKey("body"));
+        assertTrue("para element declaration not found", decls.elements.containsKey("para"));
     }
 
     @Test
@@ -194,28 +184,16 @@ public class ParserDTDTest {
                      "]>\n" +
                      "<doc id=\"test\" type=\"sample\"/>";
 
-        ContentHandler contentHandler = new MinimalContentHandler();
-        LexicalHandler lexicalHandler = new MinimalLexicalHandler();
-        Parser parser = createParser(contentHandler, lexicalHandler, null, null);
+        DeclCapture decls = new DeclCapture();
+        Parser parser = createParser(new MinimalContentHandler(), new MinimalLexicalHandler(), decls, null);
         parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes())));
 
-        DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-        assertNotNull("DTDParser not available", dtdParser);
-
-        AttributeDeclaration idAttr = dtdParser.getAttributeDeclaration("doc", "id");
-        assertNotNull("id attribute declaration not found", idAttr);
-        assertEquals("ID", idAttr.type);
-
-        AttributeDeclaration typeAttr = dtdParser.getAttributeDeclaration("doc", "type");
-        assertNotNull("type attribute declaration not found", typeAttr);
-        assertEquals("CDATA", typeAttr.type);
-
-        AttributeDeclaration versionAttr = dtdParser.getAttributeDeclaration("doc", "version");
-        assertNotNull("version attribute declaration not found", versionAttr);
-        assertNotNull("version default value", versionAttr.defaultValue);
-        assertEquals("version default size", 1, versionAttr.defaultValue.size());
-        String defaultValueStr = versionAttr.defaultValue.get(0).toString();
-        assertEquals("1.0", defaultValueStr);
+        assertEquals("ID", decls.attrs.get("doc/id")[0]);
+        assertEquals("#REQUIRED", decls.attrs.get("doc/id")[1]);
+        assertEquals("CDATA", decls.attrs.get("doc/type")[0]);
+        assertEquals("#IMPLIED", decls.attrs.get("doc/type")[1]);
+        assertEquals("CDATA", decls.attrs.get("doc/version")[0]);
+        assertEquals("1.0", decls.attrs.get("doc/version")[2]);
     }
 
     @Test
@@ -228,18 +206,15 @@ public class ParserDTDTest {
                      "]>\n" +
                      "<book title=\"My Book\"><chapter number=\"1\">Content</chapter></book>";
 
-        ContentHandler contentHandler = new MinimalContentHandler();
-        LexicalHandler lexicalHandler = new MinimalLexicalHandler();
-        Parser parser = createParser(contentHandler, lexicalHandler, null, null);
+        DeclCapture decls = new DeclCapture();
+        Parser parser = createParser(new MinimalContentHandler(), new MinimalLexicalHandler(), decls, null);
         parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes())));
 
-        DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-        assertNotNull("DTDParser not available", dtdParser);
-
-        assertNotNull("book element not found", dtdParser.getElementDeclaration("book"));
-        assertNotNull("book/@title not found", dtdParser.getAttributeDeclaration("book", "title"));
-        assertNotNull("chapter element not found", dtdParser.getElementDeclaration("chapter"));
-        assertNotNull("chapter/@number not found", dtdParser.getAttributeDeclaration("chapter", "number"));
+        assertTrue("book element not found", decls.elements.containsKey("book"));
+        assertTrue("book/@title not found", decls.attrs.containsKey("book/title"));
+        assertTrue("chapter element not found", decls.elements.containsKey("chapter"));
+        assertTrue("chapter/@number not found", decls.attrs.containsKey("chapter/number"));
+        assertEquals("NMTOKEN", decls.attrs.get("chapter/number")[0]);
     }
 
     @Test
@@ -273,24 +248,16 @@ public class ParserDTDTest {
         }
 
         try {
-            ContentHandler contentHandler = new MinimalContentHandler();
-            LexicalHandler lexicalHandler = new MinimalLexicalHandler();
-            Parser parser = createParser(contentHandler, lexicalHandler, null, null);
+            DeclCapture decls = new DeclCapture();
+            Parser parser = createParser(new MinimalContentHandler(), new MinimalLexicalHandler(), decls, null);
             parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
             parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
             parser.parse(xmlFile.toURI().toString());
 
-            DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-            assertNotNull("DTDParser not available", dtdParser);
-
-            ElementDeclaration articleDecl = dtdParser.getElementDeclaration("article");
-            assertNotNull("article element not found", articleDecl);
-
-            AttributeDeclaration langAttr = dtdParser.getAttributeDeclaration("article", "lang");
-            assertNotNull("article/@lang not found", langAttr);
-
-            AttributeDeclaration statusAttr = dtdParser.getAttributeDeclaration("article", "status");
-            assertNotNull("article/@status not found", statusAttr);
+            assertTrue("article element not found", decls.elements.containsKey("article"));
+            assertTrue("article/@lang not found", decls.attrs.containsKey("article/lang"));
+            assertTrue("article/@status not found", decls.attrs.containsKey("article/status"));
+            assertEquals("draft", decls.attrs.get("article/status")[2]);
         } finally {
             dtdFile.delete();
             xmlFile.delete();
@@ -309,21 +276,12 @@ public class ParserDTDTest {
                      "]>\n" +
                      "<doc id=\"test\" type=\"sample\"/>";
 
-        Parser parser = new Parser();
-        parser.setContentHandler(new MinimalContentHandler());
-        parser.setProperty("http://xml.org/sax/properties/lexical-handler", new MinimalLexicalHandler());
+        DeclCapture decls = new DeclCapture();
+        Parser parser = createParser(new MinimalContentHandler(), new MinimalLexicalHandler(), decls, null);
         parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes())));
 
-        DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-        assertNotNull("DTDParser not available", dtdParser);
-
-        AttributeDeclaration idAttr = dtdParser.getAttributeDeclaration("doc", "id");
-        assertNotNull("id attribute not found", idAttr);
-        assertEquals("ID", idAttr.type);
-
-        AttributeDeclaration typeAttr = dtdParser.getAttributeDeclaration("doc", "type");
-        assertNotNull("type attribute not found", typeAttr);
-        assertEquals("CDATA", typeAttr.type);
+        assertEquals("ID", decls.attrs.get("doc/id")[0]);
+        assertEquals("CDATA", decls.attrs.get("doc/type")[0]);
     }
 
     // --- NOTATION Declaration Tests (from NotationDeclTest) ---
@@ -544,6 +502,30 @@ public class ParserDTDTest {
 
         @Override
         public void skippedEntity(String name) {
+        }
+    }
+
+
+    private static class DeclCapture implements DeclHandler {
+        final Map<String, String> elements = new HashMap<String, String>();
+        final Map<String, String[]> attrs = new HashMap<String, String[]>();
+
+        @Override
+        public void elementDecl(String name, String model) {
+            elements.put(name, model);
+        }
+
+        @Override
+        public void attributeDecl(String eName, String aName, String type, String mode, String value) {
+            attrs.put(eName + "/" + aName, new String[] { type, mode, value });
+        }
+
+        @Override
+        public void internalEntityDecl(String name, String value) {
+        }
+
+        @Override
+        public void externalEntityDecl(String name, String publicId, String systemId) {
         }
     }
 

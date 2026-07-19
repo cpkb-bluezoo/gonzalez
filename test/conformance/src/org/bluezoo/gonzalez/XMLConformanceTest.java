@@ -101,7 +101,7 @@ public class XMLConformanceTest {
      *  hardening phase. Set to {@code "scanner"} (by the {@code
      *  test-conformance-scanner} ant target) to run the new async pipeline
      *  (Scanner -> NamespaceFilter -> SAXAdapter) via {@code new
-     *  Parser(Parser.Pipeline.SCANNER)} instead - the device under test, not
+     *  Parser()} instead - the device under test, not
      *  the harness itself, changes. */
     private static final String PARSER_PROPERTY = "gonzalez.conformance.parser";
 
@@ -112,7 +112,7 @@ public class XMLConformanceTest {
      *  loading test metadata isn't part of what's being tested. */
     private static XMLReader newParserUnderTest() {
         if ("scanner".equals(System.getProperty(PARSER_PROPERTY))) {
-            return new Parser(Parser.Pipeline.SCANNER);
+            return new Parser();
         }
         return new Parser();
     }

@@ -35,8 +35,8 @@ import org.xml.sax.SAXException;
  * section) - a fetched external resource is always small and fully in
  * memory already, so this is a simplified, one-shot (not streaming)
  * decode, unlike the main document's own streaming byte-to-char pipeline
- * (see {@link ExternalEntityDecoder}, which drives both {@link Tokenizer}
- * and {@link Scanner} for the main document via {@link ByteDecoderTarget}).
+ * (see {@link ExternalEntityDecoder}, which drives {@link Scanner} for the
+ * main document).
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -53,8 +53,8 @@ final class XmlDeclUtil {
      * encoding, so a raw Latin-1-style byte-to-char widening is always safe
      * for just that sniff), then {@code encodingHint} (e.g. an {@code
      * InputSource}'s own encoding, or an HTTP Content-Type charset), then
-     * UTF-8 as the final default - the same precedence order {@code
-     * ExternalEntityDecoder} uses for the old pipeline.
+     * UTF-8 as the final default - the same precedence order
+     * {@link ExternalEntityDecoder} uses.
      */
     static char[] decodeBytes(byte[] bytes, String encodingHint) {
         Charset charset;

@@ -65,10 +65,15 @@ class NamespaceFilter implements XMLHandler {
 
     private final XMLHandler delegate;
     private boolean xml11;
+    private boolean namespacePrefixes;
+    private boolean xmlnsUris;
 
     // Set by startAttribute(), consulted by attributeValueContent() for the
     // duration of the current attribute only.
     private String currentAttrName;
+    private String currentAttrType;
+    private boolean currentAttrDeclared;
+    private boolean currentAttrSpecified;
     private boolean currentIsNamespaceDecl;
     private boolean valueFirstChunk;
     private final StringBuilder valueBuilder = new StringBuilder();
@@ -83,6 +88,17 @@ class NamespaceFilter implements XMLHandler {
     NamespaceFilter(XMLHandler delegate, boolean xml11) {
         this.delegate = delegate;
         this.xml11 = xml11;
+    }
+
+    void setNamespacePrefixes(boolean namespacePrefixes) {
+        this.namespacePrefixes = namespacePrefixes;
+    }
+
+    void setXmlnsUris(boolean xmlnsUris) {
+        this.xmlnsUris = xmlnsUris;
+        if (delegate instanceof SAXAdapter) {
+            ((SAXAdapter) delegate).setXmlnsUris(xmlnsUris);
+        }
     }
 
     @Override
@@ -126,12 +142,21 @@ class NamespaceFilter implements XMLHandler {
 
     @Override
     public void startAttribute(String name, String type) throws SAXException {
+        startAttribute(name, type, false, true);
+    }
+
+    @Override
+    public void startAttribute(String name, String type, boolean declared, boolean specified)
+            throws SAXException {
         currentAttrName = name;
+        currentAttrType = type;
+        currentAttrDeclared = declared;
+        currentAttrSpecified = specified;
         currentIsNamespaceDecl = "xmlns".equals(name) || name.startsWith("xmlns:");
         if (currentIsNamespaceDecl) {
             valueFirstChunk = true;
         } else {
-            delegate.startAttribute(name, type);
+            delegate.startAttribute(name, type, declared, specified);
         }
     }
 
@@ -156,6 +181,7 @@ class NamespaceFilter implements XMLHandler {
     }
 
     private void declareNamespace(String attrName, String uri) throws SAXException {
+        String prefix;
         if ("xmlns".equals(attrName)) {
             if (NamespaceScopeTracker.XML_NAMESPACE_URI.equals(uri)) {
                 throw delegate.fatalError(
@@ -166,36 +192,39 @@ class NamespaceFilter implements XMLHandler {
                         "Cannot bind default namespace to reserved xmlns namespace URI");
             }
             validateNamespaceURI(uri);
-            delegate.namespace("", uri);
-            return;
+            prefix = "";
+        } else {
+            prefix = attrName.substring(6); // skip "xmlns:"
+            if (prefix.isEmpty()) {
+                throw delegate.fatalError("Namespace prefix must not be empty after xmlns:");
+            }
+            if (uri.isEmpty() && !xml11) {
+                throw delegate.fatalError(
+                        "Prefix unbinding (xmlns:" + prefix + "=\"\") is only allowed in XML 1.1");
+            }
+            if ("xml".equals(prefix) && !NamespaceScopeTracker.XML_NAMESPACE_URI.equals(uri)) {
+                throw delegate.fatalError(
+                        "Cannot bind 'xml' prefix to namespace other than "
+                                + NamespaceScopeTracker.XML_NAMESPACE_URI);
+            }
+            if ("xmlns".equals(prefix)) {
+                throw delegate.fatalError("Cannot declare 'xmlns' prefix");
+            }
+            if (NamespaceScopeTracker.XML_NAMESPACE_URI.equals(uri) && !"xml".equals(prefix)) {
+                throw delegate.fatalError(
+                        "Cannot bind prefix '" + prefix + "' to reserved XML namespace URI");
+            }
+            if (NamespaceScopeTracker.XMLNS_NAMESPACE_URI.equals(uri)) {
+                throw delegate.fatalError(
+                        "Cannot bind prefix '" + prefix + "' to reserved xmlns namespace URI");
+            }
+            validateNamespaceURI(uri);
         }
-
-        String prefix = attrName.substring(6); // skip "xmlns:"
-        if (prefix.isEmpty()) {
-            throw delegate.fatalError("Namespace prefix must not be empty after xmlns:");
-        }
-        if (uri.isEmpty() && !xml11) {
-            throw delegate.fatalError(
-                    "Prefix unbinding (xmlns:" + prefix + "=\"\") is only allowed in XML 1.1");
-        }
-        if ("xml".equals(prefix) && !NamespaceScopeTracker.XML_NAMESPACE_URI.equals(uri)) {
-            throw delegate.fatalError(
-                    "Cannot bind 'xml' prefix to namespace other than "
-                            + NamespaceScopeTracker.XML_NAMESPACE_URI);
-        }
-        if ("xmlns".equals(prefix)) {
-            throw delegate.fatalError("Cannot declare 'xmlns' prefix");
-        }
-        if (NamespaceScopeTracker.XML_NAMESPACE_URI.equals(uri) && !"xml".equals(prefix)) {
-            throw delegate.fatalError(
-                    "Cannot bind prefix '" + prefix + "' to reserved XML namespace URI");
-        }
-        if (NamespaceScopeTracker.XMLNS_NAMESPACE_URI.equals(uri)) {
-            throw delegate.fatalError(
-                    "Cannot bind prefix '" + prefix + "' to reserved xmlns namespace URI");
-        }
-        validateNamespaceURI(uri);
         delegate.namespace(prefix, uri);
+        if (namespacePrefixes) {
+            delegate.startAttribute(attrName, currentAttrType, currentAttrDeclared, currentAttrSpecified);
+            delegate.attributeValueContent(CharBuffer.wrap(uri), true);
+        }
     }
 
     /**
@@ -315,6 +344,32 @@ class NamespaceFilter implements XMLHandler {
     public void unparsedEntityDecl(String name, String publicId, String systemId, String notationName)
             throws SAXException {
         delegate.unparsedEntityDecl(name, publicId, systemId, notationName);
+    }
+
+    @Override
+    public void elementDecl(String name, String model) throws SAXException {
+        delegate.elementDecl(name, model);
+    }
+
+    @Override
+    public void attributeDecl(String eName, String aName, String type, String mode, String value)
+            throws SAXException {
+        delegate.attributeDecl(eName, aName, type, mode, value);
+    }
+
+    @Override
+    public void internalEntityDecl(String name, String value) throws SAXException {
+        delegate.internalEntityDecl(name, value);
+    }
+
+    @Override
+    public void externalEntityDecl(String name, String publicId, String systemId) throws SAXException {
+        delegate.externalEntityDecl(name, publicId, systemId);
+    }
+
+    @Override
+    public void skippedEntity(String name) throws SAXException {
+        delegate.skippedEntity(name);
     }
 
     @Override

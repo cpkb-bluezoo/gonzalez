@@ -160,6 +160,17 @@ public class ParserLifecycleTest {
         assertTrue("xml-1.1 is supported (read-only)", xml11);
     }
 
+    /** Smoke: SCANNER pipeline exposes the same secure feature defaults as TOKENIZER. */
+    @Test
+    public void testScannerPipelineFeatureDefaultsSmoke() throws Exception {
+        Parser parser = new Parser();
+        assertTrue(parser.getFeature("http://xml.org/sax/features/namespaces"));
+        assertFalse(parser.getFeature("http://xml.org/sax/features/external-general-entities"));
+        assertFalse(parser.getFeature("http://xml.org/sax/features/external-parameter-entities"));
+        assertTrue(parser.getFeature("http://javax.xml.XMLConstants/feature/secure-processing"));
+        assertEquals("", parser.getProperty("http://javax.xml.XMLConstants/property/accessExternalDTD"));
+    }
+
     @Test
     public void testReadOnlyFeatures() throws Exception {
         Parser parser = new Parser();

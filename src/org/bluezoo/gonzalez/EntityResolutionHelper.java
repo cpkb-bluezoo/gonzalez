@@ -44,7 +44,7 @@ import org.xml.sax.ext.EntityResolver2;
  *   <li>External DTD subset resolution</li>
  * </ul>
  *
- * <p>This helper delegates to the ContentParser's Locator to get the base URI
+ * <p>This helper uses the supplied Locator to get the base URI
  * for relative resolution.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>

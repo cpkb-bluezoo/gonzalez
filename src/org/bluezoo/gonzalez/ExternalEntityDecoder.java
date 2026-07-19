@@ -34,7 +34,7 @@ import java.util.Objects;
 import org.xml.sax.SAXException;
 
 /**
- * Decodes byte streams from external entities into character streams for tokenization.
+ * Decodes byte streams from external entities into character streams for scanning.
  * 
  * <p>This class handles:
  * <ul>
@@ -42,11 +42,10 @@ import org.xml.sax.SAXException;
  * <li>XML/text declaration parsing (directly from bytes - no decode needed)</li>
  * <li>Charset decoding with underflow handling</li>
  * <li>Line-ending normalization</li>
- * <li>Location tracking (line/column numbers)</li>
  * </ul>
  * 
- * <p>Decoded character data is fed to a {@link Tokenizer} via its
- * {@code receive(CharBuffer)} method.
+ * <p>Decoded character data is fed to a {@link Scanner} via {@link
+ * Scanner#receive(CharBuffer)}.
  * 
  * <h3>Zero-Copy Declaration Parsing</h3>
  * <p>XML/text declarations only contain 7-bit ASCII characters. This class
@@ -95,7 +94,7 @@ class ExternalEntityDecoder {
      */
     private BOM bom = BOM.NONE;
     
-    // ===== Tokenizer Integration =====
+    // ===== Scanner Integration =====
     
     /**
      * Whether this decoder is for an external entity (vs. the document entity).
@@ -127,25 +126,9 @@ class ExternalEntityDecoder {
     private CharBuffer charBuffer;
 
     /**
-     * The target that consumes decoded characters - either a {@link
-     * Tokenizer} (old pipeline) or a {@link Scanner} (new pipeline), chosen
-     * by {@link Parser.Pipeline}; see {@link ByteDecoderTarget}'s own class
-     * Javadoc for why this generalisation is deliberately narrow.
+     * The scanner that consumes decoded characters.
      */
-    private final ByteDecoderTarget target;
-
-    /**
-     * Non-null only when {@link #target} is actually a {@link Tokenizer} -
-     * used for the richer, Tokenizer-only bookkeeping this class has always
-     * done (location tracking, {@code standalone}/{@code documentVersion}
-     * storage, {@code publicId}/{@code systemId} fields) that {@link
-     * ByteDecoderTarget} deliberately doesn't cover, since {@link Scanner}
-     * doesn't support any of it yet. Simply skipped (not an error) when
-     * null - the {@link Scanner} pipeline runs {@link #target} through
-     * exactly the same declaration-resolution logic, just without this
-     * extra layer of metadata nothing downstream reads yet.
-     */
-    private final Tokenizer tokenizerTarget;
+    private final Scanner scanner;
 
     /**
      * True when the most recent decodeAndTokenize() call left undecoded bytes
@@ -167,7 +150,7 @@ class ExternalEntityDecoder {
     private enum State {
         INIT,           // Initial state, checking for BOM
         SEEN_BOM,       // BOM detected (or no BOM), ready to check for XMLDecl/TextDecl
-        CONTENT,        // Processing content with main tokenizer
+        CONTENT,        // Processing content with main scanner
         CLOSED          // Decoder has been closed, cannot receive more data
     }
     
@@ -194,20 +177,14 @@ class ExternalEntityDecoder {
     /**
      * Creates a new external entity decoder.
      *
-     * @param target the target (a {@link Tokenizer} or a {@link Scanner}) to
-     *         receive decoded characters
+     * @param scanner the {@link Scanner} to receive decoded characters
      * @param publicId public identifier for this entity (may be null)
      * @param systemId system identifier for this entity (may be null)
      * @param isExternalEntity true if this is an external parsed entity, false for document entity
      */
-    public ExternalEntityDecoder(ByteDecoderTarget target, String publicId, String systemId,
+    public ExternalEntityDecoder(Scanner scanner, String publicId, String systemId,
             boolean isExternalEntity) {
-        this.target = Objects.requireNonNull(target);
-        this.tokenizerTarget = (target instanceof Tokenizer) ? (Tokenizer) target : null;
-        if (tokenizerTarget != null) {
-            tokenizerTarget.publicId = publicId;
-            tokenizerTarget.systemId = systemId;
-        }
+        this.scanner = Objects.requireNonNull(scanner);
         this.isExternalEntity = isExternalEntity;
         declParser = isExternalEntity ? new TextDeclParser() : new XMLDeclParser();
     }
@@ -282,11 +259,11 @@ class ExternalEntityDecoder {
             // The caller has signaled there is no more data, but the last
             // decode attempt still had undecoded bytes forming part of a
             // multi-byte character - the stream ended mid-character.
-            throw target.fatalError(
+            throw scanner.fatalError(
                 "Unexpected end of input: incomplete byte sequence in encoding "
                 + (charset != null ? charset.name() : "unknown") + " at end of stream");
         }
-        target.close();
+        scanner.close();
         state = State.CLOSED;
     }
     
@@ -355,11 +332,6 @@ class ExternalEntityDecoder {
         if (b0 == 0xFE && b1 == 0xFF) {
             bom = BOM.UTF16BE;
             startDecl = data.position();
-            if (tokenizerTarget != null) {
-                tokenizerTarget.charPosition = 1;
-                tokenizerTarget.columnNumber = 1;
-                tokenizerTarget.locationValidCharPos = 1;
-            }
         } else if (b0 == 0xFF && b1 == 0xFE) {
             if (data.remaining() < 2) {
                 data.position(startPos);
@@ -374,11 +346,6 @@ class ExternalEntityDecoder {
                 data.position(startPos + 2);
             }
             startDecl = data.position();
-            if (tokenizerTarget != null) {
-                tokenizerTarget.charPosition = 1;
-                tokenizerTarget.columnNumber = 1;
-                tokenizerTarget.locationValidCharPos = 1;
-            }
         } else if (b0 == 0x00 && b1 == 0x00) {
             if (data.remaining() < 2) {
                 data.position(startPos);
@@ -389,11 +356,6 @@ class ExternalEntityDecoder {
             if (b2 == 0xFE && b3 == 0xFF) {
                 bom = BOM.UTF32BE;
                 startDecl = data.position();
-                if (tokenizerTarget != null) {
-                    tokenizerTarget.charPosition = 1;
-                    tokenizerTarget.columnNumber = 1;
-                    tokenizerTarget.locationValidCharPos = 1;
-                }
             } else {
                 data.position(startPos);
                 startDecl = startPos;
@@ -407,11 +369,6 @@ class ExternalEntityDecoder {
             if (b2 == 0xBF) {
                 bom = BOM.UTF8;
                 startDecl = data.position();
-                if (tokenizerTarget != null) {
-                    tokenizerTarget.charPosition = 1;
-                    tokenizerTarget.columnNumber = 1;
-                    tokenizerTarget.locationValidCharPos = 1;
-                }
             } else {
                 data.position(startPos);
                 startDecl = startPos;
@@ -466,32 +423,14 @@ class ExternalEntityDecoder {
                         if (!isExternalEntity) {
                             // Main document - sets the processor mode
                             xml11 = entityXml11;
-                            target.setXml11(xml11);
-                            if (tokenizerTarget != null) {
-                                tokenizerTarget.version = declVersion;
-                                tokenizerTarget.documentVersion = declVersion;
-                                tokenizerTarget.notifyXmlVersion(xml11);
-                            }
+                            scanner.setXml11(xml11);
                         } else {
-                            // External entity - check version compatibility.
-                            // Only reachable with a Tokenizer target today -
-                            // Scanner's own external entity/DTD-subset
-                            // fetching doesn't route through this class (see
-                            // Scanner's "external entity/DTD fetching"
-                            // section) - but guarded rather than assumed.
-                            boolean documentXml11 = tokenizerTarget != null
-                                    && "1.1".equals(tokenizerTarget.documentVersion);
-
-                            if (!documentXml11 && entityXml11) {
-                                throw target.fatalError(
-                                    "XML 1.0 document cannot include XML 1.1 entity (version " + declVersion + ")");
-                            }
-
-                            xml11 = documentXml11 ? entityXml11 : false;
-                            target.setXml11(xml11);
-                            if (tokenizerTarget != null) {
-                                tokenizerTarget.version = declVersion;
-                            }
+                            // External entity TextDecl version - Scanner
+                            // fetches external entities itself today, so this
+                            // branch is unused by the production Parser path;
+                            // still apply the TextDecl's version to the scanner.
+                            xml11 = entityXml11;
+                            scanner.setXml11(xml11);
                         }
                     }
 
@@ -499,29 +438,19 @@ class ExternalEntityDecoder {
                     // grammar has no SDDecl production at all, so declStandalone
                     // is always null when isExternalEntity is true)
                     if (declStandalone != null) {
-                        target.setStandalone(declStandalone.booleanValue());
+                        scanner.setStandalone(declStandalone.booleanValue());
                     }
 
                     // Setup charset decoder with declared encoding
                     setupCharsetDecoder(declEncoding);
 
-                    // Update position tracking for declaration
-                    int declChars = declParser.getCharsConsumed();
-                    if (tokenizerTarget != null) {
-                        // Count newlines in declaration for line number
-                        // tracking (declarations typically don't have
-                        // newlines, but handle it correctly).
-                        tokenizerTarget.charPosition += declChars;
-                        tokenizerTarget.columnNumber += declChars;
-                        tokenizerTarget.locationValidCharPos = tokenizerTarget.charPosition;
-                    }
 
                     state = State.CONTENT;
                     return true;
             }
         } catch (IllegalArgumentException e) {
             // Non-ASCII byte in declaration
-            throw target.fatalError(e.getMessage());
+            throw scanner.fatalError(e.getMessage());
         }
         
         return false;
@@ -537,7 +466,7 @@ class ExternalEntityDecoder {
             try {
                 charset = Charset.forName(declEncoding);
             } catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
-                throw target.fatalError("Invalid or unsupported encoding: " + declEncoding);
+                throw scanner.fatalError("Invalid or unsupported encoding: " + declEncoding);
             }
             
             // Validate BOM/encoding compatibility (only if BOM was present)
@@ -558,16 +487,11 @@ class ExternalEntityDecoder {
                 }
             }
 
-            if (tokenizerTarget != null) {
-                tokenizerTarget.encoding = declEncoding;
-            }
         } else {
             // No declared encoding - use BOM-indicated charset or default to UTF-8
             charset = bom.defaultCharset;
-            if (tokenizerTarget != null) {
-                tokenizerTarget.encoding = charset.name();
-            }
         }
+        scanner.setEncoding(charset.name());
         
         // Reuse existing decoder if charset unchanged, otherwise create new one
         if (decoder == null || !charset.equals(previousCharset)) {
@@ -595,35 +519,35 @@ class ExternalEntityDecoder {
         switch (bom) {
             case UTF16BE:
                 if (!normalized.contains("UTF16")) {
-                    throw target.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-16 BE BOM");
                 }
                 break;
 
             case UTF16LE:
                 if (!normalized.contains("UTF16")) {
-                    throw target.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-16 LE BOM");
                 }
                 break;
 
             case UTF32BE:
                 if (!normalized.contains("UTF32")) {
-                    throw target.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-32 BE BOM");
                 }
                 break;
 
             case UTF32LE:
                 if (!normalized.contains("UTF32")) {
-                    throw target.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-32 LE BOM");
                 }
                 break;
 
             case UTF8:
                 if (normalized.startsWith("UTF16") || normalized.startsWith("UTF32")) {
-                    throw target.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-8 BOM");
                 }
                 break;
@@ -688,10 +612,10 @@ class ExternalEntityDecoder {
             // Check for decoding errors
             if (result.isError()) {
                 if (result.isMalformed()) {
-                    throw target.fatalError("Malformed byte sequence in encoding " + charset.name() +
+                    throw scanner.fatalError("Malformed byte sequence in encoding " + charset.name() +
                         " (length: " + result.length() + ")");
                 } else if (result.isUnmappable()) {
-                    throw target.fatalError("Unmappable byte sequence in encoding " + charset.name() +
+                    throw scanner.fatalError("Unmappable byte sequence in encoding " + charset.name() +
                         " (length: " + result.length() + ")");
                 }
             }
@@ -703,7 +627,7 @@ class ExternalEntityDecoder {
             charBuffer.flip();
             
             // Pass to tokenizer
-            target.receive(charBuffer);
+            scanner.receive(charBuffer);
             
             // Compact to preserve any unconsumed data (underflow)
             charBuffer.compact();

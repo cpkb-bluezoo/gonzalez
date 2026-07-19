@@ -26,26 +26,23 @@ import java.util.concurrent.TimeUnit;
 
 import org.openjdk.jmh.annotations.*;
 import org.openjdk.jmh.infra.Blackhole;
-import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.DefaultHandler;
 
 /**
- * Architecture probe: generic trie tokenizer vs. a hand-written specialized
+ * Architecture probe: production {@link Scanner} vs. a hand-written specialized
  * hot-path scanner, both consuming the SAME already-decoded char[] and emitting
  * comparable event work into a Blackhole.
  * <p>
- * The trie contestant ({@link #scanTrie}) is the real, unmodified
- * {@link Tokenizer} driven exactly as the production pipeline drives it
- * (PROLOG_BEFORE_DOCTYPE, receive(CharBuffer), close), with a no-op
- * TokenConsumer - so it is the genuine current cost, not a reimplementation.
+ * The Scanner contestant ({@link #scanScanner}) is the real, unmodified
+ * {@link Scanner} driven with a no-op {@link XMLHandler} - the genuine
+ * production cost.
  * <p>
  * The specialized contestant ({@link #scanSpecialized}) is a bare hot-path
  * scanner for element/attribute/text productions only: no entity expansion, no
  * location tracking, no line-ending normalization. It is therefore an
- * <em>optimistic upper bound</em> for what a specialized rewrite could achieve.
- * The decision rule is deliberately asymmetric: if specialization cannot win
- * clearly even here (where it is handicapped in its own favour against the
- * full-cost trie), the rewrite direction is not worth pursuing.
+ * <em>optimistic upper bound</em> for what a further specialization could
+ * achieve relative to the production Scanner.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -88,10 +85,8 @@ public class ScannerArchExperiment {
         char[] all = new String(bytes, StandardCharsets.UTF_8).toCharArray();
 
         // Strip a leading XML declaration: in the real pipeline the XMLDecl is
-        // consumed by the decoder/bootstrap before the tokenizer ever sees it
-        // (it stays its own byte-level thing), so feeding "<?xml ...?>" to a raw
-        // Tokenizer - which correctly rejects it as a reserved PI target - would
-        // be unfaithful. Both contestants get the identical post-decl content.
+        // consumed by the decoder/bootstrap before Scanner ever sees document
+        // content. Both contestants get the identical post-decl content.
         int start = 0;
         if (all.length > 5 && all[0] == '<' && all[1] == '?'
                 && all[2] == 'x' && all[3] == 'm' && all[4] == 'l') {
@@ -108,42 +103,51 @@ public class ScannerArchExperiment {
         // input and produces a non-trivial signature (guards against it silently
         // bailing early and "winning" by doing nothing).
         long sig = scanSpecializedInto(chars);
-        long trieSig = scanTrieInto(chars);
+        long scannerSig = scanScannerInto(chars);
         System.out.println("setup: docType=" + docType + " chars=" + chars.length
-                + " specializedSig=" + sig + " trieTokenSig=" + trieSig);
+                + " specializedSig=" + sig + " scannerSig=" + scannerSig);
     }
 
-    // ===== Trie contestant: the real Tokenizer =====
+    // ===== Production contestant: Scanner =====
 
-    /** No-op token consumer doing trivial per-token work comparable to the specialized sink. */
-    private static final class CountingConsumer implements TokenConsumer {
+    /** Counts SAX events with length-weighted work comparable to the specialized sink. */
+    private static final class CountingHandler extends DefaultHandler {
         long sum;
-        public void setLocator(Locator locator) { }
-        public void receive(Token token, CharBuffer data) throws SAXException {
-            sum += token.ordinal();
-            if (data != null) {
-                sum += data.remaining();
+
+        @Override
+        public void startElement(String uri, String localName, String qName,
+                org.xml.sax.Attributes atts) {
+            sum += START + qName.length();
+            for (int i = 0; i < atts.getLength(); i++) {
+                sum += ATTR + atts.getQName(i).length() + atts.getValue(i).length();
             }
+            sum += ENDATTRS;
         }
-        public SAXException fatalError(String message) throws SAXException {
-            throw new SAXException(message);
+
+        @Override
+        public void endElement(String uri, String localName, String qName) {
+            sum += END + qName.length();
         }
-        public void tokenizerState(TokenizerState state) { }
-        public void xmlVersion(boolean isXML11) { }
+
+        @Override
+        public void characters(char[] ch, int start, int length) {
+            sum += CHARS + length;
+        }
     }
 
-    private long scanTrieInto(char[] c) throws SAXException {
-        CountingConsumer consumer = new CountingConsumer();
-        Tokenizer tokenizer = new Tokenizer(null, consumer, TokenizerState.PROLOG_BEFORE_DOCTYPE, false);
-        CharBuffer buf = CharBuffer.wrap(c);
-        tokenizer.receive(buf);
-        tokenizer.close();
-        return consumer.sum;
+    private long scanScannerInto(char[] c) throws SAXException {
+        CountingHandler handler = new CountingHandler();
+        SAXAdapter adapter = new SAXAdapter(false);
+        adapter.setContentHandler(handler);
+        Scanner scanner = new Scanner(adapter);
+        scanner.receive(CharBuffer.wrap(c));
+        scanner.close();
+        return handler.sum;
     }
 
     @Benchmark
-    public void scanTrie(Blackhole bh) throws SAXException {
-        bh.consume(scanTrieInto(chars));
+    public void scanScanner(Blackhole bh) throws SAXException {
+        bh.consume(scanScannerInto(chars));
     }
 
     // ===== Specialized contestant: bare hot-path scanner =====

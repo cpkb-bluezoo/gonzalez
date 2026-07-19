@@ -326,7 +326,7 @@ public class ParserValidationTest {
         assertFalse("Invalid enumeration should be rejected", errors.errors.isEmpty());
         String errorMsg = errors.errors.get(0).getMessage();
         assertTrue("Error should mention enumeration: " + errorMsg,
-            errorMsg.contains("not in enumeration"));
+            errorMsg.contains("not in enumeration") || errorMsg.contains("not one of the declared values"));
     }
 
     @Test
@@ -363,7 +363,7 @@ public class ParserValidationTest {
         assertFalse("Undeclared NOTATION should be rejected", errors.errors.isEmpty());
         String errorMsg = errors.errors.get(0).getMessage();
         assertTrue("Error should mention not declared: " + errorMsg,
-            errorMsg.contains("not declared"));
+            errorMsg.contains("not declared") || errorMsg.contains("undeclared notation"));
     }
 
     @Test
@@ -404,7 +404,7 @@ public class ParserValidationTest {
             errors.errors.isEmpty());
         String errorMsg = errors.errors.get(0).getMessage();
         assertTrue("Error should mention enumeration: " + errorMsg,
-            errorMsg.contains("not in declared enumeration"));
+            errorMsg.contains("not in declared enumeration") || errorMsg.contains("not one of the declared values"));
     }
 
     // ========== Validation Recoverability (from ValidationRecoverabilityTest) ==========
