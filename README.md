@@ -5,9 +5,9 @@ Non-blocking streaming XML parser and serializer for event-driven I/O
 This is Gonzalez, a data-driven XML parser and serializer using non-blocking,
 event-driven I/O. Unlike traditional SAX parsers that pull data from an
 InputSource, Gonzalez is completely feedforward: you push data to it as it
-arrives, and it produces SAX events without ever blocking for I/O, as long as
-the documents are standalone. The XMLWriter provides the inverse: streaming
-XML serialization to NIO channels.
+arrives, and it produces native or SAX events without ever blocking for I/O,
+as long as the documents are standalone. The XMLWriter provides the inverse:
+streaming XML serialization to NIO channels.
 
 ## Features
 
@@ -15,7 +15,8 @@ XML serialization to NIO channels.
 - non-blocking: in streaming mode, will only ever block for external entities
 - data-driven: a resumable Scanner processes whatever character data is
   available directly against the XML grammar
-- fully streaming custom XMLHandler interface allows attribute values and PI data of arbitrary size while operating in constant memory
+- fully streaming public `XMLHandler` SPI allows attribute values, PI data,
+  comments and text of arbitrary size while operating in constant memory
 - SAX-compatible: SAXAdapter exposes ContentHandler, LexicalHandler,
   DeclHandler, DTDHandler and Attributes2 events
 - JAXP integration: can be used as a drop-in SAX parser via SAXParserFactory
@@ -51,10 +52,11 @@ async I/O frameworks such as Gumdrop or Netty. Crucially, parsing events are emi
 
 ### NIO Event Pipeline
 
-The following diagram shows both the byte/character path and the internal event
-path. ByteBuffer chunks are decoded and normalized, Scanner recognizes XML and
-DTD grammar directly, and the resulting XMLHandler stream is optionally
-namespace-filtered (in `namespaceAware` mode) before SAXAdapter exposes standard SAX2 callbacks:
+The following diagram shows both the byte/character path and the event paths.
+ByteBuffer chunks are decoded and normalized, Scanner recognizes XML and DTD
+grammar directly, and the resulting `XMLHandler` stream is optionally
+namespace-filtered (in `namespaceAware` mode). It then goes either directly to
+a native consumer or through `SAXAdapter` to standard SAX2 callbacks:
 
 ![Gonzalez NIO Event Pipeline](event-pipeline.svg)
 
@@ -69,16 +71,20 @@ normalizes XML line endings, and forwards CharBuffer chunks to Scanner.
 Scanner processes those characters directly against the XML grammar. It owns
 element/entity stacks, DTD declarations and validation state, and preserves
 incomplete constructs when a receive boundary falls in the middle of markup.
-It emits a streaming internal XMLHandler vocabulary: raw element names,
-streamed attribute values and text, namespace declarations, DTD declarations
-and lexical boundaries.
+It emits the streaming `XMLHandler` vocabulary: raw element names, streamed
+attribute values and text, namespace declarations, DTD declarations and
+lexical boundaries. `XMLHandler` is a public Gonzalez-specific SPI. It avoids
+SAX adaptation for native consumers, but is not a standards interface and may
+evolve between Gonzalez releases.
 
-When namespace processing is enabled, NamespaceFilter translates `xmlns`
+When namespace processing is enabled, `NamespaceFilter` translates `xmlns`
 attributes into namespace events and can retain the original attributes when
-`namespace-prefixes` is enabled. SAXAdapter then resolves names, assembles the
-SAX Attributes2 view, and dispatches ContentHandler, LexicalHandler,
-DeclHandler, DTDHandler and ErrorHandler callbacks. The internal event stream
-does not construct or expose intermediate token objects.
+`namespace-prefixes` is enabled. A handler installed with
+`Parser.setXMLHandler` consumes this stream directly. On the standard SAX path,
+`SAXAdapter` resolves names, assembles the SAX `Attributes2` view, and
+dispatches `ContentHandler`, `LexicalHandler`, `DeclHandler`, `DTDHandler` and
+`ErrorHandler` callbacks. The native event stream does not construct or expose
+intermediate token objects.
 
 ### DTD handling
 
@@ -115,7 +121,8 @@ drop-in replacement for other XSLT processors.
 
 Key features:
 - **JAXP compliant** - Standard `TransformerFactory` interface
-- **Streaming support** - SAX-based transformation pipeline
+- **Streaming support** - Native `XMLHandler` ingest for Gonzalez-owned parses,
+  with SAX retained at JAXP and foreign-parser boundaries
 - **Iterative XPath parser** - Pratt algorithm with explicit stacks, no
   recursion
 - **Forward-compatible** - Graceful handling of later XSLT version
@@ -149,6 +156,32 @@ parser.receive(byteBuffer2);
 parser.close();
 // Signal end of document
 ```
+
+### Native XMLHandler Usage
+
+Native consumers can bypass `SAXAdapter` and receive the Scanner's streaming
+event vocabulary directly:
+
+```java
+Parser parser = new Parser();
+XMLHandler nativeHandler = createNativeHandler();
+parser.setXMLHandler(nativeHandler);
+
+parser.receive(byteBuffer1);
+parser.receive(byteBuffer2);
+parser.close();
+```
+
+Set the handler before parsing starts. When non-null, it receives content,
+lexical, declaration, DTD and error events instead of the configured SAX
+handlers. Namespace events pass through `NamespaceFilter` when namespace
+processing is enabled. The setting survives `Parser.reset()`; pass `null`
+before the next parse to restore the SAX path.
+
+`XMLHandler` is intended for Gonzalez modules and tightly integrated
+applications that benefit from streamed `CharBuffer` content and attributes.
+It is a Gonzalez-specific evolving SPI, not a compatibility substitute for
+SAX. Use SAX/JAXP interfaces when a stable standards boundary is required.
 
 ### JAXP Usage
 
@@ -389,11 +422,11 @@ with JDK 21 (Xerces) and
 [aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.1-SNAPSHOT. All paths
 ran namespace-aware with an empty handler. The raw Gonzalez path is
 `ExternalEntityDecoder → Scanner → NamespaceFilter → XMLHandler`; it bypasses
-the public Parser/SAXAdapter facade while still performing byte decoding, XML
-grammar processing, DTD work and namespace declaration handling. Gonzalez SAX
-adds name resolution, Attributes2 assembly and standard SAX callback
-adaptation. XMLHandler is currently an internal interface; this column
-measures the pre-SAX pipeline rather than a separate public API.
+`SAXAdapter` while still performing byte decoding, XML grammar processing, DTD
+work and namespace declaration handling. Gonzalez SAX adds name resolution,
+`Attributes2` assembly and standard SAX callback adaptation. The
+`XMLHandler` column measures the public native SPI path; unlike SAX, that SPI
+is Gonzalez-specific and may evolve between releases.
 
 Aalto's lower-level StAX cursor is included as an additional reference point,
 but is not directly equivalent to SAX callback delivery.

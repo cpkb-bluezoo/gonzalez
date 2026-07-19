@@ -47,7 +47,7 @@ Gonzalez implements comprehensive error handling with three modes:
 
 1. **Streaming-First** - Process documents larger than available memory
 2. **JAXP Compliance** - Drop-in replacement via `TransformerFactory`
-3. **Event-Driven** - SAX-based input and output
+3. **Event-Driven** - Native `XMLHandler` ingest with standard SAX/JAXP boundaries
 4. **Accumulator-Based** - XSLT 3.0 accumulators as the primary stateful mechanism
 5. **Automatic Streamability** - Analyze XSLT 1.0/2.0 stylesheets for streaming execution
 6. **Full XPath Support** - XPath 1.0 through 3.1 including maps, arrays, and higher-order functions
@@ -55,18 +55,24 @@ Gonzalez implements comprehensive error handling with three modes:
 
 ## Architecture
 
-### SAX Event Filter Model
+### Native and SAX Event Model
 
-The transformer operates as a **SAX event filter**: it receives input SAX events
-from the source document, applies XSLT transformations, and emits output SAX
-events to the result. This design enables:
+For documents that Gonzalez parses itself, the transformer installs its
+`XMLHandler` directly on `Parser`. Scanner events pass through
+`NamespaceFilter` when namespaces are enabled and then enter the transform
+without constructing a `SAXAdapter` or an `Attributes2` collection.
 
-- Direct integration with Gonzalez's streaming parser
-- Pipeline composition with other SAX filters
+Standards boundaries remain SAX-based. A foreign `XMLReader` or `SAXSource`
+feeds the transform's SAX facade, `TransformerHandler` accepts SAX callbacks,
+and `SAXResult` emits SAX callbacks. Other `Result` types use their normal JAXP
+output paths. This design provides:
+
+- Direct native integration with Gonzalez's streaming parser
+- Pipeline composition with foreign SAX readers and downstream SAX handlers
 - Memory-efficient processing of large documents
-- Native SAX-to-SAX transformation path
+- JAXP compatibility without imposing SAX adaptation on internal parses
 
-![SAX Event Filter Model](xslt-sax-filter.svg)
+![Native and SAX Event Model](xslt-sax-filter.svg)
 
 ### Component Overview
 
@@ -119,9 +125,12 @@ without modification.
 
 ### Stylesheet Compilation
 
-Stylesheets are compiled using SAX events from the Gonzalez XML parser:
+Stylesheets parsed by Gonzalez are compiled from native `XMLHandler` events.
+The compiler retains a SAX facade for JAXP push compilation and foreign
+readers. Includes, imports, packages, and embedded stylesheet fragments use
+the native path when Gonzalez owns the parse:
 
-1. **StylesheetCompiler** - SAX ContentHandler that builds the compiled representation
+1. **StylesheetCompiler** - Native handler and SAX facade that build the compiled representation
 2. **StreamabilityAnalyzer** - Analyzes templates for streaming capability
 3. **InternalAccumulatorFactory** - Creates synthetic accumulators for 1.0/2.0 patterns
 4. **CompiledStylesheet** - Immutable representation containing:

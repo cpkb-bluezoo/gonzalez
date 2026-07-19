@@ -55,6 +55,7 @@ import org.xml.sax.helpers.DefaultHandler;
 
 import java.nio.CharBuffer;
 
+import org.bluezoo.gonzalez.Parser;
 import org.bluezoo.gonzalez.QName;
 import org.bluezoo.gonzalez.XMLHandler;
 import org.bluezoo.gonzalez.transform.runtime.NativeAttributeBuffer;
@@ -568,17 +569,14 @@ public class StylesheetCompiler extends DefaultHandler
         StylesheetCompiler compiler = new StylesheetCompiler();
         compiler.setPackageResolver(resolver);
         
-        // Parse the stylesheet
-        javax.xml.parsers.SAXParserFactory spf = javax.xml.parsers.SAXParserFactory.newInstance();
-        spf.setNamespaceAware(true);
-        try {
-            javax.xml.parsers.SAXParser parser = spf.newSAXParser();
-            org.xml.sax.XMLReader reader = parser.getXMLReader();
-            reader.setContentHandler(compiler);
-            reader.parse(source);
-        } catch (javax.xml.parsers.ParserConfigurationException e) {
-            throw new SAXException("Parser configuration error", e);
-        }
+        // Parse via Gonzalez's native XMLHandler path (no SAXAdapter).
+        Parser parser = new Parser();
+        parser.setFeature("http://xml.org/sax/features/namespaces", true);
+        parser.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
+        parser.setFeature(
+                "http://javax.xml.XMLConstants/feature/secure-processing", true);
+        parser.setXMLHandler(compiler);
+        parser.parse(source);
         
         // Get the compiled stylesheet
         CompiledStylesheet stylesheet = compiler.getCompiledStylesheet();

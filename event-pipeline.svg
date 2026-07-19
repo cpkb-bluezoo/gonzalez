@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-labelledby="title desc">
   <title id="title">Gonzalez Scanner event pipeline</title>
-  <desc id="desc">ByteBuffer input is decoded into characters, scanned directly against the XML grammar, emitted as XMLHandler events, namespace-filtered when enabled, and adapted to standard SAX handlers. External entity resolution feeds the Scanner separately.</desc>
+  <desc id="desc">ByteBuffer input is decoded into characters, scanned directly against the XML grammar, emitted as XMLHandler events, and namespace-filtered when enabled. Events then go directly to a native consumer or through SAXAdapter to standard SAX handlers. External entity resolution feeds the Scanner separately.</desc>
 
   <defs>
     <linearGradient id="source" x1="0" y1="0" x2="1" y2="1">
@@ -128,7 +128,7 @@
   <g transform="translate(815 91)">
     <rect class="box" width="165" height="238" rx="10" fill="url(#event)" stroke="#4ade80"/>
     <text x="82.5" y="27" text-anchor="middle" class="label" font-size="13">XMLHandler</text>
-    <text x="82.5" y="43" text-anchor="middle" class="mono" font-size="8">internal streaming vocabulary</text>
+    <text x="82.5" y="43" text-anchor="middle" class="mono" font-size="8">public native SPI</text>
     <g class="mono" font-size="8">
       <text x="18" y="69">startElement(qName)</text>
       <text x="18" y="86">startAttribute(...)</text>
@@ -144,6 +144,7 @@
   </g>
 
   <path class="flow" d="M980 210 H1014"/>
+  <text x="997" y="195" text-anchor="middle" class="mono" font-size="7">SAX</text>
 
   <!-- SAX Adapter -->
   <g transform="translate(1025 100)">
@@ -162,6 +163,20 @@
       <text x="60.5" y="102" text-anchor="middle">DTD / ErrorHandler</text>
     </g>
     <text x="72.5" y="207" text-anchor="middle" class="muted" font-size="8">SAX2 / JAXP boundary</text>
+  </g>
+
+  <!-- Native consumer branch -->
+  <path class="thinFlow" d="M897 329 V354"/>
+  <g transform="translate(815 365)">
+    <rect class="box" width="355" height="115" rx="10" fill="url(#event)" stroke="#4ade80"/>
+    <text x="177.5" y="25" text-anchor="middle" class="label" font-size="12">NATIVE CONSUMERS</text>
+    <text x="177.5" y="43" text-anchor="middle" class="mono" font-size="9">Parser.setXMLHandler(...)</text>
+    <rect x="18" y="58" width="150" height="36" rx="5" fill="#166534" stroke="#4ade80"/>
+    <text x="93" y="74" text-anchor="middle" class="mono" font-size="8">transform / stylesheet</text>
+    <text x="93" y="87" text-anchor="middle" class="mono" font-size="8">document consumers</text>
+    <rect x="187" y="58" width="150" height="36" rx="5" fill="#166534" stroke="#4ade80"/>
+    <text x="262" y="74" text-anchor="middle" class="mono" font-size="8">application handlers</text>
+    <text x="262" y="87" text-anchor="middle" class="mono" font-size="8">CharBuffer content</text>
   </g>
 
   <!-- Explanatory lower panel -->
@@ -202,5 +217,5 @@
     </g>
   </g>
 
-  <text x="600" y="700" text-anchor="middle" class="mono" font-size="9" fill="#64748b">ByteBuffer - ExternalEntityDecoder - Scanner - XMLHandler / NamespaceFilter - SAXAdapter - SAX2 handlers</text>
+  <text x="600" y="700" text-anchor="middle" class="mono" font-size="9" fill="#64748b">ByteBuffer - ExternalEntityDecoder - Scanner - NamespaceFilter - XMLHandler - native consumer or SAXAdapter</text>
 </svg>
