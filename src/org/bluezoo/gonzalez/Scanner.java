@@ -176,15 +176,29 @@ class Scanner implements ByteDecoderTarget {
     private char pendingQuote;
     private boolean attrValueRunOpen;
 
-    /** True while the attribute currently being scanned is declared
-     *  with a non-CDATA type, meaning its value needs the type-dependent
-     *  collapse normalisation (XML 3.3.3) applied - see {@link
-     *  #emitAttributeValueContent}. Materializing the value defeats the
-     *  zero-copy streaming path, but only for attributes an ATTLIST
-     *  actually declares non-CDATA; the common CDATA/no-DTD case is
-     *  untouched. {@link #normalizeBuilder} is a single reused field, not a
-     *  pool, since only one attribute is ever being scanned at a time. */
+    /** True while the attribute currently being scanned needs its value
+     *  materialized (accumulated into {@link #normalizeBuilder}) rather than
+     *  streamed straight through to {@link XMLHandler#attributeValueContent}
+     *  as-is - see {@link #emitAttributeValueContent}. True whenever {@link
+     *  #collapseCurrentAttrValue} is (the value itself needs rewriting, so
+     *  streaming the original chunks would be wrong regardless of
+     *  validation), and also whenever {@link #validationEnabled} (even a
+     *  CDATA attribute's - otherwise-untouched - value must still be seen
+     *  whole at least once, for VC "Fixed Attribute Default" and friends via
+     *  {@link #checkAttributeValueVCs}, which a CDATA type is not otherwise
+     *  exempt from). Materializing the value defeats the zero-copy streaming
+     *  path, but only when validation is actually enabled or the ATTLIST
+     *  actually declares this attribute non-CDATA; the common (no
+     *  validation, or CDATA/no-DTD) case is untouched. {@link
+     *  #normalizeBuilder} is a single reused field, not a pool, since only
+     *  one attribute is ever being scanned at a time. */
     private boolean normalizingCurrentAttribute;
+    /** True while the attribute currently being scanned is declared with a
+     *  non-CDATA type, meaning its value needs the type-dependent collapse
+     *  normalisation (XML 3.3.3) actually applied (not just materialized) -
+     *  see {@link #normalizingCurrentAttribute} for the broader condition
+     *  under which the value is merely accumulated. */
+    private boolean collapseCurrentAttrValue;
     private final StringBuilder normalizeBuilder = new StringBuilder();
 
     /** The attribute currently being scanned's declaring element/name/type,
@@ -194,8 +208,7 @@ class Scanner implements ByteDecoderTarget {
      *  completion may happen on a resumed call (via {@link
      *  #inAttributeValue}) well after the locals that first knew them have
      *  gone out of scope. Only meaningful while {@link
-     *  #normalizingCurrentAttribute} is true (i.e. only for the non-CDATA
-     *  types VC checking actually applies to). */
+     *  #normalizingCurrentAttribute} is true. */
     private String currentAttrElementName;
     private String currentAttrName;
     private String currentAttrType;
@@ -453,6 +466,21 @@ class Scanner implements ByteDecoderTarget {
      *  scan is fine - this is never more than a few names deep in practice. */
     private final ArrayList<String> entityExpansionStack = new ArrayList<String>();
 
+    /** {@link #elementStack} depth at entry to each currently-active general
+     *  entity expansion in content (see {@link
+     *  #expandGeneralEntityInContent}), one entry per {@link
+     *  #entityExpansionStack} entry. An end tag encountered while inside an
+     *  entity's replacement text must not close an element that was opened
+     *  <em>before</em> that entity started - i.e. {@link #elementStack}'s
+     *  size must never drop to or below the innermost active entity's own
+     *  floor - checked in {@link #scanEndTag}. This is a stronger,
+     *  continuously-enforced condition than merely comparing {@link
+     *  #elementStack}'s size at entry and exit (which alone would miss the
+     *  classic {@code <!ENTITY e "</foo><foo>">} counter-example: the entity
+     *  closes an outer element and re-opens a same-named one, so the net
+     *  depth change is zero even though a boundary was still crossed). */
+    private final ArrayList<Integer> entityStackFloors = new ArrayList<Integer>();
+
     private static final int MAX_ENTITY_EXPANSIONS = 100_000;
     private int entityExpansionCount;
 
@@ -495,10 +523,27 @@ class Scanner implements ByteDecoderTarget {
      *  rejected the same way an unresolvable one would be. */
     private final EntityResolver entityResolver;
 
-    /** The document's own system identifier, for resolving a relative
-     *  SYSTEM identifier against - see {@link #resolveSystemId}. Null if
-     *  unknown (e.g. parsing from an in-memory string with no URI at all). */
-    private final String baseSystemId;
+    /** The <em>current</em> base URI for resolving a relative SYSTEM
+     *  identifier against - see {@link #resolveSystemId}. Initially the
+     *  document's own system identifier (null if unknown, e.g. parsing from
+     *  an in-memory string with no URI at all), but saved/temporarily
+     *  changed/restored while parsing an external DTD subset or external
+     *  parameter entity's own replacement text (see {@link
+     *  #finishDoctypeExternalSubset}/{@link #expandParameterEntityReference})
+     *  to that resource's own resolved location, so a relative SYSTEM
+     *  identifier declared within it - e.g. an external parameter entity
+     *  declared inside another one, fetched from a different directory -
+     *  resolves against <em>its own</em> location, not the original
+     *  document's. Every external parameter entity's own declaration
+     *  additionally captures this field's value at the moment it is parsed
+     *  (see {@link #scanEntityDeclaration}'s external-PE branch), since it
+     *  may not actually be *expanded* until much later, indirectly, from a
+     *  completely different lexical context (an internal parameter entity
+     *  that merely names it, itself expanded from yet another context) -
+     *  {@link #resolveParameterEntityReplacement} resolves against that
+     *  captured, per-entity value, never this field's value at expansion
+     *  time. */
+    private String baseSystemId;
 
     /** True if DTD validity constraint (VC) checking is enabled. When
      *  false (the default), no content-model tree is built and no {@link
@@ -597,11 +642,64 @@ class Scanner implements ByteDecoderTarget {
         if (!rootStarted) {
             throw handler.fatalError("Document must contain a root element");
         }
+        checkEntityValuesDoNotReferenceUnparsedEntities();
         if (validationEnabled) {
             checkPendingIdrefs();
             checkUnparsedEntityNotationsDeclared();
+            checkAttlistNotationNamesDeclared();
         }
         handler.endDocument();
+    }
+
+    /** WFC "Parsed Entity" (Section 4.1): "An entity reference must not
+     *  contain the name of an unparsed entity" - unconditional (not gated
+     *  on {@link #validationEnabled}, unlike the VCs alongside it, since
+     *  this is a well-formedness constraint) and fatal. A general entity's
+     *  own {@code EntityValue} keeps any {@code &name;} reference it
+     *  contains literal/unexpanded at declaration time (XML 4.5's
+     *  "Bypassed" construct - see {@link #scanQuotedLiteralWithCharRefs}),
+     *  so this can only be checked once the whole DTD - and therefore every
+     *  entity's unparsed-or-not status (an NDATA annotation may be declared
+     *  anywhere, including after the entity that references it) - is known,
+     *  deferred to here alongside this class's other whole-DTD checks. Only
+     *  the entity's own declared value is scanned - a reference occurring
+     *  when that entity is later used in content is instead handled by
+     *  {@link #checkEntityReferenceable} rejecting the unparsed entity's own
+     *  name directly (it is never in {@link #generalEntities} to begin
+     *  with - only {@link #externalEntityNames} - so a direct {@code
+     *  &unparsed;} in content already fails there). */
+    private void checkEntityValuesDoNotReferenceUnparsedEntities() throws SAXException {
+        for (Map.Entry<String, String> entry : generalEntities.entrySet()) {
+            String value = entry.getValue();
+            int len = value.length();
+            int q = 0;
+            while (q < len) {
+                char c = value.charAt(q);
+                if (c != '&') {
+                    q++;
+                    continue;
+                }
+                int nameStart = q + 1;
+                int p = nameStart;
+                while (p < len && isNameChar(value.charAt(p))) {
+                    p++;
+                }
+                if (p >= len || value.charAt(p) != ';') {
+                    q++;
+                    continue;
+                }
+                if (matchPredefined(value.toCharArray(), nameStart, p - nameStart) == null) {
+                    String refName = value.substring(nameStart, p);
+                    String[] ids = externalEntityNames.get(refName);
+                    if (ids != null && ids[2] != null) {
+                        throw handler.fatalError("Well-Formedness Constraint: Parsed Entity (Section 4.1). "
+                                + "Entity \"" + entry.getKey() + "\" references unparsed entity \"" + refName
+                                + "\" - an entity reference must not name an unparsed entity.");
+                    }
+                }
+                q = p + 1;
+            }
+        }
     }
 
     /** VC "Notation Declared" (Section 4.2.2): every {@code NDATA}
@@ -617,6 +715,33 @@ class Scanner implements ByteDecoderTarget {
             if (notationName != null && !declaredNotations.contains(notationName)) {
                 handler.error("Validity Constraint: Notation Declared (Section 4.2.2). Entity \"" + entry.getKey()
                         + "\" names undeclared notation \"" + notationName + "\".");
+            }
+        }
+    }
+
+    /** VC "Notation Attributes" (Section 3.3.1): every name in a {@code
+     *  NOTATION}-typed attribute's own enumerated value list must itself be
+     *  a declared {@code <!NOTATION>} - not just the value actually used on
+     *  an instance (that narrower check is {@link #checkEnumerationMembership}'s
+     *  own job, at attribute-value-scan time). Deferred to here, alongside
+     *  {@link #checkUnparsedEntityNotationsDeclared}, for the same reason: a
+     *  notation may legally be declared anywhere in the DTD, including after
+     *  the {@code <!ATTLIST>} that names it. */
+    private void checkAttlistNotationNamesDeclared() throws SAXException {
+        for (Map.Entry<String, LinkedHashMap<String, DTDModel.AttDef>> elementEntry : dtdModel.allAttlists()
+                .entrySet()) {
+            for (Map.Entry<String, DTDModel.AttDef> attrEntry : elementEntry.getValue().entrySet()) {
+                DTDModel.AttDef def = attrEntry.getValue();
+                if (!"NOTATION".equals(def.type) || def.enumeration == null) {
+                    continue;
+                }
+                for (String notationName : def.enumeration) {
+                    if (!declaredNotations.contains(notationName)) {
+                        handler.error("Validity Constraint: Notation Attributes (Section 3.3.1). Attribute \""
+                                + attrEntry.getKey() + "\" of element \"" + elementEntry.getKey()
+                                + "\" names undeclared notation \"" + notationName + "\".");
+                    }
+                }
             }
         }
     }
@@ -1261,6 +1386,10 @@ class Scanner implements ByteDecoderTarget {
                 }
                 contentRunOpen = false;
                 contentBracketRun = 0;
+                // Errata E15: a reference is itself content, regardless of
+                // what it expands to (even nothing) - see
+                // checkNotEmptyElementContent's own Javadoc.
+                checkNotEmptyElementContent("an entity reference");
                 expandGeneralEntityInContent(pendingEntityName);
                 continue;
             }
@@ -1496,11 +1625,39 @@ class Scanner implements ByteDecoderTarget {
         if (c == '/') {
             return scanEndTag(tagStart);
         } else if (c == '!') {
+            if (p + 1 >= limit) {
+                return false;
+            }
+            if (buf[p + 1] == '-') {
+                checkNotEmptyElementContent("a comment");
+            }
             return scanBangMarkup(tagStart);
         } else if (c == '?') {
+            checkNotEmptyElementContent("a processing instruction");
             return scanPI(tagStart);
         } else {
             return scanStartTag(tagStart);
+        }
+    }
+
+    /** Errata E15 (XML 1.0 Second Edition, Section 3): an element declared
+     *  {@code EMPTY} must have no content whatsoever - not just no
+     *  characters or child elements (already caught by {@link
+     *  ContentModelValidator#addTextContent}/{@link
+     *  ContentModelValidator#addChildElement}), but no comment or
+     *  processing instruction either, even though either would otherwise be
+     *  legal anywhere in content regardless of the declared content model.
+     *  Checked here, in {@link #scanMarkup} - the sole call site reached
+     *  only from within {@link #scanContent} (never from DOCTYPE subset
+     *  parsing, which calls {@link #scanComment}/{@link #scanPI} directly),
+     *  so {@link #elementStack} being non-empty here unambiguously means
+     *  "inside element content." */
+    private void checkNotEmptyElementContent(String what) throws SAXException {
+        if (validationEnabled && !elementStack.isEmpty()
+                && dtdModel.getContentType(elementStack.get(elementStack.size() - 1))
+                        == ElementDeclaration.ContentType.EMPTY) {
+            handler.error("Validity Constraint: Element Valid (Section 3.1). Element \""
+                    + elementStack.get(elementStack.size() - 1) + "\" is declared EMPTY but contains " + what + ".");
         }
     }
 
@@ -1656,14 +1813,18 @@ class Scanner implements ByteDecoderTarget {
             handler.startAttribute(attrName, attrType);
             pendingQuote = quote;
             attrValueRunOpen = false;
-            normalizingCurrentAttribute = !"CDATA".equals(attrType);
+            collapseCurrentAttrValue = !"CDATA".equals(attrType);
+            boolean checkXmlSpace = "xml:space".equals(attrName);
+            normalizingCurrentAttribute = collapseCurrentAttrValue || validationEnabled || checkXmlSpace;
             if (normalizingCurrentAttribute) {
                 normalizeBuilder.setLength(0);
-                if (validationEnabled) {
+                if (validationEnabled || checkXmlSpace) {
                     currentAttrElementName = currentElementName;
                     currentAttrName = attrName;
                     currentAttrType = attrType;
-                    if (standalone) {
+                }
+                if (validationEnabled) {
+                    if (standalone && collapseCurrentAttrValue) {
                         DTDModel.AttDef def = attributeDefOf(currentElementName, attrName);
                         if (def != null && def.declaredExternally) {
                             handler.error("Validity Constraint: Standalone Document Declaration (Section 2.9). "
@@ -1840,28 +2001,45 @@ class Scanner implements ByteDecoderTarget {
         }
         normalizeBuilder.append(chunk);
         if (end) {
-            String collapsed = collapseWhitespace(normalizeBuilder);
+            String value = collapseCurrentAttrValue ? collapseWhitespace(normalizeBuilder) : normalizeBuilder.toString();
             normalizingCurrentAttribute = false;
             if (validationEnabled) {
-                checkAttributeValueVCs(currentAttrElementName, currentAttrName, currentAttrType, collapsed);
+                checkAttributeValueVCs(currentAttrElementName, currentAttrName, currentAttrType, value);
             }
-            handler.attributeValueContent(CharBuffer.wrap(collapsed), true);
+            if ("xml:space".equals(currentAttrName) && !"default".equals(value) && !"preserve".equals(value)) {
+                // XML 2.10: xml:space's own value is constrained by the XML
+                // Recommendation itself, independent of any DTD declaration
+                // (and so checked unconditionally, not gated on
+                // validationEnabled the way DTD-driven VCs are).
+                handler.error("The \"xml:space\" attribute's value must be \"default\" or \"preserve\", not \""
+                        + value + "\".");
+            }
+            handler.attributeValueContent(CharBuffer.wrap(value), true);
         }
     }
 
     /** XML 3.3.3's type-dependent attribute value normalisation: trim
-     *  leading/trailing whitespace, collapse interior whitespace runs to a
-     *  single space each. Operates on already-tab/CR/LF-normalized text (see
-     *  {@link #scanAttributeValueStreaming}), so only plain spaces need
-     *  collapsing here, but checking {@link #isWs} generically costs nothing
-     *  extra and stays correct regardless of call order. */
+     *  leading/trailing space, collapse interior runs of space to a single
+     *  space each - deliberately just {@code ' '} (#x20), not {@link
+     *  #isWs} generically, per the spec text's own precise wording
+     *  ("replacing sequences of space (#x20) characters by a single space
+     *  (#x20) character"). A literal tab/CR/LF in the source was already
+     *  turned into a space before this ever runs (see {@link
+     *  #scanAttributeValueStreaming}), but a character reference
+     *  ({@code &#9;} and the like - errata E20) is decoded straight to its
+     *  own codepoint and never passes through that substitution, so a tab
+     *  reaching this method can only mean one did - and it must survive
+     *  uncollapsed, breaking Nmtoken-format validity exactly as a raw,
+     *  unescaped tab embedded in an NMTOKEN value should, rather than being
+     *  silently swallowed into a space as if it were unremarkable
+     *  whitespace. */
     private static String collapseWhitespace(CharSequence s) {
         int len = s.length();
         StringBuilder sb = new StringBuilder(len);
         boolean pendingSpace = false;
         for (int i = 0; i < len; i++) {
             char c = s.charAt(i);
-            if (isWs(c)) {
+            if (c == ' ') {
                 if (sb.length() > 0) {
                     pendingSpace = true;
                 }
@@ -1912,6 +2090,12 @@ class Scanner implements ByteDecoderTarget {
         int nameLen = nameEnd - nameStart;
         if (elementStack.isEmpty()) {
             throw handler.fatalError("End tag without matching start tag: " + new String(buf, nameStart, nameLen));
+        }
+        if (!entityStackFloors.isEmpty()
+                && elementStack.size() <= entityStackFloors.get(entityStackFloors.size() - 1)) {
+            throw handler.fatalError("End tag </" + new String(buf, nameStart, nameLen)
+                    + "> in an entity's replacement text must not close an element that was opened "
+                    + "outside that entity (element boundaries must nest within entity boundaries)");
         }
         String expected = elementStack.remove(elementStack.size() - 1);
         if (!rangeEquals(buf, nameStart, nameLen, expected)) {
@@ -2993,7 +3177,14 @@ class Scanner implements ByteDecoderTarget {
 
         if (isParam) {
             if (!pendingParamEntities.containsKey(name) && !parameterEntities.containsKey(name)) {
-                pendingParamExternalNames.put(name, new String[] { extPublicId, extSystemId });
+                // The third element is baseSystemId's own value right now -
+                // this declaration's own location - captured because this
+                // entity may not actually be expanded until much later, from
+                // a completely different lexical context (see baseSystemId's
+                // own Javadoc); resolveParameterEntityReplacement resolves
+                // extSystemId against this captured value, never whatever
+                // baseSystemId happens to be at expansion time.
+                pendingParamExternalNames.put(name, new String[] { extPublicId, extSystemId, baseSystemId });
             }
         } else if (!pendingEntities.containsKey(name) && !generalEntities.containsKey(name)) {
             // The optional third element is the NDATA-declared notation name
@@ -3113,7 +3304,7 @@ class Scanner implements ByteDecoderTarget {
         String name = new String(buf, nameStart, p - nameStart);
 
         int ws2 = p;
-        p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
+        p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames, validationEnabled);
         if (p >= limit) {
             return -1;
         }
@@ -3168,11 +3359,17 @@ class Scanner implements ByteDecoderTarget {
                         // here rather than after this depth-matching scan
                         // completes: a parameter entity's own replacement
                         // text may itself contain parens that need to
-                        // participate in this very depth count (VC "Proper
-                        // Group/PE Nesting" - not separately checked here,
-                        // but naturally satisfied for the common case since
-                        // splicing happens before, not after, matching).
-                        p = splicePEReferenceAt(p, pendingParamEntities, pendingParamExternalNames);
+                        // participate in this very depth count. VC "Proper
+                        // Group/PE Nesting" (checked via checkParenBalance,
+                        // when validationEnabled) catches the case this
+                        // depth count alone cannot: splicing already
+                        // flattens away PE boundaries, so an individually
+                        // unbalanced replacement text can still yield an
+                        // overall-balanced (and therefore otherwise
+                        // undetected) result once combined with a sibling
+                        // PE's own contribution.
+                        p = splicePEReferenceAt(p, pendingParamEntities, pendingParamExternalNames,
+                                validationEnabled);
                         if (p >= limit) {
                             return -1;
                         }
@@ -3421,6 +3618,36 @@ class Scanner implements ByteDecoderTarget {
             ElementDeclaration.ContentModel.NodeType groupType = (separator == '|')
                     ? ElementDeclaration.ContentModel.NodeType.CHOICE
                     : ElementDeclaration.ContentModel.NodeType.SEQUENCE;
+            if (groupType == ElementDeclaration.ContentModel.NodeType.CHOICE) {
+                // Errata E34: the same VC "No Duplicate Types" (Section
+                // 3.3.1) already enforced above for Mixed content's own
+                // choice list applies equally to an element-content choice
+                // group like "(a|a)" - ambiguous/redundant either way.
+                // Nested groups (children with no elementName of their own)
+                // are not compared - only sibling element-name particles.
+                // Unconditional (not gated on validationEnabled): xmlconf's
+                // own rmt-e2e-34 exercises this specifically as an "error"-
+                // category test, which the harness runs with validation
+                // off - this is checkable from the declaration's own local
+                // syntax alone, with no need to cross-reference anything
+                // elsewhere in the DTD, so every processor can and does
+                // catch it regardless of validation mode.
+                for (int i = 0; i < children.size(); i++) {
+                    ElementDeclaration.ContentModel child = children.get(i);
+                    if (child.type != ElementDeclaration.ContentModel.NodeType.ELEMENT) {
+                        continue;
+                    }
+                    for (int j = 0; j < i; j++) {
+                        ElementDeclaration.ContentModel other = children.get(j);
+                        if (other.type == ElementDeclaration.ContentModel.NodeType.ELEMENT
+                                && child.elementName.equals(other.elementName)) {
+                            handler.error("Validity Constraint: No Duplicate Types (Section 3.3.1). \""
+                                    + child.elementName + "\" appears more than once in this choice group.");
+                            break;
+                        }
+                    }
+                }
+            }
             return new ElementDeclaration.ContentModel(groupType, children, groupOcc);
         }
     }
@@ -3472,7 +3699,8 @@ class Scanner implements ByteDecoderTarget {
      * from the internal subset - {@link #splicePEReferenceAt} rejects it
      * outright there).
      */
-    private int scanAttlistDeclaration(int p, HashMap<String, String> pendingParamEntities,
+    private int scanAttlistDeclaration(int p, HashMap<String, String> pendingEntities,
+            HashMap<String, String[]> pendingExternalNames, HashMap<String, String> pendingParamEntities,
             HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
         int ws = p;
         p = skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames);
@@ -3668,6 +3896,9 @@ class Scanner implements ByteDecoderTarget {
                 throw handler.fatalError("Malformed attribute-list declaration");
             }
 
+            if (rawDefault != null) {
+                checkAttlistDefaultEntitiesDeclared(rawDefault, pendingEntities, pendingExternalNames);
+            }
             if (validationEnabled) {
                 checkAttlistDeclarationVCs(elementName, attrName, type, mode);
             }
@@ -3822,7 +4053,18 @@ class Scanner implements ByteDecoderTarget {
             handler.startEntity("[dtd]");
             char[] chars = fetchExternalResource("the external DTD subset for \"" + rootName + "\"",
                     doctypeExternalPublicId, doctypeExternalSystemId);
-            parseExternalSubset(chars);
+            // See baseSystemId's own Javadoc: for the duration of parsing
+            // the external subset, the current base becomes its own
+            // resolved location, so a parameter entity declared directly
+            // within it (not via another parameter entity) captures the
+            // right declaration-time base.
+            String savedBaseSystemId = baseSystemId;
+            baseSystemId = lastResolvedSystemId;
+            try {
+                parseExternalSubset(chars);
+            } finally {
+                baseSystemId = savedBaseSystemId;
+            }
             handler.endEntity("[dtd]");
         }
         doctypeExternalPublicId = null;
@@ -3961,8 +4203,9 @@ class Scanner implements ByteDecoderTarget {
                                 return false;
                             }
                             if (am == KW_MATCH) {
-                                int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length,
-                                        doctypePendingParamEntities, doctypePendingParamExternalNames);
+                                int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length, doctypePendingEntities,
+                                        doctypePendingExternalNames, doctypePendingParamEntities,
+                                        doctypePendingParamExternalNames);
                                 if (r < 0) {
                                     return false;
                                 }
@@ -4054,21 +4297,40 @@ class Scanner implements ByteDecoderTarget {
         }
     }
 
+    /** Errata E13: true once a parameter entity reference has been
+     *  recognized anywhere in the *internal* DTD subset (set by {@link
+     *  #expandParameterEntityReference}) - read by {@link
+     *  #checkEntityReferenceable} to decide whether an undeclared general
+     *  entity reference is a fatal well-formedness error (false) or a
+     *  merely recoverable validity error (true). */
+    private boolean sawInternalSubsetParameterEntityReference;
+
     /** Validates that {@code name} may be referenced now: declared (as a
      *  general, non-external entity), not currently being expanded (WFC "No
      *  Recursion"), and within the total-expansion-count guard (a simple
      *  mitigation for entity-expansion amplification, aka "billion laughs" -
      *  not a substitute for a real resource budget, but enough for this
-     *  milestone's scope). */
+     *  milestone's scope). Returns true if {@code name} is actually usable
+     *  (declared); false only for the errata E13 case just above - an
+     *  undeclared entity that this document's own internal-subset PE usage
+     *  downgrades to non-fatal - which the caller must treat as if {@code
+     *  name} had empty replacement text, having already had the VC
+     *  reported here. */
     /** @param allowExternal true for a content-context reference (external
      *         entities are fetched there - see {@link
      *         #expandGeneralEntityInContent}); false for an attribute-value
      *         reference, where WFC "No External Entity References" makes
      *         referencing one always fatal, regardless of fetchability. */
-    private void checkEntityReferenceable(String name, boolean allowExternal) throws SAXException {
+    private boolean checkEntityReferenceable(String name, boolean allowExternal) throws SAXException {
         boolean isGeneral = generalEntities.containsKey(name);
         boolean isExternal = externalEntityNames.containsKey(name);
         if (!isGeneral && !isExternal) {
+            if (sawInternalSubsetParameterEntityReference) {
+                handler.error("Validity Constraint: Entity Declared (Section 4.1). Entity \"" + name
+                        + "\" was not declared (a parameter entity reference elsewhere in the internal "
+                        + "DTD subset downgrades this from a well-formedness error to a validity error).");
+                return false;
+            }
             throw handler.fatalError("Entity \"" + name + "\" was not declared");
         }
         if (isExternal && !allowExternal) {
@@ -4086,6 +4348,7 @@ class Scanner implements ByteDecoderTarget {
         if (++entityExpansionCount > MAX_ENTITY_EXPANSIONS) {
             throw handler.fatalError("Entity expansion limit exceeded");
         }
+        return true;
     }
 
     /**
@@ -4112,7 +4375,13 @@ class Scanner implements ByteDecoderTarget {
      * case here, unlike every other use of these fields.
      */
     private void expandGeneralEntityInContent(String name) throws SAXException {
-        checkEntityReferenceable(name, true);
+        if (!checkEntityReferenceable(name, true)) {
+            // Errata E13: undeclared, but downgraded to a non-fatal VC by
+            // this document's own internal-subset PE usage - nothing
+            // actually declared for it, so there is no replacement text to
+            // report; treat the reference as producing nothing at all.
+            return;
+        }
         char[] replacementChars;
         String[] externalIds = externalEntityNames.get(name);
         // Fired here, not any earlier - mirrors the old pipeline's own
@@ -4152,6 +4421,7 @@ class Scanner implements ByteDecoderTarget {
         limit = buf.length;
         contentRunOpen = false;
         allowRestrictedCharInContent = restrictedCharEntities.contains(name);
+        entityStackFloors.add(stackDepthAtEntry);
         try {
             scan();
             if (pos != limit || inStartTag || inAttributeValue) {
@@ -4179,6 +4449,7 @@ class Scanner implements ByteDecoderTarget {
             contentRunOpen = savedContentRunOpen;
             allowRestrictedCharInContent = savedAllowRestrictedCharInContent;
             entityExpansionStack.remove(entityExpansionStack.size() - 1);
+            entityStackFloors.remove(entityStackFloors.size() - 1);
         }
     }
 
@@ -4199,7 +4470,10 @@ class Scanner implements ByteDecoderTarget {
      * here.
      */
     private String expandGeneralEntityInAttributeValue(String name) throws SAXException {
-        checkEntityReferenceable(name, false);
+        if (!checkEntityReferenceable(name, false)) {
+            // Errata E13 - see expandGeneralEntityInContent's identical carve-out.
+            return "";
+        }
         String replacement = generalEntities.get(name);
         entityExpansionStack.add(name);
         try {
@@ -4265,11 +4539,62 @@ class Scanner implements ByteDecoderTarget {
      * kept literal at declaration time, same as an {@code <!ENTITY>}'s own
      * value - see {@link #scanAttlistDeclaration}). Called once per default,
      * from {@link #scanDoctypeSubset}'s finishing step, after the whole
-     * internal subset - and therefore every entity - has been parsed, since
-     * a default may reference an entity declared later in the same subset.
+     * internal subset has been parsed - safe to defer this far because
+     * {@link #checkAttlistDefaultEntitiesDeclared} already rejected, back at
+     * declaration time, any reference this text could have made to an
+     * entity not yet declared, so every name still here is guaranteed
+     * resolvable by now.
      */
     private String resolveAttlistDefaultValue(String raw) throws SAXException {
         return resolveAttributeText(raw.toCharArray(), "an attribute default value");
+    }
+
+    /** WFC "Entity Declared" (Section 4.1)'s own special case: unlike a
+     *  general entity reference in content (always resolved only after the
+     *  whole DTD is known, so declaration order relative to the reference
+     *  never actually matters), the spec explicitly requires that "the
+     *  declaration of a general entity must precede any reference to it
+     *  which appears in a default value in an attribute-list declaration" -
+     *  checked here, immediately, against only what has been declared so
+     *  far ({@code pendingEntities}/{@code pendingExternalNames} - the
+     *  subset currently being parsed - falling back to the scanner-wide
+     *  maps for a name declared in an earlier-parsed subset), rather than
+     *  deferred to {@link #resolveAttlistDefaultValue}'s later, whole-
+     *  subset-known pass. Predefined entities are always fine, at any
+     *  point, and never reach this check (matching {@link
+     *  #resolveAttributeText}'s own precedence). */
+    private void checkAttlistDefaultEntitiesDeclared(String raw, HashMap<String, String> pendingEntities,
+            HashMap<String, String[]> pendingExternalNames) throws SAXException {
+        char[] text = raw.toCharArray();
+        int len = text.length;
+        int q = 0;
+        while (q < len) {
+            if (text[q] != '&') {
+                q++;
+                continue;
+            }
+            int nameStart = q + 1;
+            int p = nameStart;
+            while (p < len && isNameChar(text[p])) {
+                p++;
+            }
+            if (p >= len || text[p] != ';') {
+                // Malformed - already rejected by scanQuotedLiteralWithCharRefs's
+                // own scanReferenceNameLiteral when this text was first scanned.
+                q++;
+                continue;
+            }
+            if (matchPredefined(text, nameStart, p - nameStart) == null) {
+                String name = new String(text, nameStart, p - nameStart);
+                if (!pendingEntities.containsKey(name) && !pendingExternalNames.containsKey(name)
+                        && !generalEntities.containsKey(name) && !externalEntityNames.containsKey(name)) {
+                    throw handler.fatalError("Well-Formedness Constraint: Entity Declared (Section 4.1). "
+                            + "Entity \"" + name + "\" referenced in an attribute default value must be "
+                            + "declared before the <!ATTLIST> declaration that references it.");
+                }
+            }
+            q = p + 1;
+        }
     }
 
     // ===== External entity/DTD fetching =====
@@ -4299,6 +4624,8 @@ class Scanner implements ByteDecoderTarget {
             if (resolved != null && resolved.getByteStream() != null) {
                 in = resolved.getByteStream();
                 encodingHint = resolved.getEncoding();
+                lastResolvedSystemId = resolved.getSystemId() != null ? resolved.getSystemId()
+                        : resolveSystemId(systemId);
             } else {
                 String resolvedSystemId = resolveSystemId(systemId);
                 if (resolvedSystemId == null) {
@@ -4306,6 +4633,7 @@ class Scanner implements ByteDecoderTarget {
                 }
                 in = openStream(resolvedSystemId);
                 encodingHint = null;
+                lastResolvedSystemId = resolvedSystemId;
             }
             byte[] bytes = readAllExternalBytes(in);
             char[] chars = XmlDeclUtil.decodeBytes(bytes, encodingHint);
@@ -4315,6 +4643,13 @@ class Scanner implements ByteDecoderTarget {
             throw handler.fatalError("Failed to fetch " + what + " (" + systemId + "): " + e.getMessage());
         }
     }
+
+    /** Set by {@link #fetchExternalResource} - the fully-resolved (absolute,
+     *  where possible) system identifier the fetch actually used. Read by
+     *  {@link #finishDoctypeExternalSubset}/{@link
+     *  #expandParameterEntityReference} to become the new {@link
+     *  #baseSystemId} for the duration of parsing what was just fetched. */
+    private String lastResolvedSystemId;
 
     /** XML 1.1 Section 4.3.4: a document may not reference an external
      *  entity or DTD subset whose own leading declaration declares a
@@ -4520,8 +4855,8 @@ class Scanner implements ByteDecoderTarget {
                     } else {
                         int am = matchKeyword(pos, ATTLIST_MARKER);
                         if (am == KW_MATCH) {
-                            int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length, pendingParamEntities,
-                                    pendingParamExternalNames);
+                            int r = scanAttlistDeclaration(pos + ATTLIST_MARKER.length, pendingEntities,
+                                    pendingExternalNames, pendingParamEntities, pendingParamExternalNames);
                             if (r < 0) {
                                 throw handler.fatalError("Malformed attribute-list declaration");
                             }
@@ -4658,6 +4993,17 @@ class Scanner implements ByteDecoderTarget {
         String name = new String(buf, nameStart, q - nameStart);
         int resumeAt = q + 1;
 
+        if (!parsingExternalContent) {
+            // Errata E13 / WFC "Entity Declared" (Section 4.1): a parameter
+            // entity reference occurring anywhere in the *internal* DTD
+            // subset - even one wholly unrelated to any particular general
+            // entity - is enough to downgrade every undeclared-general-
+            // entity reference in this document from a fatal well-
+            // formedness error to a merely recoverable validity error (a
+            // non-validating processor is not required to have read
+            // whatever the PE's own replacement text might have declared).
+            sawInternalSubsetParameterEntityReference = true;
+        }
         char[] replacementChars = resolveParameterEntityReplacement(name, pendingParamEntities,
                 pendingParamExternalNames);
 
@@ -4671,6 +5017,7 @@ class Scanner implements ByteDecoderTarget {
         char[] savedBuf = buf;
         int savedLimit = limit;
         boolean savedParsingExternalContent = parsingExternalContent;
+        String savedBaseSystemId = baseSystemId;
         buf = replacementChars;
         pos = 0;
         limit = buf.length;
@@ -4682,6 +5029,15 @@ class Scanner implements ByteDecoderTarget {
         // (inherited unchanged, whichever way it already was).
         if (lastParamEntityWasExternal) {
             parsingExternalContent = true;
+            // baseSystemId's own Javadoc: for the duration of parsing this
+            // external entity's own replacement text, the current base
+            // becomes ITS resolved location - so any further external
+            // parameter entity declared within it captures the right
+            // declaration-time base of its own (see scanEntityDeclaration's
+            // external-PE branch), regardless of how indirectly (via an
+            // internal parameter entity merely naming it) this one was
+            // eventually expanded.
+            baseSystemId = lastResolvedSystemId;
         }
         try {
             parseMarkupDeclSeq(false, pendingEntities, pendingExternalNames, pendingParamEntities,
@@ -4693,6 +5049,7 @@ class Scanner implements ByteDecoderTarget {
             buf = savedBuf;
             limit = savedLimit;
             parsingExternalContent = savedParsingExternalContent;
+            baseSystemId = savedBaseSystemId;
             parameterEntityExpansionStack.remove(parameterEntityExpansionStack.size() - 1);
         }
         pos = resumeAt;
@@ -4732,7 +5089,19 @@ class Scanner implements ByteDecoderTarget {
             throw handler.fatalError("Parameter entity \"%" + name + ";\" was not declared");
         }
         lastParamEntityWasExternal = true;
-        char[] fetched = fetchExternalResource("parameter entity \"" + name + "\"", externalIds[0], externalIds[1]);
+        // Resolve externalIds[1] against this entity's own declaration-time
+        // base (externalIds[2]), never baseSystemId's current value here -
+        // see baseSystemId's own Javadoc for why they can differ.
+        String savedBaseSystemId = baseSystemId;
+        if (externalIds[2] != null) {
+            baseSystemId = externalIds[2];
+        }
+        char[] fetched;
+        try {
+            fetched = fetchExternalResource("parameter entity \"" + name + "\"", externalIds[0], externalIds[1]);
+        } finally {
+            baseSystemId = savedBaseSystemId;
+        }
         return XmlDeclUtil.stripXmlDeclaration(fetched, handler);
     }
 
@@ -4808,13 +5177,58 @@ class Scanner implements ByteDecoderTarget {
      */
     private int splicePEReferenceAt(int p, HashMap<String, String> pendingParamEntities,
             HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        return splicePEReferenceAt(p, pendingParamEntities, pendingParamExternalNames, false);
+    }
+
+    /** {@code checkParenBalance}: true only for the element-content-model
+     *  paren-depth-counting call site - see {@link #checkPEReplacementParenBalance}. */
+    private int splicePEReferenceAt(int p, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames, boolean checkParenBalance) throws SAXException {
         char[] replacementChars = resolveParameterEntityReferenceAt(p, pendingParamEntities,
                 pendingParamExternalNames);
         if (replacementChars == null) {
             return limit;
         }
+        if (checkParenBalance) {
+            checkPEReplacementParenBalance(replacementChars);
+        }
         String replacement = " " + new String(replacementChars) + " ";
         return spliceIntoBuf(p, lastPEReferenceEnd, replacement);
+    }
+
+    /** VC "Proper Group/PE Nesting" (Section 3.2.1): "if either of the
+     *  opening or closing parentheses of a choice, seq, or Mixed construct
+     *  is contained in the replacement text for a parameter entity, both
+     *  must be contained in the same replacement text" - i.e. a single PE's
+     *  own replacement text must be internally paren-balanced (and never
+     *  dip below zero, ruling out a stray close before its own open within
+     *  the same text), since {@link #splicePEReferenceAt}'s in-place
+     *  splicing otherwise flattens PE boundaries away entirely (the caller's
+     *  own paren-depth count, resumed transparently after the splice,
+     *  cannot tell a legitimately-nested "(" from one that only balances
+     *  because a sibling PE's replacement text happened to supply the
+     *  matching ")"). Checked once, against the replacement text alone, at
+     *  the single call site (the element-content-model span-finding loop in
+     *  {@link #scanElementDeclaration}) where an unbalanced splice could
+     *  silently produce a syntactically-valid-looking but VC-violating
+     *  content model. */
+    private void checkPEReplacementParenBalance(char[] replacementChars) throws SAXException {
+        int depth = 0;
+        for (char c : replacementChars) {
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth < 0) {
+                    break;
+                }
+            }
+        }
+        if (depth != 0) {
+            handler.error("Validity Constraint: Proper Group/PE Nesting (Section 3.2.1). "
+                    + "A parameter entity's replacement text must contain both parentheses of any "
+                    + "choice/seq/Mixed group it contributes one of.");
+        }
     }
 
     /** Set by {@link #resolveParameterEntityReferenceAt} - the position
@@ -4879,12 +5293,26 @@ class Scanner implements ByteDecoderTarget {
      *  spliced in - is handled with no other change to their logic. */
     private int skipWhitespaceInDeclaration(int p, HashMap<String, String> pendingParamEntities,
             HashMap<String, String[]> pendingParamExternalNames) throws SAXException {
+        return skipWhitespaceInDeclaration(p, pendingParamEntities, pendingParamExternalNames, false);
+    }
+
+    /** {@code checkParenBalance}: true only for {@link
+     *  #scanElementDeclaration}'s own two calls (right before a content
+     *  model is expected to begin) - see {@link
+     *  #checkPEReplacementParenBalance}. A PE reference can supply a content
+     *  model's opening parenthesis itself (not just parens found once
+     *  already inside one - the other, more common case {@link
+     *  #scanElementDeclaration}'s content-model span-finding loop already
+     *  covers with its own {@code checkParenBalance} splice), so this call
+     *  site needs the same check too. */
+    private int skipWhitespaceInDeclaration(int p, HashMap<String, String> pendingParamEntities,
+            HashMap<String, String[]> pendingParamExternalNames, boolean checkParenBalance) throws SAXException {
         while (true) {
             p = skipOptionalWhitespace(p);
             if (p >= limit || buf[p] != '%') {
                 return p;
             }
-            p = splicePEReferenceAt(p, pendingParamEntities, pendingParamExternalNames);
+            p = splicePEReferenceAt(p, pendingParamEntities, pendingParamExternalNames, checkParenBalance);
             if (p >= limit) {
                 return p;
             }
@@ -4967,21 +5395,31 @@ class Scanner implements ByteDecoderTarget {
                 checkNoColon(attrName, value, "IDREF");
                 recordPendingIdref(value);
                 break;
-            case "IDREFS":
-                for (String token : splitTokens(value)) {
+            case "IDREFS": {
+                List<String> tokens = splitTokens(value);
+                if (tokens.isEmpty()) {
+                    reportBadAttributeValueFormat(attrName, value, "IDREFS", "IDREFS");
+                }
+                for (String token : tokens) {
                     checkNameProduction(attrName, token, "IDREFS");
                     checkNoColon(attrName, token, "IDREFS");
                     recordPendingIdref(token);
                 }
                 break;
+            }
             case "NMTOKEN":
                 checkNmtokenProduction(attrName, value, "NMTOKEN");
                 break;
-            case "NMTOKENS":
-                for (String token : splitTokens(value)) {
+            case "NMTOKENS": {
+                List<String> tokens = splitTokens(value);
+                if (tokens.isEmpty()) {
+                    reportBadAttributeValueFormat(attrName, value, "NMTOKENS", "NMTOKENS");
+                }
+                for (String token : tokens) {
                     checkNmtokenProduction(attrName, token, "NMTOKENS");
                 }
                 break;
+            }
             case "ENUMERATION":
             case "NOTATION":
                 checkEnumerationMembership(elementName, attrName, type, value);
@@ -4997,7 +5435,10 @@ class Scanner implements ByteDecoderTarget {
                 }
                 break;
             default:
-                // CDATA never reaches here.
+                // CDATA (and anything else unrecognized): no type-specific
+                // value-format VC applies, but checkFixedValue below still
+                // does - a #FIXED default is legal on any type, including
+                // CDATA.
                 break;
         }
         checkFixedValue(elementName, attrName, value);

@@ -829,12 +829,32 @@ public class ScannerTest {
     }
 
     @Test
-    public void testAttributeDefaultValueResolvesForwardReferencedEntity() throws Exception {
-        // The default references &greeting;, declared LATER in the same
-        // internal subset - resolvable because defaults are only resolved
-        // once the whole subset (and therefore every entity) is known.
+    public void testAttributeDefaultValueRejectsForwardReferencedEntity() throws Exception {
+        // WFC "Entity Declared" (Section 4.1): "the declaration of a general
+        // entity must precede any reference to it which appears in a
+        // default value in an attribute-list declaration" - unlike a
+        // reference in content (always resolved only once the whole DTD is
+        // known, so declaration order relative to the reference never
+        // actually matters there), this is a special case that is checked
+        // eagerly, at declaration time, so &greeting; here - declared LATER
+        // in the same internal subset - must be rejected.
         String xml = "<!DOCTYPE root [<!ATTLIST root msg CDATA \"&greeting; world\">"
                 + "<!ENTITY greeting \"hello\">]><root/>";
+        try {
+            runScannerWithDoctype(xml);
+            org.junit.Assert.fail("expected a fatal error for an entity referenced in an ATTLIST default "
+                    + "before its own declaration");
+        } catch (org.xml.sax.SAXException e) {
+            assertTrue(e.getMessage().contains("must be declared before"));
+        }
+    }
+
+    @Test
+    public void testAttributeDefaultValueResolvesBackwardReferencedEntity() throws Exception {
+        // The mirror image of the above: &greeting; is declared BEFORE the
+        // <!ATTLIST> that references it, so this remains legal.
+        String xml = "<!DOCTYPE root [<!ENTITY greeting \"hello\">"
+                + "<!ATTLIST root msg CDATA \"&greeting; world\">]><root/>";
         assertEquals(Arrays.asList(
                 "startDocument()",
                 "startDTD(root,null,null)",
