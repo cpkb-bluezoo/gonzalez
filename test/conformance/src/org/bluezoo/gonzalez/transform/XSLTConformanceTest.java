@@ -15,6 +15,7 @@ package org.bluezoo.gonzalez.transform;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -66,9 +67,9 @@ import static org.junit.Assert.*;
  *   <li>{@code -Dxslt.version=3.0} - All XSLT 3.0 tests</li>
  * </ul>
  *
- * <p>The test suite repository must be checked out at ../xslt30-test:
+ * <p>Set {@code XSLT30_TEST_DIR} to the test-suite checkout:
  * <pre>
- * cd .. && git clone https://github.com/w3c/xslt30-test.git
+ * export XSLT30_TEST_DIR=/path/to/xslt30-test
  * </pre>
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
@@ -78,7 +79,7 @@ public class XSLTConformanceTest {
 
     // Base directory for resolving relative paths (when running from temp dir)
     private static final File PROJECT_BASEDIR = getProjectBasedir();
-    private static final File XSLT30_TEST_DIR = new File(PROJECT_BASEDIR, "../xslt30-test");
+    private static final File XSLT30_TEST_DIR = getXslt30TestDir();
     private static final File OUTPUT_DIR = new File(PROJECT_BASEDIR, "test/output");
     private static final File REPORT_FILE = new File(OUTPUT_DIR, "xslt-conformance-report.txt");
     private static final File STATS_FILE = new File(OUTPUT_DIR, "xslt-conformance-statistics.txt");
@@ -90,6 +91,15 @@ public class XSLTConformanceTest {
         }
         // Fallback to current directory if not set
         return new File(".");
+    }
+
+    private static File getXslt30TestDir() {
+        String path = System.getenv("XSLT30_TEST_DIR");
+        if (path == null || path.isEmpty()) {
+            throw new IllegalStateException(
+                    "XSLT30_TEST_DIR is not set; set it to the xslt30-test checkout directory");
+        }
+        return new File(path).getAbsoluteFile();
     }
 
     private static final String XSLT_TEST_NS = "http://www.w3.org/2012/10/xslt-test-catalog";
@@ -150,9 +160,8 @@ public class XSLTConformanceTest {
 
         File catalogFile = new File(XSLT30_TEST_DIR, "catalog.xml");
         if (!catalogFile.exists()) {
-            System.err.println("XSLT conformance test suite not found at: " + XSLT30_TEST_DIR);
-            System.err.println("Clone the test suite: cd .. && git clone https://github.com/w3c/xslt30-test.git");
-            return new ArrayList<>();
+            throw new FileNotFoundException(
+                    "XSLT conformance test catalog not found at: " + catalogFile);
         }
 
         System.out.println("Loading XSLT conformance tests from: " + XSLT30_TEST_DIR);

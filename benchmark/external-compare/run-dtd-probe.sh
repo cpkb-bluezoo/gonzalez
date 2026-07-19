@@ -2,26 +2,29 @@
 # Compiles and runs DtdProbe.java: inspects the SAX events each parser emits
 # for the XHTML internal-subset corpus to establish whether the internal DTD
 # subset is actually processed (see DtdProbe.java for the specific facts
-# checked). Shares the aalto-xml/stax2 discovery logic with run.sh.
+# checked). Set AALTO_JAR and STAX2_JAR to the corresponding dependency jars.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-AALTO_DIR="${AALTO_DIR:-$HOME/github/aalto-xml}"
-AALTO_JAR="$(find "$AALTO_DIR/target" -maxdepth 1 -name 'aalto-xml-*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -1)"
-if [ -z "$AALTO_JAR" ]; then
-    echo "No aalto-xml jar found under $AALTO_DIR/target - building it..."
-    (cd "$AALTO_DIR" && ./mvnw -q -DskipTests package)
-    AALTO_JAR="$(find "$AALTO_DIR/target" -maxdepth 1 -name 'aalto-xml-*.jar' ! -name '*sources*' ! -name '*javadoc*' | head -1)"
-fi
-echo "Using aalto-xml jar: $AALTO_JAR"
+require_jar() {
+    local name="$1"
+    local value="${!name:-}"
+    if [ -z "$value" ]; then
+        echo "Error: $name is not set; set it to the dependency jar path." >&2
+        exit 1
+    fi
+    if [ ! -f "$value" ]; then
+        echo "Error: $name does not name a file: $value" >&2
+        exit 1
+    fi
+}
 
-STAX2_JAR="$(find "$HOME/.m2/repository/org/codehaus/woodstox/stax2-api" -name 'stax2-api-*.jar' | sort -V | tail -1)"
-if [ -z "$STAX2_JAR" ]; then
-    echo "stax2-api jar not found in ~/.m2 - run 'cd $AALTO_DIR && ./mvnw -q -DskipTests package' first" >&2
-    exit 1
-fi
+require_jar AALTO_JAR
+require_jar STAX2_JAR
+
+echo "Using aalto-xml jar: $AALTO_JAR"
 echo "Using stax2-api jar: $STAX2_JAR"
 
 echo "Building Gonzalez core..."

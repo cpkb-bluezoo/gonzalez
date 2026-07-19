@@ -8,7 +8,10 @@
 #   -3, --xslt30    Run only XSLT 3.0 tests
 #   -h, --help      Show this help
 
-set -e
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$REPO_ROOT"
 
 QUIET=false
 RUN_10=true
@@ -51,10 +54,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Check for xslt30-test repository
-if [ ! -f "../xslt30-test/catalog.xml" ]; then
-    echo "Error: xslt30-test repository not found at ../xslt30-test"
-    echo "Clone it with: cd .. && git clone https://github.com/w3c/xslt30-test.git"
+# Check for the explicitly configured xslt30-test repository
+if [ -z "${XSLT30_TEST_DIR:-}" ]; then
+    echo "Error: XSLT30_TEST_DIR is not set; set it to the xslt30-test checkout directory." >&2
+    exit 1
+fi
+if [ ! -f "$XSLT30_TEST_DIR/catalog.xml" ]; then
+    echo "Error: xslt30-test catalog not found at $XSLT30_TEST_DIR/catalog.xml" >&2
     exit 1
 fi
 

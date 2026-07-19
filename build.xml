@@ -20,15 +20,13 @@
 -->
 <project name='gonzalez' default='dist'>
 
+  <property environment='env'/>
   <property name='src' location='src'/>
   <property name='build' location='build'/>
   <property name='dist' location='dist'/>
   <property name='test' location='test'/>
   <property name='doc' location='doc'/>
   <property name='lib' location='lib'/>
-  <property name='gumdrop.home' location='../gumdrop'/>
-  <property name='gumdrop.jar' location='${gumdrop.home}/dist/server.jar'/>
-  
   <!-- External parsing library dependency (downloaded by resolve-deps target) -->
   <property name='jsonparser.jar' value='jsonparser-1.3.jar'/>
   
@@ -372,11 +370,15 @@
   </target>
   
   <!-- XSLT Conformance Tests -->
-  <target name='test-xslt' depends='conformance-build' description='Run XSLT conformance tests'>
-    <available file='../xslt30-test/catalog.xml' property='xslt30test.exists'/>
+  <target name='check-xslt30-test'>
+    <fail unless='env.XSLT30_TEST_DIR'
+          message='XSLT30_TEST_DIR is not set; set it to the xslt30-test checkout directory.'/>
+    <available file='${env.XSLT30_TEST_DIR}/catalog.xml' property='xslt30test.exists'/>
     <fail unless='xslt30test.exists' 
-          message='XSLT test suite not found. Clone: cd .. &amp;&amp; git clone https://github.com/w3c/xslt30-test.git'/>
-    
+          message='XSLT test suite catalog not found at ${env.XSLT30_TEST_DIR}/catalog.xml'/>
+  </target>
+
+  <target name='test-xslt' depends='check-xslt30-test,conformance-build' description='Run XSLT conformance tests'>
     <mkdir dir='${test}/junit/results'/>
     <mkdir dir='${test}/output'/>
     <mkdir dir='${test}/output/xslt-temp'/>
@@ -415,7 +417,7 @@
   <!-- Usage: ant test-xslt10, ant test-xslt20, ant test-xslt30 -->
   <!-- Or: ant test-xslt-filter -Dxslt.filter=namespace -Dxslt.version=1.0 -->
   
-  <target name='test-xslt10' depends='conformance-build' description='Run XSLT 1.0 tests only'>
+  <target name='test-xslt10' depends='check-xslt30-test,conformance-build' description='Run XSLT 1.0 tests only'>
     <mkdir dir='${test}/junit/results'/>
     <mkdir dir='${test}/output'/>
     <mkdir dir='${test}/output/xslt-temp'/>
@@ -443,7 +445,7 @@
     <echo message='Report: ${test}/output/xslt-conformance-report.txt'/>
   </target>
   
-  <target name='test-xslt20' depends='conformance-build' description='Run XSLT 2.0 tests only'>
+  <target name='test-xslt20' depends='check-xslt30-test,conformance-build' description='Run XSLT 2.0 tests only'>
     <mkdir dir='${test}/junit/results'/>
     <mkdir dir='${test}/output'/>
     <mkdir dir='${test}/output/xslt-temp'/>
@@ -471,7 +473,7 @@
     <echo message='Report: ${test}/output/xslt-conformance-report.txt'/>
   </target>
   
-  <target name='test-xslt30' depends='conformance-build' description='Run XSLT 3.0 tests only'>
+  <target name='test-xslt30' depends='check-xslt30-test,conformance-build' description='Run XSLT 3.0 tests only'>
     <mkdir dir='${test}/junit/results'/>
     <mkdir dir='${test}/output'/>
     <mkdir dir='${test}/output/xslt-temp'/>
@@ -499,7 +501,7 @@
     <echo message='Report: ${test}/output/xslt-conformance-report.txt'/>
   </target>
   
-  <target name='test-xslt-filter' depends='conformance-build' description='Run filtered XSLT tests'>
+  <target name='test-xslt-filter' depends='check-xslt30-test,conformance-build' description='Run filtered XSLT tests'>
     <fail unless='xslt.filter' message='Usage: ant test-xslt-filter -Dxslt.filter=name [-Dxslt.version=1.0|2.0|3.0] [-Dxslt.category=fn|insn|decl]'/>
     <mkdir dir='${test}/junit/results'/>
     <mkdir dir='${test}/output'/>

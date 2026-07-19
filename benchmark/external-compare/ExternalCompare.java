@@ -3,12 +3,12 @@
  *
  * Standalone (non-JMH, non-ant-managed) throughput comparison of Gonzalez's
  * raw namespace-aware XMLHandler path and SAXAdapter path against the JDK's
- * bundled Xerces and a locally-built aalto-xml, over the file-backed
+ * bundled Xerces and an externally supplied aalto-xml, over the file-backed
  * benchmark/resources corpus plus generated encoding and DTD cases. See
  * benchmark/external-compare/run.sh for how this is compiled/run -
- * deliberately kept out of build.xml (no new project dependency), pointed at
- * a locally-built ~/github/aalto-xml jar and the JDK's own default JAXP
- * provider instead of downloading anything.
+ * deliberately kept out of build.xml (no new project dependency). The script
+ * reads the aalto-xml and stax2-api jar paths from environment variables and
+ * uses the JDK's own default JAXP provider.
  *
  * In package org.bluezoo.gonzalez only to reach the package-private Scanner
  * and XMLHandler APIs - not part of the gonzalez source tree itself (lives

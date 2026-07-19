@@ -376,11 +376,12 @@ non-schema-aware tests. The test suites include:
 Before running conformance tests, extract them from the W3C repositories:
 
 ```bash
-# Clone the test suites (one-time setup)
-git clone https://github.com/w3c/xslt30-test ../xslt30-test
-git clone https://github.com/w3c/qt3tests ../qt3tests
+# Clone the test suites wherever you keep external test data (one-time setup)
+git clone https://github.com/w3c/xslt30-test /path/to/xslt30-test
+git clone https://github.com/w3c/qt3tests /path/to/qt3tests
 
 # Run the tests
+export XSLT30_TEST_DIR=/path/to/xslt30-test
 ./test-all-xslt.sh
 
 # View results

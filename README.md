@@ -489,8 +489,17 @@ architectural advantages remain:
 - **Streaming memory use**: main-document bytes and character data are
   processed in reusable chunks rather than loading the whole document.
 
-Run `benchmark/external-compare/run.sh` from the repository root to reproduce
-the comparison using a local aalto-xml checkout.
+To reproduce the comparison, set the external dependency jar locations and
+run the script:
+
+```sh
+export AALTO_JAR=/path/to/aalto-xml.jar
+export STAX2_JAR=/path/to/stax2-api.jar
+benchmark/external-compare/run.sh
+```
+
+The script exits with an error if either variable is unset or does not name a
+file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
 
 ## Conformance
 
