@@ -1,8 +1,8 @@
 #!/bin/bash
 # Compiles and runs ExternalCompare.java: a throughput comparison of
-# Gonzalez's legacy Parser and new ScannerXMLReader pipeline against the
-# JDK's own default bundled Xerces (no download needed) and a locally-built
-# aalto-xml (built from ~/github/aalto-xml via its own Maven build).
+# Gonzalez's raw XMLHandler and SAXAdapter paths against the JDK's bundled
+# Xerces implementation (no download needed) and a locally-built aalto-xml
+# (built from ~/github/aalto-xml via its own Maven build).
 #
 # Deliberately not wired into build.xml or ant - a standalone script, no new
 # project dependency. Run from the repo root, or this script will cd there

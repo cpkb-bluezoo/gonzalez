@@ -1,303 +1,206 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 600" width="900" height="600">
-  <defs>
-    <!-- Gradients -->
-    <linearGradient id="networkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#1a365d"/>
-      <stop offset="100%" style="stop-color:#2c5282"/>
-    </linearGradient>
-    <linearGradient id="bufferGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#2d3748"/>
-      <stop offset="100%" style="stop-color:#4a5568"/>
-    </linearGradient>
-    <linearGradient id="parserGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#744210"/>
-      <stop offset="100%" style="stop-color:#b7791f"/>
-    </linearGradient>
-    <linearGradient id="saxGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#22543d"/>
-      <stop offset="100%" style="stop-color:#38a169"/>
-    </linearGradient>
-    <linearGradient id="appGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#553c9a"/>
-      <stop offset="100%" style="stop-color:#805ad5"/>
-    </linearGradient>
-    <linearGradient id="arrowGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#ed8936"/>
-      <stop offset="100%" style="stop-color:#f6ad55"/>
-    </linearGradient>
-    
-    <!-- Arrow marker -->
-    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
-      <polygon points="0 0, 10 3.5, 0 7" fill="#ed8936"/>
-    </marker>
-    
-    <!-- Glow filter -->
-    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
-      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
-      <feMerge>
-        <feMergeNode in="coloredBlur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
-    
-    <!-- Drop shadow -->
-    <filter id="shadow" x="-10%" y="-10%" width="130%" height="130%">
-      <feDropShadow dx="2" dy="3" stdDeviation="3" flood-opacity="0.3"/>
-    </filter>
-    
-    <!-- Data chunk pattern -->
-    <pattern id="dataPattern" patternUnits="userSpaceOnUse" width="8" height="8">
-      <rect width="8" height="8" fill="#2d3748"/>
-      <rect x="0" y="0" width="4" height="4" fill="#4a5568"/>
-      <rect x="4" y="4" width="4" height="4" fill="#4a5568"/>
-    </pattern>
-  </defs>
-  
-  <!-- Background -->
-  <rect width="900" height="600" fill="#0f1419"/>
-  
-  <!-- Title -->
-  <text x="450" y="40" text-anchor="middle" font-family="Georgia, serif" font-size="24" fill="#f7fafc" font-weight="bold">
-    Gonzalez NIO Event Pipeline
-  </text>
-  <text x="450" y="62" text-anchor="middle" font-family="Menlo, monospace" font-size="11" fill="#a0aec0">
-    Non-blocking XML Streaming with Bounded Memory
-  </text>
-  
-  <!-- Network Sources Section -->
-  <g transform="translate(40, 100)">
-    <!-- Container -->
-    <rect x="0" y="0" width="140" height="200" rx="8" fill="url(#networkGrad)" filter="url(#shadow)"/>
-    <text x="70" y="25" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="13" fill="#bee3f8" font-weight="600">DATA SOURCES</text>
-    
-    <!-- Network socket -->
-    <g transform="translate(20, 45)">
-      <rect width="100" height="40" rx="6" fill="#2b6cb0" stroke="#4299e1" stroke-width="1.5"/>
-      <text x="50" y="17" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#ebf8ff">SocketChannel</text>
-      <text x="50" y="30" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#90cdf4">.read(buffer)</text>
-    </g>
-    
-    <!-- SSL unwrap -->
-    <g transform="translate(20, 95)">
-      <rect width="100" height="40" rx="6" fill="#2b6cb0" stroke="#4299e1" stroke-width="1.5"/>
-      <text x="50" y="17" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#ebf8ff">SSLEngine</text>
-      <text x="50" y="30" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#90cdf4">.unwrap()</text>
-    </g>
-    
-    <!-- File channel -->
-    <g transform="translate(20, 145)">
-      <rect width="100" height="40" rx="6" fill="#2b6cb0" stroke="#4299e1" stroke-width="1.5"/>
-      <text x="50" y="17" text-anchor="middle" font-family="Menlo, monospace" font-size="10" fill="#ebf8ff">FileChannel</text>
-      <text x="50" y="30" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#90cdf4">.read(buffer)</text>
-    </g>
-  </g>
-  
-  <!-- Arrow 1: Sources to Buffer -->
-  <g>
-    <line x1="185" y1="200" x2="230" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
-  </g>
-  
-  <!-- ByteBuffer Chunks Section -->
-  <g transform="translate(240, 120)">
-    <rect x="0" y="0" width="120" height="160" rx="8" fill="url(#bufferGrad)" filter="url(#shadow)"/>
-    <text x="60" y="22" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="12" fill="#e2e8f0" font-weight="600">ByteBuffer</text>
-    <text x="60" y="36" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#a0aec0">chunks</text>
-    
-    <!-- Animated chunk representation -->
-    <g transform="translate(15, 50)">
-      <!-- Chunk 1 -->
-      <rect x="0" y="0" width="90" height="25" rx="3" fill="#4a5568" stroke="#718096" stroke-width="1">
-        <animate attributeName="opacity" values="1;0.7;1" dur="2s" repeatCount="indefinite"/>
-      </rect>
-      <text x="45" y="16" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#e2e8f0">&lt;root&gt;&lt;item</text>
-      
-      <!-- Chunk 2 -->
-      <rect x="0" y="30" width="90" height="25" rx="3" fill="#4a5568" stroke="#718096" stroke-width="1">
-        <animate attributeName="opacity" values="0.7;1;0.7" dur="2s" repeatCount="indefinite"/>
-      </rect>
-      <text x="45" y="46" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#e2e8f0">id="1"&gt;data</text>
-      
-      <!-- Chunk 3 -->
-      <rect x="0" y="60" width="90" height="25" rx="3" fill="#4a5568" stroke="#718096" stroke-width="1">
-        <animate attributeName="opacity" values="1;0.7;1" dur="2s" repeatCount="indefinite" begin="0.5s"/>
-      </rect>
-      <text x="45" y="76" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#e2e8f0">&lt;/item&gt;...</text>
-    </g>
-    
-    <!-- Size indicator -->
-    <text x="60" y="150" text-anchor="middle" font-family="Menlo, monospace" font-size="8" fill="#68d391">↔ user-defined size</text>
-  </g>
-  
-  <!-- Arrow 2: Buffer to Parser -->
-  <g>
-    <line x1="365" y1="200" x2="410" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
-    <text x="387" y="185" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#ed8936">receive()</text>
-  </g>
-  
-  <!-- Gonzalez Parser Section -->
-  <g transform="translate(420, 95)">
-    <rect x="0" y="0" width="160" height="210" rx="10" fill="url(#parserGrad)" filter="url(#shadow)" stroke="#d69e2e" stroke-width="2"/>
-    
-    <!-- Parser header -->
-    <text x="80" y="25" text-anchor="middle" font-family="Georgia, serif" font-size="16" fill="#fefcbf" font-weight="bold">Gonzalez</text>
-    <text x="80" y="42" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#faf089">Parser</text>
-    
-    <!-- Internal components -->
-    <g transform="translate(15, 55)">
-      <!-- EED -->
-      <rect width="130" height="35" rx="4" fill="#975a16" stroke="#d69e2e" stroke-width="1"/>
-      <text x="65" y="15" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#fefcbf">ExternalEntityDecoder</text>
-      <text x="65" y="27" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#ecc94b">bytes → chars</text>
-      
-      <!-- Tokenizer -->
-      <rect y="40" width="130" height="35" rx="4" fill="#975a16" stroke="#d69e2e" stroke-width="1"/>
-      <text x="65" y="55" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#fefcbf">Tokenizer</text>
-      <text x="65" y="67" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#ecc94b">state machine</text>
-      
-      <!-- Content Parser -->
-      <rect y="80" width="130" height="35" rx="4" fill="#975a16" stroke="#d69e2e" stroke-width="1"/>
-      <text x="65" y="95" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#fefcbf">ContentParser</text>
-      <text x="65" y="107" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#ecc94b">tokens → events</text>
-    </g>
-    
-    <!-- Key feature badges -->
-    <g transform="translate(20, 175)">
-      <rect width="55" height="18" rx="9" fill="#2f855a"/>
-      <text x="27" y="12" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="7" fill="#c6f6d5" font-weight="600">STREAMING</text>
-    </g>
-    <g transform="translate(80, 175)">
-      <rect width="60" height="18" rx="9" fill="#2f855a"/>
-      <text x="30" y="12" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="7" fill="#c6f6d5" font-weight="600">NON-BLOCK</text>
-    </g>
-  </g>
-  
-  <!-- Arrow 3: Parser to SAX Events -->
-  <g>
-    <line x1="585" y1="200" x2="630" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
-  </g>
-  
-  <!-- SAX Events Section -->
-  <g transform="translate(640, 110)">
-    <rect x="0" y="0" width="110" height="180" rx="8" fill="url(#saxGrad)" filter="url(#shadow)"/>
-    <text x="55" y="22" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="12" fill="#c6f6d5" font-weight="600">SAX Events</text>
-    
-    <!-- Event list -->
-    <g transform="translate(10, 38)" font-family="Menlo, monospace" font-size="8" fill="#9ae6b4">
-      <rect x="0" y="0" width="90" height="18" rx="3" fill="#276749"/>
-      <text x="45" y="12" text-anchor="middle">startDocument()</text>
-      
-      <rect x="0" y="22" width="90" height="18" rx="3" fill="#276749"/>
-      <text x="45" y="34" text-anchor="middle">startElement()</text>
-      
-      <rect x="0" y="44" width="90" height="18" rx="3" fill="#276749"/>
-      <text x="45" y="56" text-anchor="middle">characters()</text>
-      
-      <rect x="0" y="66" width="90" height="18" rx="3" fill="#276749"/>
-      <text x="45" y="78" text-anchor="middle">endElement()</text>
-      
-      <rect x="0" y="88" width="90" height="18" rx="3" fill="#276749"/>
-      <text x="45" y="100" text-anchor="middle">startElement()</text>
-      
-      <rect x="0" y="110" width="90" height="18" rx="3" fill="#276749"/>
-      <text x="45" y="122" text-anchor="middle">...</text>
-    </g>
-    
-    <text x="55" y="172" text-anchor="middle" font-family="Menlo, monospace" font-size="7" fill="#68d391">immediate dispatch</text>
-  </g>
-  
-  <!-- Arrow 4: SAX to Application -->
-  <g>
-    <line x1="755" y1="200" x2="800" y2="200" stroke="url(#arrowGrad)" stroke-width="3" marker-end="url(#arrowhead)"/>
-  </g>
-  
-  <!-- Application Handler Section -->
-  <g transform="translate(810, 145)">
-    <rect x="0" y="0" width="75" height="110" rx="8" fill="url(#appGrad)" filter="url(#shadow)"/>
-    <text x="37" y="22" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="10" fill="#e9d8fd" font-weight="600">Your</text>
-    <text x="37" y="36" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="10" fill="#e9d8fd" font-weight="600">Handler</text>
-    
-    <!-- Handler icon -->
-    <g transform="translate(22, 48)">
-      <rect width="30" height="45" rx="4" fill="#6b46c1" stroke="#9f7aea" stroke-width="1"/>
-      <line x1="6" y1="10" x2="24" y2="10" stroke="#d6bcfa" stroke-width="2"/>
-      <line x1="6" y1="18" x2="20" y2="18" stroke="#d6bcfa" stroke-width="2"/>
-      <line x1="6" y1="26" x2="22" y2="26" stroke="#d6bcfa" stroke-width="2"/>
-      <line x1="6" y1="34" x2="18" y2="34" stroke="#d6bcfa" stroke-width="2"/>
-    </g>
-  </g>
-  
-  <!-- Key Benefits Panel -->
-  <g transform="translate(40, 340)">
-    <rect x="0" y="0" width="820" height="130" rx="10" fill="#1a202c" stroke="#2d3748" stroke-width="2"/>
-    <text x="410" y="25" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="14" fill="#e2e8f0" font-weight="600">Key Benefits of Push-Model XML Parsing</text>
-    
-    <!-- Benefit 1 -->
-    <g transform="translate(30, 45)">
-      <circle cx="10" cy="10" r="10" fill="#38a169"/>
-      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">1</text>
-      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#68d391" font-weight="600">Non-Blocking I/O</text>
-      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Parser never waits for data — processes what's available, returns control</text>
-    </g>
-    
-    <!-- Benefit 2 -->
-    <g transform="translate(300, 45)">
-      <circle cx="10" cy="10" r="10" fill="#ed8936"/>
-      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">2</text>
-      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#f6ad55" font-weight="600">Bounded Memory</text>
-      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">User controls buffer size — document size is unlimited</text>
-    </g>
-    
-    <!-- Benefit 3 -->
-    <g transform="translate(560, 45)">
-      <circle cx="10" cy="10" r="10" fill="#4299e1"/>
-      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">3</text>
-      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#63b3ed" font-weight="600">Real-Time Processing</text>
-      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Events fire immediately as tokens complete</text>
-    </g>
-    
-    <!-- Benefit 4 -->
-    <g transform="translate(30, 85)">
-      <circle cx="10" cy="10" r="10" fill="#9f7aea"/>
-      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">4</text>
-      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#b794f4" font-weight="600">Pipeline Integration</text>
-      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Perfect for Selector-based async servers and event loops</text>
-    </g>
-    
-    <!-- Benefit 5 -->
-    <g transform="translate(300, 85)">
-      <circle cx="10" cy="10" r="10" fill="#ed64a6"/>
-      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">5</text>
-      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#f687b3" font-weight="600">Streaming Architecture</text>
-      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Process while receiving — no waiting for complete document</text>
-    </g>
-    
-    <!-- Benefit 6 -->
-    <g transform="translate(560, 85)">
-      <circle cx="10" cy="10" r="10" fill="#48bb78"/>
-      <text x="10" y="14" text-anchor="middle" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#fff" font-weight="bold">6</text>
-      <text x="30" y="8" font-family="SF Pro Display, Helvetica, sans-serif" font-size="11" fill="#68d391" font-weight="600">State Machine Driven</text>
-      <text x="30" y="22" font-family="SF Pro Display, Helvetica, sans-serif" font-size="9" fill="#a0aec0">Efficient resumable parsing across chunk boundaries</text>
-    </g>
-  </g>
-  
-  <!-- Data flow annotation -->
-  <g transform="translate(180, 320)">
-    <text font-family="SF Pro Display, Helvetica, sans-serif" font-size="10" fill="#718096">
-      <tspan x="0" y="0">Data flows left → right: Each component processes available data and forwards results immediately.</tspan>
-    </text>
-  </g>
-  
-  <!-- Streaming indicator animation -->
-  <g>
-    <circle r="4" fill="#ed8936" filter="url(#glow)">
-      <animateMotion dur="4s" repeatCount="indefinite" path="M 110,200 L 230,200 L 365,200 L 410,200 L 585,200 L 630,200 L 755,200 L 800,200"/>
-    </circle>
-  </g>
-  
-  <!-- Footer -->
-  <text x="450" y="585" text-anchor="middle" font-family="Menlo, monospace" font-size="9" fill="#4a5568">
-    parser.receive(byteBuffer)  →  contentHandler.startElement() / characters() / endElement() ...
-  </text>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720" role="img" aria-labelledby="title desc">
+  <title id="title">Gonzalez Scanner event pipeline</title>
+  <desc id="desc">ByteBuffer input is decoded into characters, scanned directly against the XML grammar, emitted as XMLHandler events, namespace-filtered when enabled, and adapted to standard SAX handlers. External entity resolution feeds the Scanner separately.</desc>
 
+  <defs>
+    <linearGradient id="source" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17365d"/>
+      <stop offset="1" stop-color="#245a8d"/>
+    </linearGradient>
+    <linearGradient id="decode" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#374151"/>
+      <stop offset="1" stop-color="#4b5563"/>
+    </linearGradient>
+    <linearGradient id="scan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#713f12"/>
+      <stop offset="1" stop-color="#a16207"/>
+    </linearGradient>
+    <linearGradient id="event" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#14532d"/>
+      <stop offset="1" stop-color="#15803d"/>
+    </linearGradient>
+    <linearGradient id="adapt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4c1d95"/>
+      <stop offset="1" stop-color="#6d28d9"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="2" dy="3" stdDeviation="3" flood-opacity="0.35"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#f59e0b"/>
+    </marker>
+    <style>
+      .heading { font-family: Georgia, serif; font-weight: 700; fill: #f8fafc; }
+      .label { font-family: Arial, Helvetica, sans-serif; font-weight: 700; fill: #f8fafc; }
+      .mono { font-family: Menlo, Consolas, monospace; fill: #e2e8f0; }
+      .muted { font-family: Arial, Helvetica, sans-serif; fill: #a8b3c2; }
+      .box { filter: url(#shadow); stroke-width: 1.5; }
+      .flow { fill: none; stroke: #f59e0b; stroke-width: 3; marker-end: url(#arrow); }
+      .thinFlow { fill: none; stroke: #f59e0b; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="720" fill="#0b1118"/>
+  <text id="pipelineTitle" x="600" y="38" text-anchor="middle" class="heading" font-size="25">Gonzalez Scanner Event Pipeline</text>
+  <text x="600" y="61" text-anchor="middle" class="mono" font-size="11">direct XML grammar scanning - no tokenizer or intermediate token stream</text>
+
+  <!-- Input -->
+  <g transform="translate(30 108)">
+    <rect class="box" width="150" height="205" rx="10" fill="url(#source)" stroke="#4b94cf"/>
+    <text x="75" y="27" text-anchor="middle" class="label" font-size="13">BYTE SOURCES</text>
+    <g transform="translate(18 48)">
+      <rect width="114" height="38" rx="6" fill="#1d4f7a" stroke="#60a5fa"/>
+      <text x="57" y="16" text-anchor="middle" class="mono" font-size="9">SocketChannel</text>
+      <text x="57" y="29" text-anchor="middle" class="mono" font-size="8">SSLEngine output</text>
+    </g>
+    <g transform="translate(18 96)">
+      <rect width="114" height="38" rx="6" fill="#1d4f7a" stroke="#60a5fa"/>
+      <text x="57" y="23" text-anchor="middle" class="mono" font-size="9">FileChannel</text>
+    </g>
+    <g transform="translate(18 144)">
+      <rect width="114" height="38" rx="6" fill="#1d4f7a" stroke="#60a5fa"/>
+      <text x="57" y="16" text-anchor="middle" class="mono" font-size="9">InputStream</text>
+      <text x="57" y="29" text-anchor="middle" class="mono" font-size="8">blocking wrapper</text>
+    </g>
+  </g>
+
+  <path class="flow" d="M180 210 H224"/>
+  <text x="202" y="195" text-anchor="middle" class="mono" font-size="9">bytes</text>
+
+  <!-- Parser byte entry and decoder -->
+  <g transform="translate(235 100)">
+    <rect class="box" width="205" height="220" rx="10" fill="url(#decode)" stroke="#94a3b8"/>
+    <text x="102.5" y="27" text-anchor="middle" class="label" font-size="13">PARSER BYTE STAGE</text>
+    <rect x="20" y="48" width="165" height="42" rx="6" fill="#273445" stroke="#94a3b8"/>
+    <text x="102.5" y="66" text-anchor="middle" class="mono" font-size="10">Parser.receive(ByteBuffer)</text>
+    <text x="102.5" y="81" text-anchor="middle" class="mono" font-size="8">or parse(InputSource)</text>
+    <path class="thinFlow" d="M102.5 94 V112"/>
+    <rect x="20" y="117" width="165" height="67" rx="6" fill="#334155" stroke="#94a3b8"/>
+    <text x="102.5" y="138" text-anchor="middle" class="mono" font-size="9">ExternalEntityDecoder</text>
+    <text x="102.5" y="154" text-anchor="middle" class="mono" font-size="8">BOM + XML declaration</text>
+    <text x="102.5" y="168" text-anchor="middle" class="mono" font-size="8">charset + line normalization</text>
+    <text x="102.5" y="207" text-anchor="middle" class="muted" font-size="9">reuses bounded byte/char buffers</text>
+  </g>
+
+  <path class="flow" d="M440 210 H484"/>
+  <text x="462" y="195" text-anchor="middle" class="mono" font-size="9">CharBuffer</text>
+
+  <!-- Scanner -->
+  <g transform="translate(495 86)">
+    <rect class="box" width="265" height="248" rx="12" fill="url(#scan)" stroke="#fbbf24" stroke-width="2"/>
+    <text x="132.5" y="28" text-anchor="middle" class="heading" font-size="18">Scanner</text>
+    <text x="132.5" y="47" text-anchor="middle" class="mono" font-size="9">resumable direct grammar recognizer</text>
+
+    <rect x="18" y="64" width="229" height="50" rx="6" fill="#854d0e" stroke="#fbbf24"/>
+    <text x="132.5" y="83" text-anchor="middle" class="mono" font-size="9">XML 1.0 / XML 1.1 grammar</text>
+    <text x="132.5" y="99" text-anchor="middle" class="mono" font-size="8">elements / attributes / text / lexical</text>
+
+    <rect x="18" y="122" width="110" height="57" rx="6" fill="#854d0e" stroke="#fbbf24"/>
+    <text x="73" y="143" text-anchor="middle" class="mono" font-size="9">DTDModel</text>
+    <text x="73" y="158" text-anchor="middle" class="mono" font-size="8">decls / defaults</text>
+    <text x="73" y="171" text-anchor="middle" class="mono" font-size="8">validation</text>
+
+    <rect x="137" y="122" width="110" height="57" rx="6" fill="#854d0e" stroke="#fbbf24"/>
+    <text x="192" y="143" text-anchor="middle" class="mono" font-size="9">Entity state</text>
+    <text x="192" y="158" text-anchor="middle" class="mono" font-size="8">limits / nesting</text>
+    <text x="192" y="171" text-anchor="middle" class="mono" font-size="8">standalone rules</text>
+
+    <text x="132.5" y="204" text-anchor="middle" class="muted" font-size="9">incomplete constructs resume on next chunk</text>
+    <rect x="63" y="217" width="139" height="18" rx="9" fill="#166534"/>
+    <text x="132.5" y="230" text-anchor="middle" class="label" font-size="8">NO TOKEN OBJECT PIPELINE</text>
+  </g>
+
+  <!-- External entity side path -->
+  <g transform="translate(480 385)">
+    <rect class="box" width="295" height="95" rx="9" fill="#182536" stroke="#64748b"/>
+    <text x="147.5" y="23" text-anchor="middle" class="label" font-size="12">EXTERNAL ENTITY PATH</text>
+    <text x="147.5" y="44" text-anchor="middle" class="mono" font-size="8">EntityResolver2 - protocol policy - fetch</text>
+    <text x="147.5" y="60" text-anchor="middle" class="mono" font-size="8">XmlDeclUtil decode - inline DTD/entity scan</text>
+    <text x="147.5" y="80" text-anchor="middle" class="muted" font-size="8">disabled by secure defaults; resolution may block</text>
+  </g>
+  <path class="thinFlow" d="M627 385 V342"/>
+
+  <path class="flow" d="M760 210 H804"/>
+  <text x="782" y="195" text-anchor="middle" class="mono" font-size="9">events</text>
+
+  <!-- XMLHandler and NamespaceFilter -->
+  <g transform="translate(815 91)">
+    <rect class="box" width="165" height="238" rx="10" fill="url(#event)" stroke="#4ade80"/>
+    <text x="82.5" y="27" text-anchor="middle" class="label" font-size="13">XMLHandler</text>
+    <text x="82.5" y="43" text-anchor="middle" class="mono" font-size="8">internal streaming vocabulary</text>
+    <g class="mono" font-size="8">
+      <text x="18" y="69">startElement(qName)</text>
+      <text x="18" y="86">startAttribute(...)</text>
+      <text x="18" y="103">attributeValueContent()</text>
+      <text x="18" y="120">characters(CharBuffer)</text>
+      <text x="18" y="137">namespace(prefix, uri)</text>
+      <text x="18" y="154">elementDecl / entityDecl</text>
+      <text x="18" y="171">comment / CDATA / DTD</text>
+    </g>
+    <rect x="14" y="188" width="137" height="35" rx="5" fill="#166534" stroke="#4ade80"/>
+    <text x="82.5" y="203" text-anchor="middle" class="mono" font-size="8">NamespaceFilter</text>
+    <text x="82.5" y="216" text-anchor="middle" class="mono" font-size="7">only when namespaces=true</text>
+  </g>
+
+  <path class="flow" d="M980 210 H1014"/>
+
+  <!-- SAX Adapter -->
+  <g transform="translate(1025 100)">
+    <rect class="box" width="145" height="220" rx="10" fill="url(#adapt)" stroke="#a78bfa"/>
+    <text x="72.5" y="28" text-anchor="middle" class="label" font-size="13">SAXAdapter</text>
+    <text x="72.5" y="45" text-anchor="middle" class="mono" font-size="8">name resolution</text>
+    <text x="72.5" y="59" text-anchor="middle" class="mono" font-size="8">Attributes2 assembly</text>
+    <g transform="translate(12 78)" class="mono" font-size="8">
+      <rect width="121" height="22" rx="4" fill="#5b21b6"/>
+      <text x="60.5" y="15" text-anchor="middle">ContentHandler</text>
+      <rect y="29" width="121" height="22" rx="4" fill="#5b21b6"/>
+      <text x="60.5" y="44" text-anchor="middle">LexicalHandler</text>
+      <rect y="58" width="121" height="22" rx="4" fill="#5b21b6"/>
+      <text x="60.5" y="73" text-anchor="middle">DeclHandler</text>
+      <rect y="87" width="121" height="22" rx="4" fill="#5b21b6"/>
+      <text x="60.5" y="102" text-anchor="middle">DTD / ErrorHandler</text>
+    </g>
+    <text x="72.5" y="207" text-anchor="middle" class="muted" font-size="8">SAX2 / JAXP boundary</text>
+  </g>
+
+  <!-- Explanatory lower panel -->
+  <g transform="translate(30 520)">
+    <rect width="1140" height="140" rx="10" fill="#121c27" stroke="#334155" stroke-width="1.5"/>
+    <text x="570" y="27" text-anchor="middle" class="label" font-size="14">Pipeline Properties</text>
+
+    <g transform="translate(28 48)">
+      <circle cx="10" cy="10" r="10" fill="#2563eb"/>
+      <text x="10" y="14" text-anchor="middle" class="label" font-size="10">1</text>
+      <text x="29" y="8" class="label" font-size="10">Push input</text>
+      <text x="29" y="24" class="muted" font-size="9">receive() consumes available bytes and returns control.</text>
+    </g>
+    <g transform="translate(400 48)">
+      <circle cx="10" cy="10" r="10" fill="#d97706"/>
+      <text x="10" y="14" text-anchor="middle" class="label" font-size="10">2</text>
+      <text x="29" y="8" class="label" font-size="10">Direct scan</text>
+      <text x="29" y="24" class="muted" font-size="9">Grammar recognition and DTD processing share one Scanner.</text>
+    </g>
+    <g transform="translate(780 48)">
+      <circle cx="10" cy="10" r="10" fill="#16a34a"/>
+      <text x="10" y="14" text-anchor="middle" class="label" font-size="10">3</text>
+      <text x="29" y="8" class="label" font-size="10">Streaming events</text>
+      <text x="29" y="24" class="muted" font-size="9">CharBuffer content is adapted only at the SAX boundary.</text>
+    </g>
+
+    <g transform="translate(28 94)">
+      <circle cx="10" cy="10" r="10" fill="#7c3aed"/>
+      <text x="10" y="14" text-anchor="middle" class="label" font-size="10">4</text>
+      <text x="29" y="8" class="label" font-size="10">Bounded main-document state</text>
+      <text x="29" y="24" class="muted" font-size="9">Only active stacks and incomplete constructs survive chunk boundaries.</text>
+    </g>
+    <g transform="translate(590 94)">
+      <circle cx="10" cy="10" r="10" fill="#dc2626"/>
+      <text x="10" y="14" text-anchor="middle" class="label" font-size="10">5</text>
+      <text x="29" y="8" class="label" font-size="10">Secure external resources</text>
+      <text x="29" y="24" class="muted" font-size="9">Entity flags, accessExternalDTD and expansion limits are enforced in Scanner.</text>
+    </g>
+  </g>
+
+  <text x="600" y="700" text-anchor="middle" class="mono" font-size="9" fill="#64748b">ByteBuffer - ExternalEntityDecoder - Scanner - XMLHandler / NamespaceFilter - SAXAdapter - SAX2 handlers</text>
+</svg>

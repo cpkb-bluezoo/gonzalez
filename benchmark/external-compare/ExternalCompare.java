@@ -1,22 +1,25 @@
 /*
  * ExternalCompare.java
  *
- * Standalone (non-JMH, non-ant-managed) throughput comparison of Gonzalez
- * against the JDK's bundled Xerces and a locally-built
- * aalto-xml, over the same benchmark/resources corpus ScannerPipelineBenchmark
- * uses. See benchmark/external-compare/run.sh for how this is compiled/run -
+ * Standalone (non-JMH, non-ant-managed) throughput comparison of Gonzalez's
+ * raw namespace-aware XMLHandler path and SAXAdapter path against the JDK's
+ * bundled Xerces and a locally-built aalto-xml, over the same
+ * benchmark/resources corpus ScannerPipelineBenchmark uses. See
+ * benchmark/external-compare/run.sh for how this is compiled/run -
  * deliberately kept out of build.xml (no new project dependency), pointed at
  * a locally-built ~/github/aalto-xml jar and the JDK's own default JAXP
  * provider instead of downloading anything.
  *
- * In package org.bluezoo.gonzalez only to reach the package-private
- * Parser/Scanner classes - not part of the gonzalez source tree itself
- * (lives under benchmark/external-compare, compiled ad hoc).
+ * In package org.bluezoo.gonzalez only to reach the package-private Scanner
+ * and XMLHandler APIs - not part of the gonzalez source tree itself (lives
+ * under benchmark/external-compare, compiled ad hoc).
  */
 package org.bluezoo.gonzalez;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -29,6 +32,8 @@ import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamReader;
 
 import org.xml.sax.InputSource;
+import org.xml.sax.Locator;
+import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.DefaultHandler;
 
@@ -38,6 +43,7 @@ public class ExternalCompare {
     private static final int MEASURED_ITERATIONS = 30;
 
     private static final DefaultHandler EMPTY_HANDLER = new DefaultHandler();
+    private static final XMLHandler EMPTY_XML_HANDLER = new EmptyXMLHandler();
 
     public static void main(String[] args) throws Exception {
         Map<String, Path> corpus = new LinkedHashMap<String, Path>();
@@ -71,7 +77,18 @@ public class ExternalCompare {
             byte[] bytes = Files.readAllBytes(entry.getValue());
             double mb = bytes.length / (1024.0 * 1024.0);
 
-            time(docType, "gonzalez", bytes, mb, () -> {
+            time(docType, "gonzalez-xmlhandler", bytes, mb, () -> {
+                XMLHandler handler = new NamespaceFilter(EMPTY_XML_HANDLER, false);
+                ScannerSettings settings = new ScannerSettings(
+                        false, false, false, true, "", ScannerSettings.DEFAULT_EXPANSION_LIMIT);
+                Scanner scanner = new Scanner(handler, false, null, null, null,
+                        false, true, settings, true);
+                ExternalEntityDecoder decoder = new ExternalEntityDecoder(scanner, null, null, false);
+                decoder.receive(ByteBuffer.wrap(bytes));
+                decoder.close();
+            });
+
+            time(docType, "gonzalez-sax", bytes, mb, () -> {
                 XMLReader reader = new Parser();
                 reader.setFeature("http://xml.org/sax/features/namespaces", true);
                 reader.setContentHandler(EMPTY_HANDLER);
@@ -118,6 +135,35 @@ public class ExternalCompare {
         double avgMs = (totalNanos / (double) MEASURED_ITERATIONS) / 1_000_000.0;
         double mbPerSec = mb / (avgMs / 1000.0);
         System.out.printf("%-12s %-24s %10.3f %10.1f%n", docType, label, avgMs, mbPerSec);
+    }
+
+    private static final class EmptyXMLHandler implements XMLHandler {
+        @Override public void setLocator(Locator locator) { }
+        @Override public void setXml11(boolean xml11) { }
+        @Override public void startDocument() { }
+        @Override public void endDocument() { }
+        @Override public void startElement(String qName) { }
+        @Override public void namespace(String prefix, String uri) { }
+        @Override public void startAttribute(String name, String type, boolean declared, boolean specified) { }
+        @Override public void attributeValueContent(CharBuffer value, boolean end) { }
+        @Override public void endAttributes() { }
+        @Override public void characters(CharBuffer text, boolean ignorable, boolean end) { }
+        @Override public void endElement() { }
+        @Override public void startComment() { }
+        @Override public void commentData(CharBuffer text, boolean end) { }
+        @Override public void startCDATA() { }
+        @Override public void endCDATA() { }
+        @Override public void startDTD(String name, String publicId, String systemId) { }
+        @Override public void endDTD() { }
+        @Override public void startEntity(String name) { }
+        @Override public void endEntity(String name) { }
+        @Override public void notationDecl(String name, String publicId, String systemId) { }
+        @Override public void unparsedEntityDecl(String name, String publicId, String systemId, String notationName) { }
+        @Override public void piTarget(String target) { }
+        @Override public void piData(CharBuffer data, boolean end) { }
+        @Override public void saveBuffers() { }
+        @Override public SAXException fatalError(String message) { return new SAXException(message); }
+        @Override public void error(String message) { }
     }
 
 }
