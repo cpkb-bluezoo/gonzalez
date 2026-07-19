@@ -27,8 +27,12 @@ import org.xml.sax.ContentHandler;
 import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXParseException;
+import org.xml.sax.ext.DeclHandler;
+import org.xml.sax.DTDHandler;
 
 import java.io.ByteArrayInputStream;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.junit.Assert.*;
 
@@ -39,7 +43,8 @@ import static org.junit.Assert.*;
  */
 public class ParserEntityTest {
 
-    private static final String DTD_PARSER_PROPERTY = "http://www.nongnu.org/gonzalez/properties/dtd-parser";
+    private static final String DECL_HANDLER =
+            "http://xml.org/sax/properties/declaration-handler";
 
     private void parse(String xml, ContentHandler handler) throws Exception {
         Parser parser = new Parser();
@@ -47,11 +52,6 @@ public class ParserEntityTest {
         ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
         InputSource source = new InputSource(bais);
         parser.parse(source);
-    }
-
-    private DTDParser getDTDParser(Parser parser) throws Exception {
-        Object prop = parser.getProperty(DTD_PARSER_PROPERTY);
-        return (DTDParser) prop;
     }
 
     // ========== EntityRefInContentTest ==========
@@ -300,50 +300,37 @@ public class ParserEntityTest {
                     "<!DOCTYPE root [\n" +
                     "  <!ENTITY copy \"Copyright 2025\">\n" +
                     "]>\n" +
-                    "<root/>";
+                    "<root>&copy;</root>";
 
+        DeclCapture decls = new DeclCapture();
+        ContentCapture content = new ContentCapture();
         Parser parser = new Parser();
-        ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
-        parser.parse(new InputSource(in));
+        parser.setContentHandler(content);
+        parser.setProperty(DECL_HANDLER, decls);
+        parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = getDTDParser(parser);
-        EntityDeclaration entity = dtdParser.getGeneralEntity("copy");
-        assertNotNull(entity);
-        assertFalse(entity.isParameter);
-        assertTrue(entity.isInternal());
-        assertNotNull(entity.replacementText);
-        assertEquals(1, entity.replacementText.size());
-        assertEquals("Copyright 2025", entity.replacementText.get(0));
+        assertEquals("Copyright 2025", decls.internalEntities.get("copy"));
+        assertEquals("Copyright 2025", content.getContent());
     }
 
     @Test
     public void testEntityWithReferences() throws Exception {
         String xml = "<?xml version='1.0'?>\n" +
                     "<!DOCTYPE root [\n" +
+                    "  <!ENTITY middle \"MID\">\n" +
                     "  <!ENTITY combined \"before &middle; after\">\n" +
                     "]>\n" +
-                    "<root/>";
+                    "<root>&combined;</root>";
 
+        DeclCapture decls = new DeclCapture();
+        ContentCapture content = new ContentCapture();
         Parser parser = new Parser();
-        ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
-        parser.parse(new InputSource(in));
+        parser.setContentHandler(content);
+        parser.setProperty(DECL_HANDLER, decls);
+        parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = getDTDParser(parser);
-        EntityDeclaration entity = dtdParser.getGeneralEntity("combined");
-        assertNotNull(entity);
-        assertEquals(3, entity.replacementText.size());
-
-        Object part0 = entity.replacementText.get(0);
-        Object part1 = entity.replacementText.get(1);
-        Object part2 = entity.replacementText.get(2);
-
-        assertTrue(part0 instanceof String);
-        assertEquals("before ", part0);
-        assertTrue(part1 instanceof GeneralEntityReference);
-        GeneralEntityReference ref1 = (GeneralEntityReference) part1;
-        assertEquals("middle", ref1.name);
-        assertTrue(part2 instanceof String);
-        assertEquals(" after", part2);
+        assertEquals("before &middle; after", decls.internalEntities.get("combined"));
+        assertEquals("before MID after", content.getContent());
     }
 
     @Test
@@ -354,19 +341,14 @@ public class ParserEntityTest {
                     "]>\n" +
                     "<root/>";
 
+        DeclCapture decls = new DeclCapture();
         Parser parser = new Parser();
-        ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
-        parser.parse(new InputSource(in));
+        parser.setContentHandler(new ContentCapture());
+        parser.setProperty(DECL_HANDLER, decls);
+        parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = getDTDParser(parser);
-        EntityDeclaration entity = dtdParser.getGeneralEntity("chapter");
-        assertNotNull(entity);
-        assertFalse(entity.isParameter);
-        assertTrue(entity.isExternal());
-        assertTrue(entity.isParsed());
-        assertFalse(entity.isUnparsed());
-        assertNotNull(entity.externalID);
-        assertTrue(entity.externalID.systemId.contains("chapter1"));
+        assertTrue(decls.externalEntities.containsKey("chapter"));
+        assertTrue(decls.externalEntities.get("chapter")[1].contains("chapter1"));
     }
 
     @Test
@@ -378,18 +360,14 @@ public class ParserEntityTest {
                     "]>\n" +
                     "<root/>";
 
+        UnparsedCapture unparsed = new UnparsedCapture();
         Parser parser = new Parser();
-        ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
-        parser.parse(new InputSource(in));
+        parser.setContentHandler(new ContentCapture());
+        parser.setDTDHandler(unparsed);
+        parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = getDTDParser(parser);
-        EntityDeclaration entity = dtdParser.getGeneralEntity("logo");
-        assertNotNull(entity);
-        assertFalse(entity.isParameter);
-        assertTrue(entity.isExternal());
-        assertFalse(entity.isParsed());
-        assertTrue(entity.isUnparsed());
-        assertEquals("gif", entity.notationName);
+        assertEquals("gif", unparsed.notationNames.get("logo"));
+        assertTrue(unparsed.systemIds.get("logo").contains("logo.gif"));
     }
 
     @Test
@@ -400,17 +378,13 @@ public class ParserEntityTest {
                     "]>\n" +
                     "<root/>";
 
+        DeclCapture decls = new DeclCapture();
         Parser parser = new Parser();
-        ByteArrayInputStream in = new ByteArrayInputStream(xml.getBytes("UTF-8"));
-        parser.parse(new InputSource(in));
+        parser.setContentHandler(new ContentCapture());
+        parser.setProperty(DECL_HANDLER, decls);
+        parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = getDTDParser(parser);
-        EntityDeclaration entity = dtdParser.getParameterEntity("common");
-        assertNotNull(entity);
-        assertTrue(entity.isParameter);
-        assertTrue(entity.isInternal());
-        assertEquals(1, entity.replacementText.size());
-        assertEquals("value", entity.replacementText.get(0));
+        assertEquals("value", decls.internalEntities.get("%common"));
     }
 
     // ========== WFC: Parsed Entity (element balance across entity boundaries) ==========
@@ -467,6 +441,44 @@ public class ParserEntityTest {
     /**
      * ContentHandler that captures character content.
      */
+    private static class DeclCapture implements DeclHandler {
+        final Map<String, String> internalEntities = new HashMap<String, String>();
+        final Map<String, String[]> externalEntities = new HashMap<String, String[]>();
+
+        @Override
+        public void elementDecl(String name, String model) {
+        }
+
+        @Override
+        public void attributeDecl(String eName, String aName, String type, String mode, String value) {
+        }
+
+        @Override
+        public void internalEntityDecl(String name, String value) {
+            internalEntities.put(name, value);
+        }
+
+        @Override
+        public void externalEntityDecl(String name, String publicId, String systemId) {
+            externalEntities.put(name, new String[] { publicId, systemId });
+        }
+    }
+
+    private static class UnparsedCapture implements DTDHandler {
+        final Map<String, String> notationNames = new HashMap<String, String>();
+        final Map<String, String> systemIds = new HashMap<String, String>();
+
+        @Override
+        public void notationDecl(String name, String publicId, String systemId) {
+        }
+
+        @Override
+        public void unparsedEntityDecl(String name, String publicId, String systemId, String notationName) {
+            notationNames.put(name, notationName);
+            systemIds.put(name, systemId);
+        }
+    }
+
     private static class ContentCapture implements ContentHandler {
         private StringBuilder content = new StringBuilder();
 

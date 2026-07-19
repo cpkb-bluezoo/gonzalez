@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform;
 
+import org.bluezoo.gonzalez.Parser;
 import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -237,19 +238,24 @@ public class GonzalezTransformer extends Transformer {
         
         // Parse input through the transform
         XMLReader reader = getXMLReader(source);
-        reader.setContentHandler(transformHandler);
-        reader.setDTDHandler(transformHandler);
-        
-        // Set up PSVIProvider for type information (DTD/XSD types)
-        if (reader instanceof PSVIProvider) {
-            transformHandler.setPSVIProvider((PSVIProvider) reader);
-        }
-        
-        // Set up LexicalHandler to receive comment events
-        try {
-            reader.setProperty("http://xml.org/sax/properties/lexical-handler", transformHandler);
-        } catch (SAXException e) {
-            // LexicalHandler not supported - comments won't be available
+        if (reader instanceof Parser) {
+            // Gonzalez-owned parse: keep names, attribute type metadata, and
+            // CharBuffers on the native path and avoid constructing SAXAdapter.
+            ((Parser) reader).setXMLHandler(transformHandler);
+        } else {
+            // Caller-supplied XMLReader: SAX remains the required JAXP boundary.
+            reader.setContentHandler(transformHandler);
+            reader.setDTDHandler(transformHandler);
+
+            if (reader instanceof PSVIProvider) {
+                transformHandler.setPSVIProvider((PSVIProvider) reader);
+            }
+
+            try {
+                reader.setProperty("http://xml.org/sax/properties/lexical-handler", transformHandler);
+            } catch (SAXException e) {
+                // LexicalHandler not supported - comments won't be available
+            }
         }
         
         InputSource inputSource = getInputSource(source);

@@ -34,7 +34,7 @@ import java.util.Objects;
 import org.xml.sax.SAXException;
 
 /**
- * Decodes byte streams from external entities into character streams for tokenization.
+ * Decodes byte streams from external entities into character streams for scanning.
  * 
  * <p>This class handles:
  * <ul>
@@ -42,11 +42,10 @@ import org.xml.sax.SAXException;
  * <li>XML/text declaration parsing (directly from bytes - no decode needed)</li>
  * <li>Charset decoding with underflow handling</li>
  * <li>Line-ending normalization</li>
- * <li>Location tracking (line/column numbers)</li>
  * </ul>
  * 
- * <p>Decoded character data is fed to a {@link Tokenizer} via its
- * {@code receive(CharBuffer)} method.
+ * <p>Decoded character data is fed to a {@link Scanner} via {@link
+ * Scanner#receive(CharBuffer)}.
  * 
  * <h3>Zero-Copy Declaration Parsing</h3>
  * <p>XML/text declarations only contain 7-bit ASCII characters. This class
@@ -95,7 +94,7 @@ class ExternalEntityDecoder {
      */
     private BOM bom = BOM.NONE;
     
-    // ===== Tokenizer Integration =====
+    // ===== Scanner Integration =====
     
     /**
      * Whether this decoder is for an external entity (vs. the document entity).
@@ -118,18 +117,18 @@ class ExternalEntityDecoder {
      * Only created after declaration parsing is complete.
      */
     private CharsetDecoder decoder;
-    
+
     /**
      * Working buffer for decoded character data.
      * Reused to avoid allocation on every receive() call.
      * Only allocated when actual decoding begins (after declaration).
      */
     private CharBuffer charBuffer;
-    
+
     /**
-     * Tokenizer that consumes decoded characters.
+     * The scanner that consumes decoded characters.
      */
-    private final Tokenizer tokenizer;
+    private final Scanner scanner;
 
     /**
      * True when the most recent decodeAndTokenize() call left undecoded bytes
@@ -151,7 +150,7 @@ class ExternalEntityDecoder {
     private enum State {
         INIT,           // Initial state, checking for BOM
         SEEN_BOM,       // BOM detected (or no BOM), ready to check for XMLDecl/TextDecl
-        CONTENT,        // Processing content with main tokenizer
+        CONTENT,        // Processing content with main scanner
         CLOSED          // Decoder has been closed, cannot receive more data
     }
     
@@ -177,16 +176,15 @@ class ExternalEntityDecoder {
     
     /**
      * Creates a new external entity decoder.
-     * 
-     * @param tokenizer the tokenizer to receive decoded characters
+     *
+     * @param scanner the {@link Scanner} to receive decoded characters
      * @param publicId public identifier for this entity (may be null)
      * @param systemId system identifier for this entity (may be null)
      * @param isExternalEntity true if this is an external parsed entity, false for document entity
      */
-    public ExternalEntityDecoder(Tokenizer tokenizer, String publicId, String systemId, boolean isExternalEntity) {
-        this.tokenizer = Objects.requireNonNull(tokenizer);
-        tokenizer.publicId = publicId;
-        tokenizer.systemId = systemId;
+    public ExternalEntityDecoder(Scanner scanner, String publicId, String systemId,
+            boolean isExternalEntity) {
+        this.scanner = Objects.requireNonNull(scanner);
         this.isExternalEntity = isExternalEntity;
         declParser = isExternalEntity ? new TextDeclParser() : new XMLDeclParser();
     }
@@ -261,11 +259,11 @@ class ExternalEntityDecoder {
             // The caller has signaled there is no more data, but the last
             // decode attempt still had undecoded bytes forming part of a
             // multi-byte character - the stream ended mid-character.
-            throw tokenizer.fatalError(
+            throw scanner.fatalError(
                 "Unexpected end of input: incomplete byte sequence in encoding "
                 + (charset != null ? charset.name() : "unknown") + " at end of stream");
         }
-        tokenizer.close();
+        scanner.close();
         state = State.CLOSED;
     }
     
@@ -334,9 +332,6 @@ class ExternalEntityDecoder {
         if (b0 == 0xFE && b1 == 0xFF) {
             bom = BOM.UTF16BE;
             startDecl = data.position();
-            tokenizer.charPosition = 1;
-            tokenizer.columnNumber = 1;
-            tokenizer.locationValidCharPos = 1;
         } else if (b0 == 0xFF && b1 == 0xFE) {
             if (data.remaining() < 2) {
                 data.position(startPos);
@@ -351,9 +346,6 @@ class ExternalEntityDecoder {
                 data.position(startPos + 2);
             }
             startDecl = data.position();
-            tokenizer.charPosition = 1;
-            tokenizer.columnNumber = 1;
-            tokenizer.locationValidCharPos = 1;
         } else if (b0 == 0x00 && b1 == 0x00) {
             if (data.remaining() < 2) {
                 data.position(startPos);
@@ -364,9 +356,6 @@ class ExternalEntityDecoder {
             if (b2 == 0xFE && b3 == 0xFF) {
                 bom = BOM.UTF32BE;
                 startDecl = data.position();
-                tokenizer.charPosition = 1;
-                tokenizer.columnNumber = 1;
-                tokenizer.locationValidCharPos = 1;
             } else {
                 data.position(startPos);
                 startDecl = startPos;
@@ -380,9 +369,6 @@ class ExternalEntityDecoder {
             if (b2 == 0xBF) {
                 bom = BOM.UTF8;
                 startDecl = data.position();
-                tokenizer.charPosition = 1;
-                tokenizer.columnNumber = 1;
-                tokenizer.locationValidCharPos = 1;
             } else {
                 data.position(startPos);
                 startDecl = startPos;
@@ -433,51 +419,38 @@ class ExternalEntityDecoder {
                     // Handle version
                     if (declVersion != null) {
                         boolean entityXml11 = "1.1".equals(declVersion);
-                        
+
                         if (!isExternalEntity) {
                             // Main document - sets the processor mode
-                            tokenizer.version = declVersion;
-                            tokenizer.documentVersion = declVersion;
                             xml11 = entityXml11;
-                            tokenizer.xml11 = xml11;
-                            tokenizer.notifyXmlVersion(xml11);
+                            scanner.setXml11(xml11);
                         } else {
-                            // External entity - check version compatibility
-                            boolean documentXml11 = "1.1".equals(tokenizer.documentVersion);
-                            
-                            if (!documentXml11 && entityXml11) {
-                                throw tokenizer.fatalError(
-                                    "XML 1.0 document cannot include XML 1.1 entity (version " + declVersion + ")");
-                            }
-                            
-                            tokenizer.version = declVersion;
-                            xml11 = documentXml11 ? entityXml11 : false;
-                            tokenizer.xml11 = xml11;
+                            // External entity TextDecl version - Scanner
+                            // fetches external entities itself today, so this
+                            // branch is unused by the production Parser path;
+                            // still apply the TextDecl's version to the scanner.
+                            xml11 = entityXml11;
+                            scanner.setXml11(xml11);
                         }
                     }
-                    
-                    // Handle standalone (document entity only)
+
+                    // Handle standalone (document entity only - a TextDecl's
+                    // grammar has no SDDecl production at all, so declStandalone
+                    // is always null when isExternalEntity is true)
                     if (declStandalone != null) {
-                        tokenizer.standalone = declStandalone;
+                        scanner.setStandalone(declStandalone.booleanValue());
                     }
-                    
+
                     // Setup charset decoder with declared encoding
                     setupCharsetDecoder(declEncoding);
-                    
-                    // Update position tracking for declaration
-                    int declChars = declParser.getCharsConsumed();
-                    tokenizer.charPosition += declChars;
-                    // Count newlines in declaration for line number tracking
-                    // (declarations typically don't have newlines, but handle it correctly)
-                    tokenizer.columnNumber += declChars;
-                    tokenizer.locationValidCharPos = tokenizer.charPosition;
-                    
+
+
                     state = State.CONTENT;
                     return true;
             }
         } catch (IllegalArgumentException e) {
             // Non-ASCII byte in declaration
-            throw tokenizer.fatalError(e.getMessage());
+            throw scanner.fatalError(e.getMessage());
         }
         
         return false;
@@ -493,7 +466,7 @@ class ExternalEntityDecoder {
             try {
                 charset = Charset.forName(declEncoding);
             } catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
-                throw tokenizer.fatalError("Invalid or unsupported encoding: " + declEncoding);
+                throw scanner.fatalError("Invalid or unsupported encoding: " + declEncoding);
             }
             
             // Validate BOM/encoding compatibility (only if BOM was present)
@@ -514,12 +487,11 @@ class ExternalEntityDecoder {
                 }
             }
 
-            tokenizer.encoding = declEncoding;
         } else {
             // No declared encoding - use BOM-indicated charset or default to UTF-8
             charset = bom.defaultCharset;
-            tokenizer.encoding = charset.name();
         }
+        scanner.setEncoding(charset.name());
         
         // Reuse existing decoder if charset unchanged, otherwise create new one
         if (decoder == null || !charset.equals(previousCharset)) {
@@ -547,35 +519,35 @@ class ExternalEntityDecoder {
         switch (bom) {
             case UTF16BE:
                 if (!normalized.contains("UTF16")) {
-                    throw tokenizer.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-16 BE BOM");
                 }
                 break;
 
             case UTF16LE:
                 if (!normalized.contains("UTF16")) {
-                    throw tokenizer.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-16 LE BOM");
                 }
                 break;
 
             case UTF32BE:
                 if (!normalized.contains("UTF32")) {
-                    throw tokenizer.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-32 BE BOM");
                 }
                 break;
 
             case UTF32LE:
                 if (!normalized.contains("UTF32")) {
-                    throw tokenizer.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-32 LE BOM");
                 }
                 break;
 
             case UTF8:
                 if (normalized.startsWith("UTF16") || normalized.startsWith("UTF32")) {
-                    throw tokenizer.fatalError(
+                    throw scanner.fatalError(
                         "Encoding '" + declEncoding + "' is incompatible with UTF-8 BOM");
                 }
                 break;
@@ -606,7 +578,22 @@ class ExternalEntityDecoder {
         if (charBuffer == null) {
             charBuffer = CharBuffer.allocate(MAX_CHAR_BUFFER);
         }
-        
+
+        // One pass over the raw bytes up front to learn whether this call's
+        // input can produce any '\r' at all: for the ASCII-transparent
+        // charsets (UTF-8/US-ASCII/ISO-8859-1) a decoded U+000D can only
+        // come from a literal 0x0D byte (UTF-8 continuation bytes are all
+        // >= 0x80), so if none is present, normalizeLineEndings() can skip
+        // its own per-chunk scan of every decoded char entirely. XML 1.1
+        // additionally normalizes NEL/LS, whose encoded bytes are ordinary
+        // continuation-byte values that would false-positive constantly on
+        // multibyte text, so the XML 1.1 case keeps the per-chunk char scan.
+        // The SWAR long-stride scan reads 8 bytes per step, making this
+        // cheaper than the per-char scan it replaces even when it doesn't
+        // hit; absolute getLong() works identically for heap and direct
+        // buffers and never disturbs the buffer's position.
+        boolean crFree = !xml11 && asciiFastPathEligible && !containsCarriageReturnByte(data);
+
         // Process in chunks - decode, tokenize, compact, repeat
         while (data.hasRemaining()) {
             // Opportunistically widen a leading run of plain-ASCII bytes directly,
@@ -625,22 +612,22 @@ class ExternalEntityDecoder {
             // Check for decoding errors
             if (result.isError()) {
                 if (result.isMalformed()) {
-                    throw tokenizer.fatalError("Malformed byte sequence in encoding " + charset.name() +
+                    throw scanner.fatalError("Malformed byte sequence in encoding " + charset.name() +
                         " (length: " + result.length() + ")");
                 } else if (result.isUnmappable()) {
-                    throw tokenizer.fatalError("Unmappable byte sequence in encoding " + charset.name() +
+                    throw scanner.fatalError("Unmappable byte sequence in encoding " + charset.name() +
                         " (length: " + result.length() + ")");
                 }
             }
 
             // Normalize line endings
-            normalizeLineEndings();
+            normalizeLineEndings(crFree);
 
             // Flip to read mode before passing to tokenizer
             charBuffer.flip();
             
             // Pass to tokenizer
-            tokenizer.receive(charBuffer);
+            scanner.receive(charBuffer);
             
             // Compact to preserve any unconsumed data (underflow)
             charBuffer.compact();
@@ -707,6 +694,31 @@ class ExternalEntityDecoder {
     }
 
     /**
+     * True if any byte in {@code data}'s remaining range is 0x0D (CR).
+     * Long-stride SWAR scan - 8 bytes per step via the classic
+     * zero-byte-in-a-word test - with a plain byte loop for the tail.
+     * Reads via absolute accessors only; {@code data}'s position and limit
+     * are untouched. Byte order is irrelevant: the test only asks whether
+     * any of the 8 lanes is zero after XORing with the CR pattern.
+     */
+    private static boolean containsCarriageReturnByte(ByteBuffer data) {
+        int i = data.position();
+        int limit = data.limit();
+        for (int longEnd = limit - 7; i < longEnd; i += 8) {
+            long v = data.getLong(i) ^ 0x0D0D0D0D0D0D0D0DL;
+            if (((v - 0x0101010101010101L) & ~v & 0x8080808080808080L) != 0L) {
+                return true;
+            }
+        }
+        for (; i < limit; i++) {
+            if (data.get(i) == 0x0D) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Normalizes line endings in the character buffer according to XML spec.
      * 
      * <p>XML line ending normalization rules:
@@ -721,14 +733,26 @@ class ExternalEntityDecoder {
      * <p>This implementation uses a single-pass O(n) algorithm with separate
      * read and write positions, avoiding the O(n^2) cost of shifting data
      * for each CRLF encountered.
+     *
+     * @param crFree true when the caller has already proven (by byte-level
+     *         scan - see {@link #containsCarriageReturnByte}) that no '\r'
+     *         can be present in this chunk and XML 1.1's NEL/LS rules do
+     *         not apply, so the per-char scan below is skipped. {@link
+     *         #lastChar} still matters: a '\r' that ended the previous
+     *         receive() call must swallow a leading '\n' in this one.
      */
-    private void normalizeLineEndings() {
+    private void normalizeLineEndings(boolean crFree) {
         int end = charBuffer.position();
         if (end == 0) {
             return;
         }
 
         char[] array = charBuffer.array();
+
+        if (crFree && lastChar != '\r') {
+            lastChar = array[end - 1];
+            return;
+        }
 
         // Fast scan: check if normalization is needed at all
         boolean needsNormalization = (lastChar == '\r');

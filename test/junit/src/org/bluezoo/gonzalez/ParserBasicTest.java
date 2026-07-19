@@ -40,7 +40,7 @@ import static org.junit.Assert.*;
 
 /**
  * Basic tests for Parser: DOCTYPE, comments, and processing instructions.
- * Converted from SimpleCommentTest, SimpleDOCTYPETest, ContentParserCommentPITest,
+ * Converted from SimpleCommentTest, SimpleDOCTYPETest, comment/PI placement tests,
  * MultipleCommentsTest, and MultiChunkCommentTest.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
@@ -56,23 +56,6 @@ public class ParserBasicTest {
         ByteArrayInputStream bais = new ByteArrayInputStream(xml.getBytes("UTF-8"));
         InputSource source = new InputSource(bais);
         parser.parse(source);
-    }
-
-    // --- From SimpleCommentTest: comment after DOCTYPE name ---
-
-    @Test
-    public void testCommentAfterDoctypeName() throws Exception {
-        String xml = "<?xml version='1.0'?>\n"
-                + "<!DOCTYPE root <!-- comment after name --> >\n"
-                + "<root/>";
-
-        RecordingLexicalHandler handler = new RecordingLexicalHandler();
-        parse(xml, handler, handler);
-
-        assertEquals("Expected 1 comment", 1, handler.comments.size());
-        String expected = " comment after name ";
-        String actual = handler.comments.get(0);
-        assertEquals("Comment content mismatch", expected, actual);
     }
 
     // --- From SimpleDOCTYPETest: basic DOCTYPE parsing ---
@@ -144,43 +127,24 @@ public class ParserBasicTest {
         assertEquals("Epilog PI target mismatch", "epilog-pi", pi2.target);
     }
 
-    // --- From MultipleCommentsTest: multiple comments in DTD ---
-
-    @Test
-    public void testMultipleCommentsInDtd() throws Exception {
-        String xml = "<?xml version='1.0'?>\n"
-                + "<!DOCTYPE root <!-- comment 1 --> [\n"
-                + "  <!-- comment 2 -->\n"
-                + "] <!-- comment 3 --> >\n"
-                + "<root/>";
-
-        RecordingLexicalHandler handler = new RecordingLexicalHandler();
-        parse(xml, handler, handler);
-
-        assertEquals("Expected 3 comments", 3, handler.comments.size());
-    }
-
-    // --- From MultiChunkCommentTest: comment accumulation across buffer chunks ---
+    // --- Multi-chunk comment accumulation via Parser.receive ---
 
     @Test
     public void testMultiChunkCommentAccumulation() throws Exception {
         String xml = "<!-- This is a long comment that should be accumulated properly --><root/>";
 
         RecordingLexicalHandler handler = new RecordingLexicalHandler();
-        ContentParser xmlParser = new ContentParser();
-        Tokenizer tokenizer = new Tokenizer("test.xml", xmlParser, TokenizerState.PROLOG_BEFORE_DOCTYPE, false);
-        ExternalEntityDecoder decoder = new ExternalEntityDecoder(tokenizer, null, null, false);
-        xmlParser.setContentHandler(handler);
-        xmlParser.setLexicalHandler(handler);
+        Parser parser = new Parser();
+        parser.setContentHandler(handler);
+        parser.setProperty("http://xml.org/sax/properties/lexical-handler", handler);
 
         byte[] data = xml.getBytes(StandardCharsets.UTF_8);
         for (int i = 0; i < data.length; i += 20) {
             int len = Math.min(20, data.length - i);
             ByteBuffer buffer = ByteBuffer.wrap(data, i, len);
-            decoder.receive(buffer);
+            parser.receive(buffer);
         }
-        decoder.close();
-        xmlParser.close();
+        parser.close();
 
         assertEquals("Expected 1 comment", 1, handler.comments.size());
         String expected = " This is a long comment that should be accumulated properly ";

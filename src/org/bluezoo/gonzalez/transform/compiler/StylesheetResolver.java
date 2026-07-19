@@ -33,6 +33,10 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
+import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.XMLHandler;
+import org.bluezoo.gonzalez.transform.runtime.NativeAttributeBuffer;
+import org.bluezoo.gonzalez.transform.runtime.NativeExpandedNames;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import javax.xml.transform.Source;
@@ -40,13 +44,15 @@ import javax.xml.transform.TransformerException;
 import javax.xml.transform.URIResolver;
 import javax.xml.transform.stream.StreamSource;
 
-import org.xml.sax.Attributes;
-import org.xml.sax.ContentHandler;
 import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 import org.xml.sax.helpers.XMLReaderFactory;
+
+import java.nio.CharBuffer;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Resolves and compiles external stylesheets for xsl:import and xsl:include.
@@ -280,13 +286,20 @@ public class StylesheetResolver {
                 compiler.setSharedStaticVariables(sharedStaticVariables);
             }
             
-            // Parse the stylesheet
+            // Parse the stylesheet. Fragment selection uses a native XMLHandler
+            // filter; full documents go straight to the compiler.
             XMLReader reader = createXMLReader();
-            ContentHandler handler = compiler;
-            if (fragmentId != null && !fragmentId.isEmpty()) {
-                handler = new EmbeddedStylesheetFilter(fragmentId, compiler);
+            if (!(reader instanceof Parser)) {
+                reader = new Parser();
+                reader.setFeature("http://xml.org/sax/features/namespaces", true);
+                reader.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
             }
-            reader.setContentHandler(handler);
+            if (fragmentId != null && !fragmentId.isEmpty()) {
+                ((Parser) reader).setXMLHandler(
+                        new EmbeddedStylesheetFilter(fragmentId, compiler));
+            } else {
+                ((Parser) reader).setXMLHandler(compiler);
+            }
             reader.parse(inputSource);
             
             try {
@@ -466,6 +479,8 @@ public class StylesheetResolver {
         // Configure entity processing based on accessExternalDTD setting
         boolean allowDTD = accessExternalDTD != null && !accessExternalDTD.isEmpty();
         try {
+            reader.setFeature("http://xml.org/sax/features/namespaces", true);
+            reader.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
             reader.setFeature("http://xml.org/sax/features/external-general-entities", allowDTD);
             reader.setFeature("http://xml.org/sax/features/external-parameter-entities", allowDTD);
         } catch (SAXException e) {
@@ -529,41 +544,46 @@ public class StylesheetResolver {
     }
 
     /**
-     * SAX filter for embedded stylesheets. Searches an XML document for an
-     * element whose {@code id} attribute matches a fragment identifier, then
-     * forwards only that element subtree to the delegate (typically a
-     * {@link StylesheetCompiler}).
+     * Native XMLHandler filter that selects an embedded stylesheet subtree by
+     * element whose {@code id} / {@code xml:id} attribute matches a fragment
+     * identifier, then forwards only that subtree to the delegate compiler.
      *
-     * <p>Prefix mappings that appear immediately before the target element
-     * are buffered and replayed, since SAX fires {@code startPrefixMapping}
-     * before the corresponding {@code startElement}.
+     * <p>Namespace declarations on skipped ancestors are discarded (same as the
+     * former SAX filter): the fragment root must carry its own xmlns bindings.
+     * Declarations on the matched element are buffered until {@code endAttributes}
+     * and replayed before the delegated start-tag.
      *
-     * <p>If the matched element has an {@code xml:base} attribute, it is
-     * resolved against the document URI and exposed via a wrapping
-     * {@link Locator} so that the compiler uses the correct base URI for
-     * nested includes and imports.
+     * <p>If the matched element has {@code xml:base}, it is resolved against the
+     * document URI and exposed via a wrapping {@link Locator}.
      */
-    private static class EmbeddedStylesheetFilter implements ContentHandler {
+    private static class EmbeddedStylesheetFilter implements XMLHandler {
 
         private final String targetId;
-        private final ContentHandler delegate;
+        private final XMLHandler delegate;
         private int depth;
-        private boolean found;
-        private java.util.List<String[]> pendingPrefixes;
+        private boolean forwarding;
         private MutableLocator locatorWrapper;
 
-        EmbeddedStylesheetFilter(String targetId, ContentHandler delegate) {
+        private String currentQName;
+        private final List<String[]> pendingNamespaces = new ArrayList<String[]>();
+        private final NativeAttributeBuffer attributes = new NativeAttributeBuffer();
+
+        EmbeddedStylesheetFilter(String targetId, XMLHandler delegate) {
             this.targetId = targetId;
             this.delegate = delegate;
             this.depth = 0;
-            this.found = false;
-            this.pendingPrefixes = new java.util.ArrayList<String[]>();
+            this.forwarding = false;
         }
 
         @Override
-        public void setDocumentLocator(Locator locator) {
+        public void setLocator(Locator locator) {
             locatorWrapper = new MutableLocator(locator);
-            delegate.setDocumentLocator(locatorWrapper);
+            delegate.setLocator(locatorWrapper);
+        }
+
+        @Override
+        public void setXml11(boolean xml11) {
+            delegate.setXml11(xml11);
         }
 
         @Override
@@ -577,55 +597,107 @@ public class StylesheetResolver {
         }
 
         @Override
-        public void startPrefixMapping(String prefix, String uri)
-                throws SAXException {
-            if (found) {
-                delegate.startPrefixMapping(prefix, uri);
-            } else {
-                pendingPrefixes.add(new String[] { prefix, uri });
-            }
-        }
-
-        @Override
-        public void endPrefixMapping(String prefix) throws SAXException {
-            if (found) {
-                delegate.endPrefixMapping(prefix);
-            }
-        }
-
-        @Override
-        public void startElement(String uri, String localName, String qName,
-                                 Attributes atts) throws SAXException {
-            if (found) {
+        public void startElement(String qName) throws SAXException {
+            if (forwarding) {
                 depth++;
-                delegate.startElement(uri, localName, qName, atts);
+                delegate.startElement(qName);
                 return;
             }
-            String id = atts.getValue("id");
-            if (id == null) {
-                id = atts.getValue("xml:id");
+            currentQName = qName;
+            pendingNamespaces.clear();
+            attributes.clear();
+        }
+
+        @Override
+        public void namespace(String prefix, String uri) throws SAXException {
+            if (forwarding) {
+                delegate.namespace(prefix, uri);
+                return;
             }
+            pendingNamespaces.add(new String[] {
+                prefix != null ? prefix : "",
+                uri != null ? uri : ""
+            });
+        }
+
+        @Override
+        public void startAttribute(String name, String type, boolean declared,
+                boolean specified) throws SAXException {
+            if (forwarding) {
+                delegate.startAttribute(name, type, declared, specified);
+                return;
+            }
+            attributes.startAttribute(name, type);
+        }
+
+        @Override
+        public void attributeValueContent(CharBuffer value, boolean end)
+                throws SAXException {
+            if (forwarding) {
+                delegate.attributeValueContent(value, end);
+                return;
+            }
+            attributes.attributeValueContent(value, end);
+        }
+
+        @Override
+        public void endAttributes() throws SAXException {
+            if (forwarding) {
+                delegate.endAttributes();
+                return;
+            }
+
+            String id = findIdValue();
             if (targetId.equals(id)) {
-                found = true;
+                forwarding = true;
                 depth = 1;
-                applyXmlBase(atts);
-                for (String[] mapping : pendingPrefixes) {
-                    delegate.startPrefixMapping(mapping[0], mapping[1]);
+                applyXmlBase();
+                for (String[] mapping : pendingNamespaces) {
+                    delegate.namespace(mapping[0], mapping[1]);
                 }
-                pendingPrefixes.clear();
-                delegate.startElement(uri, localName, qName, atts);
+                pendingNamespaces.clear();
+                delegate.startElement(currentQName);
+                for (int i = 0; i < attributes.size(); i++) {
+                    NativeAttributeBuffer.Attr attr = attributes.get(i);
+                    if (NativeExpandedNames.isNamespaceDeclaration(attr.qName)) {
+                        continue;
+                    }
+                    delegate.startAttribute(attr.qName,
+                            attr.type != null ? attr.type : "CDATA");
+                    CharBuffer value = CharBuffer.wrap(
+                            attr.value != null ? attr.value : "");
+                    delegate.attributeValueContent(value, true);
+                }
+                delegate.endAttributes();
             } else {
-                pendingPrefixes.clear();
+                pendingNamespaces.clear();
+                attributes.clear();
             }
         }
 
-        /**
-         * If the element has xml:base, resolve it against the document URI
-         * and update the locator wrapper so the compiler sees the new base.
-         */
-        private void applyXmlBase(Attributes atts) {
-            String xmlBase = atts.getValue("xml:base");
-            if (xmlBase == null || xmlBase.isEmpty() || locatorWrapper == null) {
+        private String findIdValue() {
+            for (int i = 0; i < attributes.size(); i++) {
+                NativeAttributeBuffer.Attr attr = attributes.get(i);
+                if ("id".equals(attr.qName) || "xml:id".equals(attr.qName)) {
+                    return attr.value;
+                }
+            }
+            return null;
+        }
+
+        private void applyXmlBase() {
+            if (locatorWrapper == null) {
+                return;
+            }
+            String xmlBase = null;
+            for (int i = 0; i < attributes.size(); i++) {
+                NativeAttributeBuffer.Attr attr = attributes.get(i);
+                if ("xml:base".equals(attr.qName)) {
+                    xmlBase = attr.value;
+                    break;
+                }
+            }
+            if (xmlBase == null || xmlBase.isEmpty()) {
                 return;
             }
             String docUri = locatorWrapper.getDelegate().getSystemId();
@@ -642,45 +714,116 @@ public class StylesheetResolver {
         }
 
         @Override
-        public void endElement(String uri, String localName, String qName)
+        public void characters(CharBuffer text, boolean ignorable, boolean end)
                 throws SAXException {
-            if (found) {
-                depth--;
-                delegate.endElement(uri, localName, qName);
-                if (depth == 0) {
-                    found = false;
-                }
+            if (forwarding) {
+                delegate.characters(text, ignorable, end);
             }
         }
 
         @Override
-        public void characters(char[] ch, int start, int length)
-                throws SAXException {
-            if (found) {
-                delegate.characters(ch, start, length);
+        public void endElement() throws SAXException {
+            if (!forwarding) {
+                return;
+            }
+            depth--;
+            delegate.endElement();
+            if (depth == 0) {
+                forwarding = false;
             }
         }
 
         @Override
-        public void ignorableWhitespace(char[] ch, int start, int length)
-                throws SAXException {
-            if (found) {
-                delegate.ignorableWhitespace(ch, start, length);
+        public void startComment() throws SAXException {
+            if (forwarding) {
+                delegate.startComment();
             }
         }
 
         @Override
-        public void processingInstruction(String target, String data)
-                throws SAXException {
-            if (found) {
-                delegate.processingInstruction(target, data);
+        public void commentData(CharBuffer text, boolean end) throws SAXException {
+            if (forwarding) {
+                delegate.commentData(text, end);
             }
         }
 
         @Override
-        public void skippedEntity(String name) throws SAXException {
-            if (found) {
-                delegate.skippedEntity(name);
+        public void startCDATA() throws SAXException {
+            if (forwarding) {
+                delegate.startCDATA();
+            }
+        }
+
+        @Override
+        public void endCDATA() throws SAXException {
+            if (forwarding) {
+                delegate.endCDATA();
+            }
+        }
+
+        @Override
+        public void startDTD(String name, String publicId, String systemId)
+                throws SAXException {
+        }
+
+        @Override
+        public void endDTD() throws SAXException {
+        }
+
+        @Override
+        public void startEntity(String name) throws SAXException {
+            if (forwarding) {
+                delegate.startEntity(name);
+            }
+        }
+
+        @Override
+        public void endEntity(String name) throws SAXException {
+            if (forwarding) {
+                delegate.endEntity(name);
+            }
+        }
+
+        @Override
+        public void notationDecl(String name, String publicId, String systemId)
+                throws SAXException {
+        }
+
+        @Override
+        public void unparsedEntityDecl(String name, String publicId,
+                String systemId, String notationName) throws SAXException {
+        }
+
+        @Override
+        public void piTarget(String target) throws SAXException {
+            if (forwarding) {
+                delegate.piTarget(target);
+            }
+        }
+
+        @Override
+        public void piData(CharBuffer data, boolean end) throws SAXException {
+            if (forwarding) {
+                delegate.piData(data, end);
+            }
+        }
+
+        @Override
+        public void saveBuffers() throws SAXException {
+            if (forwarding) {
+                delegate.saveBuffers();
+            }
+        }
+
+        @Override
+        public SAXException fatalError(String message) throws SAXException {
+            return delegate.fatalError(message);
+        }
+
+        @Override
+        public void error(String message) throws SAXException {
+            if (forwarding) {
+                delegate.error(message);
             }
         }
     }

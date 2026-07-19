@@ -28,6 +28,7 @@ import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.DocumentLoader;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.SecureGonzalezParser;
 import org.bluezoo.gonzalez.transform.runtime.StreamingContext;
 import org.bluezoo.gonzalez.transform.runtime.StreamingTransformHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
@@ -183,8 +184,7 @@ public final class SourceDocumentNode implements XSLTNode {
             );
 
             // Parse the external document in streaming mode
-            Parser parser = new Parser();
-            parser.setContentHandler(handler);
+            Parser parser = SecureGonzalezParser.create(handler);
             
             URL url = new URL(href);
             try (InputStream in = url.openStream()) {

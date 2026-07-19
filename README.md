@@ -5,20 +5,23 @@ Non-blocking streaming XML parser and serializer for event-driven I/O
 This is Gonzalez, a data-driven XML parser and serializer using non-blocking,
 event-driven I/O. Unlike traditional SAX parsers that pull data from an
 InputSource, Gonzalez is completely feedforward: you push data to it as it
-arrives, and it produces SAX events without ever blocking for I/O, as long as
-the documents are standalone. The XMLWriter provides the inverse: streaming
-XML serialization to NIO channels.
+arrives, and it produces native or SAX events without ever blocking for I/O,
+as long as the documents are standalone. The XMLWriter provides the inverse:
+streaming XML serialization to NIO channels.
 
 ## Features
 
 ### Parser
 - non-blocking: in streaming mode, will only ever block for external entities
-- data-driven: processes whatever is available, state machine driven
-- SAX-compatible: generates standard ContentHandler events and has a SAX2
-  convenience front end (which is blocking, of course)
+- data-driven: a resumable Scanner processes whatever character data is
+  available directly against the XML grammar
+- fully streaming public `XMLHandler` SPI allows attribute values, PI data,
+  comments and text of arbitrary size while operating in constant memory
+- SAX-compatible: SAXAdapter exposes ContentHandler, LexicalHandler,
+  DeclHandler, DTDHandler and Attributes2 events
 - JAXP integration: can be used as a drop-in SAX parser via SAXParserFactory
 - JPMS module: proper Java module (`org.bluezoo.gonzalez`) for Java 9+
-- lazy DTD parsing: DTD parser loaded only when a DOCTYPE is encountered
+- inline DTD support: Scanner parses internal and external subsets directly
 - memory efficient: streaming architecture handles documents of any size
 - Java NIO throughput: uses ByteBuffer for content I/O operations
 
@@ -40,51 +43,59 @@ data via InputSource. This requires blocking I/O and makes them incompatible
 with asynchronous frameworks. Gonzalez inverts this by using a push model where
 data is fed to the parser via `receive(ByteBuffer)`.
 
-The parser is a state machine that processes whatever data is available and
-buffers incomplete tokens. When the end of available data is reached, it returns
-control to the caller, who can then feed more data when it arrives.  This makes
-Gonzalez ideal for integration with async I/O frameworks like the Gumdrop
-multiserver.
+The parser is a resumable state machine that processes whatever data is
+available and retains only incomplete XML constructs across input boundaries.
+When the end of the currently
+available data chunk is reached, parsing returns control to the caller, who can feed
+more data as and when it arrives. This makes Gonzalez suitable for integration with
+async I/O frameworks such as Gumdrop or Netty. Crucially, parsing events are emitted as soon as they can be parsed, meaning that you can process data in your application before having received the entire document and without blocking an entire thread to do it.
 
 ### NIO Event Pipeline
 
-The following diagram illustrates how Gonzalez integrates into an NIO server
-pipeline like Gumdrop or Netty, receiving ByteBuffer chunks from network channels, SSL unwrap operations, or other sources, and transforming XML data in real time into SAX events without blocking or loading the entire document into memory:
+The following diagram shows both the byte/character path and the event paths.
+ByteBuffer chunks are decoded and normalized, Scanner recognizes XML and DTD
+grammar directly, and the resulting `XMLHandler` stream is optionally
+namespace-filtered (in `namespaceAware` mode). It then goes either directly to
+a native consumer or through `SAXAdapter` to standard SAX2 callbacks:
 
 ![Gonzalez NIO Event Pipeline](event-pipeline.svg)
 
-### Tokenizer and EED (external entity decoder)
+### Decoder, Scanner, and event adaptation
 
 Gonzalez treats the source document being processed itself as an external
-entity, as well as external identities that are potentially referenced
-inside it. The job of the EED is to convert byte data into character data,
-and it will use the XML declaration and text declarations (if any) as well
-as BOMs in the byte data to determine the character set decoding process to
-be used via NIO.
+entity, as well as external entities that are potentially referenced
+inside it. ExternalEntityDecoder converts incoming document bytes into
+characters. It uses the BOM and XML declaration to choose a Java charset,
+normalizes XML line endings, and forwards CharBuffer chunks to Scanner.
 
-The tokenizer processes the character data to produce token events using
-a state trie to predictably decide on token types and boundaries.
-When the tokenizer emits tokens, it passes them to a token consumer via
-the latters receive(Token, CharBuffer) interface, so character data
-associated with the token is exposed via the NIO CharBuffer interface.
+Scanner processes those characters directly against the XML grammar. It owns
+element/entity stacks, DTD declarations and validation state, and preserves
+incomplete constructs when a receive boundary falls in the middle of markup.
+It emits the streaming `XMLHandler` vocabulary: raw element names, streamed
+attribute values and text, namespace declarations, DTD declarations and
+lexical boundaries. `XMLHandler` is a public Gonzalez-specific SPI. It avoids
+SAX adaptation for native consumers, but is not a standards interface and may
+evolve between Gonzalez releases.
 
-### Content Parser
+When namespace processing is enabled, `NamespaceFilter` translates `xmlns`
+attributes into namespace events and can retain the original attributes when
+`namespace-prefixes` is enabled. A handler installed with
+`Parser.setXMLHandler` consumes this stream directly. On the standard SAX path,
+`SAXAdapter` resolves names, assembles the SAX `Attributes2` view, and
+dispatches `ContentHandler`, `LexicalHandler`, `DeclHandler`, `DTDHandler` and
+`ErrorHandler` callbacks. The native event stream does not construct or expose
+intermediate token objects.
 
-The content parser is a type of token consumer which handles the main XML
-content grammar: elements, attributes, PI, comments etc. It reports events
-to the configured SAX ContentHandler.
+### DTD handling
 
-### DTD Parser
-
-Most XML documents in practice are standalone documents without DTDs. To
-minimize memory overhead for the common case, the DTD parser is a separate
-component that is loaded only when a DOCTYPE declaration is encountered.
-
-The DTD parser uses the same token consumer interface as the content parser.
-It receives DTD content via `receive(Token, CharBuffer)` and reports
-declarations through the standard SAX interfaces: DTDHandler for notations
-and unparsed entities, DeclHandler for element and attribute declarations,
-and LexicalHandler for comments and entity boundaries.
+Most XML documents in practice are standalone documents without DTDs. When a
+DOCTYPE is present, the Scanner parses the internal and external subsets
+inline into its DTDModel. The model supplies attribute defaults and types,
+entity declarations, validation content models and ignorable-whitespace
+decisions during the same stream. Declarations are exposed through standard
+SAX interfaces: DTDHandler for notations and unparsed entities, DeclHandler
+for element, attribute and entity declarations, and LexicalHandler for DTD,
+comment and entity boundaries.
 
 ### External Entity Resolution
 
@@ -110,7 +121,8 @@ drop-in replacement for other XSLT processors.
 
 Key features:
 - **JAXP compliant** - Standard `TransformerFactory` interface
-- **Streaming support** - SAX-based transformation pipeline
+- **Streaming support** - Native `XMLHandler` ingest for Gonzalez-owned parses,
+  with SAX retained at JAXP and foreign-parser boundaries
 - **Iterative XPath parser** - Pratt algorithm with explicit stacks, no
   recursion
 - **Forward-compatible** - Graceful handling of later XSLT version
@@ -145,6 +157,32 @@ parser.close();
 // Signal end of document
 ```
 
+### Native XMLHandler Usage
+
+Native consumers can bypass `SAXAdapter` and receive the Scanner's streaming
+event vocabulary directly:
+
+```java
+Parser parser = new Parser();
+XMLHandler nativeHandler = createNativeHandler();
+parser.setXMLHandler(nativeHandler);
+
+parser.receive(byteBuffer1);
+parser.receive(byteBuffer2);
+parser.close();
+```
+
+Set the handler before parsing starts. When non-null, it receives content,
+lexical, declaration, DTD and error events instead of the configured SAX
+handlers. Namespace events pass through `NamespaceFilter` when namespace
+processing is enabled. The setting survives `Parser.reset()`; pass `null`
+before the next parse to restore the SAX path.
+
+`XMLHandler` is intended for Gonzalez modules and tightly integrated
+applications that benefit from streamed `CharBuffer` content and attributes.
+It is a Gonzalez-specific evolving SPI, not a compatibility substitute for
+SAX. Use SAX/JAXP interfaces when a stable standards boundary is required.
+
 ### JAXP Usage
 
 Gonzalez can also be used via the standard JAXP SAXParserFactory mechanism,
@@ -173,20 +211,18 @@ parser.parse(inputStream, myHandler);
 
 ### Document Location Tracking
 
-The parser implements `org.xml.sax.ext.Locator2` to provide accurate position
-information during parsing. The locator is automatically passed to the
-ContentHandler via `setDocumentLocator()` before `startDocument()` is called.
+The parser implements `org.xml.sax.ext.Locator2`. The locator is automatically
+passed to the ContentHandler via `setDocumentLocator()` before
+`startDocument()` is called.
 
-The locator tracks:
-- Line number (starting at 1)
-- Column number (starting at 0)
+The locator reports:
 - System identifier (URI)
 - Public identifier
 - Character encoding
 - XML version
 
-Since Gonzalez is data-driven, you must explicitly set the system and
-public identifiers if you want them reported:
+Line and column positions are not currently tracked and are reported as `-1`.
+Set the system and public identifiers explicitly if you want them reported:
 
 ```java
 parser.setSystemId("http://example.com/document.xml");
@@ -349,7 +385,7 @@ This produces three jar files in the `dist` directory:
 
 | JAR | Contents | Dependencies |
 |-----|----------|--------------|
-| `gonzalez-core-1.2.jar` | Parser, XMLWriter, DTD (~230 KB) | None |
+| `gonzalez-core-1.2.jar` | Scanner-based parser and XMLWriter | None |
 | `gonzalez-xslt-1.2.jar` | XSLT transformer, schema (~1.7 MB) | gonzalez-core, jsonparser |
 | `gonzalez-1.2.jar` | Combined (fat jar) (~1.9 MB) | jsonparser |
 
@@ -367,8 +403,7 @@ The build downloads the jsonparser library automatically (see Dependencies below
 
 ## Implementation Status
 
-The architecture has been designed to support the full XML specification,
-including:
+The Scanner-based architecture supports:
 - XML declaration with all charsets supported by Java
 - DOCTYPE with internal and external subsets
 - Elements with attributes
@@ -382,31 +417,52 @@ including:
 
 ## Performance
 
-Benchmark results comparing Gonzalez with the JDK's bundled Xerces SAX parser
-(Java 21, measured with JMH, namespace-aware mode):
+The current Scanner implementation was compared with the SAX parser bundled
+with JDK 21 (Xerces) and
+[aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.1-SNAPSHOT. All paths
+ran namespace-aware with an empty handler. The raw Gonzalez path is
+`ExternalEntityDecoder → Scanner → NamespaceFilter → XMLHandler`; it bypasses
+`SAXAdapter` while still performing byte decoding, XML grammar processing, DTD
+work and namespace declaration handling. Gonzalez SAX adds name resolution,
+`Attributes2` assembly and standard SAX callback adaptation. The
+`XMLHandler` column measures the public native SPI path; unlike SAX, that SPI
+is Gonzalez-specific and may evolve between releases.
 
-| Document Size | Gonzalez | Xerces | Comparison |
-|---------------|----------|--------|------------|
-| Small plain (1.3KB) | 10.4 µs | 11.3 µs | Gonzalez **1.09x faster** |
-| Small NS-heavy (2.9KB) | 19.9 µs | 18.8 µs | Xerces 1.06x faster |
-| Large plain (1MB) | 3835 µs | 1799 µs | Xerces 2.13x faster |
-| Large NS-heavy (1.4MB) | 9423 µs | 4607 µs | Xerces 2.05x faster |
+Aalto's lower-level StAX cursor is included as an additional reference point,
+but is not directly equivalent to SAX callback delivery.
 
-For small documents, Gonzalez can slightly outperform Xerces due to its
-lightweight architecture and efficient NIO buffer handling.
+The figures below are median throughput across five fresh JVM runs. Each run
+used 20 warm-up parses followed by 30 measured parses of the large corpus
+documents in `benchmark/resources`.
 
-For larger documents, Xerces is faster.
-Gonzalez's streaming architecture provides benefits that don't show
-in synthetic benchmarks, though:
+| Corpus | Size | Gonzalez XMLHandler | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |
+|--------|-----:|--------------------:|-------------:|----------------:|----------:|------------------:|
+| Plain | 1.02 MiB | **878 MB/s** | 630 MB/s | 487 MB/s | 1,138 MB/s | 1,189 MB/s |
+| Attribute-heavy | 1.28 MiB | **494 MB/s** | 342 MB/s | 256 MB/s | 976 MB/s | 981 MB/s |
+| Whitespace-heavy | 0.94 MiB | **1,084 MB/s** | 835 MB/s | 658 MB/s | 1,310 MB/s | 1,550 MB/s |
+| Markup-heavy | 0.96 MiB | **708 MB/s** | 653 MB/s | 372 MB/s | 886 MB/s | 1,402 MB/s |
+| Multibyte UTF-8 | 0.49 MiB | **444 MB/s** | 366 MB/s | 317 MB/s | 688 MB/s | 758 MB/s |
 
-- **Non-blocking I/O**: Your thread is never waiting on data from a network
-  connection, allowing integration with async frameworks like Netty or Gumdrop
-- **Memory efficiency**: Documents are processed in chunks without loading
-  the entire file into memory
+SAX adaptation reduces Gonzalez throughput by about 8–31% on these corpora;
+the largest cost appears on attribute-heavy input, where Attributes2 assembly
+and namespace/name processing do the most work. Even through SAXAdapter,
+Gonzalez is 1.15–1.76 times faster than JDK Xerces on this workload. Aalto
+remains faster in raw in-memory parsing, particularly for attribute-heavy
+input.
 
-Xerces and other blocking I/O based parsers require you either to wait for
-the entire document to arrive, or to allocate another thread specifically
-for that parse.
+These are microbenchmarks, not application-level latency guarantees. Results
+depend on the JDK, hardware, handlers and document shape. Gonzalez's primary
+architectural advantages remain:
+
+- **Non-blocking document input**: `receive(ByteBuffer)` processes available
+  network data without dedicating a thread to wait for the rest of the
+  document. External entity resolution may still block when explicitly
+  enabled.
+- **Streaming memory use**: main-document bytes and character data are
+  processed in reusable chunks rather than loading the whole document.
+
+Run `benchmark/external-compare/run.sh` from the repository root to reproduce
+the comparison using a local aalto-xml checkout.
 
 ## Conformance
 

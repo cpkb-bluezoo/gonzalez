@@ -21,22 +21,25 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
+import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.XMLHandler;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeWithBaseURI;
-import org.xml.sax.Attributes;
 import org.xml.sax.InputSource;
+import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
-import org.xml.sax.ext.LexicalHandler;
-import org.xml.sax.helpers.DefaultHandler;
+import org.xml.sax.SAXParseException;
 
-import javax.xml.parsers.SAXParser;
-import javax.xml.parsers.SAXParserFactory;
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URI;
 import java.net.URL;
+import java.nio.CharBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -160,35 +163,15 @@ public final class DocumentLoader {
                 return cached;
             }
             
-            // Parse the document with secure defaults
+            // Parse with Gonzalez's native XMLHandler path (no SAXAdapter).
             URL url = resolved.toURL();
-            SAXParserFactory factory = SAXParserFactory.newInstance();
-            factory.setNamespaceAware(true);
-            try {
-                factory.setFeature("http://javax.xml.XMLConstants/feature/secure-processing", true);
-            } catch (Exception e) {
-                // Platform parser may not support this feature
-            }
-            try {
-                factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-                factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-            } catch (Exception e) {
-                // Platform parser may not support these features
-            }
-            SAXParser parser = factory.newSAXParser();
-            
-            DocumentTreeBuilder builder = new DocumentTreeBuilder(absoluteUri, stripSpace, preserveSpace);
-            // Register LexicalHandler so comments are captured
-            try {
-                parser.getXMLReader().setProperty(
-                    "http://xml.org/sax/properties/lexical-handler", builder);
-            } catch (Exception e) {
-                // Parser may not support LexicalHandler
-            }
+            DocumentTreeBuilder builder = new DocumentTreeBuilder(
+                    absoluteUri, stripSpace, preserveSpace);
+            Parser parser = SecureGonzalezParser.create(builder);
             try (InputStream in = url.openStream()) {
                 InputSource source = new InputSource(in);
                 source.setSystemId(absoluteUri);
-                parser.parse(source, builder);
+                parser.parse(source);
             }
             
             XPathNode root = builder.getRoot();
@@ -300,17 +283,15 @@ public final class DocumentLoader {
     public static XPathNode loadDocumentFromString(String xml, String baseUri,
             List<String> stripSpace, List<String> preserveSpace) throws SAXException {
         try {
-            SAXParserFactory factory = SAXParserFactory.newInstance();
-            factory.setNamespaceAware(true);
-            SAXParser parser = factory.newSAXParser();
-            
-            DocumentTreeBuilder builder = new DocumentTreeBuilder(baseUri, stripSpace, preserveSpace);
-            InputSource source = new InputSource(new java.io.StringReader(xml));
+            DocumentTreeBuilder builder = new DocumentTreeBuilder(
+                    baseUri, stripSpace, preserveSpace);
+            Parser parser = SecureGonzalezParser.create(builder);
+            InputSource source = new InputSource(new ByteArrayInputStream(
+                    xml.getBytes(StandardCharsets.UTF_8)));
             if (baseUri != null) {
                 source.setSystemId(baseUri);
             }
-            parser.parse(source, builder);
-            
+            parser.parse(source);
             return builder.getRoot();
         } catch (SAXException e) {
             throw e;
@@ -359,17 +340,26 @@ public final class DocumentLoader {
     }
 
     /**
-     * SAX handler that builds a navigable node tree from a parsed XML document.
+     * Native XMLHandler that builds a navigable node tree from a parsed XML document.
      */
-    private static class DocumentTreeBuilder extends DefaultHandler implements LexicalHandler {
+    private static class DocumentTreeBuilder implements XMLHandler {
         private final String baseUri;
         private final List<String> stripSpace;
         private final List<String> preserveSpace;
         private DocumentNode root;
         private DocumentNode current;
-        private StringBuilder textBuffer = new StringBuilder();
+        private final StringBuilder textBuffer = new StringBuilder();
         private int documentOrder = 0;
-        private List<String[]> pendingNamespaces = new ArrayList<>();
+        private final List<String[]> pendingNamespaces = new ArrayList<>();
+        private final Map<String, String> inScopeNamespaces = new HashMap<>();
+        private final List<Map<String, String>> namespaceScopeStack = new ArrayList<>();
+        private final NativeAttributeBuffer attributes = new NativeAttributeBuffer();
+        private String currentElementQName;
+        private String currentPITarget;
+        private boolean piDataFirstChunk;
+        private final StringBuilder piDataBuffer = new StringBuilder();
+        private boolean commentDataFirstChunk;
+        private final StringBuilder commentDataBuffer = new StringBuilder();
         
         DocumentTreeBuilder(String baseUri, List<String> stripSpace, List<String> preserveSpace) {
             this.baseUri = baseUri;
@@ -380,91 +370,187 @@ public final class DocumentLoader {
         XPathNode getRoot() {
             return root;
         }
+
+        @Override
+        public void setLocator(Locator locator) {
+        }
+
+        @Override
+        public void setXml11(boolean xml11) {
+        }
         
         @Override
         public void startDocument() {
             root = new DocumentNode(NodeType.ROOT, null, null, null, baseUri);
             root.documentOrder = documentOrder++;
             current = root;
+            inScopeNamespaces.clear();
+            inScopeNamespaces.put("xml", "http://www.w3.org/XML/1998/namespace");
+            namespaceScopeStack.clear();
         }
-        
+
         @Override
-        public void startPrefixMapping(String prefix, String uri) {
-            pendingNamespaces.add(new String[]{prefix, uri});
-        }
-        
-        @Override
-        public void endPrefixMapping(String prefix) {
-            // Nothing needed
-        }
-        
-        @Override
-        public void startElement(String uri, String localName, String qName, Attributes attrs) {
+        public void endDocument() {
             flushText();
-            DocumentNode element = new DocumentNode(NodeType.ELEMENT, uri, localName, 
-                qName.contains(":") ? qName.substring(0, qName.indexOf(':')) : null, baseUri);
+        }
+
+        @Override
+        public void startElement(String qName) {
+            flushText();
+            currentElementQName = qName;
+            attributes.clear();
+            pendingNamespaces.clear();
+        }
+
+        @Override
+        public void namespace(String prefix, String uri) {
+            pendingNamespaces.add(new String[] {
+                prefix != null ? prefix : "",
+                uri != null ? uri : ""
+            });
+        }
+
+        @Override
+        public void startAttribute(String name, String type, boolean declared,
+                boolean specified) {
+            attributes.startAttribute(name, type);
+        }
+
+        @Override
+        public void attributeValueContent(CharBuffer value, boolean end) {
+            attributes.attributeValueContent(value, end);
+        }
+
+        @Override
+        public void endAttributes() throws SAXException {
+            Map<String, String> elementBindings = new HashMap<>(inScopeNamespaces);
+            for (String[] ns : pendingNamespaces) {
+                elementBindings.put(ns[0], ns[1]);
+            }
+
+            String prefix = NativeExpandedNames.extractPrefix(currentElementQName);
+            String localName = NativeExpandedNames.extractLocalName(currentElementQName);
+            String uri = NativeExpandedNames.resolveNamespaceURI(
+                    prefix, false, elementBindings);
+            attributes.resolveAndCheckDuplicates(elementBindings);
+
+            DocumentNode element = new DocumentNode(NodeType.ELEMENT, uri, localName,
+                    prefix, baseUri);
             element.documentOrder = documentOrder++;
             element.parent = current;
             if (current != null) {
                 current.addChild(element);
             }
-            
-            // Add namespace nodes from pending prefix mappings
+
             for (String[] ns : pendingNamespaces) {
-                DocumentNode nsNode = new DocumentNode(NodeType.NAMESPACE, null, ns[0], null, baseUri);
+                DocumentNode nsNode = new DocumentNode(
+                        NodeType.NAMESPACE, null, ns[0], null, baseUri);
                 nsNode.documentOrder = documentOrder++;
                 nsNode.value = ns[1];
                 nsNode.parent = element;
                 element.addNamespace(nsNode);
             }
             pendingNamespaces.clear();
-            
-            // Add attributes
-            for (int i = 0; i < attrs.getLength(); i++) {
-                DocumentNode attr = new DocumentNode(NodeType.ATTRIBUTE, 
-                    attrs.getURI(i), attrs.getLocalName(i), null, baseUri);
-                attr.documentOrder = documentOrder++;
-                attr.value = attrs.getValue(i);
-                attr.dtdType = attrs.getType(i);
-                attr.parent = element;
-                element.addAttribute(attr);
+
+            for (int i = 0; i < attributes.size(); i++) {
+                NativeAttributeBuffer.Attr attr = attributes.get(i);
+                if (NativeExpandedNames.isNamespaceDeclaration(attr.qName)) {
+                    continue;
+                }
+                DocumentNode attrNode = new DocumentNode(
+                        NodeType.ATTRIBUTE, attr.uri, attr.localName, attr.prefix, baseUri);
+                attrNode.documentOrder = documentOrder++;
+                attrNode.value = attr.value;
+                attrNode.dtdType = attr.type;
+                attrNode.parent = element;
+                element.addAttribute(attrNode);
             }
-            
+
+            namespaceScopeStack.add(new HashMap<>(inScopeNamespaces));
+            inScopeNamespaces.clear();
+            inScopeNamespaces.putAll(elementBindings);
             current = element;
         }
-        
+
         @Override
-        public void endElement(String uri, String localName, String qName) {
+        public void endElement() {
             flushText();
             if (current != null && current.parent != null) {
                 current = current.parent;
             }
+            if (!namespaceScopeStack.isEmpty()) {
+                inScopeNamespaces.clear();
+                inScopeNamespaces.putAll(
+                        namespaceScopeStack.remove(namespaceScopeStack.size() - 1));
+            }
         }
-        
+
         @Override
-        public void characters(char[] ch, int start, int length) {
-            textBuffer.append(ch, start, length);
+        public void characters(CharBuffer text, boolean ignorable, boolean end) {
+            if (!ignorable) {
+                textBuffer.append(text);
+            }
         }
-        
+
         @Override
-        public void processingInstruction(String target, String data) {
+        public void piTarget(String target) {
             flushText();
-            DocumentNode pi = new DocumentNode(NodeType.PROCESSING_INSTRUCTION, null, target, null, baseUri);
+            currentPITarget = target;
+            piDataFirstChunk = true;
+        }
+
+        @Override
+        public void piData(CharBuffer data, boolean end) {
+            String value;
+            if (piDataFirstChunk && end) {
+                value = data.toString();
+            } else {
+                if (piDataFirstChunk) {
+                    piDataBuffer.setLength(0);
+                    piDataFirstChunk = false;
+                }
+                piDataBuffer.append(data);
+                if (!end) {
+                    return;
+                }
+                value = piDataBuffer.toString();
+            }
+            DocumentNode pi = new DocumentNode(
+                    NodeType.PROCESSING_INSTRUCTION, null, currentPITarget, null, baseUri);
             pi.documentOrder = documentOrder++;
-            pi.value = data != null ? data : "";
+            pi.value = value != null ? value : "";
             pi.parent = current;
             if (current != null) {
                 current.addChild(pi);
             }
         }
-        
-        // LexicalHandler methods
+
         @Override
-        public void comment(char[] ch, int start, int length) {
+        public void startComment() {
             flushText();
-            DocumentNode comment = new DocumentNode(NodeType.COMMENT, null, null, null, baseUri);
+            commentDataFirstChunk = true;
+        }
+
+        @Override
+        public void commentData(CharBuffer text, boolean end) {
+            String value;
+            if (commentDataFirstChunk && end) {
+                value = text.toString();
+            } else {
+                if (commentDataFirstChunk) {
+                    commentDataBuffer.setLength(0);
+                    commentDataFirstChunk = false;
+                }
+                commentDataBuffer.append(text);
+                if (!end) {
+                    return;
+                }
+                value = commentDataBuffer.toString();
+            }
+            DocumentNode comment = new DocumentNode(
+                    NodeType.COMMENT, null, null, null, baseUri);
             comment.documentOrder = documentOrder++;
-            comment.value = new String(ch, start, length);
+            comment.value = value;
             comment.parent = current;
             if (current != null) {
                 current.addChild(comment);
@@ -472,22 +558,50 @@ public final class DocumentLoader {
         }
 
         @Override
-        public void startDTD(String name, String publicId, String systemId) {}
+        public void startCDATA() {
+        }
 
         @Override
-        public void endDTD() {}
+        public void endCDATA() {
+        }
 
         @Override
-        public void startEntity(String name) {}
+        public void startDTD(String name, String publicId, String systemId) {
+        }
 
         @Override
-        public void endEntity(String name) {}
+        public void endDTD() {
+        }
 
         @Override
-        public void startCDATA() {}
+        public void startEntity(String name) {
+        }
 
         @Override
-        public void endCDATA() {}
+        public void endEntity(String name) {
+        }
+
+        @Override
+        public void notationDecl(String name, String publicId, String systemId) {
+        }
+
+        @Override
+        public void unparsedEntityDecl(String name, String publicId, String systemId,
+                String notationName) {
+        }
+
+        @Override
+        public void saveBuffers() {
+        }
+
+        @Override
+        public SAXException fatalError(String message) {
+            return new SAXParseException(message, null);
+        }
+
+        @Override
+        public void error(String message) {
+        }
         
         private void flushText() {
             if (textBuffer.length() > 0) {

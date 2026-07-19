@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform;
 
+import org.bluezoo.gonzalez.XMLHandler;
 import org.bluezoo.gonzalez.schema.PSVIProvider;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
@@ -53,6 +54,7 @@ import org.xml.sax.ext.LexicalHandler;
 import org.xml.sax.helpers.AttributesImpl;
 import org.xml.sax.helpers.DefaultHandler;
 
+import java.nio.CharBuffer;
 import java.util.*;
 import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
 
@@ -75,7 +77,7 @@ import org.bluezoo.gonzalez.transform.compiler.SequenceBuilderOutputHandler;
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public class GonzalezTransformHandler extends DefaultHandler 
-        implements LexicalHandler {
+        implements LexicalHandler, XMLHandler {
 
     /** The compiled XSLT stylesheet. */
     private final CompiledStylesheet stylesheet;
@@ -131,6 +133,14 @@ public class GonzalezTransformHandler extends DefaultHandler
     private final Map<String, String> reusableNsBindings = new HashMap<>();
     private StringBuilder textBuffer = new StringBuilder();
     private Locator documentLocator;
+
+    private final NativeAttributeBuffer nativeAttributes = new NativeAttributeBuffer();
+    private String nativeElementQName;
+    private String nativePITarget;
+    private boolean nativePIDataFirstChunk;
+    private final StringBuilder nativePIDataBuffer = new StringBuilder();
+    private boolean nativeCommentDataFirstChunk;
+    private final StringBuilder nativeCommentDataBuffer = new StringBuilder();
 
     // Buffer for unparsed entity declarations received before startDocument()
     private List<String[]> pendingUnparsedEntities;
@@ -308,6 +318,16 @@ public class GonzalezTransformHandler extends DefaultHandler
     public void setDocumentLocator(Locator locator) {
         this.documentLocator = locator;
     }
+
+    @Override
+    public void setLocator(Locator locator) {
+        setDocumentLocator(locator);
+    }
+
+    @Override
+    public void setXml11(boolean xml11) {
+        // The transform tree has no XML-version-dependent behavior.
+    }
     
     @Override
     public void startDocument() throws SAXException {
@@ -338,6 +358,86 @@ public class GonzalezTransformHandler extends DefaultHandler
         } catch (Exception e) {
             throw new SAXException("Transformation error", e);
         }
+    }
+
+    // Gonzalez-native input path. Names and attribute values remain streamed
+    // until endAttributes(), when all namespace declarations on the start tag
+    // are known and expanded names can be resolved correctly.
+
+    @Override
+    public void startElement(String qName) throws SAXException {
+        flushTextBuffer();
+        nativeElementQName = qName;
+        nativeAttributes.clear();
+    }
+
+    @Override
+    public void namespace(String prefix, String uri) throws SAXException {
+        pendingNamespaces.put(prefix != null ? prefix : "", uri != null ? uri : "");
+    }
+
+    @Override
+    public void startAttribute(String name, String type, boolean declared,
+            boolean specified) throws SAXException {
+        nativeAttributes.startAttribute(name, type);
+    }
+
+    @Override
+    public void attributeValueContent(CharBuffer value, boolean end)
+            throws SAXException {
+        nativeAttributes.attributeValueContent(value, end);
+    }
+
+    @Override
+    public void endAttributes() throws SAXException {
+        reusableNsBindings.clear();
+        if (currentNode != null) {
+            reusableNsBindings.putAll(currentNode.getNamespaceBindings());
+        }
+        reusableNsBindings.putAll(pendingNamespaces);
+        pendingNamespaces.clear();
+
+        String elementPrefix = NativeExpandedNames.extractPrefix(nativeElementQName);
+        String elementLocalName = NativeExpandedNames.extractLocalName(nativeElementQName);
+        String elementUri = NativeExpandedNames.resolveNamespaceURI(
+                elementPrefix, false, reusableNsBindings);
+        nativeAttributes.resolveAndCheckDuplicates(reusableNsBindings);
+        StreamingNode element = StreamingNode.createElement(
+                elementUri, elementLocalName, elementPrefix, null,
+                reusableNsBindings, currentNode, documentOrderCounter);
+
+        int nsCount = element.getNamespaceNodeCount();
+        int emittedAttributeCount = 0;
+        for (int i = 0; i < nativeAttributes.size(); i++) {
+            NativeAttributeBuffer.Attr attr = nativeAttributes.get(i);
+            if (NativeExpandedNames.isNamespaceDeclaration(attr.qName)) {
+                continue;
+            }
+            long attrOrder = documentOrderCounter + nsCount
+                    + emittedAttributeCount + 1;
+            element.addNativeAttribute(attr.uri, attr.localName,
+                    attr.prefix, attr.value, attr.type, null,
+                    attrOrder);
+            emittedAttributeCount++;
+        }
+
+        documentOrderCounter += nsCount + emittedAttributeCount + 1;
+        setEntityBaseURIIfNeeded(element);
+        currentNode = element;
+    }
+
+    @Override
+    public void characters(CharBuffer text, boolean ignorable, boolean end)
+            throws SAXException {
+        if (!ignorable) {
+            textBuffer.append(text);
+        }
+    }
+
+    @Override
+    public void endElement() throws SAXException {
+        flushTextBuffer();
+        currentNode = (StreamingNode) currentNode.getParent();
     }
 
     @Override
@@ -409,7 +509,60 @@ public class GonzalezTransformHandler extends DefaultHandler
         setEntityBaseURIIfNeeded(pi);
     }
 
+    @Override
+    public void piTarget(String target) throws SAXException {
+        flushTextBuffer();
+        nativePITarget = target;
+        nativePIDataFirstChunk = true;
+    }
+
+    @Override
+    public void piData(CharBuffer data, boolean end) throws SAXException {
+        String value;
+        if (nativePIDataFirstChunk && end) {
+            value = data.toString();
+        } else {
+            if (nativePIDataFirstChunk) {
+                nativePIDataBuffer.setLength(0);
+                nativePIDataFirstChunk = false;
+            }
+            nativePIDataBuffer.append(data);
+            if (!end) {
+                return;
+            }
+            value = nativePIDataBuffer.toString();
+        }
+        StreamingNode pi = StreamingNode.createPI(
+                nativePITarget, value, currentNode, documentOrderCounter++);
+        setEntityBaseURIIfNeeded(pi);
+    }
+
     // LexicalHandler methods
+
+    @Override
+    public void startComment() throws SAXException {
+        flushTextBuffer();
+        nativeCommentDataFirstChunk = true;
+    }
+
+    @Override
+    public void commentData(CharBuffer text, boolean end) throws SAXException {
+        String value;
+        if (nativeCommentDataFirstChunk && end) {
+            value = text.toString();
+        } else {
+            if (nativeCommentDataFirstChunk) {
+                nativeCommentDataBuffer.setLength(0);
+                nativeCommentDataFirstChunk = false;
+            }
+            nativeCommentDataBuffer.append(text);
+            if (!end) {
+                return;
+            }
+            value = nativeCommentDataBuffer.toString();
+        }
+        StreamingNode.createComment(value, currentNode, documentOrderCounter++);
+    }
     
     @Override
     public void comment(char[] ch, int start, int length) throws SAXException {
@@ -452,6 +605,56 @@ public class GonzalezTransformHandler extends DefaultHandler
     @Override
     public void endEntity(String name) throws SAXException {
         // Not needed for XSLT processing
+    }
+
+    @Override
+    public void notationDecl(String name, String publicId, String systemId)
+            throws SAXException {
+        // Not represented in the XSLT data model.
+    }
+
+    @Override
+    public void elementDecl(String name, String model) throws SAXException {
+        // DTD declarations are represented through per-attribute type data.
+    }
+
+    @Override
+    public void attributeDecl(String eName, String aName, String type,
+            String mode, String value) throws SAXException {
+        // DTD declarations are represented through per-attribute type data.
+    }
+
+    @Override
+    public void internalEntityDecl(String name, String value)
+            throws SAXException {
+        // Not represented in the XSLT data model.
+    }
+
+    @Override
+    public void externalEntityDecl(String name, String publicId,
+            String systemId) throws SAXException {
+        // Not represented in the XSLT data model.
+    }
+
+    @Override
+    public void skippedEntity(String name) throws SAXException {
+        // The source tree contains only expanded entity content.
+    }
+
+    @Override
+    public void saveBuffers() throws SAXException {
+        // Native chunks are copied immediately into builders or node strings.
+    }
+
+    @Override
+    public SAXException fatalError(String message) throws SAXException {
+        return new SAXParseException(message, documentLocator);
+    }
+
+    @Override
+    public void error(String message) throws SAXException {
+        // Match the existing SAX path when no ErrorHandler is configured:
+        // recoverable validity errors do not stop transformation.
     }
     
     @Override

@@ -210,17 +210,15 @@
  *
  * <h2>Architecture</h2>
  *
- * <p>Internally, Gonzalez uses a pipeline architecture:
+ * <p>Internally, Gonzalez uses a streaming pipeline:
  *
  * <ol>
  *   <li>{@link org.bluezoo.gonzalez.ExternalEntityDecoder} - Converts bytes
  *       to characters with charset detection</li>
- *   <li>{@link org.bluezoo.gonzalez.Tokenizer} - State machine that produces
- *       XML tokens</li>
- *   <li>{@link org.bluezoo.gonzalez.ContentParser} - Converts tokens to SAX
- *       events</li>
- *   <li>{@link org.bluezoo.gonzalez.DTDParser} - Handles DTD declarations
- *       (loaded lazily)</li>
+ *   <li>{@link org.bluezoo.gonzalez.Scanner} - Character-level XML grammar
+ *       scan that drives {@link org.bluezoo.gonzalez.XMLHandler}</li>
+ *   <li>{@link org.bluezoo.gonzalez.SAXAdapter} - Adapts XMLHandler events
+ *       to SAX2 ContentHandler / LexicalHandler / DeclHandler / DTDHandler</li>
  * </ol>
  *
  * @author Chris Burdess

@@ -1,0 +1,8 @@
+<![INCLUDE[
+<!ENTITY % rootDecl "<!ELEMENT root (#PCDATA)>">
+]]>
+%rootDecl;
+
+<![IGNORE[
+this is not valid markup at all <><><
+]]>

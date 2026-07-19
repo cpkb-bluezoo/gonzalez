@@ -36,6 +36,7 @@ import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
 import org.xml.sax.ext.Attributes2;
+import org.xml.sax.ext.DeclHandler;
 import org.xml.sax.helpers.DefaultHandler;
 
 import static org.junit.Assert.*;
@@ -47,7 +48,6 @@ import static org.junit.Assert.*;
  */
 public class ParserAttributeTest {
 
-    private static final String DTD_PARSER_PROPERTY = "http://www.nongnu.org/gonzalez/properties/dtd-parser";
 
     static class ValidationErrorCollector implements ErrorHandler {
         List<SAXParseException> errors = new ArrayList<SAXParseException>();
@@ -295,8 +295,8 @@ public class ParserAttributeTest {
         assertFalse("Missing #REQUIRED attribute should produce error",
             errors.errors.isEmpty());
         String message = errors.errors.get(0).getMessage();
-        assertTrue("Expected 'Required attribute' in message",
-            message.contains("Required attribute"));
+        assertTrue("Expected required-attribute diagnostic: " + message,
+            message.toLowerCase().contains("required") && message.toLowerCase().contains("attribute"));
     }
 
     @Test
@@ -333,8 +333,8 @@ public class ParserAttributeTest {
         assertFalse("Duplicate ID should produce error",
             errors.errors.isEmpty());
         String message = errors.errors.get(0).getMessage();
-        assertTrue("Expected 'already declared' in message",
-            message.contains("already declared"));
+        assertTrue("Expected duplicate-ID diagnostic: " + message,
+            message.contains("already declared") || message.contains("appears more than once"));
     }
 
     @Test
@@ -369,8 +369,8 @@ public class ParserAttributeTest {
         assertFalse("IDREF to undeclared ID should produce error",
             errors.errors.isEmpty());
         String message = errors.errors.get(0).getMessage();
-        assertTrue("Expected 'undeclared ID' in message",
-            message.contains("undeclared ID"));
+        assertTrue("Expected unresolved-IDREF diagnostic: " + message,
+            message.contains("undeclared ID") || message.contains("does not match the value of any ID"));
     }
 
     @Test
@@ -403,8 +403,8 @@ public class ParserAttributeTest {
         assertFalse("Invalid NMTOKEN should produce error",
             errors.errors.isEmpty());
         String message = errors.errors.get(0).getMessage();
-        assertTrue("Expected 'not a valid NMTOKEN' in message",
-            message.contains("not a valid NMTOKEN"));
+        assertTrue("Expected invalid-NMTOKEN diagnostic: " + message,
+            message.contains("not a valid NMTOKEN") || message.contains("Nmtoken production"));
     }
 
     // --- Default Attribute Value Tests (from DefaultAttributeValueTest) ---
@@ -549,20 +549,22 @@ public class ParserAttributeTest {
                     "]>\n" +
                     "<root/>";
 
+        DeclCapture decls = new DeclCapture();
+        final String[] seen = new String[1];
         Parser parser = new Parser();
-        parser.setContentHandler(new MinimalContentHandler());
+        parser.setContentHandler(new DefaultHandler() {
+            @Override
+            public void startElement(String uri, String localName, String qName, Attributes atts) {
+                seen[0] = atts.getValue("attr");
+            }
+        });
+        parser.setProperty("http://xml.org/sax/properties/declaration-handler", decls);
         parser.setProperty("http://xml.org/sax/properties/lexical-handler", new MinimalLexicalHandler());
         parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-        assertNotNull("DTDParser not available", dtdParser);
-
-        AttributeDeclaration attrDecl = dtdParser.getAttributeDeclaration("root", "attr");
-        assertNotNull("Attribute declaration for 'attr' not found", attrDecl);
-        assertNotNull("Default value is null", attrDecl.defaultValue);
-        assertEquals("Expected 1 part", 1, attrDecl.defaultValue.size());
-        assertTrue("Part 0 should be String", attrDecl.defaultValue.get(0) instanceof String);
-        assertEquals("default value", attrDecl.defaultValue.get(0));
+        assertEquals("CDATA", decls.attrs.get("root/attr")[0]);
+        assertEquals("default value", decls.attrs.get("root/attr")[2]);
+        assertEquals("default value", seen[0]);
     }
 
     @Test
@@ -576,27 +578,21 @@ public class ParserAttributeTest {
                     "]>\n" +
                     "<root/>";
 
+        DeclCapture decls = new DeclCapture();
+        final String[] seen = new String[1];
         Parser parser = new Parser();
-        parser.setContentHandler(new MinimalContentHandler());
+        parser.setContentHandler(new DefaultHandler() {
+            @Override
+            public void startElement(String uri, String localName, String qName, Attributes atts) {
+                seen[0] = atts.getValue("attr");
+            }
+        });
+        parser.setProperty("http://xml.org/sax/properties/declaration-handler", decls);
         parser.setProperty("http://xml.org/sax/properties/lexical-handler", new MinimalLexicalHandler());
         parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-        assertNotNull("DTDParser not available", dtdParser);
-
-        AttributeDeclaration attrDecl = dtdParser.getAttributeDeclaration("root", "attr");
-        assertNotNull("Attribute declaration for 'attr' not found", attrDecl);
-        assertNotNull("Default value is null", attrDecl.defaultValue);
-        assertEquals("Expected 3 parts", 3, attrDecl.defaultValue.size());
-
-        Object part0 = attrDecl.defaultValue.get(0);
-        Object part1 = attrDecl.defaultValue.get(1);
-        Object part2 = attrDecl.defaultValue.get(2);
-
-        assertTrue("Part 0 should be 'before '", part0 instanceof String && "before ".equals(part0));
-        assertTrue("Part 1 should be GeneralEntityReference", part1 instanceof GeneralEntityReference);
-        assertEquals("copy", ((GeneralEntityReference) part1).name);
-        assertTrue("Part 2 should be ' after'", part2 instanceof String && " after".equals(part2));
+        assertEquals("before &copy; after", decls.attrs.get("root/attr")[2]);
+        assertEquals("before Copyright 2025 after", seen[0]);
     }
 
     @Test
@@ -610,29 +606,46 @@ public class ParserAttributeTest {
                     "]>\n" +
                     "<root/>";
 
+        DeclCapture decls = new DeclCapture();
+        final String[] seen = new String[1];
         Parser parser = new Parser();
-        parser.setContentHandler(new MinimalContentHandler());
+        parser.setContentHandler(new DefaultHandler() {
+            @Override
+            public void startElement(String uri, String localName, String qName, Attributes atts) {
+                seen[0] = atts.getValue("ver");
+            }
+        });
+        parser.setProperty("http://xml.org/sax/properties/declaration-handler", decls);
         parser.setProperty("http://xml.org/sax/properties/lexical-handler", new MinimalLexicalHandler());
         parser.parse(new InputSource(new ByteArrayInputStream(xml.getBytes("UTF-8"))));
 
-        DTDParser dtdParser = (DTDParser) parser.getProperty(DTD_PARSER_PROPERTY);
-        assertNotNull("DTDParser not available", dtdParser);
-
-        AttributeDeclaration attrDecl = dtdParser.getAttributeDeclaration("root", "ver");
-        assertNotNull("Attribute declaration for 'ver' not found", attrDecl);
-        assertEquals(Token.FIXED, attrDecl.mode);
-        assertNotNull("Default value is null", attrDecl.defaultValue);
-        assertEquals("Expected 2 parts", 2, attrDecl.defaultValue.size());
-
-        Object part0 = attrDecl.defaultValue.get(0);
-        Object part1 = attrDecl.defaultValue.get(1);
-
-        assertTrue("Part 0 should be 'v'", part0 instanceof String && "v".equals(part0));
-        assertTrue("Part 1 should be GeneralEntityReference", part1 instanceof GeneralEntityReference);
-        assertEquals("version", ((GeneralEntityReference) part1).name);
+        assertEquals("#FIXED", decls.attrs.get("root/ver")[1]);
+        assertEquals("v&version;", decls.attrs.get("root/ver")[2]);
+        assertEquals("v1.0", seen[0]);
     }
 
     // --- Inner handler classes ---
+
+    private static class DeclCapture implements DeclHandler {
+        final Map<String, String[]> attrs = new HashMap<String, String[]>();
+
+        @Override
+        public void elementDecl(String name, String model) {
+        }
+
+        @Override
+        public void attributeDecl(String eName, String aName, String type, String mode, String value) {
+            attrs.put(eName + "/" + aName, new String[] { type, mode, value });
+        }
+
+        @Override
+        public void internalEntityDecl(String name, String value) {
+        }
+
+        @Override
+        public void externalEntityDecl(String name, String publicId, String systemId) {
+        }
+    }
 
     private static class AttributeCaptureHandler implements ContentHandler {
         Map<String, String> attributes = new HashMap<String, String>();

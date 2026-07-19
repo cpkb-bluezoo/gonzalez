@@ -21,6 +21,7 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
+import org.bluezoo.gonzalez.XMLHandler;
 import org.bluezoo.gonzalez.transform.ast.XSLTNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -28,15 +29,17 @@ import org.xml.sax.Attributes;
 import org.xml.sax.ContentHandler;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
+import org.xml.sax.SAXParseException;
 
+import java.nio.CharBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * SAX ContentHandler for streaming transformation.
+ * Native/SAX handler for streaming transformation.
  *
- * <p>This handler processes SAX events from the Gonzalez parser during
- * xsl:stream execution. It:
+ * <p>This handler processes events from the Gonzalez parser during
+ * xsl:stream / xsl:source-document streaming execution. It:
  * <ul>
  *   <li>Creates StreamingNode instances for each element</li>
  *   <li>Fires accumulator rules at appropriate times</li>
@@ -44,12 +47,12 @@ import java.util.Map;
  *   <li>Outputs results to the OutputHandler</li>
  * </ul>
  *
- * <p>The handler maintains minimal state to enable memory-efficient
- * processing of large documents.
+ * <p>When driven by Gonzalez {@code Parser.setXMLHandler}, no SAXAdapter is
+ * constructed. A SAX {@link ContentHandler} façade remains for foreign readers.
  *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
-public final class StreamingTransformHandler implements ContentHandler {
+public final class StreamingTransformHandler implements ContentHandler, XMLHandler {
 
     private final StreamingContext streamingContext;
     private final XSLTNode body;
@@ -61,6 +64,12 @@ public final class StreamingTransformHandler implements ContentHandler {
     private boolean documentStarted;
     private boolean hasPendingText;
     private final Map<String, String> reusableNsBindings = new HashMap<String, String>();
+    private final Map<String, String> pendingNamespaces = new HashMap<String, String>();
+    private final NativeAttributeBuffer nativeAttributes = new NativeAttributeBuffer();
+    private String nativeElementQName;
+    private String nativePITarget;
+    private boolean nativePIDataFirstChunk;
+    private final StringBuilder nativePIDataBuffer = new StringBuilder();
 
     /**
      * Creates a new streaming transform handler.
@@ -84,9 +93,19 @@ public final class StreamingTransformHandler implements ContentHandler {
     }
 
     @Override
+    public void setLocator(Locator locator) {
+        setDocumentLocator(locator);
+    }
+
+    @Override
+    public void setXml11(boolean xml11) {
+    }
+
+    @Override
     public void startDocument() throws SAXException {
         documentStarted = true;
         documentOrder = 0;
+        pendingNamespaces.clear();
         
         // Create root node so that document element becomes its child,
         // matching the non-streaming tree where / is the document root
@@ -113,14 +132,75 @@ public final class StreamingTransformHandler implements ContentHandler {
 
     @Override
     public void startPrefixMapping(String prefix, String uri) throws SAXException {
-        if (currentNode != null) {
-            currentNode.addNamespaceMapping(prefix, uri);
-        }
+        pendingNamespaces.put(prefix != null ? prefix : "", uri != null ? uri : "");
     }
 
     @Override
     public void endPrefixMapping(String prefix) throws SAXException {
         // Namespace mappings are scoped to elements
+    }
+
+    @Override
+    public void namespace(String prefix, String uri) throws SAXException {
+        pendingNamespaces.put(prefix != null ? prefix : "", uri != null ? uri : "");
+    }
+
+    @Override
+    public void startElement(String qName) throws SAXException {
+        firePendingTextAccumulators();
+        nativeElementQName = qName;
+        nativeAttributes.clear();
+    }
+
+    @Override
+    public void startAttribute(String name, String type, boolean declared,
+            boolean specified) throws SAXException {
+        nativeAttributes.startAttribute(name, type);
+    }
+
+    @Override
+    public void attributeValueContent(CharBuffer value, boolean end)
+            throws SAXException {
+        nativeAttributes.attributeValueContent(value, end);
+    }
+
+    @Override
+    public void endAttributes() throws SAXException {
+        documentOrder++;
+        streamingContext.pushDepth();
+
+        reusableNsBindings.clear();
+        if (currentNode != null) {
+            reusableNsBindings.putAll(currentNode.getNamespaceBindings());
+        }
+        reusableNsBindings.putAll(pendingNamespaces);
+        pendingNamespaces.clear();
+
+        String prefix = NativeExpandedNames.extractPrefix(nativeElementQName);
+        String localName = NativeExpandedNames.extractLocalName(nativeElementQName);
+        String uri = NativeExpandedNames.resolveNamespaceURI(
+                prefix, false, reusableNsBindings);
+        nativeAttributes.resolveAndCheckDuplicates(reusableNsBindings);
+
+        StreamingNode node = StreamingNode.createElement(
+                uri, localName, prefix, null, reusableNsBindings,
+                currentNode, documentOrder);
+
+        int nsCount = node.getNamespaceNodeCount();
+        int emittedAttributeCount = 0;
+        for (int i = 0; i < nativeAttributes.size(); i++) {
+            NativeAttributeBuffer.Attr attr = nativeAttributes.get(i);
+            if (NativeExpandedNames.isNamespaceDeclaration(attr.qName)) {
+                continue;
+            }
+            long attrOrder = documentOrder + nsCount + emittedAttributeCount + 1;
+            node.addNativeAttribute(attr.uri, attr.localName, attr.prefix,
+                    attr.value, attr.type, null, attrOrder);
+            emittedAttributeCount++;
+        }
+        documentOrder += nsCount + emittedAttributeCount;
+
+        finishStartElement(node);
     }
 
     @Override
@@ -137,17 +217,22 @@ public final class StreamingTransformHandler implements ContentHandler {
             prefix = qName.substring(0, colonIdx);
         }
         
-        // Collect namespace bindings from parent (reuse map to avoid allocation)
+        // Collect namespace bindings from parent + pending declarations
         reusableNsBindings.clear();
         if (currentNode != null) {
             reusableNsBindings.putAll(currentNode.getNamespaceBindings());
         }
+        reusableNsBindings.putAll(pendingNamespaces);
+        pendingNamespaces.clear();
         
-        // Create a new streaming node using factory method
         StreamingNode node = StreamingNode.createElement(
             uri, localName, prefix, atts, reusableNsBindings, currentNode, documentOrder
         );
-        
+        documentOrder += node.getNamespaceNodeCount() + atts.getLength();
+        finishStartElement(node);
+    }
+
+    private void finishStartElement(StreamingNode node) throws SAXException {
         currentNode = node;
         streamingContext.setCurrentNode(node);
         
@@ -161,6 +246,11 @@ public final class StreamingTransformHandler implements ContentHandler {
         if (streamingContext.getDepth() == 1) {
             documentElement = node;
         }
+    }
+
+    @Override
+    public void endElement() throws SAXException {
+        endElement(null, null, null);
     }
 
     @Override
@@ -192,6 +282,17 @@ public final class StreamingTransformHandler implements ContentHandler {
     }
 
     @Override
+    public void characters(CharBuffer text, boolean ignorable, boolean end)
+            throws SAXException {
+        // Match prior SAX streaming behaviour: ignorable whitespace is kept.
+        if (currentNode != null) {
+            documentOrder++;
+            currentNode.appendText(text.toString(), documentOrder);
+            hasPendingText = true;
+        }
+    }
+
+    @Override
     public void characters(char[] ch, int start, int length) throws SAXException {
         if (currentNode != null) {
             documentOrder++;
@@ -207,6 +308,34 @@ public final class StreamingTransformHandler implements ContentHandler {
     }
 
     @Override
+    public void piTarget(String target) throws SAXException {
+        nativePITarget = target;
+        nativePIDataFirstChunk = true;
+    }
+
+    @Override
+    public void piData(CharBuffer data, boolean end) throws SAXException {
+        String value;
+        if (nativePIDataFirstChunk && end) {
+            value = data.toString();
+        } else {
+            if (nativePIDataFirstChunk) {
+                nativePIDataBuffer.setLength(0);
+                nativePIDataFirstChunk = false;
+            }
+            nativePIDataBuffer.append(data);
+            if (!end) {
+                return;
+            }
+            value = nativePIDataBuffer.toString();
+        }
+        documentOrder++;
+        if (currentNode != null) {
+            StreamingNode.createPI(nativePITarget, value, currentNode, documentOrder);
+        }
+    }
+
+    @Override
     public void processingInstruction(String target, String data) throws SAXException {
         documentOrder++;
         if (currentNode != null) {
@@ -217,6 +346,61 @@ public final class StreamingTransformHandler implements ContentHandler {
     @Override
     public void skippedEntity(String name) throws SAXException {
         // Not typically relevant in streaming
+    }
+
+    @Override
+    public void startComment() {
+    }
+
+    @Override
+    public void commentData(CharBuffer text, boolean end) {
+        // Streaming path historically dropped comments (no LexicalHandler).
+    }
+
+    @Override
+    public void startCDATA() {
+    }
+
+    @Override
+    public void endCDATA() {
+    }
+
+    @Override
+    public void startDTD(String name, String publicId, String systemId) {
+    }
+
+    @Override
+    public void endDTD() {
+    }
+
+    @Override
+    public void startEntity(String name) {
+    }
+
+    @Override
+    public void endEntity(String name) {
+    }
+
+    @Override
+    public void notationDecl(String name, String publicId, String systemId) {
+    }
+
+    @Override
+    public void unparsedEntityDecl(String name, String publicId, String systemId,
+            String notationName) {
+    }
+
+    @Override
+    public void saveBuffers() {
+    }
+
+    @Override
+    public SAXException fatalError(String message) {
+        return new SAXParseException(message, null);
+    }
+
+    @Override
+    public void error(String message) {
     }
 
     /**
