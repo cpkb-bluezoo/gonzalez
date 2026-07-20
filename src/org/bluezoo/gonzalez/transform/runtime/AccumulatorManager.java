@@ -86,6 +86,7 @@ public final class AccumulatorManager {
     private final CompiledStylesheet stylesheet;
     private final TransformContext transformContext;
     private final Map<String, AccumulatorState> accumulators;
+    private final List<InternalAccumulator> internalAccumulators;
     private boolean initialized;
     private boolean streamingMode;
 
@@ -119,6 +120,9 @@ public final class AccumulatorManager {
         this.stylesheet = stylesheet;
         this.transformContext = transformContext;
         this.accumulators = new HashMap<>();
+        this.internalAccumulators = stylesheet != null
+                ? new ArrayList<InternalAccumulator>(stylesheet.getInternalAccumulators())
+                : new ArrayList<InternalAccumulator>();
         this.initialized = false;
         this.beforeValues = new HashMap<>();
         this.afterValues = new HashMap<>();
@@ -137,6 +141,7 @@ public final class AccumulatorManager {
         this.stylesheet = other.stylesheet;
         this.transformContext = newContext;
         this.accumulators = new HashMap<>();
+        this.internalAccumulators = new ArrayList<InternalAccumulator>(other.internalAccumulators);
         this.initialized = other.initialized;
         this.beforeValues = other.beforeValues;
         this.afterValues = other.afterValues;
@@ -171,6 +176,10 @@ public final class AccumulatorManager {
             if (!afterValues.containsKey(accName)) {
                 afterValues.put(accName, new IdentityHashMap<XPathNode, XPathValue>());
             }
+        }
+
+        for (int i = 0; i < internalAccumulators.size(); i++) {
+            internalAccumulators.get(i).initialize();
         }
 
         initialized = true;
@@ -384,6 +393,10 @@ public final class AccumulatorManager {
                 }
             }
         }
+
+        for (int i = 0; i < internalAccumulators.size(); i++) {
+            internalAccumulators.get(i).notifyStartElement(node, transformContext);
+        }
     }
 
     /**
@@ -411,6 +424,10 @@ public final class AccumulatorManager {
             }
 
             state.pop();
+        }
+
+        for (int i = 0; i < internalAccumulators.size(); i++) {
+            internalAccumulators.get(i).notifyEndElement(node, transformContext);
         }
     }
 

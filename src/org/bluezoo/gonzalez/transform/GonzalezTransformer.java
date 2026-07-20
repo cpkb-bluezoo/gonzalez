@@ -23,11 +23,21 @@ package org.bluezoo.gonzalez.transform;
 
 import org.bluezoo.gonzalez.Parser;
 import org.bluezoo.gonzalez.schema.PSVIProvider;
+import org.bluezoo.gonzalez.transform.ast.ApplyTemplatesNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathBoolean;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 import org.bluezoo.gonzalez.transform.compiler.OutputProperties;
+import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.HTMLOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
+import org.bluezoo.gonzalez.transform.runtime.StreamingContext;
+import org.bluezoo.gonzalez.transform.runtime.StreamingTransformHandler;
+import org.bluezoo.gonzalez.transform.runtime.TemplateMatcher;
 import org.bluezoo.gonzalez.transform.runtime.TextOutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.XMLWriterOutputHandler;
 import org.xml.sax.*;
@@ -50,6 +60,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -182,7 +193,7 @@ public class GonzalezTransformer extends Transformer {
         } else {
             outputHandler = getStreamOutputHandler(result);
         }
-        
+
         // Create the transformation pipeline
         GonzalezTransformHandler transformHandler = 
             new GonzalezTransformHandler(stylesheet, parameters, outputHandler, errorListener);
@@ -260,6 +271,64 @@ public class GonzalezTransformer extends Transformer {
         
         InputSource inputSource = getInputSource(source);
         reader.parse(inputSource);
+    }
+
+    /**
+     * Streams the primary source through {@link StreamingTransformHandler},
+     * applying templates once the document element is complete.
+     */
+    /**
+     * Streams the primary source through {@link StreamingTransformHandler},
+     * applying templates once the document element is complete.
+     *
+     * <p>Reserved for callers that explicitly opt in once incremental
+     * apply-templates streaming is complete. The default JAXP path still
+     * uses {@link GonzalezTransformHandler}.
+     */
+    void performStreamingPrimaryTransform(Source source, OutputHandler outputHandler)
+            throws SAXException, IOException, TransformerException {
+        TemplateMatcher matcher = new TemplateMatcher(stylesheet);
+        BasicTransformContext parentContext = new BasicTransformContext(
+                stylesheet, null, matcher, outputHandler, errorListener);
+        if (parameters != null) {
+            for (Map.Entry<String, Object> entry : parameters.entrySet()) {
+                Object raw = entry.getValue();
+                XPathValue value;
+                if (raw instanceof XPathValue) {
+                    value = (XPathValue) raw;
+                } else if (raw instanceof Number) {
+                    value = new XPathNumber(((Number) raw).doubleValue());
+                } else if (raw instanceof Boolean) {
+                    value = XPathBoolean.of(((Boolean) raw).booleanValue());
+                } else {
+                    value = XPathString.of(String.valueOf(raw));
+                }
+                parentContext.setVariable(entry.getKey(), value);
+            }
+        }
+
+        StreamingContext streamCtx = new StreamingContext(
+                stylesheet, parentContext.getVariableScope(), parentContext);
+        if (!stylesheet.getAccumulators().isEmpty()
+                || !stylesheet.getInternalAccumulators().isEmpty()) {
+            AccumulatorManager mgr = new AccumulatorManager(stylesheet, parentContext);
+            mgr.setStreamingMode(true);
+            streamCtx.setAccumulatorManager(mgr);
+            parentContext.setAccumulatorManager(mgr);
+        }
+
+        ApplyTemplatesNode body = new ApplyTemplatesNode(
+                null, initialMode, Collections.emptyList(), Collections.emptyList());
+        StreamingTransformHandler handler = new StreamingTransformHandler(
+                streamCtx, body, outputHandler);
+
+        XMLReader reader = getXMLReader(source);
+        if (reader instanceof Parser) {
+            ((Parser) reader).setXMLHandler(handler);
+        } else {
+            reader.setContentHandler(handler);
+        }
+        reader.parse(getInputSource(source));
     }
 
     /**

@@ -169,21 +169,28 @@ public final class StreamingTransformHandler implements ContentHandler, XMLHandl
         documentOrder++;
         streamingContext.pushDepth();
 
-        reusableNsBindings.clear();
-        if (currentNode != null) {
-            reusableNsBindings.putAll(currentNode.getNamespaceBindings());
+        boolean hadPending = !pendingNamespaces.isEmpty();
+        Map<String, String> nsBindings;
+        if (!hadPending && currentNode != null) {
+            nsBindings = currentNode.getNamespaceBindingsForChild();
+        } else {
+            reusableNsBindings.clear();
+            if (currentNode != null) {
+                reusableNsBindings.putAll(currentNode.getNamespaceBindingsForChild());
+            }
+            reusableNsBindings.putAll(pendingNamespaces);
+            nsBindings = reusableNsBindings;
         }
-        reusableNsBindings.putAll(pendingNamespaces);
         pendingNamespaces.clear();
 
         String prefix = NativeExpandedNames.extractPrefix(nativeElementQName);
         String localName = NativeExpandedNames.extractLocalName(nativeElementQName);
         String uri = NativeExpandedNames.resolveNamespaceURI(
-                prefix, false, reusableNsBindings);
-        nativeAttributes.resolveAndCheckDuplicates(reusableNsBindings);
+                prefix, false, nsBindings);
+        nativeAttributes.resolveAndCheckDuplicates(nsBindings);
 
         StreamingNode node = StreamingNode.createElement(
-                uri, localName, prefix, null, reusableNsBindings,
+                uri, localName, prefix, null, nsBindings,
                 currentNode, documentOrder);
 
         int nsCount = node.getNamespaceNodeCount();
@@ -218,15 +225,22 @@ public final class StreamingTransformHandler implements ContentHandler, XMLHandl
         }
         
         // Collect namespace bindings from parent + pending declarations
-        reusableNsBindings.clear();
-        if (currentNode != null) {
-            reusableNsBindings.putAll(currentNode.getNamespaceBindings());
+        Map<String, String> nsBindings;
+        boolean hadPending = !pendingNamespaces.isEmpty();
+        if (!hadPending && currentNode != null) {
+            nsBindings = currentNode.getNamespaceBindingsForChild();
+        } else {
+            reusableNsBindings.clear();
+            if (currentNode != null) {
+                reusableNsBindings.putAll(currentNode.getNamespaceBindingsForChild());
+            }
+            reusableNsBindings.putAll(pendingNamespaces);
+            nsBindings = reusableNsBindings;
         }
-        reusableNsBindings.putAll(pendingNamespaces);
         pendingNamespaces.clear();
         
         StreamingNode node = StreamingNode.createElement(
-            uri, localName, prefix, atts, reusableNsBindings, currentNode, documentOrder
+            uri, localName, prefix, atts, nsBindings, currentNode, documentOrder
         );
         documentOrder += node.getNamespaceNodeCount() + atts.getLength();
         finishStartElement(node);

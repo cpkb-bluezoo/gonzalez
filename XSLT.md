@@ -423,9 +423,9 @@ The transformer is designed for:
 
 ### Benchmarking
 
-Parser JMH benchmarks live under `benchmark/` (`ant benchmark`). For an XSLT
-**performance and conformance bake-off** against the JDK JAXP default (Xalan,
-XSLT 1.0) and Saxon-HE 12.9:
+Parser JMH benchmarks live under `benchmark/` (`ant benchmark`). XSLT hot-path
+JMH: `ant benchmark-xslt`. For an XSLT **performance and conformance bake-off**
+against the JDK JAXP default (Xalan, XSLT 1.0) and Saxon-HE 12.9:
 
 ```bash
 # Throughput / compile / heap delta over a fixed corpus
@@ -438,8 +438,8 @@ benchmark/xslt-compare/run-conformance.sh -Dxslt.version=1.0
 benchmark/xslt-compare/run-conformance.sh -Dxslt.version=3.0 -Dxslt.limit=100
 ```
 
-Reports are written to `benchmark/xslt-compare/out/` (`conformance-summary.txt`,
-`conformance-matrix.txt`, `conformance-disagreements.txt`).
+Reports are written to `benchmark/xslt-compare/out/` (`perf-summary.txt`,
+`conformance-summary.txt`, `conformance-matrix.txt`, `conformance-disagreements.txt`).
 
 | Engine | Role |
 |--------|------|
@@ -451,6 +451,22 @@ Saxon is bake-off-only (`ant download-saxon`); it is not a product compile depen
 Metrics of interest: stylesheet compilation time, transform throughput, approximate
 heap delta, and (for conformance) pass/fail/error/skip rates plus pairwise output
 disagreements.
+
+### Recent bake-off transform times (5k-item corpus)
+
+| Case | Gonzalez | Saxon-HE | Notes |
+|------|----------|----------|-------|
+| streaming-3.0 | ~1.7 ms | ~1.3 ms | Competitive |
+| free-ranging-3.0 | ~4.3 ms | ~3.8 ms | Absolute-path AVT memoization (was ~47× slower) |
+| variable-meta-3.0 | ~4.3 ms | ~3.2 ms | Idiomatic hoist via `xsl:variable` |
+| streaming-large-3.0 (50k) | ~12 ms | ~13 ms | Slightly ahead of Saxon on this run |
+
+Throughput wins include memoizing context-independent absolute location paths,
+fast attribute-by-name steps, fewer `for-each` context allocations, and shared
+namespace maps during tree build. `InternalAccumulatorFactory` is wired at
+compile time for 1.0/2.0 streaming patterns; primary-source streaming via
+`StreamingTransformHandler` is available for explicit opt-in once incremental
+apply-templates streaming is complete.
 
 ## Extension Mechanisms
 

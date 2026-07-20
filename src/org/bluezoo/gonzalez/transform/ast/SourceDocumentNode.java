@@ -166,7 +166,8 @@ public final class SourceDocumentNode implements XSLTNode {
 
             // Wire accumulators for streaming
             if (context.getStylesheet() != null
-                    && !context.getStylesheet().getAccumulators().isEmpty()) {
+                    && (!context.getStylesheet().getAccumulators().isEmpty()
+                        || !context.getStylesheet().getInternalAccumulators().isEmpty())) {
                 AccumulatorManager mgr = new AccumulatorManager(
                     context.getStylesheet(), context);
                 mgr.initialize();

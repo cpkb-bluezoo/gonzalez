@@ -24,6 +24,7 @@ package org.bluezoo.gonzalez.transform.runtime;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,6 +42,7 @@ import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.XPathVariableException;
+import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
 import org.bluezoo.gonzalez.transform.xpath.function.XSLTFunctionLibrary;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -93,6 +95,8 @@ public class BasicTransformContext implements TransformContext {
     private Map<String, OutputHandler> resultDocumentCollector;  // fn:transform() secondary capture
     private Map<CompiledStylesheet, Map<String, XPathValue>> packageGlobalVariables;  // Pre-evaluated package globals
     private java.util.Set<String> availableResourceUris;  // URIs declared available by test environment
+    /** Shared across for-each context clones: memoized absolute location paths. */
+    private Map<LocationPath, AbsolutePathCacheEntry> absolutePathCache;
 
     /**
      * Creates a new transform context.
@@ -346,6 +350,25 @@ public class BasicTransformContext implements TransformContext {
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
             runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));
+        result.xsltCurrentItem = null;
+        return result;
+    }
+
+    /**
+     * Single-allocation for-each iteration frame: pushed variable scope, cleared
+     * current template rule, new XSLT current node, and position/size.
+     *
+     * @param node the iteration context node
+     * @param position 1-based position
+     * @param size sequence size
+     * @return a new context for this iteration
+     */
+    public TransformContext forEachIteration(XPathNode node, int position, int size) {
+        BasicTransformContext result = inherit(new BasicTransformContext(stylesheet, node, node, null,
+            position, size, currentMode, variableScope.push(), functionLibrary, templateMatcher,
+            outputHandler, accumulatorManager, errorListener, null, staticBaseURI,
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache,
+            variablesBeingEvaluated, usedResultUris, principalOutput));
         result.xsltCurrentItem = null;
         return result;
     }
@@ -1137,12 +1160,53 @@ public class BasicTransformContext implements TransformContext {
         derived.dynamicEvaluation = this.dynamicEvaluation;
         derived.insideMergeAction = this.insideMergeAction;
         derived.availableResourceUris = this.availableResourceUris;
+        if (this.absolutePathCache == null) {
+            this.absolutePathCache = new IdentityHashMap<LocationPath, AbsolutePathCacheEntry>();
+        }
+        derived.absolutePathCache = this.absolutePathCache;
         if (this.contextItemUndefined &&
                 derived.contextNode == this.contextNode &&
                 derived.contextItem == this.contextItem) {
             derived.contextItemUndefined = true;
         }
         return derived;
+    }
+
+    /**
+     * Returns a memoized result for a context-independent absolute path, or null.
+     */
+    public XPathValue getCachedAbsolutePath(LocationPath path, XPathNode root) {
+        if (absolutePathCache == null || path == null || root == null) {
+            return null;
+        }
+        AbsolutePathCacheEntry entry = absolutePathCache.get(path);
+        if (entry != null && entry.root == root) {
+            return entry.value;
+        }
+        return null;
+    }
+
+    /**
+     * Stores a memoized result for a context-independent absolute path.
+     */
+    public void putCachedAbsolutePath(LocationPath path, XPathNode root, XPathValue value) {
+        if (path == null || root == null || value == null) {
+            return;
+        }
+        if (absolutePathCache == null) {
+            absolutePathCache = new IdentityHashMap<LocationPath, AbsolutePathCacheEntry>();
+        }
+        absolutePathCache.put(path, new AbsolutePathCacheEntry(root, value));
+    }
+
+    private static final class AbsolutePathCacheEntry {
+        final XPathNode root;
+        final XPathValue value;
+
+        AbsolutePathCacheEntry(XPathNode root, XPathValue value) {
+            this.root = root;
+            this.value = value;
+        }
     }
 
     /**

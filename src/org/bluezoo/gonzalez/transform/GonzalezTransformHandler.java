@@ -390,21 +390,29 @@ public class GonzalezTransformHandler extends DefaultHandler
 
     @Override
     public void endAttributes() throws SAXException {
-        reusableNsBindings.clear();
-        if (currentNode != null) {
-            reusableNsBindings.putAll(currentNode.getNamespaceBindings());
+        Map<String, String> nsBindings;
+        boolean hadPending = !pendingNamespaces.isEmpty();
+        if (!hadPending && currentNode != null) {
+            nsBindings = currentNode.getNamespaceBindingsForChild();
+        } else {
+            reusableNsBindings.clear();
+            if (currentNode != null) {
+                reusableNsBindings.putAll(currentNode.getNamespaceBindingsForChild());
+            }
+            reusableNsBindings.putAll(pendingNamespaces);
+            pendingNamespaces.clear();
+            nsBindings = reusableNsBindings;
         }
-        reusableNsBindings.putAll(pendingNamespaces);
         pendingNamespaces.clear();
 
         String elementPrefix = NativeExpandedNames.extractPrefix(nativeElementQName);
         String elementLocalName = NativeExpandedNames.extractLocalName(nativeElementQName);
         String elementUri = NativeExpandedNames.resolveNamespaceURI(
-                elementPrefix, false, reusableNsBindings);
-        nativeAttributes.resolveAndCheckDuplicates(reusableNsBindings);
+                elementPrefix, false, nsBindings);
+        nativeAttributes.resolveAndCheckDuplicates(nsBindings);
         StreamingNode element = StreamingNode.createElement(
                 elementUri, elementLocalName, elementPrefix, null,
-                reusableNsBindings, currentNode, documentOrderCounter);
+                nsBindings, currentNode, documentOrderCounter);
 
         int nsCount = element.getNamespaceNodeCount();
         int emittedAttributeCount = 0;
@@ -462,17 +470,24 @@ public class GonzalezTransformHandler extends DefaultHandler
             prefix = qName.substring(0, colon);
         }
         
-        // Build namespace bindings (inherit from parent + pending, reuse map)
-        reusableNsBindings.clear();
-        if (currentNode instanceof StreamingNode) {
-            reusableNsBindings.putAll(((StreamingNode) currentNode).getNamespaceBindings());
+        // Build namespace bindings (share parent map when no new declarations)
+        Map<String, String> nsBindings;
+        boolean hadPending = !pendingNamespaces.isEmpty();
+        if (!hadPending && currentNode instanceof StreamingNode) {
+            nsBindings = ((StreamingNode) currentNode).getNamespaceBindingsForChild();
+        } else {
+            reusableNsBindings.clear();
+            if (currentNode instanceof StreamingNode) {
+                reusableNsBindings.putAll(((StreamingNode) currentNode).getNamespaceBindingsForChild());
+            }
+            reusableNsBindings.putAll(pendingNamespaces);
+            nsBindings = reusableNsBindings;
         }
-        reusableNsBindings.putAll(pendingNamespaces);
         pendingNamespaces.clear();
         
         // Create element node - pass PSVIProvider for type information if available
         StreamingNode element = StreamingNode.createElement(
-            uri, localName, prefix, atts, reusableNsBindings, currentNode, documentOrderCounter, psviProvider);
+            uri, localName, prefix, atts, nsBindings, currentNode, documentOrderCounter, psviProvider);
         // Account for element + namespace nodes + attribute nodes
         int nsCount = element.getNamespaceNodeCount();
         documentOrderCounter += nsCount + atts.getLength() + 1;
@@ -840,7 +855,8 @@ public class GonzalezTransformHandler extends DefaultHandler
         // Wire accumulators for the main document (manager created now,
         // but initialization deferred until globals are available)
         AccumulatorManager accMgr = null;
-        if (!stylesheet.getAccumulators().isEmpty()) {
+        if (!stylesheet.getAccumulators().isEmpty()
+                || !stylesheet.getInternalAccumulators().isEmpty()) {
             accMgr = new AccumulatorManager(stylesheet, context);
             context.setAccumulatorManager(accMgr);
         }

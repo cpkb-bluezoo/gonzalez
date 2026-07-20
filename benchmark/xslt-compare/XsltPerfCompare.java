@@ -8,6 +8,7 @@ package org.bluezoo.gonzalez.xsltcompare;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,40 +40,72 @@ public class XsltPerfCompare {
         Path booksXml = Paths.get("benchmark/resources/books.xml");
         byte[] booksBytes = Files.readAllBytes(booksXml);
         byte[] largeBytes = generateLargeDocument(5000);
+        byte[] veryLargeBytes = generateLargeDocument(50000);
 
         List<Case> cases = new ArrayList<Case>();
         cases.add(new Case("identity-1.0", "1.0",
                 Files.readAllBytes(resources.resolve("identity-1.0.xsl")), booksBytes));
         cases.add(new Case("books-1.0", "1.0",
                 Files.readAllBytes(resources.resolve("books-1.0.xsl")), booksBytes));
+        cases.add(new Case("many-templates-1.0", "1.0",
+                Files.readAllBytes(resources.resolve("many-templates-1.0.xsl")), largeBytes));
         cases.add(new Case("streaming-3.0", "3.0",
                 Files.readAllBytes(resources.resolve("streaming-3.0.xsl")), largeBytes));
         cases.add(new Case("free-ranging-3.0", "3.0",
                 Files.readAllBytes(resources.resolve("free-ranging-3.0.xsl")), largeBytes));
+        cases.add(new Case("relative-meta-3.0", "3.0",
+                Files.readAllBytes(resources.resolve("relative-meta-3.0.xsl")), largeBytes));
+        cases.add(new Case("variable-meta-3.0", "3.0",
+                Files.readAllBytes(resources.resolve("variable-meta-3.0.xsl")), largeBytes));
+        cases.add(new Case("streaming-large-3.0", "3.0",
+                Files.readAllBytes(resources.resolve("streaming-3.0.xsl")), veryLargeBytes));
 
         Engine gonzalez = engine("gonzalez", GONZALEZ_FACTORY);
         Engine jdk = jdkEngine();
         Engine saxon = engine("saxon-he", SAXON_FACTORY);
 
+        Path outDir = Paths.get("benchmark/xslt-compare/out");
+        Files.createDirectories(outDir);
+        Path summaryPath = outDir.resolve("perf-summary.txt");
+        PrintWriter summary = new PrintWriter(Files.newBufferedWriter(summaryPath, StandardCharsets.UTF_8));
+
+        String header = String.format("%-22s %-12s %12s %12s %10s %12s",
+                "case", "engine", "compile ms", "transform ms", "MB/s", "heap delta");
+        String rule = "------------------------------------------------------------------------------------------";
+
         System.out.println("gonzalez factory: " + gonzalez.factory.getClass().getName());
         System.out.println("jdk factory:      " + jdk.factory.getClass().getName());
         System.out.println("saxon factory:    " + saxon.factory.getClass().getName());
         System.out.println();
-        System.out.printf("%-18s %-12s %12s %12s %10s %12s%n",
-                "case", "engine", "compile ms", "transform ms", "MB/s", "heap delta");
-        System.out.println("--------------------------------------------------------------------------------");
+        System.out.println(header);
+        System.out.println(rule);
+        summary.println("XSLT bake-off performance summary");
+        summary.println("warmup=" + WARMUP_ITERATIONS + " measured=" + MEASURED_ITERATIONS);
+        summary.println();
+        summary.println(header);
+        summary.println(rule);
 
         for (Case c : cases) {
-            runCase(c, gonzalez);
+            writeResult(summary, runCase(c, gonzalez));
             if ("1.0".equals(c.minVersion)) {
-                runCase(c, jdk);
+                writeResult(summary, runCase(c, jdk));
             } else {
-                System.out.printf("%-18s %-12s %12s %12s %10s %12s%n",
+                String na = String.format("%-22s %-12s %12s %12s %10s %12s",
                         c.name, jdk.name, "n/a", "n/a", "n/a", "n/a");
+                System.out.println(na);
+                summary.println(na);
             }
-            runCase(c, saxon);
+            writeResult(summary, runCase(c, saxon));
             System.out.println();
+            summary.println();
         }
+        summary.close();
+        System.out.println("Wrote " + summaryPath);
+    }
+
+    private static void writeResult(PrintWriter summary, String line) {
+        System.out.println(line);
+        summary.println(line);
     }
 
     private static Engine engine(String name, String factoryClass) throws Exception {
@@ -81,7 +114,6 @@ public class XsltPerfCompare {
     }
 
     private static Engine jdkEngine() throws Exception {
-        // Force the platform default, not Gonzalez's META-INF/services entry.
         ClassLoader empty = new ClassLoader(null) { };
         TransformerFactory factory = TransformerFactory.newInstance(
                 "com.sun.org.apache.xalan.internal.xsltc.trax.TransformerFactoryImpl",
@@ -89,12 +121,11 @@ public class XsltPerfCompare {
         return new Engine("jdk", factory);
     }
 
-    private static void runCase(Case c, Engine engine) throws Exception {
+    private static String runCase(Case c, Engine engine) throws Exception {
         Runtime rt = Runtime.getRuntime();
         System.gc();
         long heapBefore = rt.totalMemory() - rt.freeMemory();
 
-        // Compile timing
         for (int i = 0; i < WARMUP_ITERATIONS; i++) {
             compile(engine.factory, c.stylesheet);
         }
@@ -107,7 +138,6 @@ public class XsltPerfCompare {
         }
         double compileMs = (compileNanos / (double) MEASURED_ITERATIONS) / 1_000_000.0;
 
-        // Transform timing (reuse last compiled templates)
         final Templates compiled = templates;
         for (int i = 0; i < WARMUP_ITERATIONS; i++) {
             transform(compiled, c.source);
@@ -126,7 +156,7 @@ public class XsltPerfCompare {
         long heapAfter = rt.totalMemory() - rt.freeMemory();
         long heapDelta = Math.max(0L, heapAfter - heapBefore);
 
-        System.out.printf("%-18s %-12s %12.3f %12.3f %10.1f %10.1f KB%n",
+        return String.format("%-22s %-12s %12.3f %12.3f %10.1f %10.1f KB",
                 c.name, engine.name, compileMs, transformMs, mbPerSec, heapDelta / 1024.0);
     }
 

@@ -127,6 +127,8 @@ public final class CompiledStylesheet {
     
     // Streamability analysis (set after build)
     private volatile StreamabilityAnalyzer.StylesheetStreamability streamabilityAnalysis;
+    private List<org.bluezoo.gonzalez.transform.runtime.InternalAccumulator> internalAccumulators =
+            java.util.Collections.emptyList();
 
     /**
      * Stores decimal format configuration for format-number().
@@ -2282,6 +2284,41 @@ public final class CompiledStylesheet {
      */
     public StreamabilityAnalyzer.StylesheetStreamability getStreamabilityAnalysis() {
         return streamabilityAnalysis;
+    }
+
+    /**
+     * Sets synthetic internal accumulators for 1.0/2.0 streaming patterns.
+     *
+     * @param accumulators the internal accumulators (may be null)
+     */
+    public void setInternalAccumulators(
+            List<org.bluezoo.gonzalez.transform.runtime.InternalAccumulator> accumulators) {
+        this.internalAccumulators = accumulators != null
+                ? java.util.Collections.unmodifiableList(
+                    new java.util.ArrayList<>(accumulators))
+                : java.util.Collections.emptyList();
+    }
+
+    /**
+     * Returns synthetic internal accumulators for streaming 1.0/2.0 patterns.
+     *
+     * @return the internal accumulators (never null)
+     */
+    public List<org.bluezoo.gonzalez.transform.runtime.InternalAccumulator> getInternalAccumulators() {
+        return internalAccumulators;
+    }
+
+    /**
+     * Returns true when streamability analysis says the stylesheet needs no
+     * free-ranging buffering. Used as a signal for future primary-source
+     * streaming; the default JAXP path still builds a tree until incremental
+     * apply-templates streaming is complete.
+     *
+     * @return true if analysis reports {@code BufferingStrategy.NONE}
+     */
+    public boolean shouldStreamPrimarySource() {
+        StreamabilityAnalyzer.StylesheetStreamability analysis = streamabilityAnalysis;
+        return analysis != null && analysis.isFullyStreamable();
     }
 
     /**

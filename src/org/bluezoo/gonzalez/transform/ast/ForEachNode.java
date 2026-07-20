@@ -119,14 +119,16 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                 output.itemBoundary();
             }
             
-            TransformContext iterContext = context.pushVariableScope()
-                .withCurrentTemplateRule(null);
-            
-            if (iterContext instanceof BasicTransformContext) {
-                iterContext = ((BasicTransformContext) iterContext)
-                    .withXsltCurrentNode(node).withPositionAndSize(position, size);
+            TransformContext iterContext;
+            if (context instanceof BasicTransformContext) {
+                // Single allocation: new scope + current node + position
+                iterContext = ((BasicTransformContext) context)
+                    .forEachIteration(node, position, size);
             } else {
-                iterContext = iterContext.withContextNode(node).withPositionAndSize(position, size);
+                iterContext = context.pushVariableScope()
+                    .withCurrentTemplateRule(null);
+                iterContext = iterContext.withContextNode(node)
+                    .withPositionAndSize(position, size);
             }
             body.execute(iterContext, output);
             position++;
@@ -153,40 +155,52 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
                 output.itemBoundary();
             }
             
-            TransformContext iterContext = context.pushVariableScope()
-                .withCurrentTemplateRule(null);
-            
-            // For node items, set context node; for atomic values, set context item
-            if (item instanceof XPathNode) {
-                XPathNode node = (XPathNode) item;
-                if (iterContext instanceof BasicTransformContext) {
-                    iterContext = ((BasicTransformContext) iterContext)
-                        .withXsltCurrentNode(node).withPositionAndSize(position, size);
-                } else {
-                    iterContext = iterContext.withContextNode(node).withPositionAndSize(position, size);
-                }
-            } else if (item instanceof XPathNodeSet) {
-                // Node-set item (single node wrapped in node-set from sequence construction)
+            TransformContext iterContext;
+            if (item instanceof XPathNode && context instanceof BasicTransformContext) {
+                iterContext = ((BasicTransformContext) context)
+                    .forEachIteration((XPathNode) item, position, size);
+            } else if (item instanceof XPathNodeSet && context instanceof BasicTransformContext) {
                 XPathNodeSet ns = (XPathNodeSet) item;
                 Iterator<XPathNode> iter = ns.iterator();
                 if (iter.hasNext()) {
-                    XPathNode node = iter.next();
+                    iterContext = ((BasicTransformContext) context)
+                        .forEachIteration(iter.next(), position, size);
+                } else {
+                    iterContext = context.pushVariableScope().withCurrentTemplateRule(null)
+                        .withPositionAndSize(position, size);
+                }
+            } else {
+                iterContext = context.pushVariableScope()
+                    .withCurrentTemplateRule(null);
+                if (item instanceof XPathNode) {
+                    XPathNode node = (XPathNode) item;
                     if (iterContext instanceof BasicTransformContext) {
                         iterContext = ((BasicTransformContext) iterContext)
                             .withXsltCurrentNode(node).withPositionAndSize(position, size);
                     } else {
                         iterContext = iterContext.withContextNode(node).withPositionAndSize(position, size);
                     }
-                }
-            } else {
-                // Atomic value - set as context item and XSLT current item
-                if (iterContext instanceof BasicTransformContext) {
-                    BasicTransformContext btc = ((BasicTransformContext) iterContext)
-                        .withContextItem(item);
-                    btc.setXsltCurrentItem(item);
-                    iterContext = btc.withPositionAndSize(position, size);
+                } else if (item instanceof XPathNodeSet) {
+                    XPathNodeSet ns = (XPathNodeSet) item;
+                    Iterator<XPathNode> iter = ns.iterator();
+                    if (iter.hasNext()) {
+                        XPathNode node = iter.next();
+                        if (iterContext instanceof BasicTransformContext) {
+                            iterContext = ((BasicTransformContext) iterContext)
+                                .withXsltCurrentNode(node).withPositionAndSize(position, size);
+                        } else {
+                            iterContext = iterContext.withContextNode(node).withPositionAndSize(position, size);
+                        }
+                    }
                 } else {
-                    iterContext = iterContext.withPositionAndSize(position, size);
+                    if (iterContext instanceof BasicTransformContext) {
+                        BasicTransformContext btc = ((BasicTransformContext) iterContext)
+                            .withContextItem(item);
+                        btc.setXsltCurrentItem(item);
+                        iterContext = btc.withPositionAndSize(position, size);
+                    } else {
+                        iterContext = iterContext.withPositionAndSize(position, size);
+                    }
                 }
             }
             body.execute(iterContext, output);

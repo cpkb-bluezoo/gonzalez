@@ -48,7 +48,8 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     private final String stringValue;
     private final StreamingNode parent;
     private final List<StreamingNode> attributes;
-    private final Map<String, String> namespaceBindings;
+    private Map<String, String> namespaceBindings;
+    private boolean namespaceBindingsShared;
     private final long documentOrder;
     private final String attributeType;  // DTD attribute type (ID, IDREF, CDATA, etc.)
     private final TypedValue typedValue; // Schema typed value (from XSD validation)
@@ -279,7 +280,13 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         this.prefix = prefix;
         this.stringValue = stringValue;
         this.parent = parent;
-        this.namespaceBindings = new HashMap<>(namespaceBindings);
+        if (parent != null && namespaceBindings == parent.namespaceBindings) {
+            this.namespaceBindings = parent.namespaceBindings;
+            this.namespaceBindingsShared = true;
+        } else {
+            this.namespaceBindings = new HashMap<>(namespaceBindings);
+            this.namespaceBindingsShared = false;
+        }
         this.documentOrder = documentOrder;
         this.attributeType = attributeType;
         this.typedValue = typedValue;
@@ -628,6 +635,14 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     }
 
     /**
+     * Returns the raw in-scope namespace map for constructing child nodes.
+     * Shared across siblings when no new declarations are present (copy-on-write).
+     */
+    public Map<String, String> getNamespaceBindingsForChild() {
+        return namespaceBindings;
+    }
+
+    /**
      * Looks up a namespace URI by prefix.
      * Searches from this element up to the root.
      *
@@ -724,6 +739,10 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
      * @param uri the namespace URI
      */
     public void addNamespaceMapping(String prefix, String uri) {
+        if (namespaceBindingsShared) {
+            namespaceBindings = new HashMap<>(namespaceBindings);
+            namespaceBindingsShared = false;
+        }
         namespaceBindings.put(prefix != null ? prefix : "", uri);
         cachedNamespaceNodes = null;
     }

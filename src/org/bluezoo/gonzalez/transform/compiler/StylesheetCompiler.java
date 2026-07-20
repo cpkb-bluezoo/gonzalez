@@ -505,6 +505,9 @@ public class StylesheetCompiler extends DefaultHandler
         StreamabilityAnalyzer analyzer = new StreamabilityAnalyzer();
         StreamabilityAnalyzer.StylesheetStreamability analysis = analyzer.analyze(stylesheet);
         stylesheet.setStreamabilityAnalysis(analysis);
+        stylesheet.setInternalAccumulators(
+                new org.bluezoo.gonzalez.transform.runtime.InternalAccumulatorFactory()
+                    .createFor(stylesheet));
 
         // XTSE3430: Validate that templates in streamable modes are streamable.
         // With streaming fallback (§19.10), failing modes are downgraded to

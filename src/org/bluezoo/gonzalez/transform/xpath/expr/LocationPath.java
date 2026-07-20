@@ -120,7 +120,29 @@ public final class LocationPath implements Expr {
         if (context.isContextItemUndefined()) {
             throw new XPathException("XPDY0002: Context item is undefined");
         }
-        
+
+        // Memoize context-independent absolute paths (e.g. /root/meta/@generated
+        // inside a hot xsl:for-each) on the transform context.
+        if (absolute && isContextIndependent()
+                && context instanceof org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) {
+            org.bluezoo.gonzalez.transform.runtime.BasicTransformContext btc =
+                    (org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) context;
+            XPathNode ctxNode = context.getContextNode();
+            if (ctxNode != null) {
+                XPathNode root = ctxNode.getRoot();
+                XPathValue cached = btc.getCachedAbsolutePath(this, root);
+                if (cached != null) {
+                    return cached;
+                }
+                XPathValue computed = evaluateUncached(context);
+                btc.putCachedAbsolutePath(this, root, computed);
+                return computed;
+            }
+        }
+        return evaluateUncached(context);
+    }
+
+    private XPathValue evaluateUncached(XPathContext context) throws XPathException {
         // XPath 2.0+: Check for atomic context item with single self-step (".")
         // When the context is an atomic value, "." should return that value directly
         if (!absolute && steps.size() == 1) {
@@ -297,11 +319,21 @@ public final class LocationPath implements Expr {
             
             // Apply node test - collect candidates for THIS input node
             List<XPathNode> stepResult = new ArrayList<>();
+            Step.Axis axis = step.getAxis();
+            boolean attributeSingleton = axis == Step.Axis.ATTRIBUTE
+                    && !step.hasPredicates()
+                    && (step.getNodeTestType() == Step.NodeTestType.NAME
+                        || step.getNodeTestType() == Step.NodeTestType.QNAME
+                        || step.getNodeTestType() == Step.NodeTestType.ANY_NAMESPACE);
             while (axisNodes.hasNext()) {
                 XPathNode candidate = axisNodes.next();
                 
                 if (matchesNodeTest(step, candidate, context)) {
                     stepResult.add(candidate);
+                    // Attributes are unique by expanded name — stop after first hit.
+                    if (attributeSingleton) {
+                        break;
+                    }
                 }
             }
             
@@ -316,11 +348,24 @@ public final class LocationPath implements Expr {
         }
 
         // Remove duplicates and sort by document order (XPath 2.0 requires
-        // path expression results to be in document order without duplicates)
-        result = removeDuplicates(result);
-        XPathNodeSet.sortByDocumentOrder(result);
+        // path expression results to be in document order without duplicates).
+        // Single-parent child/attribute/self/parent steps are already ordered
+        // and duplicate-free.
+        if (result.size() > 1
+                && !(inputNodes.size() == 1 && !step.hasPredicates() && isDocOrderAxis(step.getAxis()))) {
+            result = removeDuplicates(result);
+            XPathNodeSet.sortByDocumentOrder(result);
+        }
 
         return result;
+    }
+
+    private static boolean isDocOrderAxis(Step.Axis axis) {
+        return axis == Step.Axis.CHILD
+                || axis == Step.Axis.ATTRIBUTE
+                || axis == Step.Axis.SELF
+                || axis == Step.Axis.PARENT
+                || axis == Step.Axis.NAMESPACE;
     }
 
     private Iterator<XPathNode> selectAxis(Step.Axis axis, XPathNode node) throws XPathException {
@@ -788,6 +833,37 @@ public final class LocationPath implements Expr {
      */
     public boolean isAbsolute() {
         return absolute;
+    }
+
+    /**
+     * Returns true if this absolute path does not depend on the context node
+     * (only on the document root). Safe to memoize across for-each iterations.
+     *
+     * @return true if context-independent
+     */
+    public boolean isContextIndependent() {
+        if (!absolute) {
+            return false;
+        }
+        for (int i = 0; i < steps.size(); i++) {
+            Step step = steps.get(i);
+            if (step.hasPredicates()) {
+                return false;
+            }
+            if (step.getNodeTestType() == Step.NodeTestType.EXPR) {
+                return false;
+            }
+            Step.Axis axis = step.getAxis();
+            if (axis != Step.Axis.CHILD
+                    && axis != Step.Axis.ATTRIBUTE
+                    && axis != Step.Axis.DESCENDANT
+                    && axis != Step.Axis.DESCENDANT_OR_SELF
+                    && axis != Step.Axis.SELF
+                    && axis != Step.Axis.NAMESPACE) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

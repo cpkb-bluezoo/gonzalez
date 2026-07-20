@@ -110,9 +110,10 @@ public final class StreamNode implements XSLTNode {
                 context
             );
 
-            // Wire accumulators for streaming
+            // Wire accumulators for streaming (explicit + internal 1.0/2.0)
             if (context.getStylesheet() != null
-                    && !context.getStylesheet().getAccumulators().isEmpty()) {
+                    && (!context.getStylesheet().getAccumulators().isEmpty()
+                        || !context.getStylesheet().getInternalAccumulators().isEmpty())) {
                 AccumulatorManager mgr = new AccumulatorManager(
                     context.getStylesheet(), context);
                 mgr.setStreamingMode(true);

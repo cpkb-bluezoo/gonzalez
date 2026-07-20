@@ -321,6 +321,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                     
                     // Collect new tunnel parameters from with-param nodes
                     Map<String, XPathValue> newTunnelParams = new HashMap<>();
+                    if (params != null) {
                     for (WithParamNode param : params) {
                         if (param.isTunnel()) {
                             try {
@@ -329,6 +330,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                                 throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
                             }
                         }
+                    }
                     }
                     
                     // Merge with existing tunnel params and update context
