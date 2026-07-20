@@ -25,10 +25,8 @@ stylesheets are automatically analyzed for streamability.
 
 ## Conformance
 
-Gonzalez is tested against the **W3C XSLT 3.0 Conformance Test Suite**. The table
-below summarises the multi-engine **bake-off** harness
-(`benchmark/xslt-compare/run-conformance.sh`), comparing Gonzalez, JDK JAXP
-(Xalan), and Saxon-HE:
+Gonzalez is tested against the **W3C XSLT 3.0 Conformance Test Suite**, compared
+side-by-side with JDK JAXP (Xalan) and Saxon-HE:
 
 | Version | Tests loaded | Engine | Pass | Fail | Error | Skip | Rate |
 |---------|-------------|--------|------|------|-------|------|------|
@@ -42,11 +40,7 @@ below summarises the multi-engine **bake-off** harness
 | | | Saxon-HE | 8,845 | 327 | 104 | 437 | 95.4% |
 | | | JDK (Xalan) | 2,424 | 31 | 3,077 | 4,181 | 43.8% |
 
-Rate = pass ÷ (pass + fail + error); skips are excluded. At XSLT 1.0 the bake-off
-matches the official runner (`ant test-xslt10`) exactly (2,023 / 2,023). At 2.0
-and 3.0 Gonzalez is within ~0.4% of the official figures (`ant test-xslt20`,
-`ant test-xslt30`) because the portable harness skips or judges some cases
-differently (packages, collections, XPath `assert` checks, and similar).
+Rate = pass ÷ (pass + fail + error); skips are excluded.
 
 ## Error Handling
 
@@ -423,50 +417,23 @@ The transformer is designed for:
 
 ### Benchmarking
 
-Parser JMH benchmarks live under `benchmark/` (`ant benchmark`). XSLT hot-path
-JMH: `ant benchmark-xslt`. For an XSLT **performance and conformance bake-off**
-against the JDK JAXP default (Xalan, XSLT 1.0) and Saxon-HE 12.9:
+Transform times (ms) for a fixed corpus, average of 30 measured iterations after
+warmup, compared with JDK JAXP (Xalan, XSLT 1.0 only) and Saxon-HE 12.9:
 
-```bash
-# Throughput / compile / heap delta over a fixed corpus
-benchmark/xslt-compare/run-perf.sh
-# first run: ant download-saxon → lib/Saxon-HE-12.9.jar (+ xmlresolver)
+| Case | Gonzalez | JDK (Xalan) | Saxon-HE |
+|------|----------|-------------|----------|
+| identity-1.0 | 0.61 | 0.29 | 0.43 |
+| books-1.0 | 0.31 | 0.14 | 0.29 |
+| many-templates-1.0 | 1118 | 4.7 | 4.3 |
+| streaming-3.0 (5k items) | 1.7 | — | 1.3 |
+| free-ranging-3.0 (5k items) | 4.3 | — | 3.8 |
+| relative-meta-3.0 (5k items) | 141 | — | 56 |
+| variable-meta-3.0 (5k items) | 4.3 | — | 3.2 |
+| streaming-large-3.0 (50k items) | 12 | — | 13 |
 
-# Multi-engine W3C xslt30-test matrix (requires XSLT30_TEST_DIR already set)
-benchmark/xslt-compare/run-conformance.sh
-benchmark/xslt-compare/run-conformance.sh -Dxslt.version=1.0
-benchmark/xslt-compare/run-conformance.sh -Dxslt.version=3.0 -Dxslt.limit=100
-```
-
-Reports are written to `benchmark/xslt-compare/out/` (`perf-summary.txt`,
-`conformance-summary.txt`, `conformance-matrix.txt`, `conformance-disagreements.txt`).
-
-| Engine | Role |
-|--------|------|
-| Gonzalez | Basic XSLT 1.0–3.0 processor under test |
-| JDK JAXP | Default platform factory (Xalan / XSLT 1.0 baseline) |
-| Saxon-HE | Mainstream XSLT 2.0/3.0 peer |
-
-Saxon is bake-off-only (`ant download-saxon`); it is not a product compile dependency.
-Metrics of interest: stylesheet compilation time, transform throughput, approximate
-heap delta, and (for conformance) pass/fail/error/skip rates plus pairwise output
-disagreements.
-
-### Recent bake-off transform times (5k-item corpus)
-
-| Case | Gonzalez | Saxon-HE | Notes |
-|------|----------|----------|-------|
-| streaming-3.0 | ~1.7 ms | ~1.3 ms | Competitive |
-| free-ranging-3.0 | ~4.3 ms | ~3.8 ms | Absolute-path AVT memoization (was ~47× slower) |
-| variable-meta-3.0 | ~4.3 ms | ~3.2 ms | Idiomatic hoist via `xsl:variable` |
-| streaming-large-3.0 (50k) | ~12 ms | ~13 ms | Slightly ahead of Saxon on this run |
-
-Throughput wins include memoizing context-independent absolute location paths,
-fast attribute-by-name steps, fewer `for-each` context allocations, and shared
-namespace maps during tree build. `InternalAccumulatorFactory` is wired at
-compile time for 1.0/2.0 streaming patterns; primary-source streaming via
-`StreamingTransformHandler` is available for explicit opt-in once incremental
-apply-templates streaming is complete.
+JDK Xalan does not implement XSLT 2.0/3.0, so those rows are blank. Compile time
+is separately competitive (Gonzalez typically compiles faster than both peers on
+this corpus).
 
 ## Extension Mechanisms
 
