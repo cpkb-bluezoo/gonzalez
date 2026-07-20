@@ -23,12 +23,20 @@ package org.bluezoo.gonzalez.transform.compiler;
 
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 
 import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
+import org.bluezoo.gonzalez.transform.xpath.expr.BinaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
+import org.bluezoo.gonzalez.transform.xpath.expr.FunctionCall;
+import org.bluezoo.gonzalez.transform.xpath.expr.Literal;
+import org.bluezoo.gonzalez.transform.xpath.expr.Operator;
+import org.bluezoo.gonzalez.transform.xpath.expr.UnaryExpr;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -42,6 +50,8 @@ abstract class AbstractPattern implements Pattern {
 
     private static final double POSITION_COMPARISON_TOLERANCE = 0.0001;
     static final Map<String, XPathExpression> xpathCache = new HashMap<>();
+    /** Cache: whether a predicate expression needs sibling position/size. */
+    private static final Map<String, Boolean> needsPositionCache = new HashMap<>();
 
     protected final String patternStr;
     protected final String predicateStr;
@@ -82,28 +92,39 @@ abstract class AbstractPattern implements Pattern {
                                         TransformContext context,
                                         XPathNode targetNode) {
         try {
-            int position = 1;
-            int size = 0;
+            XPathExpression predExpr = xpathCache.get(predicateStr);
+            if (predExpr == null) {
+                predExpr = XPathExpression.compile(predicateStr, null);
+                xpathCache.put(predicateStr, predExpr);
+            }
 
-            XPathNode parent = node.getParent();
-            if (parent != null) {
-                Iterator<XPathNode> siblings = parent.getChildren();
-                boolean foundNode = false;
-                while (siblings.hasNext()) {
-                    XPathNode sibling = siblings.next();
-                    if (matchesBase(sibling, context, targetNode)) {
-                        size++;
-                        if (!foundNode) {
-                            if (sibling == node) {
-                                foundNode = true;
-                                position = size;
+            int position = 1;
+            int size = 1;
+
+            // Only walk siblings when the predicate needs position()/last()
+            // or is a numeric predicate (XPath: [n] means position()=n).
+            // Scanning all matching siblings is O(n) per attempt and was the
+            // many-templates-1.0 cliff (item[@id='k'] under a 5k-child parent).
+            if (predicateNeedsContextPosition(predicateStr, predExpr)) {
+                XPathNode parent = node.getParent();
+                if (parent != null) {
+                    Iterator<XPathNode> siblings = parent.getChildren();
+                    boolean foundNode = false;
+                    size = 0;
+                    position = 1;
+                    while (siblings.hasNext()) {
+                        XPathNode sibling = siblings.next();
+                        if (matchesBase(sibling, context, targetNode)) {
+                            size++;
+                            if (!foundNode) {
+                                if (sibling == node) {
+                                    foundNode = true;
+                                    position = size;
+                                }
                             }
                         }
                     }
                 }
-            } else {
-                position = 1;
-                size = 1;
             }
 
             TransformContext predContext;
@@ -116,11 +137,6 @@ abstract class AbstractPattern implements Pattern {
                     .withPositionAndSize(position, size);
             }
 
-            XPathExpression predExpr = xpathCache.get(predicateStr);
-            if (predExpr == null) {
-                predExpr = XPathExpression.compile(predicateStr, null);
-                xpathCache.put(predicateStr, predExpr);
-            }
             XPathValue result = predExpr.evaluate(predContext);
 
             if (result.getType() == XPathValue.Type.NUMBER) {
@@ -141,6 +157,106 @@ abstract class AbstractPattern implements Pattern {
             }
             return false;
         }
+    }
+
+    /**
+     * Returns true if evaluating this predicate requires accurate context
+     * position/size among matching siblings.
+     */
+    private static boolean predicateNeedsContextPosition(String predicateStr,
+            XPathExpression predExpr) {
+        Boolean cached = needsPositionCache.get(predicateStr);
+        if (cached != null) {
+            return cached.booleanValue();
+        }
+        Expr expr = predExpr != null ? predExpr.getCompiledExpr() : null;
+        boolean needs = expr == null || needsContextPosition(expr);
+        needsPositionCache.put(predicateStr, Boolean.valueOf(needs));
+        return needs;
+    }
+
+    /**
+     * True when the predicate result is numeric (XPath {@code [n]} means
+     * {@code position()=n}) or the expression references {@code position()} /
+     * {@code last()}.
+     */
+    private static boolean needsContextPosition(Expr expr) {
+        if (expr == null) {
+            return true;
+        }
+        if (isNumericResult(expr)) {
+            return true;
+        }
+        return referencesPositionOrLast(expr);
+    }
+
+    private static boolean isNumericResult(Expr expr) {
+        if (expr instanceof Literal) {
+            return ((Literal) expr).getValue() instanceof XPathNumber;
+        }
+        if (expr instanceof UnaryExpr) {
+            return true;
+        }
+        if (expr instanceof FunctionCall) {
+            return isNumericFunction(((FunctionCall) expr).getLocalName());
+        }
+        if (expr instanceof BinaryExpr) {
+            Operator op = ((BinaryExpr) expr).getOperator();
+            return isArithmeticOperator(op);
+        }
+        return false;
+    }
+
+    private static boolean isArithmeticOperator(Operator op) {
+        return op == Operator.PLUS || op == Operator.MINUS
+                || op == Operator.MULTIPLY || op == Operator.DIV
+                || op == Operator.IDIV || op == Operator.MOD
+                || op == Operator.TO;
+    }
+
+    private static boolean isNumericFunction(String name) {
+        if (name == null) {
+            return false;
+        }
+        return "position".equals(name)
+                || "last".equals(name)
+                || "count".equals(name)
+                || "sum".equals(name)
+                || "number".equals(name)
+                || "string-length".equals(name)
+                || "floor".equals(name)
+                || "ceiling".equals(name)
+                || "round".equals(name)
+                || "abs".equals(name)
+                || "avg".equals(name)
+                || "min".equals(name)
+                || "max".equals(name);
+    }
+
+    private static boolean referencesPositionOrLast(Expr expr) {
+        if (expr instanceof FunctionCall) {
+            FunctionCall fc = (FunctionCall) expr;
+            String name = fc.getLocalName();
+            if ("position".equals(name) || "last".equals(name)) {
+                return true;
+            }
+            List<Expr> args = fc.getArguments();
+            for (int i = 0; i < args.size(); i++) {
+                if (referencesPositionOrLast(args.get(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof BinaryExpr) {
+            BinaryExpr be = (BinaryExpr) expr;
+            return referencesPositionOrLast(be.getLeft())
+                    || referencesPositionOrLast(be.getRight());
+        }
+        if (expr instanceof UnaryExpr) {
+            return referencesPositionOrLast(((UnaryExpr) expr).getOperand());
+        }
+        return false;
     }
 
     @Override
