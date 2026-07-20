@@ -59,6 +59,8 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
 
     // For element nodes - track children as they're added
     private final List<StreamingNode> children;
+    /** Lazy index of element children by local name; invalidated when children change. */
+    private Map<String, List<StreamingNode>> elementChildrenByLocalName;
     private StreamingNode followingSibling;
     private StreamingNode precedingSibling;
     private List<XPathNode> cachedNamespaceNodes;
@@ -698,6 +700,47 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         }
         children.add(child);
         cachedStringValue = null;
+        elementChildrenByLocalName = null;
+    }
+
+    /**
+     * Returns element children with the given local name, in document order.
+     * Builds a lazy per-local-name index on first use so repeated
+     * {@code child::name} steps from a large parent stay cheap.
+     *
+     * @param localName the element local name
+     * @return matching element children (possibly empty); never null
+     */
+    public List<StreamingNode> getElementChildrenByLocalName(String localName) {
+        if (localName == null) {
+            return Collections.emptyList();
+        }
+        Map<String, List<StreamingNode>> index = elementChildrenByLocalName;
+        if (index == null) {
+            index = buildElementChildrenByLocalName();
+            elementChildrenByLocalName = index;
+        }
+        List<StreamingNode> named = index.get(localName);
+        if (named == null) {
+            return Collections.emptyList();
+        }
+        return named;
+    }
+
+    private Map<String, List<StreamingNode>> buildElementChildrenByLocalName() {
+        Map<String, List<StreamingNode>> index = new HashMap<>();
+        for (int i = 0; i < children.size(); i++) {
+            StreamingNode child = children.get(i);
+            if (child.nodeType == NodeType.ELEMENT && child.localName != null) {
+                List<StreamingNode> list = index.get(child.localName);
+                if (list == null) {
+                    list = new ArrayList<>();
+                    index.put(child.localName, list);
+                }
+                list.add(child);
+            }
+        }
+        return index;
     }
 
     /**
@@ -720,6 +763,7 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         if (!children.isEmpty()) {
             children.remove(children.size() - 1);
             cachedStringValue = null;
+            elementChildrenByLocalName = null;
         }
     }
 

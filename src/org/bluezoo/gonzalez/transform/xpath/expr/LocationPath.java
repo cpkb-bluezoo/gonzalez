@@ -121,22 +121,29 @@ public final class LocationPath implements Expr {
             throw new XPathException("XPDY0002: Context item is undefined");
         }
 
-        // Memoize context-independent absolute paths (e.g. /root/meta/@generated
-        // inside a hot xsl:for-each) on the transform context.
-        if (absolute && isContextIndependent()
-                && context instanceof org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) {
+        // Memoize paths whose result is stable across sibling focus changes:
+        // absolute context-independent paths (keyed by document root) and
+        // parent-relative paths like ../meta/@generated (keyed by parent).
+        if (context instanceof org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) {
             org.bluezoo.gonzalez.transform.runtime.BasicTransformContext btc =
                     (org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) context;
             XPathNode ctxNode = context.getContextNode();
             if (ctxNode != null) {
-                XPathNode root = ctxNode.getRoot();
-                XPathValue cached = btc.getCachedAbsolutePath(this, root);
-                if (cached != null) {
-                    return cached;
+                XPathNode anchor = null;
+                if (absolute && isContextIndependent()) {
+                    anchor = ctxNode.getRoot();
+                } else if (!absolute && isParentRelativeMemoizable()) {
+                    anchor = parentRelativeAnchor(ctxNode);
                 }
-                XPathValue computed = evaluateUncached(context);
-                btc.putCachedAbsolutePath(this, root, computed);
-                return computed;
+                if (anchor != null) {
+                    XPathValue cached = btc.getCachedPathResult(this, anchor);
+                    if (cached != null) {
+                        return cached;
+                    }
+                    XPathValue computed = evaluateUncached(context);
+                    btc.putCachedPathResult(this, anchor, computed);
+                    return computed;
+                }
             }
         }
         return evaluateUncached(context);
@@ -315,9 +322,6 @@ public final class LocationPath implements Expr {
 
         for (XPathNode node : inputNodes) {
             // Select nodes along the axis
-            Iterator<XPathNode> axisNodes = selectAxis(step.getAxis(), node);
-            
-            // Apply node test - collect candidates for THIS input node
             List<XPathNode> stepResult = new ArrayList<>();
             Step.Axis axis = step.getAxis();
             boolean attributeSingleton = axis == Step.Axis.ATTRIBUTE
@@ -325,14 +329,36 @@ public final class LocationPath implements Expr {
                     && (step.getNodeTestType() == Step.NodeTestType.NAME
                         || step.getNodeTestType() == Step.NodeTestType.QNAME
                         || step.getNodeTestType() == Step.NodeTestType.ANY_NAMESPACE);
-            while (axisNodes.hasNext()) {
-                XPathNode candidate = axisNodes.next();
-                
-                if (matchesNodeTest(step, candidate, context)) {
-                    stepResult.add(candidate);
-                    // Attributes are unique by expanded name — stop after first hit.
-                    if (attributeSingleton) {
-                        break;
+
+            // child::name from a StreamingNode: use the per-local-name child index
+            // instead of scanning every sibling (critical under large parents).
+            if (axis == Step.Axis.CHILD
+                    && !step.hasPredicates()
+                    && step.getLocalName() != null
+                    && (step.getNodeTestType() == Step.NodeTestType.NAME
+                        || step.getNodeTestType() == Step.NodeTestType.QNAME
+                        || step.getNodeTestType() == Step.NodeTestType.ANY_NAMESPACE)
+                    && node instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
+                List<org.bluezoo.gonzalez.transform.runtime.StreamingNode> named =
+                    ((org.bluezoo.gonzalez.transform.runtime.StreamingNode) node)
+                        .getElementChildrenByLocalName(step.getLocalName());
+                for (int i = 0; i < named.size(); i++) {
+                    XPathNode candidate = named.get(i);
+                    if (matchesNodeTest(step, candidate, context)) {
+                        stepResult.add(candidate);
+                    }
+                }
+            } else {
+                Iterator<XPathNode> axisNodes = selectAxis(axis, node);
+                while (axisNodes.hasNext()) {
+                    XPathNode candidate = axisNodes.next();
+
+                    if (matchesNodeTest(step, candidate, context)) {
+                        stepResult.add(candidate);
+                        // Attributes are unique by expanded name — stop after first hit.
+                        if (attributeSingleton) {
+                            break;
+                        }
                     }
                 }
             }
@@ -845,7 +871,38 @@ public final class LocationPath implements Expr {
         if (!absolute) {
             return false;
         }
-        for (int i = 0; i < steps.size(); i++) {
+        return isDownwardMemoizable(0);
+    }
+
+    /**
+     * Returns true if this relative path starts with {@code parent::} (possibly
+     * repeated) and otherwise only uses downward context-independent steps.
+     * Sibling focus changes that share the climbed-to ancestor yield the same
+     * result (e.g. {@code ../meta/@generated} under a common parent).
+     *
+     * @return true if parent-relative memoization is safe
+     */
+    public boolean isParentRelativeMemoizable() {
+        if (absolute || steps.isEmpty()) {
+            return false;
+        }
+        if (steps.get(0).getAxis() != Step.Axis.PARENT) {
+            return false;
+        }
+        int i = 0;
+        while (i < steps.size() && steps.get(i).getAxis() == Step.Axis.PARENT) {
+            Step step = steps.get(i);
+            if (step.hasPredicates()
+                    || step.getNodeTestType() == Step.NodeTestType.EXPR) {
+                return false;
+            }
+            i++;
+        }
+        return isDownwardMemoizable(i);
+    }
+
+    private boolean isDownwardMemoizable(int fromStep) {
+        for (int i = fromStep; i < steps.size(); i++) {
             Step step = steps.get(i);
             if (step.hasPredicates()) {
                 return false;
@@ -864,6 +921,25 @@ public final class LocationPath implements Expr {
             }
         }
         return true;
+    }
+
+    /**
+     * Returns the ancestor reached by applying leading {@code parent::} steps
+     * to {@code contextNode}, used as the memoization key for parent-relative
+     * paths.
+     */
+    private XPathNode parentRelativeAnchor(XPathNode contextNode) {
+        XPathNode n = contextNode;
+        for (int i = 0; i < steps.size(); i++) {
+            if (steps.get(i).getAxis() != Step.Axis.PARENT) {
+                break;
+            }
+            if (n == null) {
+                return null;
+            }
+            n = n.getParent();
+        }
+        return n;
     }
 
     /**

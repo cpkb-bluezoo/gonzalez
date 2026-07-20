@@ -95,8 +95,8 @@ public class BasicTransformContext implements TransformContext {
     private Map<String, OutputHandler> resultDocumentCollector;  // fn:transform() secondary capture
     private Map<CompiledStylesheet, Map<String, XPathValue>> packageGlobalVariables;  // Pre-evaluated package globals
     private java.util.Set<String> availableResourceUris;  // URIs declared available by test environment
-    /** Shared across for-each context clones: memoized absolute location paths. */
-    private Map<LocationPath, AbsolutePathCacheEntry> absolutePathCache;
+    /** Shared across for-each context clones: memoized location-path results. */
+    private Map<LocationPath, PathCacheEntry> pathResultCache;
 
     /**
      * Creates a new transform context.
@@ -1160,10 +1160,10 @@ public class BasicTransformContext implements TransformContext {
         derived.dynamicEvaluation = this.dynamicEvaluation;
         derived.insideMergeAction = this.insideMergeAction;
         derived.availableResourceUris = this.availableResourceUris;
-        if (this.absolutePathCache == null) {
-            this.absolutePathCache = new IdentityHashMap<LocationPath, AbsolutePathCacheEntry>();
+        if (this.pathResultCache == null) {
+            this.pathResultCache = new IdentityHashMap<LocationPath, PathCacheEntry>();
         }
-        derived.absolutePathCache = this.absolutePathCache;
+        derived.pathResultCache = this.pathResultCache;
         if (this.contextItemUndefined &&
                 derived.contextNode == this.contextNode &&
                 derived.contextItem == this.contextItem) {
@@ -1173,38 +1173,40 @@ public class BasicTransformContext implements TransformContext {
     }
 
     /**
-     * Returns a memoized result for a context-independent absolute path, or null.
+     * Returns a memoized location-path result for the given anchor node, or null.
+     * The anchor is the document root for absolute paths, or the climbed-to
+     * parent for parent-relative paths such as {@code ../meta/@generated}.
      */
-    public XPathValue getCachedAbsolutePath(LocationPath path, XPathNode root) {
-        if (absolutePathCache == null || path == null || root == null) {
+    public XPathValue getCachedPathResult(LocationPath path, XPathNode anchor) {
+        if (pathResultCache == null || path == null || anchor == null) {
             return null;
         }
-        AbsolutePathCacheEntry entry = absolutePathCache.get(path);
-        if (entry != null && entry.root == root) {
+        PathCacheEntry entry = pathResultCache.get(path);
+        if (entry != null && entry.anchor == anchor) {
             return entry.value;
         }
         return null;
     }
 
     /**
-     * Stores a memoized result for a context-independent absolute path.
+     * Stores a memoized location-path result for the given anchor node.
      */
-    public void putCachedAbsolutePath(LocationPath path, XPathNode root, XPathValue value) {
-        if (path == null || root == null || value == null) {
+    public void putCachedPathResult(LocationPath path, XPathNode anchor, XPathValue value) {
+        if (path == null || anchor == null || value == null) {
             return;
         }
-        if (absolutePathCache == null) {
-            absolutePathCache = new IdentityHashMap<LocationPath, AbsolutePathCacheEntry>();
+        if (pathResultCache == null) {
+            pathResultCache = new IdentityHashMap<LocationPath, PathCacheEntry>();
         }
-        absolutePathCache.put(path, new AbsolutePathCacheEntry(root, value));
+        pathResultCache.put(path, new PathCacheEntry(anchor, value));
     }
 
-    private static final class AbsolutePathCacheEntry {
-        final XPathNode root;
+    private static final class PathCacheEntry {
+        final XPathNode anchor;
         final XPathValue value;
 
-        AbsolutePathCacheEntry(XPathNode root, XPathValue value) {
-            this.root = root;
+        PathCacheEntry(XPathNode anchor, XPathValue value) {
+            this.anchor = anchor;
             this.value = value;
         }
     }
