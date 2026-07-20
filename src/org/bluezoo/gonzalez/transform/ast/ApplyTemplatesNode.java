@@ -24,11 +24,9 @@ package org.bluezoo.gonzalez.transform.ast;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.xml.sax.SAXException;
 
@@ -275,148 +273,147 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
             // Process each node
             int size = nodes.size();
             int position = 1;
+            String resolvedMode = mode;
+            if ("#current".equals(mode)) {
+                resolvedMode = context.getCurrentMode();
+            }
+            boolean hasWithParams = params != null && !params.isEmpty();
+            TemplateMatcher matcher = context.getTemplateMatcher();
+            AccumulatorManager sharedAccMgr = context instanceof BasicTransformContext
+                ? ((BasicTransformContext) context).getAccumulatorManager() : null;
+
             for (XPathNode node : nodes) {
-                // Use withXsltCurrentNode to update both context node and XSLT current()
-                TransformContext nodeContext;
-                if (context instanceof BasicTransformContext) {
-                    nodeContext = ((BasicTransformContext) context)
-                        .withXsltCurrentNodeAndContextItem(node).withPositionAndSize(position, size);
-                } else {
-                    nodeContext = context.withContextNode(node).withPositionAndSize(position, size);
-                }
-                // Resolve special mode values
-                String effectiveMode = mode;
-                if ("#current".equals(mode)) {
-                    // Use the current mode from the context
-                    effectiveMode = context.getCurrentMode();
+                String effectiveMode = resolvedMode;
+
+                if (sharedAccMgr != null) {
+                    sharedAccMgr.notifyStartElement(node);
                 }
                 
-                if (effectiveMode != null) {
-                    nodeContext = nodeContext.withMode(effectiveMode);
-                }
-                
-                // Fire pre-descent accumulator rules
-                AccumulatorManager accMgr = null;
-                if (nodeContext instanceof BasicTransformContext) {
-                    accMgr = ((BasicTransformContext) nodeContext).getAccumulatorManager();
-                }
-                if (accMgr != null) {
-                    accMgr.notifyStartElement(node);
-                }
-                
-                // Find and execute matching template
-                TemplateMatcher matcher = context.getTemplateMatcher();
-                TemplateRule rule = matcher.findMatch(node, effectiveMode, nodeContext);
+                // Match against the parent context: pattern predicates allocate
+                // their own node-local context. Then enter the template in one
+                // allocation (focus + current rule + optional scope push).
+                TemplateRule rule = matcher.findMatch(node, effectiveMode, context);
                 
                 if (rule != null) {
-                    // Push scope and set current template rule (needed for apply-imports)
-                    TransformContext execContext = 
-                        nodeContext.pushVariableScope()
+                    boolean pushScope = hasWithParams
+                        || !rule.getParameters().isEmpty()
+                        || templateBodyNeedsScope(rule.getBody());
+                    TransformContext execContext;
+                    if (context instanceof BasicTransformContext) {
+                        execContext = ((BasicTransformContext) context)
+                            .applyTemplates(node, position, size, resolvedMode, rule, pushScope);
+                    } else {
+                        TransformContext nodeContext = context.withContextNode(node)
+                            .withPositionAndSize(position, size);
+                        if (resolvedMode != null) {
+                            nodeContext = nodeContext.withMode(resolvedMode);
+                        }
+                        execContext = nodeContext.pushVariableScope()
                             .withCurrentTemplateRule(rule);
-                    
-                    // XSLT 2.0 tunnel parameter support:
-                    // - Non-tunnel with-param matches non-tunnel param only
-                    // - Tunnel with-param matches tunnel param only
-                    // - Tunnel params also receive values from context's tunnel params
+                    }
                     
                     // Collect new tunnel parameters from with-param nodes
-                    Map<String, XPathValue> newTunnelParams = new HashMap<>();
-                    if (params != null) {
-                    for (WithParamNode param : params) {
-                        if (param.isTunnel()) {
-                            try {
-                                newTunnelParams.put(param.getName(), param.evaluate(context));
-                            } catch (XPathException e) {
-                                throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                    Map<String, XPathValue> newTunnelParams = null;
+                    if (hasWithParams) {
+                        for (WithParamNode param : params) {
+                            if (param.isTunnel()) {
+                                try {
+                                    if (newTunnelParams == null) {
+                                        newTunnelParams = new HashMap<>();
+                                    }
+                                    newTunnelParams.put(param.getName(), param.evaluate(context));
+                                } catch (XPathException e) {
+                                    throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                                }
                             }
                         }
-                    }
                     }
                     
                     // Merge with existing tunnel params and update context
-                    if (!newTunnelParams.isEmpty()) {
+                    if (newTunnelParams != null && !newTunnelParams.isEmpty()) {
                         execContext = (TransformContext) execContext.withTunnelParameters(newTunnelParams);
                     }
                     
-                    // Collect passed parameter names (only non-tunnel, matching non-tunnel template params)
-                    Set<String> passedParams = new HashSet<>();
-                    
                     // Process each template parameter
-                    for (TemplateParameter templateParam : rule.getParameters()) {
-                        XPathValue value = null;
-                        boolean found = false;
-                        
-                        if (templateParam.isTunnel()) {
-                            // Tunnel param: first check tunnel with-param, then context tunnel params
-                            for (WithParamNode param : params) {
-                                if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
-                                    try {
-                                        value = param.evaluate(context);
-                                        found = true;
-                                    } catch (XPathException e) {
-                                        throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                    List<TemplateParameter> templateParams = rule.getParameters();
+                    if (!templateParams.isEmpty()) {
+                        for (TemplateParameter templateParam : templateParams) {
+                            XPathValue value = null;
+                            boolean found = false;
+                            
+                            if (templateParam.isTunnel()) {
+                                // Tunnel param: first check tunnel with-param, then context tunnel params
+                                if (hasWithParams) {
+                                    for (WithParamNode param : params) {
+                                        if (param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                                            try {
+                                                value = param.evaluate(context);
+                                                found = true;
+                                            } catch (XPathException e) {
+                                                throw new SAXException("Error evaluating tunnel param: " + e.getMessage(), e);
+                                            }
+                                            break;
+                                        }
                                     }
-                                    break;
+                                }
+                                // If not passed directly, check context's tunnel params
+                                if (!found) {
+                                    value = execContext.getTunnelParameters().get(templateParam.getName());
+                                    found = (value != null);
+                                }
+                            } else if (hasWithParams) {
+                                // Non-tunnel param: only accept non-tunnel with-param
+                                for (WithParamNode param : params) {
+                                    if (!param.isTunnel() && param.getName().equals(templateParam.getName())) {
+                                        try {
+                                            value = param.evaluate(context);
+                                            found = true;
+                                        } catch (XPathException e) {
+                                            throw new SAXException("Error evaluating param: " + e.getMessage(), e);
+                                        }
+                                        break;
+                                    }
                                 }
                             }
-                            // If not passed directly, check context's tunnel params
-                            if (!found) {
-                                value = execContext.getTunnelParameters().get(templateParam.getName());
-                                found = (value != null);
-                            }
-                        } else {
-                            // Non-tunnel param: only accept non-tunnel with-param
-                            for (WithParamNode param : params) {
-                                if (!param.isTunnel() && param.getName().equals(templateParam.getName())) {
-                                    try {
-                                        value = param.evaluate(context);
-                                        found = true;
-                                    } catch (XPathException e) {
-                                        throw new SAXException("Error evaluating param: " + e.getMessage(), e);
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        if (found && value != null) {
-                            // XTTE0590: validate supplied value against declared type
-                            try {
-                                value = templateParam.validateValue(value, "XTTE0590");
-                            } catch (XPathException e) {
-                                throw new SAXException(e.getMessage(), e);
-                            }
-                            execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
-                            passedParams.add(templateParam.getName());
-                        } else {
-                            // XTDE0700: required parameter must be supplied
-                            if (templateParam.isRequired()) {
-                                throw new SAXException("XTDE0700: Template parameter $" +
-                                    templateParam.getLocalName() + " is required but no value was supplied");
-                            }
-                            // Use default value
-                            XPathValue defaultValue = null;
-                            if (templateParam.getSelectExpr() != null) {
+                            
+                            if (found && value != null) {
+                                // XTTE0590: validate supplied value against declared type
                                 try {
-                                    defaultValue = templateParam.getSelectExpr().evaluate(execContext);
+                                    value = templateParam.validateValue(value, "XTTE0590");
                                 } catch (XPathException e) {
-                                    throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
+                                    throw new SAXException(e.getMessage(), e);
                                 }
+                                execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), value);
                             } else {
-                                defaultValue = templateParam.evaluateDefaultContent(execContext);
+                                // XTDE0700: required parameter must be supplied
+                                if (templateParam.isRequired()) {
+                                    throw new SAXException("XTDE0700: Template parameter $" +
+                                        templateParam.getLocalName() + " is required but no value was supplied");
+                                }
+                                // Use default value
+                                XPathValue defaultValue = null;
+                                if (templateParam.getSelectExpr() != null) {
+                                    try {
+                                        defaultValue = templateParam.getSelectExpr().evaluate(execContext);
+                                    } catch (XPathException e) {
+                                        throw new SAXException("Error evaluating param default: " + e.getMessage(), e);
+                                    }
+                                } else {
+                                    defaultValue = templateParam.evaluateDefaultContent(execContext);
+                                }
+                                try {
+                                    defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                                } catch (XPathException e) {
+                                    throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
+                                }
+                                // XTTE0600: validate default value against declared type
+                                try {
+                                    defaultValue = templateParam.validateValue(defaultValue, "XTTE0600");
+                                } catch (XPathException e) {
+                                    throw new SAXException(e.getMessage(), e);
+                                }
+                                execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
                             }
-                            try {
-                                defaultValue = templateParam.coerceDefaultValue(defaultValue);
-                            } catch (XPathException e) {
-                                throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
-                            }
-                            // XTTE0600: validate default value against declared type
-                            try {
-                                defaultValue = templateParam.validateValue(defaultValue, "XTTE0600");
-                            } catch (XPathException e) {
-                                throw new SAXException(e.getMessage(), e);
-                            }
-                            execContext.getVariableScope().bind(templateParam.getNamespaceURI(), templateParam.getLocalName(), defaultValue);
                         }
                     }
                     
@@ -447,8 +444,8 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 }
                 
                 // Fire post-descent accumulator rules
-                if (accMgr != null) {
-                    accMgr.notifyEndElement(node);
+                if (sharedAccMgr != null) {
+                    sharedAccMgr.notifyEndElement(node);
                 }
                 position++;
             }
@@ -946,4 +943,66 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     private void executeDeepCopy(XPathNode node, OutputHandler output) throws SAXException {
         ValueOutputHelper.deepCopyNode(node, output);
     }
+
+    /**
+     * True when the template body declares an {@code xsl:variable} or
+     * {@code xsl:param} that must bind in a fresh template-local scope.
+     */
+    private static boolean templateBodyNeedsScope(XSLTNode node) {
+        if (node == null) {
+            return false;
+        }
+        if (node instanceof VariableNode || node instanceof ParamNode) {
+            return true;
+        }
+        if (node instanceof SequenceNode) {
+            for (XSLTNode child : ((SequenceNode) node).getChildren()) {
+                if (templateBodyNeedsScope(child)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (node instanceof CopyNode) {
+            return templateBodyNeedsScope(((CopyNode) node).getContent());
+        }
+        if (node instanceof ElementNode) {
+            return templateBodyNeedsScope(((ElementNode) node).getContent());
+        }
+        if (node instanceof LiteralResultElement) {
+            return templateBodyNeedsScope(((LiteralResultElement) node).getContent());
+        }
+        if (node instanceof IfNode) {
+            return templateBodyNeedsScope(((IfNode) node).getContent());
+        }
+        if (node instanceof WhenNode) {
+            return templateBodyNeedsScope(((WhenNode) node).getContent());
+        }
+        if (node instanceof OtherwiseNode) {
+            return templateBodyNeedsScope(((OtherwiseNode) node).getContent());
+        }
+        if (node instanceof ChooseNode) {
+            ChooseNode choose = (ChooseNode) node;
+            for (WhenNode when : choose.getWhens()) {
+                if (templateBodyNeedsScope(when)) {
+                    return true;
+                }
+            }
+            return templateBodyNeedsScope(choose.getOtherwise());
+        }
+        if (node instanceof ForEachNode) {
+            return templateBodyNeedsScope(((ForEachNode) node).getBody());
+        }
+        if (node instanceof ForEachGroupNode) {
+            return templateBodyNeedsScope(((ForEachGroupNode) node).getBody());
+        }
+        if (node instanceof AttributeNode) {
+            return templateBodyNeedsScope(((AttributeNode) node).getContent());
+        }
+        if (node instanceof MessageNode) {
+            return templateBodyNeedsScope(((MessageNode) node).getContent());
+        }
+        return false;
+    }
+
 }

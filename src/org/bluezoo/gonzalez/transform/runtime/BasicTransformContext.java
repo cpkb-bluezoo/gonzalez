@@ -388,6 +388,44 @@ public class BasicTransformContext implements TransformContext {
     public TransformContext forEachIteration(XPathNode node, int position, int size) {
         return forEachIteration(node, position, size, true);
     }
+
+    /**
+     * Single-allocation apply-templates execution context: focus on {@code node}
+     * plus the matched template rule (and optional variable-scope push).
+     *
+     * <p>Prefer matching with the parent context via
+     * {@link TemplateMatcher#findMatch}, then calling this once — pattern
+     * predicates build their own node-local context.
+     *
+     * @param node the node being processed
+     * @param position 1-based position among selected nodes
+     * @param size size of the selected node list
+     * @param mode mode to set, or null to keep the current mode
+     * @param rule the matched template rule
+     * @param pushVariableScope true when the template has parameters or local variables
+     * @return execution context for the template body
+     */
+    public TransformContext applyTemplates(XPathNode node, int position, int size,
+                                           String mode, TemplateRule rule,
+                                           boolean pushVariableScope) {
+        String useMode = mode != null ? mode : currentMode;
+        VariableScope scope = pushVariableScope ? variableScope.push() : variableScope;
+        CompiledStylesheet effectiveStylesheet = stylesheet;
+        if (rule != null && rule.getDefiningStylesheet() != null) {
+            effectiveStylesheet = rule.getDefiningStylesheet();
+        } else if (rule != null && principalStylesheet != null) {
+            effectiveStylesheet = principalStylesheet;
+        }
+        BasicTransformContext result = inherit(new BasicTransformContext(
+            effectiveStylesheet, node, node, XPathNodeSet.of(node), position, size,
+            useMode, scope, functionLibrary, templateMatcher,
+            outputHandler, accumulatorManager, errorListener, rule, staticBaseURI,
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache,
+            variablesBeingEvaluated, usedResultUris, principalOutput));
+        result.insideMergeAction = false;
+        result.xsltCurrentItem = null;
+        return result;
+    }
     
     /**
      * Creates a new context where the given node is both the context node and the context item.

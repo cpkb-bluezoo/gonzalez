@@ -1136,17 +1136,45 @@ public final class BinaryExpr implements Expr {
             if (contextNode == null) {
                 return XPathNodeSet.EMPTY;
             }
-            List<XPathNode> nodes = new ArrayList<>();
             Iterator<XPathNode> attrs = contextNode.getAttributes();
+            Iterator<XPathNode> children = contextNode.getChildren();
+            boolean hasAttr = attrs.hasNext();
+            boolean hasChild = children.hasNext();
+            if (!hasAttr && !hasChild) {
+                return XPathNodeSet.EMPTY;
+            }
+            if (hasAttr && !hasChild) {
+                XPathNode first = attrs.next();
+                if (!attrs.hasNext()) {
+                    return XPathNodeSet.of(first);
+                }
+                List<XPathNode> nodes = new ArrayList<>();
+                nodes.add(first);
+                while (attrs.hasNext()) {
+                    nodes.add(attrs.next());
+                }
+                return XPathNodeSet.ordered(nodes);
+            }
+            if (!hasAttr && hasChild) {
+                XPathNode first = children.next();
+                if (!children.hasNext()) {
+                    return XPathNodeSet.of(first);
+                }
+                List<XPathNode> nodes = new ArrayList<>();
+                nodes.add(first);
+                while (children.hasNext()) {
+                    nodes.add(children.next());
+                }
+                return XPathNodeSet.ordered(nodes);
+            }
+            List<XPathNode> nodes = new ArrayList<>();
+            nodes.add(attrs.next());
             while (attrs.hasNext()) {
                 nodes.add(attrs.next());
             }
-            Iterator<XPathNode> children = contextNode.getChildren();
+            nodes.add(children.next());
             while (children.hasNext()) {
                 nodes.add(children.next());
-            }
-            if (nodes.isEmpty()) {
-                return XPathNodeSet.EMPTY;
             }
             return XPathNodeSet.ordered(nodes);
         }
