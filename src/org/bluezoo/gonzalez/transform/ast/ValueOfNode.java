@@ -82,6 +82,20 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
     public void execute(TransformContext context, 
                        OutputHandler output) throws SAXException {
         try {
+            // Hot path: select="." — avoid node-set allocation and AVT separator work
+            if (isDotSelect() && separatorAvt == null && staticBaseURI == null) {
+                XPathNode node = context.getContextNode();
+                if (node != null) {
+                    String value = node.getStringValue();
+                    if (disableEscaping) {
+                        output.charactersRaw(value);
+                    } else {
+                        output.characters(value);
+                    }
+                    return;
+                }
+            }
+
             // Use instruction's static base URI if set (for xml:base support)
             TransformContext evalContext = (staticBaseURI != null) 
                 ? context.withStaticBaseURI(staticBaseURI) 
@@ -123,7 +137,9 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
                 if (nodeSet.isEmpty()) {
                     return;
                 }
-                if (outputAllItems) {
+                if (nodeSet.size() == 1) {
+                    value = nodeSet.getNodes().get(0).getStringValue();
+                } else if (outputAllItems) {
                     String sep = (separator != null) ? separator : " ";
                     StringBuilder sb = new StringBuilder();
                     boolean first = true;
@@ -143,7 +159,9 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
                 if (seq.isEmpty()) {
                     return;
                 }
-                if (outputAllItems) {
+                if (seq.size() == 1) {
+                    value = seq.getItems().get(0).asString();
+                } else if (outputAllItems) {
                     String sep = (separator != null) ? separator : " ";
                     StringBuilder sb = new StringBuilder();
                     boolean first = true;
@@ -203,6 +221,29 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
             }
         }
         return false;
+    }
+
+    private boolean isDotSelect() {
+        if (selectExpr == null) {
+            return false;
+        }
+        org.bluezoo.gonzalez.transform.xpath.expr.Expr compiled = selectExpr.getCompiledExpr();
+        if (!(compiled instanceof org.bluezoo.gonzalez.transform.xpath.expr.LocationPath)) {
+            return false;
+        }
+        org.bluezoo.gonzalez.transform.xpath.expr.LocationPath path =
+            (org.bluezoo.gonzalez.transform.xpath.expr.LocationPath) compiled;
+        if (path.isAbsolute()) {
+            return false;
+        }
+        java.util.List<org.bluezoo.gonzalez.transform.xpath.expr.Step> steps = path.getSteps();
+        if (steps.size() != 1) {
+            return false;
+        }
+        org.bluezoo.gonzalez.transform.xpath.expr.Step step = steps.get(0);
+        return step.getAxis() == org.bluezoo.gonzalez.transform.xpath.expr.Step.Axis.SELF
+            && step.getNodeTestType() == org.bluezoo.gonzalez.transform.xpath.expr.Step.NodeTestType.NODE
+            && !step.hasPredicates();
     }
 
     /**

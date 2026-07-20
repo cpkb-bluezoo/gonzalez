@@ -78,6 +78,8 @@ public final class LiteralResultElement implements XSLTNode {
     // Type annotation (from xsl:type attribute)
     private final String typeNamespaceURI;
     private final String typeLocalName;
+    /** Lazily: whether content declares xsl:variable / xsl:param. */
+    private Boolean contentDeclaresLocalVariables;
     
     // XSLT 3.0 on-empty/on-non-empty support
     private final XSLTNode onEmptyNode;
@@ -319,10 +321,13 @@ public final class LiteralResultElement implements XSLTNode {
 
         // Output namespace declarations (with aliases applied)
         // Track which result namespace URIs we've declared
-        Set<String> declaredResultUris = new HashSet<String>();
+        Set<String> declaredResultUris = null;
         boolean declaredDefaultNs = false;
         
         for (Map.Entry<String, String> ns : namespaceDeclarations.entrySet()) {
+            if (declaredResultUris == null) {
+                declaredResultUris = new HashSet<String>();
+            }
             String nsPrefix = ns.getKey();
             String nsUri = ns.getValue();
             
@@ -369,9 +374,14 @@ public final class LiteralResultElement implements XSLTNode {
         
         // Ensure the element's result namespace is declared if aliased
         // Skip xml prefix - it's implicitly bound and should never be declared
-        if (elementAlias != null && !declaredResultUris.contains(elementAlias.resultUri) &&
-            !"xml".equals(elementAlias.resultPrefix)) {
+        if (elementAlias != null && !"xml".equals(elementAlias.resultPrefix)
+                && (declaredResultUris == null
+                    || !declaredResultUris.contains(elementAlias.resultUri))) {
             output.namespace(elementAlias.resultPrefix, elementAlias.resultUri);
+            if (declaredResultUris == null) {
+                declaredResultUris = new HashSet<String>();
+            }
+            declaredResultUris.add(elementAlias.resultUri);
         }
 
         // Ensure element's own prefix has a namespace binding.
@@ -431,9 +441,13 @@ public final class LiteralResultElement implements XSLTNode {
                     if (attrAlias.resultPrefix != null && !attrAlias.resultPrefix.isEmpty()) {
                         attrQName = attrAlias.resultPrefix + ":" + attrLocalName;
                         // Ensure the aliased namespace is declared (unless it's xml)
-                        if (!"xml".equals(attrAlias.resultPrefix) && 
-                            !declaredResultUris.contains(attrAlias.resultUri)) {
+                        if (!"xml".equals(attrAlias.resultPrefix)
+                                && (declaredResultUris == null
+                                    || !declaredResultUris.contains(attrAlias.resultUri))) {
                             output.namespace(attrAlias.resultPrefix, attrAlias.resultUri);
+                            if (declaredResultUris == null) {
+                                declaredResultUris = new HashSet<String>();
+                            }
                             declaredResultUris.add(attrAlias.resultUri);
                         }
                     } else {
@@ -453,9 +467,11 @@ public final class LiteralResultElement implements XSLTNode {
             output.setInheritNamespaces(false);
         }
         try {
-            // Push variable scope so variables declared in the content
-            // don't leak to following siblings after the element closes
-            TransformContext scopedContext = context.pushVariableScope();
+            // Push variable scope only when content declares locals, so
+            // variables don't leak to following siblings after the element.
+            TransformContext scopedContext = contentNeedsLocalScope()
+                ? context.pushVariableScope()
+                : context;
             content.executeWithOnEmptySupport(scopedContext, output, content.hasOnEmptyOrOnNonEmpty());
         } finally {
             if (!inheritNamespaces) {
@@ -465,6 +481,16 @@ public final class LiteralResultElement implements XSLTNode {
 
         // End element
         output.endElement(outputUri, localName, qName);
+    }
+
+    private boolean contentNeedsLocalScope() {
+        Boolean cached = contentDeclaresLocalVariables;
+        if (cached != null) {
+            return cached.booleanValue();
+        }
+        boolean needs = LocalVariableDetector.declaresLocalVariables(content);
+        contentDeclaresLocalVariables = Boolean.valueOf(needs);
+        return needs;
     }
 
     @Override

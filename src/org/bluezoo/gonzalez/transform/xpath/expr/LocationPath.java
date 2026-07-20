@@ -128,22 +128,15 @@ public final class LocationPath implements Expr {
             org.bluezoo.gonzalez.transform.runtime.BasicTransformContext btc =
                     (org.bluezoo.gonzalez.transform.runtime.BasicTransformContext) context;
             XPathNode ctxNode = context.getContextNode();
-            if (ctxNode != null) {
-                XPathNode anchor = null;
-                if (absolute && isContextIndependent()) {
-                    anchor = ctxNode.getRoot();
-                } else if (!absolute && isParentRelativeMemoizable()) {
-                    anchor = parentRelativeAnchor(ctxNode);
+            XPathNode anchor = memoizationAnchor(ctxNode);
+            if (anchor != null) {
+                XPathValue cached = btc.getCachedPathResult(this, anchor);
+                if (cached != null) {
+                    return cached;
                 }
-                if (anchor != null) {
-                    XPathValue cached = btc.getCachedPathResult(this, anchor);
-                    if (cached != null) {
-                        return cached;
-                    }
-                    XPathValue computed = evaluateUncached(context);
-                    btc.putCachedPathResult(this, anchor, computed);
-                    return computed;
-                }
+                XPathValue computed = evaluateUncached(context);
+                btc.putCachedPathResult(this, anchor, computed);
+                return computed;
             }
         }
         return evaluateUncached(context);
@@ -896,6 +889,26 @@ public final class LocationPath implements Expr {
             return false;
         }
         return isDownwardMemoizable(0);
+    }
+
+    /**
+     * Anchor node for memoizing this path's result across sibling focus changes,
+     * or null when the path is not memoizable.
+     *
+     * @param contextNode the current context node
+     * @return document root, climbed-to parent, or null
+     */
+    public XPathNode memoizationAnchor(XPathNode contextNode) {
+        if (contextNode == null) {
+            return null;
+        }
+        if (absolute && isContextIndependent()) {
+            return contextNode.getRoot();
+        }
+        if (!absolute && isParentRelativeMemoizable()) {
+            return parentRelativeAnchor(contextNode);
+        }
+        return null;
     }
 
     /**

@@ -22,12 +22,15 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.ast.XSLTNode.StreamingCapability;
+import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.StaticTypeContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.XPathParser;
 import org.bluezoo.gonzalez.transform.xpath.XPathSyntaxException;
+import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
 import org.bluezoo.gonzalez.transform.xpath.expr.XPathException;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 import java.util.ArrayList;
@@ -86,7 +89,30 @@ public final class AttributeValueTemplate {
 
         @Override
         String evaluate(TransformContext context, boolean backwardsCompatible) throws XPathException {
+            // Memoizable absolute / parent-relative paths: reuse cached string
+            // across for-each iterations (free-ranging / relative-meta AVTs).
+            if (expression.getCompiledExpr() instanceof LocationPath
+                    && context instanceof BasicTransformContext) {
+                LocationPath path = (LocationPath) expression.getCompiledExpr();
+                XPathNode ctxNode = context.getContextNode();
+                XPathNode anchor = path.memoizationAnchor(ctxNode);
+                if (anchor != null) {
+                    BasicTransformContext btc = (BasicTransformContext) context;
+                    String cached = btc.getCachedPathString(path, anchor);
+                    if (cached != null) {
+                        return cached;
+                    }
+                    XPathValue computed = expression.evaluate(context);
+                    String s = valueToString(computed, backwardsCompatible);
+                    btc.putCachedPathString(path, anchor, s);
+                    return s;
+                }
+            }
             XPathValue result = expression.evaluate(context);
+            return valueToString(result, backwardsCompatible);
+        }
+
+        private static String valueToString(XPathValue result, boolean backwardsCompatible) {
             if (result == null) {
                 return "";
             }
@@ -366,6 +392,10 @@ public final class AttributeValueTemplate {
     public String evaluate(TransformContext context) throws XPathException {
         if (isStatic) {
             return ((LiteralPart) parts.get(0)).text;
+        }
+
+        if (parts.size() == 1) {
+            return parts.get(0).evaluate(context, backwardsCompatible);
         }
 
         StringBuilder result = new StringBuilder();

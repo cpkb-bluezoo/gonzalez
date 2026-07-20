@@ -1235,8 +1235,22 @@ public class BasicTransformContext implements TransformContext {
             return null;
         }
         PathCacheEntry entry = pathResultCache.get(path);
-        if (entry != null && entry.anchor == anchor) {
+        if (entry != null && entry.anchor == anchor && entry.value != null) {
             return entry.value;
+        }
+        return null;
+    }
+
+    /**
+     * Returns a memoized string value for a location path (AVT hot path), or null.
+     */
+    public String getCachedPathString(LocationPath path, XPathNode anchor) {
+        if (pathResultCache == null || path == null || anchor == null) {
+            return null;
+        }
+        PathCacheEntry entry = pathResultCache.get(path);
+        if (entry != null && entry.anchor == anchor) {
+            return entry.stringValue;
         }
         return null;
     }
@@ -1251,16 +1265,38 @@ public class BasicTransformContext implements TransformContext {
         if (pathResultCache == null) {
             pathResultCache = new IdentityHashMap<LocationPath, PathCacheEntry>();
         }
-        pathResultCache.put(path, new PathCacheEntry(anchor, value));
+        pathResultCache.put(path, new PathCacheEntry(anchor, value, null));
+    }
+
+    /**
+     * Stores or updates the string form for a memoized path (after AVT conversion).
+     */
+    public void putCachedPathString(LocationPath path, XPathNode anchor, String stringValue) {
+        if (path == null || anchor == null || stringValue == null) {
+            return;
+        }
+        if (pathResultCache == null) {
+            pathResultCache = new IdentityHashMap<LocationPath, PathCacheEntry>();
+        }
+        PathCacheEntry entry = pathResultCache.get(path);
+        if (entry != null && entry.anchor == anchor) {
+            if (entry.stringValue == null) {
+                entry.stringValue = stringValue;
+            }
+            return;
+        }
+        pathResultCache.put(path, new PathCacheEntry(anchor, null, stringValue));
     }
 
     private static final class PathCacheEntry {
         final XPathNode anchor;
         final XPathValue value;
+        String stringValue;
 
-        PathCacheEntry(XPathNode anchor, XPathValue value) {
+        PathCacheEntry(XPathNode anchor, XPathValue value, String stringValue) {
             this.anchor = anchor;
             this.value = value;
+            this.stringValue = stringValue;
         }
     }
 

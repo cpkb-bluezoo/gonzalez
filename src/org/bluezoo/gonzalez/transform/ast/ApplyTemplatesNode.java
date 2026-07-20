@@ -297,7 +297,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                 if (rule != null) {
                     boolean pushScope = hasWithParams
                         || !rule.getParameters().isEmpty()
-                        || templateBodyNeedsScope(rule.getBody());
+                        || LocalVariableDetector.declaresLocalVariables(rule.getBody());
                     TransformContext execContext;
                     if (context instanceof BasicTransformContext) {
                         execContext = ((BasicTransformContext) context)
@@ -942,67 +942,6 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
     
     private void executeDeepCopy(XPathNode node, OutputHandler output) throws SAXException {
         ValueOutputHelper.deepCopyNode(node, output);
-    }
-
-    /**
-     * True when the template body declares an {@code xsl:variable} or
-     * {@code xsl:param} that must bind in a fresh template-local scope.
-     */
-    private static boolean templateBodyNeedsScope(XSLTNode node) {
-        if (node == null) {
-            return false;
-        }
-        if (node instanceof VariableNode || node instanceof ParamNode) {
-            return true;
-        }
-        if (node instanceof SequenceNode) {
-            for (XSLTNode child : ((SequenceNode) node).getChildren()) {
-                if (templateBodyNeedsScope(child)) {
-                    return true;
-                }
-            }
-            return false;
-        }
-        if (node instanceof CopyNode) {
-            return templateBodyNeedsScope(((CopyNode) node).getContent());
-        }
-        if (node instanceof ElementNode) {
-            return templateBodyNeedsScope(((ElementNode) node).getContent());
-        }
-        if (node instanceof LiteralResultElement) {
-            return templateBodyNeedsScope(((LiteralResultElement) node).getContent());
-        }
-        if (node instanceof IfNode) {
-            return templateBodyNeedsScope(((IfNode) node).getContent());
-        }
-        if (node instanceof WhenNode) {
-            return templateBodyNeedsScope(((WhenNode) node).getContent());
-        }
-        if (node instanceof OtherwiseNode) {
-            return templateBodyNeedsScope(((OtherwiseNode) node).getContent());
-        }
-        if (node instanceof ChooseNode) {
-            ChooseNode choose = (ChooseNode) node;
-            for (WhenNode when : choose.getWhens()) {
-                if (templateBodyNeedsScope(when)) {
-                    return true;
-                }
-            }
-            return templateBodyNeedsScope(choose.getOtherwise());
-        }
-        if (node instanceof ForEachNode) {
-            return templateBodyNeedsScope(((ForEachNode) node).getBody());
-        }
-        if (node instanceof ForEachGroupNode) {
-            return templateBodyNeedsScope(((ForEachGroupNode) node).getBody());
-        }
-        if (node instanceof AttributeNode) {
-            return templateBodyNeedsScope(((AttributeNode) node).getContent());
-        }
-        if (node instanceof MessageNode) {
-            return templateBodyNeedsScope(((MessageNode) node).getContent());
-        }
-        return false;
     }
 
 }

@@ -56,6 +56,8 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
     private final XPathExpression selectExpr;
     private final List<SortSpec> sorts;
     private final SequenceNode body;
+    /** Lazily: whether body declares xsl:variable / xsl:param. */
+    private Boolean bodyDeclaresLocalVariables;
     public ForEachNode(XPathExpression selectExpr, List<SortSpec> sorts, SequenceNode body) {
         this.selectExpr = selectExpr;
         this.sorts = sorts;
@@ -63,6 +65,16 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
     }
     @Override public String getInstructionName() { return "for-each"; }
     public SequenceNode getBody() { return body; }
+
+    private boolean bodyNeedsLocalScope() {
+        Boolean cached = bodyDeclaresLocalVariables;
+        if (cached != null) {
+            return cached.booleanValue();
+        }
+        boolean needs = LocalVariableDetector.declaresLocalVariables(body);
+        bodyDeclaresLocalVariables = Boolean.valueOf(needs);
+        return needs;
+    }
 
     @Override
     public List<XPathExpression> getExpressions() {
@@ -121,9 +133,9 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
             
             TransformContext iterContext;
             if (context instanceof BasicTransformContext) {
-                // Single allocation: new scope + current node + position
+                // Single allocation: optional scope + current node + position
                 iterContext = ((BasicTransformContext) context)
-                    .forEachIteration(node, position, size);
+                    .forEachIteration(node, position, size, bodyNeedsLocalScope());
             } else {
                 iterContext = context.pushVariableScope()
                     .withCurrentTemplateRule(null);
@@ -158,13 +170,13 @@ public class ForEachNode extends XSLTInstruction implements ExpressionHolder {
             TransformContext iterContext;
             if (item instanceof XPathNode && context instanceof BasicTransformContext) {
                 iterContext = ((BasicTransformContext) context)
-                    .forEachIteration((XPathNode) item, position, size);
+                    .forEachIteration((XPathNode) item, position, size, bodyNeedsLocalScope());
             } else if (item instanceof XPathNodeSet && context instanceof BasicTransformContext) {
                 XPathNodeSet ns = (XPathNodeSet) item;
                 Iterator<XPathNode> iter = ns.iterator();
                 if (iter.hasNext()) {
                     iterContext = ((BasicTransformContext) context)
-                        .forEachIteration(iter.next(), position, size);
+                        .forEachIteration(iter.next(), position, size, bodyNeedsLocalScope());
                 } else {
                     iterContext = context.pushVariableScope().withCurrentTemplateRule(null)
                         .withPositionAndSize(position, size);

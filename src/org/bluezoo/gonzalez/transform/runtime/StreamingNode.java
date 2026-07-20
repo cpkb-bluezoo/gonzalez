@@ -47,6 +47,8 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
     private final String prefix;
     private final String stringValue;
     private final StreamingNode parent;
+    /** Document root; null when this node is the root. */
+    private final StreamingNode documentRoot;
     private final List<StreamingNode> attributes;
     private Map<String, String> namespaceBindings;
     private boolean namespaceBindingsShared;
@@ -282,6 +284,8 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         this.prefix = prefix;
         this.stringValue = stringValue;
         this.parent = parent;
+        this.documentRoot = parent == null ? null
+            : (parent.documentRoot != null ? parent.documentRoot : parent);
         if (parent != null && namespaceBindings == parent.namespaceBindings) {
             this.namespaceBindings = parent.namespaceBindings;
             this.namespaceBindingsShared = true;
@@ -601,11 +605,7 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
 
     @Override
     public XPathNode getRoot() {
-        XPathNode node = this;
-        while (node.getParent() != null) {
-            node = node.getParent();
-        }
-        return node;
+        return documentRoot != null ? documentRoot : this;
     }
 
     @Override
