@@ -434,6 +434,14 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
             if (cachedStringValue != null) {
                 return cachedStringValue;
             }
+            // Fast path: single text child (common for leaf elements like <item>value</item>)
+            if (children.size() == 1) {
+                StreamingNode only = children.get(0);
+                if (only.nodeType == NodeType.TEXT) {
+                    cachedStringValue = only.stringValue != null ? only.stringValue : "";
+                    return cachedStringValue;
+                }
+            }
             StringBuilder sb = new StringBuilder();
             appendDescendantText(sb);
             cachedStringValue = sb.toString();
@@ -521,6 +529,25 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
                 throw new UnsupportedOperationException();
             }
         };
+    }
+
+    @Override
+    public XPathNode getAttribute(String namespaceURI, String localName) {
+        if (localName == null || attributes.isEmpty()) {
+            return null;
+        }
+        String ns = namespaceURI == null ? "" : namespaceURI;
+        for (int i = 0; i < attributes.size(); i++) {
+            StreamingNode attr = attributes.get(i);
+            String attrNs = attr.namespaceURI;
+            if (attrNs == null) {
+                attrNs = "";
+            }
+            if (ns.equals(attrNs) && localName.equals(attr.localName)) {
+                return attr;
+            }
+        }
+        return null;
     }
 
     @Override
@@ -765,6 +792,25 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
             cachedStringValue = null;
             elementChildrenByLocalName = null;
         }
+    }
+
+    /**
+     * Returns true if this node has any in-scope namespace bindings that would
+     * be copied by {@code xsl:copy} (i.e. non-xml, non-empty URIs). Used to skip
+     * building namespace nodes when there is nothing to emit.
+     */
+    public boolean hasCopyableNamespaceBindings() {
+        if (namespaceBindings == null || namespaceBindings.isEmpty()) {
+            return false;
+        }
+        for (Map.Entry<String, String> entry : namespaceBindings.entrySet()) {
+            String prefix = entry.getKey();
+            String uri = entry.getValue();
+            if (!"xml".equals(prefix) && uri != null && !uri.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

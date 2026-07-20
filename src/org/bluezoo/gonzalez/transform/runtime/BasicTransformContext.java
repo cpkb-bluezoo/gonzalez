@@ -355,8 +355,30 @@ public class BasicTransformContext implements TransformContext {
     }
 
     /**
-     * Single-allocation for-each iteration frame: pushed variable scope, cleared
-     * current template rule, new XSLT current node, and position/size.
+     * Single-allocation for-each iteration frame: optional pushed variable scope,
+     * cleared current template rule, new XSLT current node, and position/size.
+     *
+     * @param node the iteration context node
+     * @param position 1-based position
+     * @param size sequence size
+     * @param pushVariableScope if false, reuse the parent variable scope (safe when
+     *        the for-each body does not declare local variables)
+     * @return a new context for this iteration
+     */
+    public TransformContext forEachIteration(XPathNode node, int position, int size,
+                                             boolean pushVariableScope) {
+        VariableScope scope = pushVariableScope ? variableScope.push() : variableScope;
+        BasicTransformContext result = inherit(new BasicTransformContext(stylesheet, node, node, null,
+            position, size, currentMode, scope, functionLibrary, templateMatcher,
+            outputHandler, accumulatorManager, errorListener, null, staticBaseURI,
+            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache,
+            variablesBeingEvaluated, usedResultUris, principalOutput));
+        result.xsltCurrentItem = null;
+        return result;
+    }
+
+    /**
+     * Single-allocation for-each iteration frame with a pushed variable scope.
      *
      * @param node the iteration context node
      * @param position 1-based position
@@ -364,13 +386,7 @@ public class BasicTransformContext implements TransformContext {
      * @return a new context for this iteration
      */
     public TransformContext forEachIteration(XPathNode node, int position, int size) {
-        BasicTransformContext result = inherit(new BasicTransformContext(stylesheet, node, node, null,
-            position, size, currentMode, variableScope.push(), functionLibrary, templateMatcher,
-            outputHandler, accumulatorManager, errorListener, null, staticBaseURI,
-            runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache,
-            variablesBeingEvaluated, usedResultUris, principalOutput));
-        result.xsltCurrentItem = null;
-        return result;
+        return forEachIteration(node, position, size, true);
     }
     
     /**
@@ -381,8 +397,7 @@ public class BasicTransformContext implements TransformContext {
      * @return new context with the node as context node and context item
      */
     public TransformContext withXsltCurrentNodeAndContextItem(XPathNode node) {
-        XPathNodeSet nodeItem = new XPathNodeSet(java.util.Collections.singletonList(node));
-        return inherit(new BasicTransformContext(stylesheet, node, node, nodeItem, position, size,
+        return inherit(new BasicTransformContext(stylesheet, node, node, XPathNodeSet.of(node), position, size,
             currentMode, variableScope, functionLibrary, templateMatcher, 
             outputHandler, accumulatorManager, errorListener, currentTemplateRule, staticBaseURI,
             runtimeValidator, regexMatcher, tunnelParameters, keysBeingEvaluated, keyIndexCache, variablesBeingEvaluated, usedResultUris, principalOutput));

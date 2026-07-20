@@ -1129,6 +1129,28 @@ public final class BinaryExpr implements Expr {
     }
 
     private XPathValue evaluateUnion(XPathContext context) throws XPathException {
+        // Hot path: @* | node() (attributes then children) is already in document
+        // order with no overlap — skip IdentityHashMap dedup + sort.
+        if (isAttributeChildNodeUnion()) {
+            XPathNode contextNode = context.getContextNode();
+            if (contextNode == null) {
+                return XPathNodeSet.EMPTY;
+            }
+            List<XPathNode> nodes = new ArrayList<>();
+            Iterator<XPathNode> attrs = contextNode.getAttributes();
+            while (attrs.hasNext()) {
+                nodes.add(attrs.next());
+            }
+            Iterator<XPathNode> children = contextNode.getChildren();
+            while (children.hasNext()) {
+                nodes.add(children.next());
+            }
+            if (nodes.isEmpty()) {
+                return XPathNodeSet.EMPTY;
+            }
+            return XPathNodeSet.ordered(nodes);
+        }
+
         XPathValue leftVal = left.evaluate(context);
         XPathValue rightVal = right.evaluate(context);
 
@@ -1136,6 +1158,39 @@ public final class BinaryExpr implements Expr {
         XPathNodeSet rightSet = toNodeSet(rightVal, "union");
 
         return leftSet.union(rightSet);
+    }
+
+    /**
+     * True for the common identity-transform select {@code @*|node()} /
+     * {@code attribute::*|child::node()}.
+     */
+    private boolean isAttributeChildNodeUnion() {
+        if (!(left instanceof LocationPath) || !(right instanceof LocationPath)) {
+            return false;
+        }
+        LocationPath attrPath = (LocationPath) left;
+        LocationPath childPath = (LocationPath) right;
+        if (attrPath.isAbsolute() || childPath.isAbsolute()) {
+            return false;
+        }
+        List<Step> attrSteps = attrPath.getSteps();
+        List<Step> childSteps = childPath.getSteps();
+        if (attrSteps.size() != 1 || childSteps.size() != 1) {
+            return false;
+        }
+        Step attrStep = attrSteps.get(0);
+        Step childStep = childSteps.get(0);
+        if (attrStep.getAxis() != Step.Axis.ATTRIBUTE
+                || attrStep.hasPredicates()
+                || attrStep.getNodeTestType() != Step.NodeTestType.WILDCARD) {
+            return false;
+        }
+        if (childStep.getAxis() != Step.Axis.CHILD
+                || childStep.hasPredicates()
+                || childStep.getNodeTestType() != Step.NodeTestType.NODE) {
+            return false;
+        }
+        return true;
     }
 
     /**

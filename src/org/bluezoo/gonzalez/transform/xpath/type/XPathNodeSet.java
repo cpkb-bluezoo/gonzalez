@@ -93,9 +93,22 @@ public final class XPathNodeSet implements XPathValue, Iterable<XPathNode> {
         if (node == null) {
             return EMPTY;
         }
-        List<XPathNode> list = new ArrayList<>(1);
-        list.add(node);
-        XPathNodeSet result = new XPathNodeSet(list);
+        XPathNodeSet result = new XPathNodeSet(Collections.singletonList(node));
+        result.sorted = true;
+        return result;
+    }
+
+    /**
+     * Creates a node-set from a list already in document order without duplicates.
+     *
+     * @param nodes ordered nodes (not copied; must not be modified afterward)
+     * @return the node-set
+     */
+    public static XPathNodeSet ordered(List<XPathNode> nodes) {
+        if (nodes == null || nodes.isEmpty()) {
+            return EMPTY;
+        }
+        XPathNodeSet result = new XPathNodeSet(nodes);
         result.sorted = true;
         return result;
     }

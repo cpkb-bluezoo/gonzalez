@@ -43,11 +43,26 @@ public final class VariableScope {
      * A single scope level with variable bindings.
      */
     private static class Scope {
-        final Map<String, XPathValue> variables = new HashMap<>();
+        Map<String, XPathValue> variables; // lazy — most for-each frames never bind
         final Scope parent;
 
         Scope(Scope parent) {
             this.parent = parent;
+        }
+
+        void put(String key, XPathValue value) {
+            if (variables == null) {
+                variables = new HashMap<>();
+            }
+            variables.put(key, value);
+        }
+
+        boolean containsKey(String key) {
+            return variables != null && variables.containsKey(key);
+        }
+
+        XPathValue get(String key) {
+            return variables == null ? null : variables.get(key);
         }
     }
 
@@ -116,7 +131,7 @@ public final class VariableScope {
      */
     public void bind(String namespaceURI, String localName, XPathValue value) {
         String key = makeKey(namespaceURI, localName);
-        currentScope.variables.put(key, value);
+        currentScope.put(key, value);
     }
 
     /**
@@ -144,8 +159,8 @@ public final class VariableScope {
         // Search from current scope up to root
         Scope scope = currentScope;
         while (scope != null) {
-            if (scope.variables.containsKey(key)) {
-                return scope.variables.get(key);
+            if (scope.containsKey(key)) {
+                return scope.get(key);
             }
             scope = scope.parent;
         }

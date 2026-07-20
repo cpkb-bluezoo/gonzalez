@@ -422,14 +422,14 @@ warmup, compared with JDK JAXP (Xalan, XSLT 1.0 only) and Saxon-HE 12.9:
 
 | Case | Gonzalez | JDK (Xalan) | Saxon-HE |
 |------|----------|-------------|----------|
-| identity-1.0 | 0.45 | 0.27 | 0.37 |
-| books-1.0 | 0.32 | 0.17 | 0.36 |
-| many-templates-1.0 | 5.7 | 5.2 | 3.6 |
-| streaming-3.0 (5k items) | 1.0 | — | 1.4 |
-| free-ranging-3.0 (5k items) | 4.5 | — | 2.9 |
-| relative-meta-3.0 (5k items) | 4.2 | — | 58 |
-| variable-meta-3.0 (5k items) | 4.2 | — | 2.8 |
-| streaming-large-3.0 (50k items) | 13 | — | 12 |
+| identity-1.0 | 0.36 | 0.28 | 0.36 |
+| books-1.0 | 0.25 | 0.17 | 0.24 |
+| many-templates-1.0 | 4.5 | 4.5 | 3.5 |
+| streaming-3.0 (5k items) | 0.92 | — | 1.4 |
+| free-ranging-3.0 (5k items) | 3.8 | — | 2.6 |
+| relative-meta-3.0 (5k items) | 3.3 | — | 52 |
+| variable-meta-3.0 (5k items) | 3.0 | — | 2.5 |
+| streaming-large-3.0 (50k items) | 9.9 | — | 12 |
 
 JDK Xalan does not implement XSLT 2.0/3.0, so those rows are blank. Compile time
 is separately competitive (Gonzalez typically compiles faster than both peers on

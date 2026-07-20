@@ -304,7 +304,10 @@ public class CopyNode extends XSLTInstruction implements ExpressionHolder {
                 // Copy namespace declarations from source element (if copy-namespaces="yes")
                 // Per XSLT spec, namespace undeclarations (xmlns="") should NOT be copied
                 // because the output tree follows different namespace inheritance rules
-                if (effectiveCopyNamespaces) {
+                if (effectiveCopyNamespaces
+                        && !(node instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode
+                             && !((org.bluezoo.gonzalez.transform.runtime.StreamingNode) node)
+                                    .hasCopyableNamespaceBindings())) {
                     Iterator<XPathNode> namespaces = 
                         node.getNamespaces();
                     while (namespaces.hasNext()) {

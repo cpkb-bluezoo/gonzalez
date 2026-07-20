@@ -161,6 +161,30 @@ public final class LocationPath implements Expr {
                 if (contextItem != null && !(contextItem instanceof XPathNode)) {
                     return contextItem;
                 }
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode == null) {
+                    return XPathNodeSet.EMPTY;
+                }
+                return XPathNodeSet.of(contextNode);
+            }
+            // Hot AVT path: @attr / attribute::name with no predicates
+            if (step.getAxis() == Step.Axis.ATTRIBUTE
+                    && !step.hasPredicates()
+                    && step.getLocalName() != null
+                    && (step.getNodeTestType() == Step.NodeTestType.NAME
+                        || step.getNodeTestType() == Step.NodeTestType.QNAME)) {
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode == null) {
+                    return XPathNodeSet.EMPTY;
+                }
+                String ns = step.getNodeTestType() == Step.NodeTestType.NAME
+                    ? ""
+                    : (step.getNamespaceURI() == null ? "" : step.getNamespaceURI());
+                XPathNode attr = contextNode.getAttribute(ns, step.getLocalName());
+                if (attr == null || !matchesNodeTest(step, attr, context)) {
+                    return XPathNodeSet.EMPTY;
+                }
+                return XPathNodeSet.of(attr);
             }
         }
         
