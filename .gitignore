@@ -36,3 +36,13 @@ test/output/
 # XSLT conformance test output
 xslconf/
 
+# Ad-hoc transform / result-document output (often cwd-relative)
+/out*.xml
+/error*output.xml
+/temp.out
+/try*.out
+
+# XSLT bake-off build artifacts
+benchmark/xslt-compare/classes/
+benchmark/xslt-compare/out/
+

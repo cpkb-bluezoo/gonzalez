@@ -538,6 +538,31 @@
   <property name='benchmark.resources' location='benchmark/resources'/>
   <property name='jmh.version' value='1.37'/>
 
+  <!-- Saxon-HE for XSLT bake-off (benchmark/xslt-compare); not a product dependency -->
+  <property name='saxon.he.version' value='12.9'/>
+  <property name='saxon.he.jar' value='Saxon-HE-${saxon.he.version}.jar'/>
+  <property name='xmlresolver.version' value='5.3.3'/>
+  <property name='xmlresolver.jar' value='xmlresolver-${xmlresolver.version}.jar'/>
+  <property name='xmlresolver.data.jar' value='xmlresolver-${xmlresolver.version}-data.jar'/>
+
+  <target name='download-saxon' description='Download Saxon-HE for XSLT bake-off'>
+    <mkdir dir='${lib}'/>
+    <echo message='Downloading Saxon-HE ${saxon.he.version} and xmlresolver...'/>
+    <get src='https://repo1.maven.org/maven2/net/sf/saxon/Saxon-HE/${saxon.he.version}/Saxon-HE-${saxon.he.version}.jar'
+         dest='${lib}/${saxon.he.jar}'
+         skipexisting='true'
+         verbose='true'/>
+    <get src='https://repo1.maven.org/maven2/org/xmlresolver/xmlresolver/${xmlresolver.version}/xmlresolver-${xmlresolver.version}.jar'
+         dest='${lib}/${xmlresolver.jar}'
+         skipexisting='true'
+         verbose='true'/>
+    <get src='https://repo1.maven.org/maven2/org/xmlresolver/xmlresolver/${xmlresolver.version}/xmlresolver-${xmlresolver.version}-data.jar'
+         dest='${lib}/${xmlresolver.data.jar}'
+         skipexisting='true'
+         verbose='true'/>
+    <echo message='Saxon-HE downloaded to ${lib}/${saxon.he.jar}'/>
+  </target>
+
   <target name='download-jmh' description='Download JMH libraries'>
     <mkdir dir='lib'/>
     <echo message='Downloading JMH ${jmh.version} and dependencies...'/>

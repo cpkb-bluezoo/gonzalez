@@ -25,13 +25,28 @@ stylesheets are automatically analyzed for streamability.
 
 ## Conformance
 
-Current pass rates against the W3C XSLT 3.0 Conformance Test Suite:
+Gonzalez is tested against the **W3C XSLT 3.0 Conformance Test Suite**. The table
+below summarises the multi-engine **bake-off** harness
+(`benchmark/xslt-compare/run-conformance.sh`), comparing Gonzalez, JDK JAXP
+(Xalan), and Saxon-HE:
 
-| Version | Tests | Passed | Rate |
-|---------|-------|--------|------|
-| XSLT 1.0 | 2,023 | 2,023 | 100.0% |
-| XSLT 2.0 | 4,709 | 4,708 | 100.0% |
-| XSLT 3.0 | 9,319 | 9,317 | 100.0% |
+| Version | Tests loaded | Engine | Pass | Fail | Error | Skip | Rate |
+|---------|-------------|--------|------|------|-------|------|------|
+| **1.0** | 2,024 | Gonzalez | 2,023 | 0 | 0 | 1 | **100.0%** |
+| | | Saxon-HE | 2,020 | 2 | 0 | 2 | 99.9% |
+| | | JDK (Xalan) | 1,803 | 31 | 181 | 9 | 89.5% |
+| **2.0** | 4,753 | Gonzalez | 4,711 | 13 | 11 | 18 | **99.5%** |
+| | | Saxon-HE | 4,637 | 69 | 25 | 22 | 98.0% |
+| | | JDK (Xalan) | 2,107 | 31 | 1,428 | 1,187 | 59.1% |
+| **3.0** | 9,713 | Gonzalez | 9,214 | 34 | 32 | 433 | **99.3%** |
+| | | Saxon-HE | 8,845 | 327 | 104 | 437 | 95.4% |
+| | | JDK (Xalan) | 2,424 | 31 | 3,077 | 4,181 | 43.8% |
+
+Rate = pass ÷ (pass + fail + error); skips are excluded. At XSLT 1.0 the bake-off
+matches the official runner (`ant test-xslt10`) exactly (2,023 / 2,023). At 2.0
+and 3.0 Gonzalez is within ~0.4% of the official figures (`ant test-xslt20`,
+`ant test-xslt30`) because the portable harness skips or judges some cases
+differently (packages, collections, XPath `assert` checks, and similar).
 
 ## Error Handling
 
@@ -408,12 +423,34 @@ The transformer is designed for:
 
 ### Benchmarking
 
-Benchmark infrastructure is available in the `benchmark/` directory. Key metrics:
+Parser JMH benchmarks live under `benchmark/` (`ant benchmark`). For an XSLT
+**performance and conformance bake-off** against the JDK JAXP default (Xalan,
+XSLT 1.0) and Saxon-HE 12.9:
 
-- Stylesheet compilation time
-- Transformation throughput (documents/second)
-- Memory usage during transformation
-- Streaming efficiency (bytes buffered vs document size)
+```bash
+# Throughput / compile / heap delta over a fixed corpus
+benchmark/xslt-compare/run-perf.sh
+# first run: ant download-saxon → lib/Saxon-HE-12.9.jar (+ xmlresolver)
+
+# Multi-engine W3C xslt30-test matrix (requires XSLT30_TEST_DIR already set)
+benchmark/xslt-compare/run-conformance.sh
+benchmark/xslt-compare/run-conformance.sh -Dxslt.version=1.0
+benchmark/xslt-compare/run-conformance.sh -Dxslt.version=3.0 -Dxslt.limit=100
+```
+
+Reports are written to `benchmark/xslt-compare/out/` (`conformance-summary.txt`,
+`conformance-matrix.txt`, `conformance-disagreements.txt`).
+
+| Engine | Role |
+|--------|------|
+| Gonzalez | Basic XSLT 1.0–3.0 processor under test |
+| JDK JAXP | Default platform factory (Xalan / XSLT 1.0 baseline) |
+| Saxon-HE | Mainstream XSLT 2.0/3.0 peer |
+
+Saxon is bake-off-only (`ant download-saxon`); it is not a product compile dependency.
+Metrics of interest: stylesheet compilation time, transform throughput, approximate
+heap delta, and (for conformance) pass/fail/error/skip rates plus pairwise output
+disagreements.
 
 ## Extension Mechanisms
 
