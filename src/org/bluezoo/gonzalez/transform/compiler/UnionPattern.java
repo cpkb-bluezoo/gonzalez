@@ -22,6 +22,7 @@
 package org.bluezoo.gonzalez.transform.compiler;
 
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
+import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
@@ -84,6 +85,40 @@ final class UnionPattern extends AbstractPattern {
 
     Pattern[] getAlternatives() {
         return alternatives;
+    }
+
+    @Override
+    public NodeType getMatchableNodeType() {
+        if (alternatives.length == 0) {
+            return null;
+        }
+        NodeType type = alternatives[0].getMatchableNodeType();
+        if (type == null) {
+            return null;
+        }
+        for (int i = 1; i < alternatives.length; i++) {
+            if (type != alternatives[i].getMatchableNodeType()) {
+                return null;
+            }
+        }
+        return type;
+    }
+
+    @Override
+    public String getMatchableLocalName() {
+        if (alternatives.length == 0) {
+            return null;
+        }
+        String name = alternatives[0].getMatchableLocalName();
+        if (name == null) {
+            return null;
+        }
+        for (int i = 1; i < alternatives.length; i++) {
+            if (!name.equals(alternatives[i].getMatchableLocalName())) {
+                return null;
+            }
+        }
+        return name;
     }
 
     @Override

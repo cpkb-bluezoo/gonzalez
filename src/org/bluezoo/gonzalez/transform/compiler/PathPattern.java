@@ -65,6 +65,25 @@ final class PathPattern extends AbstractPattern {
         return null;
     }
 
+    @Override
+    public String getMatchableLocalName() {
+        if (steps.length > 0) {
+            return steps[steps.length - 1].nodeTest.getMatchableLocalName();
+        }
+        return null;
+    }
+
+    @Override
+    public SimpleAttrEquality getSimpleAttrEquality() {
+        if (predicateStr != null) {
+            return super.getSimpleAttrEquality();
+        }
+        if (steps.length == 0) {
+            return null;
+        }
+        return analyzeSimpleAttrEquality(steps[steps.length - 1].predicateStr);
+    }
+
     PatternStep[] getSteps() {
         return steps;
     }

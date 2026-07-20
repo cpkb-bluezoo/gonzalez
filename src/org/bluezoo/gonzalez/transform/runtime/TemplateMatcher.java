@@ -26,6 +26,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +34,8 @@ import java.util.Set;
 import org.bluezoo.gonzalez.transform.ast.SequenceNode;
 import org.bluezoo.gonzalez.transform.compiler.CompiledStylesheet;
 import org.bluezoo.gonzalez.transform.compiler.ModeDeclaration;
+import org.bluezoo.gonzalez.transform.compiler.Pattern;
+import org.bluezoo.gonzalez.transform.compiler.SimpleAttrEquality;
 import org.bluezoo.gonzalez.transform.compiler.TemplateRule;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
@@ -48,12 +51,15 @@ import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
  *   <li>If still tied, it's an error (but we use last-declared)</li>
  * </ol>
  *
+ * <p>Rules are indexed by mode, then by matchable node type and local name so
+ * that only plausible candidates are considered for each node.
+ *
  * @author <a href="mailto:dog@gnu.org">Chris Burdess</a>
  */
 public final class TemplateMatcher {
 
     private final CompiledStylesheet stylesheet;
-    private final Map<String, List<TemplateRule>> rulesByMode;
+    private final Map<String, ModeIndex> rulesByMode;
     private final List<TemplateRule> allModeRules;
 
     /**
@@ -71,19 +77,16 @@ public final class TemplateMatcher {
         }
     }
 
-    private Map<String, List<TemplateRule>> indexRulesByMode() {
-        Map<String, List<TemplateRule>> map = new HashMap<>();
-        
-        // First pass: collect all named mode keys and #all rules
+    private Map<String, ModeIndex> indexRulesByMode() {
+        Map<String, ModeIndex> map = new HashMap<>();
+
         Set<String> allModeKeys = new HashSet<>();
         allModeKeys.add("");
-        
-        // Include declared modes so #all templates are added to them
+
         for (String declaredMode : stylesheet.getModeDeclarations().keySet()) {
-            String key = normalizeModeKey(declaredMode);
-            allModeKeys.add(key);
+            allModeKeys.add(normalizeModeKey(declaredMode));
         }
-        
+
         for (TemplateRule rule : stylesheet.getTemplateRules()) {
             if (rule.getMatchPattern() != null) {
                 String mode = rule.getMode();
@@ -92,74 +95,74 @@ public final class TemplateMatcher {
                 } else {
                     String key = normalizeModeKey(mode);
                     allModeKeys.add(key);
-                    List<TemplateRule> modeRules = map.get(key);
-                    if (modeRules == null) {
-                        modeRules = new ArrayList<>();
-                        map.put(key, modeRules);
+                    ModeIndex index = map.get(key);
+                    if (index == null) {
+                        index = new ModeIndex();
+                        map.put(key, index);
                     }
-                    modeRules.add(rule);
+                    index.add(rule);
                 }
             }
         }
-        
-        // Second pass: add #all rules to every known mode bucket
+
         if (!allModeRules.isEmpty()) {
             Collections.sort(allModeRules, TEMPLATE_PRECEDENCE_COMPARATOR);
             for (String key : allModeKeys) {
-                List<TemplateRule> modeRules = map.get(key);
-                if (modeRules == null) {
-                    modeRules = new ArrayList<>();
-                    map.put(key, modeRules);
+                ModeIndex index = map.get(key);
+                if (index == null) {
+                    index = new ModeIndex();
+                    map.put(key, index);
                 }
-                modeRules.addAll(allModeRules);
+                for (int i = 0; i < allModeRules.size(); i++) {
+                    index.add(allModeRules.get(i));
+                }
             }
         }
-        
-        // Sort each mode's rules by precedence (descending) then priority (descending)
-        for (List<TemplateRule> rules : map.values()) {
-            Collections.sort(rules, TEMPLATE_PRECEDENCE_COMPARATOR);
+
+        for (ModeIndex index : map.values()) {
+            index.seal();
         }
-        
+
         return map;
     }
-    
+
     /**
-     * Returns the candidate list for a mode, creating one on the fly for
+     * Returns the candidate index for a mode, creating one on the fly for
      * previously-unseen modes that have #all rules.
      */
-    private List<TemplateRule> getCandidates(String modeKey) {
-        List<TemplateRule> candidates = rulesByMode.get(modeKey);
-        if (candidates != null) {
-            return candidates;
+    private ModeIndex getModeIndex(String modeKey) {
+        ModeIndex index = rulesByMode.get(modeKey);
+        if (index != null) {
+            return index;
         }
         if (!allModeRules.isEmpty()) {
-            List<TemplateRule> newBucket = new ArrayList<>(allModeRules);
-            rulesByMode.put(modeKey, newBucket);
-            return newBucket;
+            ModeIndex newIndex = new ModeIndex();
+            for (int i = 0; i < allModeRules.size(); i++) {
+                newIndex.add(allModeRules.get(i));
+            }
+            newIndex.seal();
+            rulesByMode.put(modeKey, newIndex);
+            return newIndex;
         }
         return null;
     }
-    
+
     /**
      * Comparator for template rules: higher import precedence wins,
      * then higher priority wins. When tied, later-declared wins (higher index).
      */
-    private static final Comparator<TemplateRule> TEMPLATE_PRECEDENCE_COMPARATOR = 
+    private static final Comparator<TemplateRule> TEMPLATE_PRECEDENCE_COMPARATOR =
         new Comparator<TemplateRule>() {
             @Override
             public int compare(TemplateRule a, TemplateRule b) {
-                // First by import precedence (higher wins)
                 int precDiff = b.getImportPrecedence() - a.getImportPrecedence();
                 if (precDiff != 0) {
                     return precDiff;
                 }
-                // Then by priority (higher wins)
                 int priDiff = Double.compare(b.getPriority(), a.getPriority());
                 if (priDiff != 0) {
                     return priDiff;
                 }
-                // When tied, later-declared template wins (higher declaration index)
-                // XSLT 1.0 spec: "recover by choosing the one that occurs last"
                 return b.getDeclarationIndex() - a.getDeclarationIndex();
             }
         };
@@ -174,30 +177,23 @@ public final class TemplateMatcher {
      * @throws RuntimeException if on-multiple-match="fail" and multiple templates match
      */
     public TemplateRule findMatch(XPathNode node, String mode, TransformContext context) {
-        String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = getCandidates(modeKey);
-        
-        if (candidates == null || candidates.isEmpty()) {
-            // Fall back to built-in rules
+        ModeIndex index = getModeIndex(normalizeModeKey(mode));
+
+        if (index == null || index.all.isEmpty()) {
             return getBuiltInRule(node, mode);
         }
-        
-        // Check on-multiple-match setting for this mode
+
         ModeDeclaration modeDecl = stylesheet.getModeDeclaration(mode);
-        boolean failOnMultiple = modeDecl != null && 
+        boolean failOnMultiple = modeDecl != null &&
             modeDecl.getOnMultipleMatch() == ModeDeclaration.OnMultipleMatch.FAIL;
-        
-        
-        // Rules are already sorted by precedence/priority
+
+        CandidateLists candidates = index.candidatesFor(node);
         TemplateRule firstMatch = null;
         int matchCount = 0;
-        NodeType nodeType = node.getNodeType();
-        
-        for (TemplateRule rule : candidates) {
-            NodeType ruleType = rule.getMatchPattern().getMatchableNodeType();
-            if (ruleType != null && ruleType != nodeType) {
-                continue;
-            }
+
+        CandidateCursor cursor = new CandidateCursor(candidates);
+        while (cursor.hasNext()) {
+            TemplateRule rule = cursor.next();
             if (rule.getMatchPattern().matches(node, context)) {
                 if (firstMatch == null) {
                     firstMatch = rule;
@@ -208,8 +204,6 @@ public final class TemplateMatcher {
                 } else if (failOnMultiple) {
                     if (rule.getImportPrecedence() == firstMatch.getImportPrecedence() &&
                         rule.getPriority() == firstMatch.getPriority()) {
-                        // Two branches of the same union pattern share
-                        // the same body; don't count them as separate matches
                         if (rule.getBody() != firstMatch.getBody()) {
                             matchCount++;
                         }
@@ -219,19 +213,18 @@ public final class TemplateMatcher {
                 }
             }
         }
-        
+
         if (firstMatch != null) {
             if (failOnMultiple && matchCount > 1) {
-                throw new RuntimeException("XTDE0540: Multiple templates match node " + 
+                throw new RuntimeException("XTDE0540: Multiple templates match node " +
                     describeNode(node) + " with the same import precedence and priority");
             }
             return firstMatch;
         }
-        
-        // No match - use built-in
+
         return getBuiltInRule(node, mode);
     }
-    
+
     /**
      * Finds the best matching template for an atomic value (XSLT 3.0).
      * Atomic value patterns use the syntax ".[ predicate ]".
@@ -242,23 +235,22 @@ public final class TemplateMatcher {
      * @return the matching rule, or null if no match
      * @throws RuntimeException if on-multiple-match="fail" and ambiguous
      */
-    public TemplateRule findMatchForAtomicValue(org.bluezoo.gonzalez.transform.xpath.type.XPathValue value, 
+    public TemplateRule findMatchForAtomicValue(XPathValue value,
                                                  String mode, TransformContext context) {
-        String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = getCandidates(modeKey);
-        
-        if (candidates == null || candidates.isEmpty()) {
+        ModeIndex index = getModeIndex(normalizeModeKey(mode));
+
+        if (index == null || index.all.isEmpty()) {
             return null;
         }
-        
+
         ModeDeclaration modeDecl = stylesheet.getModeDeclaration(mode);
         boolean failOnMultiple = modeDecl != null &&
             modeDecl.getOnMultipleMatch() == ModeDeclaration.OnMultipleMatch.FAIL;
-        
+
         TemplateRule firstMatch = null;
         int matchCount = 0;
-        
-        for (TemplateRule rule : candidates) {
+
+        for (TemplateRule rule : index.all) {
             if (rule.getMatchPattern().canMatchAtomicValues() &&
                 rule.getMatchPattern().matchesAtomicValue(value, context)) {
                 if (firstMatch == null) {
@@ -279,16 +271,16 @@ public final class TemplateMatcher {
                 }
             }
         }
-        
+
         if (firstMatch != null && failOnMultiple && matchCount > 1) {
             throw new RuntimeException(
                 "XTDE0540: Ambiguous rule match for atomic value " +
                 "with the same import precedence and priority");
         }
-        
+
         return firstMatch;
     }
-    
+
     /**
      * Finds the next matching template for an atomic value after the current rule (XSLT 3.0).
      *
@@ -299,17 +291,16 @@ public final class TemplateMatcher {
      * @return the next matching rule, or null if no more matches
      */
     public TemplateRule findNextMatchForAtomicValue(
-            org.bluezoo.gonzalez.transform.xpath.type.XPathValue value,
+            XPathValue value,
             String mode, TemplateRule currentRule, TransformContext context) {
-        String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = getCandidates(modeKey);
-        
-        if (candidates == null || candidates.isEmpty()) {
+        ModeIndex index = getModeIndex(normalizeModeKey(mode));
+
+        if (index == null || index.all.isEmpty()) {
             return null;
         }
-        
+
         boolean foundCurrent = false;
-        for (TemplateRule rule : candidates) {
+        for (TemplateRule rule : index.all) {
             if (foundCurrent) {
                 if (rule.getMatchPattern().canMatchAtomicValues()
                         && rule.getMatchPattern().matchesAtomicValue(value, context)) {
@@ -319,10 +310,10 @@ public final class TemplateMatcher {
                 foundCurrent = true;
             }
         }
-        
+
         return null;
     }
-    
+
     /**
      * Returns a brief description of a node for error messages.
      */
@@ -358,48 +349,41 @@ public final class TemplateMatcher {
      * @return the built-in rule
      */
     private TemplateRule getBuiltInRule(XPathNode node, String mode) {
-        // Check for XSLT 3.0 mode declaration
         ModeDeclaration modeDecl = stylesheet.getModeDeclaration(mode);
         if (modeDecl != null) {
             return getBuiltInRuleForMode(node, modeDecl);
         }
-        
-        // Default XSLT 1.0/2.0 behavior
+
         if (node.isElement() || node.getNodeType() == NodeType.ROOT) {
             return BUILTIN_ELEMENT_RULE;
         }
         if (node.isText() || node.isAttribute()) {
             return BUILTIN_TEXT_RULE;
         }
-        // Comments and PIs - do nothing
         return BUILTIN_EMPTY_RULE;
     }
-    
+
     /**
      * Returns the built-in rule based on the mode's on-no-match setting.
      */
     private TemplateRule getBuiltInRuleForMode(XPathNode node, ModeDeclaration modeDecl) {
         ModeDeclaration.OnNoMatch onNoMatch = modeDecl.getOnNoMatch();
-        
-        // XSLT 3.0 spec 6.7: document node always processes its children
-        // regardless of on-no-match setting
+
         if (node.getNodeType() == NodeType.ROOT) {
             return BUILTIN_SHALLOW_SKIP_RULE;
         }
-        
-        // XTTE3100: typed="yes" requires all nodes to be schema-typed.
-        // As a Basic XSLT processor, all nodes are untyped.
+
         if (modeDecl.isTyped() && node.isElement()) {
             return BUILTIN_TYPED_FAIL_RULE;
         }
-        
+
         switch (onNoMatch) {
             case SHALLOW_COPY:
                 return BUILTIN_SHALLOW_COPY_RULE;
-                
+
             case DEEP_COPY:
                 return BUILTIN_DEEP_COPY_RULE;
-                
+
             case TEXT_ONLY_COPY:
                 if (node.isElement()) {
                     return BUILTIN_ELEMENT_RULE;
@@ -408,16 +392,16 @@ public final class TemplateMatcher {
                     return BUILTIN_TEXT_RULE;
                 }
                 return BUILTIN_EMPTY_RULE;
-                
+
             case SHALLOW_SKIP:
                 return BUILTIN_SHALLOW_SKIP_RULE;
-                
+
             case DEEP_SKIP:
                 return BUILTIN_EMPTY_RULE;
-                
+
             case FAIL:
                 return BUILTIN_FAIL_RULE;
-                
+
             default:
                 if (node.isElement()) {
                     return BUILTIN_ELEMENT_RULE;
@@ -451,10 +435,8 @@ public final class TemplateMatcher {
     }
 
     private static TemplateRule createBuiltInRule(String type) {
-        // Built-in rules are created with placeholder bodies
-        // The actual behavior is implemented in the transformer
-        return new TemplateRule(null, "__builtin__" + type, null, 
-            Double.NEGATIVE_INFINITY, -1, Collections.emptyList(), 
+        return new TemplateRule(null, "__builtin__" + type, null,
+            Double.NEGATIVE_INFINITY, -1, Collections.emptyList(),
             SequenceNode.EMPTY);
     }
 
@@ -494,24 +476,19 @@ public final class TemplateMatcher {
      * @param context the transformation context
      * @return the next matching rule, or null if no more matches
      */
-    public TemplateRule findNextMatch(XPathNode node, String mode, 
+    public TemplateRule findNextMatch(XPathNode node, String mode,
                                        TemplateRule currentRule, TransformContext context) {
-        String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = getCandidates(modeKey);
-        
-        if (candidates == null || candidates.isEmpty()) {
+        ModeIndex index = getModeIndex(normalizeModeKey(mode));
+
+        if (index == null || index.all.isEmpty()) {
             return null;
         }
-        
-        // Find the current rule in the sorted list, then return the next match
+
         boolean foundCurrent = false;
-        NodeType nodeType = node.getNodeType();
-        for (TemplateRule rule : candidates) {
+        CandidateCursor cursor = new CandidateCursor(index.candidatesFor(node));
+        while (cursor.hasNext()) {
+            TemplateRule rule = cursor.next();
             if (foundCurrent) {
-                NodeType ruleType = rule.getMatchPattern().getMatchableNodeType();
-                if (ruleType != null && ruleType != nodeType) {
-                    continue;
-                }
                 if (rule.getMatchPattern().matches(node, context)) {
                     return rule;
                 }
@@ -519,13 +496,11 @@ public final class TemplateMatcher {
                 foundCurrent = true;
             }
         }
-        
-        // If we found and passed the current rule but no more matches,
-        // fall through to built-in rules
+
         if (foundCurrent) {
             return getBuiltInRule(node, mode);
         }
-        
+
         return null;
     }
 
@@ -563,38 +538,33 @@ public final class TemplateMatcher {
      * @param context the transformation context
      * @return the matching rule from imports, or null if no import matches
      */
-    public TemplateRule findImportMatch(XPathNode node, String mode, 
+    public TemplateRule findImportMatch(XPathNode node, String mode,
                                          TemplateRule currentRule, TransformContext context) {
         if (currentRule == null) {
             return null;
         }
-        
-        String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = getCandidates(modeKey);
-        
-        if (candidates == null || candidates.isEmpty()) {
+
+        ModeIndex index = getModeIndex(normalizeModeKey(mode));
+
+        if (index == null || index.all.isEmpty()) {
             return getBuiltInRule(node, mode);
         }
-        
+
         int currentPrecedence = currentRule.getImportPrecedence();
         int minPrecedence = currentRule.getMinImportPrecedence();
-        NodeType nodeType = node.getNodeType();
-        
-        for (TemplateRule rule : candidates) {
+
+        CandidateCursor cursor = new CandidateCursor(index.candidatesFor(node));
+        while (cursor.hasNext()) {
+            TemplateRule rule = cursor.next();
             int rulePrec = rule.getImportPrecedence();
             if (rulePrec < currentPrecedence
                     && (minPrecedence < 0 || rulePrec >= minPrecedence)) {
-                NodeType ruleType = rule.getMatchPattern().getMatchableNodeType();
-                if (ruleType != null && ruleType != nodeType) {
-                    continue;
-                }
                 if (rule.getMatchPattern().matches(node, context)) {
                     return rule;
                 }
             }
         }
-        
-        // No matching template from imports - fall through to built-in rules
+
         return getBuiltInRule(node, mode);
     }
 
@@ -608,17 +578,16 @@ public final class TemplateMatcher {
             return null;
         }
 
-        String modeKey = normalizeModeKey(mode);
-        List<TemplateRule> candidates = getCandidates(modeKey);
+        ModeIndex index = getModeIndex(normalizeModeKey(mode));
 
-        if (candidates == null || candidates.isEmpty()) {
+        if (index == null || index.all.isEmpty()) {
             return null;
         }
 
         int currentPrecedence = currentRule.getImportPrecedence();
         int minPrecedence = currentRule.getMinImportPrecedence();
 
-        for (TemplateRule rule : candidates) {
+        for (TemplateRule rule : index.all) {
             int rulePrec = rule.getImportPrecedence();
             if (rulePrec < currentPrecedence
                     && (minPrecedence < 0 || rulePrec >= minPrecedence)) {
@@ -630,6 +599,190 @@ public final class TemplateMatcher {
         }
 
         return null;
+    }
+
+    /**
+     * Per-mode index of template rules by node type and local name.
+     */
+    private static final class ModeIndex {
+        final List<TemplateRule> all = new ArrayList<>();
+        final List<TemplateRule> anyType = new ArrayList<>();
+        final Map<NodeType, TypeIndex> byType = new HashMap<>();
+
+        void add(TemplateRule rule) {
+            all.add(rule);
+            Pattern pattern = rule.getMatchPattern();
+            NodeType type = pattern.getMatchableNodeType();
+            if (type == null) {
+                anyType.add(rule);
+                return;
+            }
+            TypeIndex typeIndex = byType.get(type);
+            if (typeIndex == null) {
+                typeIndex = new TypeIndex();
+                byType.put(type, typeIndex);
+            }
+            String localName = pattern.getMatchableLocalName();
+            if (localName == null) {
+                typeIndex.anyName.add(rule);
+            } else {
+                NameBucket bucket = typeIndex.byLocalName.get(localName);
+                if (bucket == null) {
+                    bucket = new NameBucket();
+                    typeIndex.byLocalName.put(localName, bucket);
+                }
+                SimpleAttrEquality attrEq = pattern.getSimpleAttrEquality();
+                if (attrEq != null) {
+                    String key = attrEq.indexKey();
+                    List<TemplateRule> keyed = bucket.byAttrEq.get(key);
+                    if (keyed == null) {
+                        keyed = new ArrayList<>();
+                        bucket.byAttrEq.put(key, keyed);
+                    }
+                    keyed.add(rule);
+                } else {
+                    bucket.residual.add(rule);
+                }
+            }
+        }
+
+        void seal() {
+            Collections.sort(all, TEMPLATE_PRECEDENCE_COMPARATOR);
+            Collections.sort(anyType, TEMPLATE_PRECEDENCE_COMPARATOR);
+            for (TypeIndex typeIndex : byType.values()) {
+                Collections.sort(typeIndex.anyName, TEMPLATE_PRECEDENCE_COMPARATOR);
+                for (NameBucket bucket : typeIndex.byLocalName.values()) {
+                    Collections.sort(bucket.residual, TEMPLATE_PRECEDENCE_COMPARATOR);
+                    for (List<TemplateRule> keyed : bucket.byAttrEq.values()) {
+                        Collections.sort(keyed, TEMPLATE_PRECEDENCE_COMPARATOR);
+                    }
+                }
+            }
+        }
+
+        CandidateLists candidatesFor(XPathNode node) {
+            NodeType nodeType = node.getNodeType();
+            TypeIndex typeIndex = byType.get(nodeType);
+            List<TemplateRule> attrHits = null;
+            List<TemplateRule> residual = Collections.emptyList();
+            List<TemplateRule> anyName = Collections.emptyList();
+            if (typeIndex != null) {
+                anyName = typeIndex.anyName;
+                String localName = node.getLocalName();
+                if (localName != null) {
+                    NameBucket bucket = typeIndex.byLocalName.get(localName);
+                    if (bucket != null) {
+                        residual = bucket.residual;
+                        if (!bucket.byAttrEq.isEmpty()) {
+                            attrHits = collectAttrEqualityHits(bucket, node);
+                        }
+                    }
+                }
+            }
+            return new CandidateLists(attrHits, residual, anyName, anyType);
+        }
+
+        private static List<TemplateRule> collectAttrEqualityHits(
+                NameBucket bucket, XPathNode node) {
+            List<TemplateRule> hits = null;
+            Iterator<XPathNode> attrs = node.getAttributes();
+            while (attrs.hasNext()) {
+                XPathNode attr = attrs.next();
+                String key = SimpleAttrEquality.indexKey(
+                    attr.getNamespaceURI(), attr.getLocalName(),
+                    attr.getStringValue());
+                List<TemplateRule> keyed = bucket.byAttrEq.get(key);
+                if (keyed != null) {
+                    if (hits == null) {
+                        hits = new ArrayList<>(keyed.size());
+                    }
+                    hits.addAll(keyed);
+                }
+            }
+            if (hits != null && hits.size() > 1) {
+                Collections.sort(hits, TEMPLATE_PRECEDENCE_COMPARATOR);
+            }
+            return hits;
+        }
+    }
+
+    private static final class TypeIndex {
+        final Map<String, NameBucket> byLocalName = new HashMap<>();
+        final List<TemplateRule> anyName = new ArrayList<>();
+    }
+
+    /**
+     * Per-local-name rules: simple {@code @attr='v'} templates are keyed;
+     * everything else stays in {@code residual}.
+     */
+    private static final class NameBucket {
+        final Map<String, List<TemplateRule>> byAttrEq = new HashMap<>();
+        final List<TemplateRule> residual = new ArrayList<>();
+    }
+
+    /**
+     * Up to four precedence-sorted candidate lists to merge for a node.
+     */
+    private static final class CandidateLists {
+        final List<TemplateRule> attrHits;
+        final List<TemplateRule> residual;
+        final List<TemplateRule> anyName;
+        final List<TemplateRule> anyType;
+
+        CandidateLists(List<TemplateRule> attrHits, List<TemplateRule> residual,
+                       List<TemplateRule> anyName, List<TemplateRule> anyType) {
+            this.attrHits = attrHits;
+            this.residual = residual;
+            this.anyName = anyName;
+            this.anyType = anyType;
+        }
+    }
+
+    /**
+     * Merges precedence-sorted candidate lists in conflict-resolution order.
+     */
+    private static final class CandidateCursor {
+        private final List<TemplateRule>[] lists;
+        private final int[] indexes;
+
+        @SuppressWarnings("unchecked")
+        CandidateCursor(CandidateLists candidates) {
+            this.lists = new List[] {
+                candidates.attrHits,
+                candidates.residual,
+                candidates.anyName,
+                candidates.anyType
+            };
+            this.indexes = new int[lists.length];
+        }
+
+        boolean hasNext() {
+            for (int i = 0; i < lists.length; i++) {
+                List<TemplateRule> list = lists[i];
+                if (list != null && indexes[i] < list.size()) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        TemplateRule next() {
+            TemplateRule best = null;
+            int bestList = -1;
+            for (int i = 0; i < lists.length; i++) {
+                List<TemplateRule> list = lists[i];
+                if (list != null && indexes[i] < list.size()) {
+                    TemplateRule r = list.get(indexes[i]);
+                    if (best == null
+                            || TEMPLATE_PRECEDENCE_COMPARATOR.compare(r, best) < 0) {
+                        best = r;
+                        bestList = i;
+                    }
+                }
+            }
+            indexes[bestList]++;
+            return best;
+        }
     }
 
 }

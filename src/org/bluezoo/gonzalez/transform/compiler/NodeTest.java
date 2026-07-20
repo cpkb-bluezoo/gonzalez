@@ -57,6 +57,16 @@ interface NodeTest {
     }
 
     /**
+     * Returns the single local name this test can match, or null if it can
+     * match any local name (e.g. {@code *} or {@code node()}).
+     *
+     * @return the matchable local name, or null for any
+     */
+    default String getMatchableLocalName() {
+        return null;
+    }
+
+    /**
      * Parses a name test string into a structured NodeTest.
      * The string should already have namespace prefixes resolved to Clark
      * notation by {@code resolvePatternNamespaces}.

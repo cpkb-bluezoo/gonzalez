@@ -106,4 +106,9 @@ final class ElementTest implements NodeTest {
     public NodeType getMatchableNodeType() {
         return NodeType.ELEMENT;
     }
+
+    @Override
+    public String getMatchableLocalName() {
+        return localName;
+    }
 }

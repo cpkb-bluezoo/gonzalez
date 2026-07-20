@@ -107,4 +107,9 @@ final class AttributeTest implements NodeTest {
     public NodeType getMatchableNodeType() {
         return NodeType.ATTRIBUTE;
     }
+
+    @Override
+    public String getMatchableLocalName() {
+        return localName;
+    }
 }

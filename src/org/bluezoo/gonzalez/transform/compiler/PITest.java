@@ -58,6 +58,11 @@ final class PITest implements NodeTest {
     }
 
     @Override
+    public String getMatchableLocalName() {
+        return target;
+    }
+
+    @Override
     public String toString() {
         if (target == null) {
             return "processing-instruction()";

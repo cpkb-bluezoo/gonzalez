@@ -89,6 +89,28 @@ public interface Pattern {
     }
 
     /**
+     * Returns the single local name this pattern can match, or null if it can
+     * match any/unknown local names. Used with {@link #getMatchableNodeType()}
+     * to index template rules by name.
+     *
+     * @return the matchable local name, or null for any/unknown
+     */
+    default String getMatchableLocalName() {
+        return null;
+    }
+
+    /**
+     * Returns a simple {@code @attr = 'literal'} predicate fingerprint when
+     * this pattern is exactly that form, or null otherwise. Used to index
+     * template rules by attribute value.
+     *
+     * @return the attribute equality, or null if not a simple attr-equality pattern
+     */
+    default SimpleAttrEquality getSimpleAttrEquality() {
+        return null;
+    }
+
+    /**
      * Returns the default priority for this pattern.
      *
      * <p>Default priorities are:

@@ -33,10 +33,13 @@ import org.bluezoo.gonzalez.transform.xpath.expr.BinaryExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
 import org.bluezoo.gonzalez.transform.xpath.expr.FunctionCall;
 import org.bluezoo.gonzalez.transform.xpath.expr.Literal;
+import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
 import org.bluezoo.gonzalez.transform.xpath.expr.Operator;
+import org.bluezoo.gonzalez.transform.xpath.expr.Step;
 import org.bluezoo.gonzalez.transform.xpath.expr.UnaryExpr;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
+import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathValue;
 
 /**
@@ -52,9 +55,16 @@ abstract class AbstractPattern implements Pattern {
     static final Map<String, XPathExpression> xpathCache = new HashMap<>();
     /** Cache: whether a predicate expression needs sibling position/size. */
     private static final Map<String, Boolean> needsPositionCache = new HashMap<>();
+    /** Cache: simple @attr='literal' fingerprints extracted from predicates. */
+    private static final Map<String, SimpleAttrEquality> simpleAttrEqualityCache =
+        new HashMap<>();
+    private static final SimpleAttrEquality NO_SIMPLE_ATTR_EQUALITY =
+        new SimpleAttrEquality("", "", "");
 
     protected final String patternStr;
     protected final String predicateStr;
+    private SimpleAttrEquality cachedSimpleAttrEquality;
+    private boolean simpleAttrEqualityResolved;
 
     AbstractPattern(String patternStr, String predicateStr) {
         this.patternStr = patternStr;
@@ -63,6 +73,15 @@ abstract class AbstractPattern implements Pattern {
 
     String getPredicateStr() {
         return predicateStr;
+    }
+
+    @Override
+    public SimpleAttrEquality getSimpleAttrEquality() {
+        if (!simpleAttrEqualityResolved) {
+            cachedSimpleAttrEquality = analyzeSimpleAttrEquality(predicateStr);
+            simpleAttrEqualityResolved = true;
+        }
+        return cachedSimpleAttrEquality;
     }
 
     /**
@@ -91,6 +110,17 @@ abstract class AbstractPattern implements Pattern {
     protected boolean evaluatePredicate(XPathNode node,
                                         TransformContext context,
                                         XPathNode targetNode) {
+        // Fast path: @attr = 'literal' — avoid XPath context / expression eval.
+        SimpleAttrEquality attrEq = getSimpleAttrEquality();
+        if (attrEq != null) {
+            XPathNode attr = node.getAttribute(attrEq.getNamespaceURI(),
+                attrEq.getLocalName());
+            if (attr == null) {
+                return false;
+            }
+            return attrEq.getValue().equals(attr.getStringValue());
+        }
+
         try {
             XPathExpression predExpr = xpathCache.get(predicateStr);
             if (predExpr == null) {
@@ -157,6 +187,113 @@ abstract class AbstractPattern implements Pattern {
             }
             return false;
         }
+    }
+
+    /**
+     * Analyzes a predicate string for a simple {@code @attr = 'literal'} form.
+     *
+     * @param pred the predicate text, or null
+     * @return the equality fingerprint, or null if not simple
+     */
+    static SimpleAttrEquality analyzeSimpleAttrEquality(String pred) {
+        if (pred == null || pred.isEmpty()) {
+            return null;
+        }
+        SimpleAttrEquality cached = simpleAttrEqualityCache.get(pred);
+        if (cached != null) {
+            return cached == NO_SIMPLE_ATTR_EQUALITY ? null : cached;
+        }
+        SimpleAttrEquality result = null;
+        try {
+            XPathExpression predExpr = xpathCache.get(pred);
+            if (predExpr == null) {
+                predExpr = XPathExpression.compile(pred, null);
+                xpathCache.put(pred, predExpr);
+            }
+            result = extractSimpleAttrEquality(predExpr.getCompiledExpr());
+        } catch (Exception e) {
+            result = null;
+        }
+        simpleAttrEqualityCache.put(pred,
+            result == null ? NO_SIMPLE_ATTR_EQUALITY : result);
+        return result;
+    }
+
+    private static SimpleAttrEquality extractSimpleAttrEquality(Expr expr) {
+        if (!(expr instanceof BinaryExpr)) {
+            return null;
+        }
+        BinaryExpr be = (BinaryExpr) expr;
+        Operator op = be.getOperator();
+        if (op != Operator.EQUALS && op != Operator.VALUE_EQUALS) {
+            return null;
+        }
+
+        Expr left = be.getLeft();
+        Expr right = be.getRight();
+        String literal = stringLiteralValue(right);
+        Expr pathExpr = left;
+        if (literal == null) {
+            literal = stringLiteralValue(left);
+            pathExpr = right;
+        }
+        if (literal == null) {
+            return null;
+        }
+
+        String[] attr = extractAttributeName(pathExpr);
+        if (attr == null) {
+            return null;
+        }
+        return new SimpleAttrEquality(attr[0], attr[1], literal);
+    }
+
+    private static String stringLiteralValue(Expr expr) {
+        if (!(expr instanceof Literal)) {
+            return null;
+        }
+        XPathValue value = ((Literal) expr).getValue();
+        if (value instanceof XPathString) {
+            return ((XPathString) value).getValue();
+        }
+        return null;
+    }
+
+    /**
+     * Returns {namespaceURI, localName} for a relative {@code @name} path,
+     * or null if the expression is not a single attribute name step.
+     */
+    private static String[] extractAttributeName(Expr expr) {
+        if (!(expr instanceof LocationPath)) {
+            return null;
+        }
+        LocationPath path = (LocationPath) expr;
+        if (path.isAbsolute()) {
+            return null;
+        }
+        List<Step> steps = path.getSteps();
+        if (steps.size() != 1) {
+            return null;
+        }
+        Step step = steps.get(0);
+        if (step.getAxis() != Step.Axis.ATTRIBUTE || step.hasPredicates()) {
+            return null;
+        }
+        Step.NodeTestType test = step.getNodeTestType();
+        String local = step.getLocalName();
+        if (local == null) {
+            return null;
+        }
+        if (test == Step.NodeTestType.NAME) {
+            return new String[] { "", local };
+        }
+        if (test == Step.NodeTestType.QNAME) {
+            String ns = step.getNamespaceURI();
+            return new String[] { ns == null ? "" : ns, local };
+        }
+        // *:local — index by local name with empty ns key would be wrong;
+        // skip indexing for any-namespace attribute tests.
+        return null;
     }
 
     /**

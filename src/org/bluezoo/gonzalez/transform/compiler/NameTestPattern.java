@@ -87,6 +87,11 @@ final class NameTestPattern extends AbstractPattern {
         return nodeTest.getMatchableNodeType();
     }
 
+    @Override
+    public String getMatchableLocalName() {
+        return nodeTest.getMatchableLocalName();
+    }
+
     NodeTest getNodeTest() {
         return nodeTest;
     }
