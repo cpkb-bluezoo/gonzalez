@@ -754,6 +754,27 @@ public class StreamingNode implements XPathNode, XPathNodeWithBaseURI {
         return named;
     }
 
+    /**
+     * Returns the first element child with the given local name, or null.
+     * Linear scan — preferred for small parents / singleton lookups where
+     * building the local-name index would cost more than it saves.
+     *
+     * @param localName the element local name
+     * @return the first matching child, or null
+     */
+    public StreamingNode getFirstElementChildByLocalName(String localName) {
+        if (localName == null) {
+            return null;
+        }
+        for (int i = 0; i < children.size(); i++) {
+            StreamingNode child = children.get(i);
+            if (child.nodeType == NodeType.ELEMENT && localName.equals(child.localName)) {
+                return child;
+            }
+        }
+        return null;
+    }
+
     private Map<String, List<StreamingNode>> buildElementChildrenByLocalName() {
         Map<String, List<StreamingNode>> index = new HashMap<>();
         for (int i = 0; i < children.size(); i++) {

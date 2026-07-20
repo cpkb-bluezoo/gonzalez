@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez.transform.ast;
 
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 import org.xml.sax.SAXException;
@@ -82,6 +83,39 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
     public void execute(TransformContext context, 
                        OutputHandler output) throws SAXException {
         try {
+            // Hot path: select="child::name" (e.g. books-1.0 title)
+            String childName = simpleChildNameSelect();
+            if (childName != null && separatorAvt == null && staticBaseURI == null) {
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode != null) {
+                    XPathNode child = null;
+                    if (contextNode instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
+                        child = ((org.bluezoo.gonzalez.transform.runtime.StreamingNode) contextNode)
+                            .getFirstElementChildByLocalName(childName);
+                    } else {
+                        Iterator<XPathNode> it = contextNode.getChildren();
+                        while (it.hasNext()) {
+                            XPathNode c = it.next();
+                            if (c.getNodeType() == NodeType.ELEMENT
+                                    && childName.equals(c.getLocalName())) {
+                                child = c;
+                                break;
+                            }
+                        }
+                    }
+                    if (child != null) {
+                        String value = child.getStringValue();
+                        if (disableEscaping) {
+                            output.charactersRaw(value);
+                        } else {
+                            output.characters(value);
+                        }
+                        return;
+                    }
+                    return;
+                }
+            }
+
             // Hot path: select="." — avoid node-set allocation and AVT separator work
             if (isDotSelect() && separatorAvt == null && staticBaseURI == null) {
                 XPathNode node = context.getContextNode();
@@ -244,6 +278,36 @@ public class ValueOfNode extends XSLTInstruction implements ExpressionHolder {
         return step.getAxis() == org.bluezoo.gonzalez.transform.xpath.expr.Step.Axis.SELF
             && step.getNodeTestType() == org.bluezoo.gonzalez.transform.xpath.expr.Step.NodeTestType.NODE
             && !step.hasPredicates();
+    }
+
+    /**
+     * Local name of a simple unprefixed {@code child::name} select, or null.
+     */
+    private String simpleChildNameSelect() {
+        if (selectExpr == null) {
+            return null;
+        }
+        org.bluezoo.gonzalez.transform.xpath.expr.Expr compiled = selectExpr.getCompiledExpr();
+        if (!(compiled instanceof org.bluezoo.gonzalez.transform.xpath.expr.LocationPath)) {
+            return null;
+        }
+        org.bluezoo.gonzalez.transform.xpath.expr.LocationPath path =
+            (org.bluezoo.gonzalez.transform.xpath.expr.LocationPath) compiled;
+        if (path.isAbsolute()) {
+            return null;
+        }
+        java.util.List<org.bluezoo.gonzalez.transform.xpath.expr.Step> steps = path.getSteps();
+        if (steps.size() != 1) {
+            return null;
+        }
+        org.bluezoo.gonzalez.transform.xpath.expr.Step step = steps.get(0);
+        if (step.getAxis() != org.bluezoo.gonzalez.transform.xpath.expr.Step.Axis.CHILD
+                || step.hasPredicates()
+                || step.getNodeTestType() != org.bluezoo.gonzalez.transform.xpath.expr.Step.NodeTestType.NAME
+                || step.getLocalName() == null) {
+            return null;
+        }
+        return step.getLocalName();
     }
 
     /**

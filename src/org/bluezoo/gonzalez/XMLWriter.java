@@ -30,6 +30,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
@@ -118,6 +119,8 @@ public class XMLWriter {
 
     // Namespace context: maps prefix -> URI at current scope
     private final Deque<Map<String, String>> namespaceStack = new ArrayDeque<Map<String, String>>();
+    /** Shared empty scope; replaced with a HashMap on first declaration in the element. */
+    private static final Map<String, String> EMPTY_NS_SCOPE = Collections.emptyMap();
 
     // Pending start tag that hasn't been closed yet (for empty element optimization)
     private boolean pendingStartTag = false;
@@ -196,7 +199,7 @@ public class XMLWriter {
         this.sendThreshold = (int) (bufferCapacity * SEND_THRESHOLD);
         this.charset = StandardCharsets.UTF_8;
         initEncodedAscii();
-        namespaceStack.push(new HashMap<String, String>());
+        namespaceStack.push(EMPTY_NS_SCOPE);
     }
 
     /**
@@ -309,7 +312,7 @@ public class XMLWriter {
         writeRawString("<");
         writeRawString(localName);
 
-        namespaceStack.push(new HashMap<String, String>());
+        namespaceStack.push(EMPTY_NS_SCOPE);
         elementStack.push(new ElementInfo(localName, hasContent, hasNestedElements));
 
         pendingStartTag = true;
@@ -353,7 +356,7 @@ public class XMLWriter {
         writeRawString("<");
         writeRawString(qName);
 
-        namespaceStack.push(new HashMap<String, String>());
+        namespaceStack.push(EMPTY_NS_SCOPE);
         elementStack.push(new ElementInfo(qName, hasContent, hasNestedElements));
 
         pendingStartTag = true;
@@ -400,7 +403,7 @@ public class XMLWriter {
         writeRawString("<");
         writeRawString(qName);
 
-        namespaceStack.push(new HashMap<String, String>());
+        namespaceStack.push(EMPTY_NS_SCOPE);
         elementStack.push(new ElementInfo(qName, hasContent, hasNestedElements));
 
         pendingStartTag = true;
@@ -550,7 +553,7 @@ public class XMLWriter {
             return;
         }
         writeNamespaceDeclaration(prefix, namespaceURI);
-        namespaceStack.peek().put(prefix, namespaceURI != null ? namespaceURI : "");
+        mutableNamespaceScope().put(prefix, namespaceURI != null ? namespaceURI : "");
     }
 
     /**
@@ -567,7 +570,21 @@ public class XMLWriter {
             throw new IOException("writeDefaultNamespace() called outside of start element");
         }
         writeNamespaceDeclaration("", namespaceURI);
-        namespaceStack.peek().put("", namespaceURI != null ? namespaceURI : "");
+        mutableNamespaceScope().put("", namespaceURI != null ? namespaceURI : "");
+    }
+
+    /**
+     * Returns the current element's namespace scope map, allocating one if
+     * the placeholder empty scope is still in place.
+     */
+    private Map<String, String> mutableNamespaceScope() {
+        Map<String, String> scope = namespaceStack.peek();
+        if (scope == EMPTY_NS_SCOPE || scope.isEmpty()) {
+            namespaceStack.pop();
+            scope = new HashMap<String, String>();
+            namespaceStack.push(scope);
+        }
+        return scope;
     }
 
     // ========== Character Methods ==========
@@ -588,8 +605,15 @@ public class XMLWriter {
         if (text == null || text.isEmpty()) {
             return;
         }
-        char[] ch = text.toCharArray();
-        writeCharacters(ch, 0, ch.length);
+        closePendingStartTag(true);
+        if (inCDATA) {
+            char[] ch = text.toCharArray();
+            validateCDATAContent(ch, 0, ch.length);
+            writeRawChars(ch, 0, ch.length);
+        } else {
+            writeEscapedCharacters(text);
+        }
+        sendIfNeeded();
     }
 
     /**
@@ -1322,6 +1346,27 @@ public class XMLWriter {
      */
     private void writeRawString(String s) throws IOException {
         emitBOMIfNeeded();
+        int len = s.length();
+        if (len == 0) {
+            return;
+        }
+        // Fast path: ASCII under UTF-8 (common for markup delimiters and names)
+        if (charset == StandardCharsets.UTF_8) {
+            boolean ascii = true;
+            for (int i = 0; i < len; i++) {
+                if (s.charAt(i) > 0x7F) {
+                    ascii = false;
+                    break;
+                }
+            }
+            if (ascii) {
+                ensureCapacity(len);
+                for (int i = 0; i < len; i++) {
+                    buffer.put((byte) s.charAt(i));
+                }
+                return;
+            }
+        }
         byte[] bytes = s.getBytes(charset);
         ensureCapacity(bytes.length);
         buffer.put(bytes);
@@ -1435,28 +1480,42 @@ public class XMLWriter {
         for (int i = start; i < end; ) {
             int codePoint = Character.codePointAt(ch, i);
             int charCount = Character.charCount(codePoint);
-
-            if (codePoint == '<') {
-                writeRawString("&lt;");
-            } else if (codePoint == '>') {
-                writeRawString("&gt;");
-            } else if (codePoint == '&') {
-                writeRawString("&amp;");
-            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
-                       && (codePoint != '\r' || xml11)) {
-                writeCharacterReference(codePoint);
-            } else if (codePoint < 0x80) {
-                ensureCapacity(maxAsciiBytes);
-                writeAscii(codePoint);
-            } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
-                writeCharacterReference(codePoint);
-            } else if (xml11 && codePoint == 0x2028) {
-                writeCharacterReference(codePoint);
-            } else {
-                writeEncodedCodePoint(codePoint);
-            }
-
+            writeEscapedCodePoint(codePoint);
             i += charCount;
+        }
+    }
+
+    /**
+     * Writes character content with XML escaping, without copying to a char[].
+     */
+    private void writeEscapedCharacters(String s) throws IOException {
+        for (int i = 0; i < s.length(); ) {
+            int codePoint = s.codePointAt(i);
+            int charCount = Character.charCount(codePoint);
+            writeEscapedCodePoint(codePoint);
+            i += charCount;
+        }
+    }
+
+    private void writeEscapedCodePoint(int codePoint) throws IOException {
+        if (codePoint == '<') {
+            writeRawString("&lt;");
+        } else if (codePoint == '>') {
+            writeRawString("&gt;");
+        } else if (codePoint == '&') {
+            writeRawString("&amp;");
+        } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
+                   && (codePoint != '\r' || xml11)) {
+            writeCharacterReference(codePoint);
+        } else if (codePoint < 0x80) {
+            ensureCapacity(maxAsciiBytes);
+            writeAscii(codePoint);
+        } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
+            writeCharacterReference(codePoint);
+        } else if (xml11 && codePoint == 0x2028) {
+            writeCharacterReference(codePoint);
+        } else {
+            writeEncodedCodePoint(codePoint);
         }
     }
 

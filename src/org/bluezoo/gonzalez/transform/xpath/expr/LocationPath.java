@@ -179,6 +179,64 @@ public final class LocationPath implements Expr {
                 }
                 return XPathNodeSet.of(attr);
             }
+            // Hot path: child::name with no predicates (books-1.0 author/title, etc.)
+            if (step.getAxis() == Step.Axis.CHILD
+                    && !step.hasPredicates()
+                    && step.getLocalName() != null
+                    && (step.getNodeTestType() == Step.NodeTestType.NAME
+                        || step.getNodeTestType() == Step.NodeTestType.QNAME
+                        || step.getNodeTestType() == Step.NodeTestType.ANY_NAMESPACE)) {
+                XPathNode contextNode = context.getContextNode();
+                if (contextNode == null) {
+                    return XPathNodeSet.EMPTY;
+                }
+                if (contextNode instanceof org.bluezoo.gonzalez.transform.runtime.StreamingNode) {
+                    List<org.bluezoo.gonzalez.transform.runtime.StreamingNode> named =
+                        ((org.bluezoo.gonzalez.transform.runtime.StreamingNode) contextNode)
+                            .getElementChildrenByLocalName(step.getLocalName());
+                    if (named.isEmpty()) {
+                        return XPathNodeSet.EMPTY;
+                    }
+                    if (named.size() == 1) {
+                        XPathNode only = named.get(0);
+                        if (!matchesNodeTest(step, only, context)) {
+                            return XPathNodeSet.EMPTY;
+                        }
+                        return XPathNodeSet.of(only);
+                    }
+                    List<XPathNode> matched = new ArrayList<>(named.size());
+                    for (int i = 0; i < named.size(); i++) {
+                        XPathNode candidate = named.get(i);
+                        if (matchesNodeTest(step, candidate, context)) {
+                            matched.add(candidate);
+                        }
+                    }
+                    if (matched.isEmpty()) {
+                        return XPathNodeSet.EMPTY;
+                    }
+                    if (matched.size() == 1) {
+                        return XPathNodeSet.of(matched.get(0));
+                    }
+                    return XPathNodeSet.ordered(matched);
+                }
+                // Non-streaming: collect all matching element children
+                List<XPathNode> matched = new ArrayList<>();
+                Iterator<XPathNode> children = contextNode.getChildren();
+                while (children.hasNext()) {
+                    XPathNode candidate = children.next();
+                    if (candidate.getNodeType() == NodeType.ELEMENT
+                            && matchesNodeTest(step, candidate, context)) {
+                        matched.add(candidate);
+                    }
+                }
+                if (matched.isEmpty()) {
+                    return XPathNodeSet.EMPTY;
+                }
+                if (matched.size() == 1) {
+                    return XPathNodeSet.of(matched.get(0));
+                }
+                return XPathNodeSet.ordered(matched);
+            }
         }
         
         // XPTY0020: axis step on non-node context item (XPath 2.0+)
