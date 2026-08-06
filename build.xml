@@ -90,7 +90,7 @@
   <!-- Prepare XSLT source tree (module-info + transform + schema packages) -->
   <target name='prepare-xslt-src'>
     <mkdir dir='${xslt.srcdir}'/>
-    <copy file='module/module-info-xslt.java' tofile='${xslt.srcdir}/module-info.java'/>
+    <copy file='module/xslt/module-info.java' tofile='${xslt.srcdir}/module-info.java'/>
     <copy todir='${xslt.srcdir}'>
       <fileset dir='${src}'>
         <include name='org/bluezoo/gonzalez/transform/**'/>
@@ -179,7 +179,7 @@
       <fileset dir='${build.xslt}' excludes='module-info.class'/>
     </copy>
     <delete file='${build.fat}/module-info.class' failonerror='false'/>
-    <copy file='module/module-info-full.java' tofile='${build.fat}/module-info.java'/>
+    <copy file='module/full/module-info.java' tofile='${build.fat}/module-info.java'/>
     <javac srcdir='${build.fat}' destdir='${build.fat}' debug='true' includeantruntime='false'
            release='9'>
       <include name='module-info.java'/>
