@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  This POM declares Maven coordinates and the metadata Maven Central's
+  Publisher API validates (name/description/url/licenses/developers/scm)
+  for the "fat" artifact (core + xslt combined into one jar, for users who
+  want everything without wiring up the split modules themselves - it
+  still needs jsonparser as an external runtime dependency for the XSLT
+  parts, since jsonparser's own classes are not repackaged inside it). It
+  performs no build or deploy action of its own: Ant (build.xml) is the
+  sole build tool, and this file is only consumed by
+  scripts/publish-to-central.sh when assembling the Central upload bundle.
+
+  See gonzalez-core-pom.xml for the general notes on why this file exists
+  separately from the root pom.xml (which is a distribution POM for
+  GitHub Packages, sharing this artifactId but published via an unrelated
+  `mvn deploy:deploy-file` workflow).
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>org.bluezoo</groupId>
+    <artifactId>gonzalez</artifactId>
+    <version>1.2.0</version>
+    <packaging>jar</packaging>
+
+    <name>Gonzalez</name>
+    <description>Non-blocking streaming XML parser for event-driven I/O, combined with XSLT 1.0/2.0/3.0 transformation and XML Schema support in a single jar.</description>
+    <url>https://github.com/cpkb-bluezoo/gonzalez</url>
+
+    <licenses>
+        <license>
+            <name>GNU Lesser General Public License v3.0</name>
+            <url>https://www.gnu.org/licenses/lgpl-3.0.html</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Chris Burdess</name>
+            <email>dog@gnu.org</email>
+        </developer>
+    </developers>
+
+    <scm>
+        <connection>scm:git:git://github.com/cpkb-bluezoo/gonzalez.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/cpkb-bluezoo/gonzalez.git</developerConnection>
+        <url>https://github.com/cpkb-bluezoo/gonzalez</url>
+    </scm>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.bluezoo</groupId>
+            <artifactId>jsonparser</artifactId>
+            <version>1.3</version>
+        </dependency>
+    </dependencies>
+
+</project>

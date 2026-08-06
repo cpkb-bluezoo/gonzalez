@@ -205,15 +205,86 @@
   <!-- Legacy alias -->
   <target name='jar' depends='jar-all'/>
 
-  <!-- API documentation -->
-  <target name='javadoc'>
+  <!-- API documentation. Depends only on resolve-deps (a jar download, not
+       a compile) so that classes referencing org.bluezoo.json.* (from the
+       transform package) can be resolved - without this classpath entry,
+       javadoc silently emits "cannot find symbol" errors for those classes
+       (Ant's javadoc task does not fail the build on javac-style errors),
+       producing broken docs instead of a build failure. module-info.java
+       is excluded: its presence puts javadoc into module mode, and since
+       jsonparser.jar has no module descriptor of its own, strong
+       encapsulation then blocks visibility into it ("package ... is not
+       visible ... module ... does not read it") even with the classpath
+       entry above - a plain classpath-mode scan avoids that entirely and
+       is sufficient for docs. -->
+  <target name='javadoc' depends='resolve-deps'>
     <mkdir dir='${doc}'/>
-    <javadoc sourcepath='${src}' destdir='${doc}'/>
+    <javadoc destdir='${doc}'>
+      <classpath>
+        <pathelement location='${lib}/${jsonparser.jar}'/>
+      </classpath>
+      <fileset dir='${src}'>
+        <include name='**/*.java'/>
+        <exclude name='module-info.java'/>
+      </fileset>
+    </javadoc>
   </target>
 
   <!-- Distribution target: core, xslt, and fat jars -->
   <target name='dist' depends='jar-core,jar-xslt,jar-all'/>
-  
+
+  <!-- Sources jar for Maven Central (core module only) - mirrors jar-core's
+       own package excludes. No depends: archiving .java files needs no
+       compile step first. -->
+  <target name='release-sources-core'>
+    <mkdir dir='${dist}'/>
+    <jar jarfile='${dist}/gonzalez-core-${version}-sources.jar'>
+      <fileset dir='${src}'>
+        <exclude name='org/bluezoo/gonzalez/transform/**'/>
+        <exclude name='org/bluezoo/gonzalez/schema/**'/>
+      </fileset>
+    </jar>
+  </target>
+
+  <!-- Sources jar for Maven Central (XSLT module only) - jars the same
+       already-assembled tree build-xslt itself compiles from. Depends
+       only on prepare-xslt-src (file copying), not on any compile. -->
+  <target name='release-sources-xslt' depends='prepare-xslt-src'>
+    <mkdir dir='${dist}'/>
+    <jar jarfile='${dist}/gonzalez-xslt-${version}-sources.jar' basedir='${xslt.srcdir}'/>
+  </target>
+
+  <!-- Sources jar for Maven Central (fat jar: core + xslt combined) -
+       mirrors jar-all's own module-info.java substitution. -->
+  <target name='release-sources-fat'>
+    <mkdir dir='${dist}'/>
+    <jar jarfile='${dist}/gonzalez-${version}-sources.jar'>
+      <fileset dir='${src}'>
+        <exclude name='module-info.java'/>
+      </fileset>
+      <zipfileset file='module/full/module-info.java' fullpath='module-info.java'/>
+    </jar>
+  </target>
+
+  <target name='release-sources' depends='release-sources-core,release-sources-xslt,release-sources-fat'/>
+
+  <!-- Javadoc jar for Maven Central - one shared javadoc build (covering
+       the whole source tree) reused for all three published artifacts;
+       see scripts/publish-to-central.sh, which copies/renames this single
+       jar into each artifact's bundle. No depends="build": javadoc
+       generation is a source-level operation and needs nothing compiled
+       first (see jsonparser's build.xml for the bug this avoids). -->
+  <target name='release-javadoc' depends='javadoc'>
+    <mkdir dir='${dist}'/>
+    <jar jarfile='${dist}/gonzalez-${version}-javadoc.jar' basedir='${doc}'/>
+  </target>
+
+  <!-- Everything scripts/publish-to-central.sh needs in ${dist}: the
+       three main jars, their three sources jars, and the one shared
+       javadoc jar. -->
+  <target name='release-central' depends='dist,release-sources,release-javadoc'
+          description='Build all artifacts needed for a Maven Central publish'/>
+
   <!-- Download JUnit test framework dependencies from Maven Central -->
   <target name='resolve-test-deps' description='Download JUnit test dependencies'>
     <mkdir dir='${test}/junit/lib'/>
