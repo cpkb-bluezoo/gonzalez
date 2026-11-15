@@ -21,14 +21,13 @@
 
 package org.bluezoo.gonzalez.transform.ast;
 
-import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.XMLParser;
 import org.bluezoo.gonzalez.transform.runtime.AccumulatorManager;
 import org.bluezoo.gonzalez.transform.runtime.OutputHandler;
 import org.bluezoo.gonzalez.transform.runtime.SecureGonzalezParser;
 import org.bluezoo.gonzalez.transform.runtime.StreamingContext;
 import org.bluezoo.gonzalez.transform.runtime.StreamingTransformHandler;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
-import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
 import java.io.IOException;
@@ -126,13 +125,12 @@ public final class StreamNode implements XSLTNode {
             );
 
             // Parse the external document in streaming mode
-            Parser parser = SecureGonzalezParser.create(handler);
+            XMLParser parser = SecureGonzalezParser.create(handler);
+            parser.setSystemId(resolvedHref);
             
             URL url = new URL(resolvedHref);
             try (InputStream is = url.openStream()) {
-                InputSource inputSource = new InputSource(is);
-                inputSource.setSystemId(resolvedHref);
-                parser.parse(inputSource);
+                parser.parse(is);
             }
 
         } catch (IOException e) {

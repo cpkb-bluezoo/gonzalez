@@ -53,16 +53,18 @@ import org.xml.sax.ext.LexicalHandler;
 /**
  * Gonzalez streaming XML parser.
  *
- * <p>This class provides the public interface to the Gonzalez parser. As a
- * SAX2 XMLReader, it allows it to be used with existing SAX2 frameworks and
- * applications. 
- * Internally, it drives a streaming {@link Scanner}/{@link SAXAdapter}
- * chain, fed decoded characters by an {@link ExternalEntityDecoder}.
- * {@link Scanner} enforces the security/entity
- * settings - external entity fetch gating, DOCTYPE rejection, protocol
- * allow-listing, expansion limiting (snapshotted into a {@link
- * ScannerSettings} when the chain is built) - as well as
- * {@code EntityResolver2} resolution.
+ * <p>This class is the SAX2 face of the Gonzalez parser. As an XMLReader,
+ * it allows the parser to be used with existing SAX2 frameworks and
+ * applications.
+ * It is a wrapper: the parsing itself is done by an {@link XMLParser},
+ * which knows nothing of SAX. This class translates SAX feature and
+ * property URIs into that parser's typed configuration, resolves an
+ * {@code InputSource} to a byte stream, and installs a {@link SAXAdapter}
+ * to turn the native {@link XMLHandler} events into ContentHandler,
+ * LexicalHandler, DeclHandler and DTDHandler callbacks.
+ *
+ * <p>An application that does not need SAX can use {@link XMLParser}
+ * directly.
  *
  * <p>The same Parser instance to be reused for multiple documents by calling
  * {@link #reset()} between parses.
@@ -98,103 +100,71 @@ import org.xml.sax.ext.LexicalHandler;
 public class Parser implements XMLReader, PSVIProvider {
 
     /**
-     * The external entity decoder that converts bytes to characters for
-     * {@link Scanner}. {@link Scanner} itself is inherently
-     * single-document (it has no {@code reset()}), so this - and {@link
-     * #scanner} - are (re)built lazily, once per document, by {@link
-     * #ensureScannerReady()}.
+     * The native parser this reader wraps. It holds every setting that is
+     * not SAX-specific, so that there is one copy of each.
      */
-    private ExternalEntityDecoder decoder;
+    private final XMLParser core = new XMLParser();
 
-    /** Non-null only once {@link #ensureScannerReady()} has run for the
-     *  document currently being received. */
-    private Scanner scanner;
+    // ===== SAX-side configuration: the handlers the adapter reports to. =====
+    private ContentHandler contentHandler;
+    private DTDHandler dtdHandler;
+    private ErrorHandler errorHandler;
+    private LexicalHandler lexicalHandler;
+    private DeclHandler declHandler;
 
-    // ===== Configuration accumulated before parsing starts - read by
-    // ensureScannerReady() when it (re)builds the Scanner chain. =====
-    private ContentHandler scannerContentHandler;
-    private DTDHandler scannerDtdHandler;
-    private ErrorHandler scannerErrorHandler;
-    private EntityResolver scannerEntityResolver;
-    private LexicalHandler scannerLexicalHandler;
-    private DeclHandler scannerDeclHandler;
-    private XMLHandler scannerXMLHandler;
-    private boolean scannerNamespaces = true;
-    private boolean scannerNamespacePrefixes;
-    private boolean scannerValidation;
-    private boolean scannerExternalGeneralEntities;
-    private boolean scannerExternalParameterEntities;
-    private boolean scannerDisallowDoctypeDecl;
-    private boolean scannerResolveDTDURIs = true;
-    private boolean scannerStringInterning = true;
-    private boolean scannerXmlnsUris;
-    private String scannerAccessExternalDTD = "";
-    private int scannerEntityExpansionLimit = ScannerSettings.DEFAULT_EXPANSION_LIMIT;
-    private String scannerPublicId;
-    private String scannerSystemId;
+    /** The native handler chosen with {@link #setXMLHandler}, or null for
+     *  the SAX path. */
+    private XMLHandler xmlHandler;
 
-    /** Document standalone status before {@link #scanner} exists (always
-     *  false - the declared value lives on the live Scanner once built;
-     *  see {@link Scanner#isStandalone}). */
-    private boolean scannerStandalone;
+    /** The SAX string-interning feature. Reported back as set; names are
+     *  interned either way. */
+    private boolean stringInterning = true;
 
-    /** The adapter feeding {@link #scannerContentHandler} and friends -
-     *  kept so a handler set/changed after {@link #ensureScannerReady()}
-     *  has run still reaches the live pipeline. Non-null only when {@link
-     *  #scanner} is. */
-    private SAXAdapter scannerAdapter;
+    /** True once {@link #prepare()} has run for the document currently
+     *  being received, until {@link #reset()}. */
+    private boolean started;
+
+    /** The adapter feeding {@link #contentHandler} and friends - kept so a
+     *  handler set or changed after {@link #prepare()} has run still
+     *  reaches the live pipeline. Non-null only on the SAX path, and only
+     *  while {@link #started}. */
+    private SAXAdapter adapter;
 
     /**
-     * Reusable byte buffer for parse() methods.
-     * Kept across resets to avoid per-parse allocation.
-     */
-    private ByteBuffer parseBuffer;
-
-    /**
-     * Creates a new Parser instance. The internal {@link Scanner} chain is
-     * built lazily, once per document, when parsing begins - see {@link
-     * #ensureScannerReady()}.
+     * Creates a new Parser instance. The pipeline is built lazily, once
+     * per document, when parsing begins - see {@link #prepare()}.
      */
     public Parser() {
-        // decoder/scanner are built lazily by ensureScannerReady()
     }
 
     /**
-     * (Re)builds the {@link #scanner}/{@link #decoder} pair, if not already
-     * built for the document currently being received - a no-op once
-     * already built ({@link Scanner} has no {@code reset()}, so a fresh
-     * pair is built per document). Called from {@link #receive(ByteBuffer)}.
+     * Chooses the handler for the document about to be received, if that
+     * has not already been done for it: the native handler if one was set
+     * with {@link #setXMLHandler}, otherwise a new {@link SAXAdapter}
+     * (single-document, like the pipeline it feeds) over the SAX handlers.
+     * A no-op once done. Called from {@link #receive(ByteBuffer)},
+     * {@link #close()} and the {@code parse} methods.
      */
-    private void ensureScannerReady() throws SAXException {
-        if (scanner != null) {
+    private void prepare() {
+        if (started) {
             return;
         }
-        XMLHandler target = scannerXMLHandler;
+        XMLHandler target = xmlHandler;
         if (target == null) {
-            SAXAdapter adapter = new SAXAdapter(scannerNamespaces);
-            adapter.setContentHandler(scannerContentHandler);
-            adapter.setLexicalHandler(scannerLexicalHandler);
-            adapter.setDeclHandler(scannerDeclHandler);
-            adapter.setDTDHandler(scannerDtdHandler);
-            adapter.setErrorHandler(scannerErrorHandler);
-            adapter.setXmlnsUris(scannerXmlnsUris);
-            adapter.setPublicId(scannerPublicId);
-            adapter.setSystemId(scannerSystemId);
-            scannerAdapter = adapter;
-            target = adapter;
+            SAXAdapter newAdapter = new SAXAdapter(core.isNamespaceAware());
+            newAdapter.setContentHandler(contentHandler);
+            newAdapter.setLexicalHandler(lexicalHandler);
+            newAdapter.setDeclHandler(declHandler);
+            newAdapter.setDTDHandler(dtdHandler);
+            newAdapter.setErrorHandler(errorHandler);
+            newAdapter.setXmlnsUris(core.isXmlnsUris());
+            newAdapter.setPublicId(core.getPublicId());
+            newAdapter.setSystemId(core.getSystemId());
+            adapter = newAdapter;
+            target = newAdapter;
         }
-        if (scannerNamespaces) {
-            NamespaceFilter filter = new NamespaceFilter(target, false);
-            filter.setNamespacePrefixes(scannerNamespacePrefixes);
-            filter.setXmlnsUris(scannerXmlnsUris);
-            target = filter;
-        }
-        ScannerSettings settings = new ScannerSettings(scannerExternalGeneralEntities,
-                scannerExternalParameterEntities, scannerDisallowDoctypeDecl, scannerResolveDTDURIs,
-                scannerAccessExternalDTD, scannerEntityExpansionLimit);
-        scanner = new Scanner(target, false, scannerEntityResolver, scannerPublicId, scannerSystemId, scannerValidation,
-                scannerNamespaces, settings, true);
-        decoder = new ExternalEntityDecoder(scanner, scannerPublicId, scannerSystemId, false);
+        core.setHandler(target);
+        started = true;
     }
 
     // ========================================================================
@@ -234,21 +204,14 @@ public class Parser implements XMLReader, PSVIProvider {
             setSystemId(input.getSystemId());
         }
         
-        // The decoder isn't built until ensureScannerReady() runs (it needs
-        // scannerPublicId/scannerSystemId, just set above). Built
-        // unconditionally here, not just when an encoding is given:
-        // receive() below would build it lazily on first call anyway, but an
-        // empty input stream (zero bytes, immediate EOF) never calls
-        // receive() at all, and close() below unconditionally calls
-        // decoder.close() - so decoder must exist before that regardless of
-        // whether any bytes ever actually arrive.
-        ensureScannerReady();
+        // The adapter needs the identifiers just set above.
+        prepare();
 
         // Set initial encoding from InputSource if specified.
         if (input.getEncoding() != null) {
             try {
                 Charset charset = Charset.forName(input.getEncoding());
-                decoder.setInitialCharset(charset);
+                core.setInitialCharset(charset);
             } catch (IllegalCharsetNameException | UnsupportedCharsetException e) {
                 // Invalid encoding name - ignore and use default (UTF-8)
                 // The XML declaration will override if needed
@@ -292,44 +255,9 @@ public class Parser implements XMLReader, PSVIProvider {
             closeInputStream = true;
         }
 
-        // Bridge pattern: read from InputStream and feed to decoder
-        // Uses standard NIO buffer management: read, flip, receive, compact
-        if (parseBuffer == null || parseBuffer.capacity() < 32768) {
-            parseBuffer = ByteBuffer.allocate(32768);
-        } else {
-            parseBuffer.clear();
-        }
-        ByteBuffer byteBuffer = parseBuffer;
-        byte[] array = byteBuffer.array();
-        int bytesRead;
-        
+        // The native parser pumps the stream and signals end of document.
         try {
-            // Buffer is in write mode: position indicates end of any unprocessed data
-            while (true) {
-                // Read into the buffer's backing array starting at current position
-                bytesRead = inputStream.read(array, byteBuffer.position(), byteBuffer.remaining());
-
-                if (bytesRead > 0) {
-                    // Advance position to account for bytes read
-                    byteBuffer.position(byteBuffer.position() + bytesRead);
-                }
-
-                // If we have data in buffer, process it
-                if (byteBuffer.position() > 0) {
-                    byteBuffer.flip();  // Switch to read mode
-                    receive(byteBuffer);
-                    byteBuffer.compact();  // Compact unprocessed bytes for next cycle
-                }
-
-                // Exit loop on EOF. Note: this breaks even if bytes remain in the
-                // buffer (e.g. an incomplete trailing multi-byte character) -
-                // once the stream reports -1, no more bytes will ever arrive, so
-                // waiting for the buffer to fully drain would loop forever.
-                // close() below reports a proper error if undecoded bytes remain.
-                if (bytesRead == -1) {
-                    break;
-                }
-            }
+            core.parse(inputStream);
         } finally {
             // Only close streams we opened ourselves from a system ID; streams
             // supplied by the caller remain the caller's responsibility.
@@ -341,9 +269,6 @@ public class Parser implements XMLReader, PSVIProvider {
                 }
             }
         }
-
-        // Signal end of document
-        close();
     }
 
     /**
@@ -436,34 +361,8 @@ public class Parser implements XMLReader, PSVIProvider {
             throw new IllegalArgumentException("Channel cannot be null");
         }
 
-        // Reuse parse buffer for channel I/O
-        if (parseBuffer == null) {
-            parseBuffer = ByteBuffer.allocate(8192);
-        } else {
-            parseBuffer.clear();
-        }
-        ByteBuffer buffer = parseBuffer;
-
-        // Standard NIO read loop: read, flip, process, compact. Breaks on true
-        // EOF (channel.read() returning -1) even if bytes remain in the buffer
-        // (e.g. an incomplete trailing multi-byte character) - once the channel
-        // reports -1, no more bytes will ever arrive, so waiting for the buffer
-        // to fully drain would loop forever. close() below reports a proper
-        // error if undecoded bytes remain.
-        while (true) {
-            int bytesRead = channel.read(buffer);
-            if (buffer.position() > 0) {
-                buffer.flip();
-                receive(buffer);
-                buffer.compact();
-            }
-            if (bytesRead == -1) {
-                break;
-            }
-        }
-
-        // Signal end of document
-        close();
+        prepare();
+        core.parse(channel);
     }
 
     /**
@@ -474,7 +373,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public ContentHandler getContentHandler() {
-        return scannerContentHandler;
+        return contentHandler;
     }
 
     /**
@@ -489,9 +388,9 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setContentHandler(ContentHandler handler) {
-        scannerContentHandler = handler;
-        if (scannerAdapter != null) {
-            scannerAdapter.setContentHandler(handler);
+        contentHandler = handler;
+        if (adapter != null) {
+            adapter.setContentHandler(handler);
         }
     }
 
@@ -501,13 +400,13 @@ public class Parser implements XMLReader, PSVIProvider {
      * @return the native handler, or {@code null} when events are adapted to SAX
      */
     public XMLHandler getXMLHandler() {
-        return scannerXMLHandler;
+        return xmlHandler;
     }
 
     /**
      * Selects Gonzalez's native event path for subsequent parses.
      *
-     * <p>When non-null, scanner events are sent directly to this handler
+     * <p>When non-null, parse events are sent directly to this handler
      * (through the namespace filter when namespaces are enabled) and no
      * {@link SAXAdapter} is created. SAX content, DTD, lexical, declaration,
      * and error handlers are therefore not called; the native handler receives
@@ -522,11 +421,11 @@ public class Parser implements XMLReader, PSVIProvider {
      * @throws SAXNotSupportedException if parsing has already started
      */
     public void setXMLHandler(XMLHandler handler) throws SAXNotSupportedException {
-        if (scanner != null && handler != scannerXMLHandler) {
+        if (started && handler != xmlHandler) {
             throw new SAXNotSupportedException(
                     "Cannot change XMLHandler once parsing has started");
         }
-        scannerXMLHandler = handler;
+        xmlHandler = handler;
     }
 
     /**
@@ -537,7 +436,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public DTDHandler getDTDHandler() {
-        return scannerDtdHandler;
+        return dtdHandler;
     }
 
     /**
@@ -551,9 +450,9 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setDTDHandler(DTDHandler handler) {
-        scannerDtdHandler = handler;
-        if (scannerAdapter != null) {
-            scannerAdapter.setDTDHandler(handler);
+        dtdHandler = handler;
+        if (adapter != null) {
+            adapter.setDTDHandler(handler);
         }
     }
 
@@ -565,7 +464,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public ErrorHandler getErrorHandler() {
-        return scannerErrorHandler;
+        return errorHandler;
     }
 
     /**
@@ -580,9 +479,9 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setErrorHandler(ErrorHandler handler) {
-        scannerErrorHandler = handler;
-        if (scannerAdapter != null) {
-            scannerAdapter.setErrorHandler(handler);
+        errorHandler = handler;
+        if (adapter != null) {
+            adapter.setErrorHandler(handler);
         }
     }
 
@@ -594,7 +493,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public EntityResolver getEntityResolver() {
-        return scannerEntityResolver;
+        return core.getEntityResolver();
     }
 
     /**
@@ -614,7 +513,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public void setEntityResolver(EntityResolver resolver) {
-        scannerEntityResolver = resolver;
+        core.setEntityResolver(resolver);
     }
 
     /**
@@ -663,34 +562,34 @@ public class Parser implements XMLReader, PSVIProvider {
         }
         switch (name) {
             case "http://xml.org/sax/features/is-standalone":
-                return (scanner != null) ? scanner.isStandalone() : scannerStandalone;
+                return core.isStandalone();
 
             case "http://xml.org/sax/features/namespaces":
-                return scannerNamespaces;
+                return core.isNamespaceAware();
 
             case "http://xml.org/sax/features/namespace-prefixes":
-                return scannerNamespacePrefixes;
+                return core.isNamespacePrefixes();
 
             case "http://xml.org/sax/features/validation":
-                return scannerValidation;
+                return core.isValidating();
 
             case "http://xml.org/sax/features/external-general-entities":
-                return scannerExternalGeneralEntities;
+                return core.isExternalGeneralEntities();
 
             case "http://xml.org/sax/features/external-parameter-entities":
-                return scannerExternalParameterEntities;
+                return core.isExternalParameterEntities();
 
             case "http://apache.org/xml/features/disallow-doctype-decl":
-                return scannerDisallowDoctypeDecl;
+                return core.isDisallowDoctypeDecl();
 
             case "http://xml.org/sax/features/resolve-dtd-uris":
-                return scannerResolveDTDURIs;
+                return core.isResolveDTDURIs();
 
             case "http://xml.org/sax/features/string-interning":
-                return scannerStringInterning;
+                return stringInterning;
 
             case "http://xml.org/sax/features/xmlns-uris":
-                return scannerXmlnsUris;
+                return core.isXmlnsUris();
 
             // Read-only features (report capabilities)
             case "http://xml.org/sax/features/lexical-handler":
@@ -703,7 +602,7 @@ public class Parser implements XMLReader, PSVIProvider {
 
             // JAXP secure processing
             case "http://javax.xml.XMLConstants/feature/secure-processing":
-                return !scannerExternalGeneralEntities && !scannerExternalParameterEntities;
+                return !core.isExternalGeneralEntities() && !core.isExternalParameterEntities();
 
             // Unsupported features
             case "http://xml.org/sax/features/unicode-normalization-checking":
@@ -737,47 +636,47 @@ public class Parser implements XMLReader, PSVIProvider {
         }
         switch (name) {
             case "http://xml.org/sax/features/namespaces":
-                if (scanner != null && value != scannerNamespaces) {
+                if (started && value != core.isNamespaceAware()) {
                     throw new SAXNotSupportedException(
                             "Cannot change " + name + " once parsing has started");
                 }
-                scannerNamespaces = value;
+                core.setNamespaceAware(value);
                 break;
 
             case "http://xml.org/sax/features/namespace-prefixes":
-                scannerNamespacePrefixes = value;
+                core.setNamespacePrefixes(value);
                 break;
 
             case "http://xml.org/sax/features/validation":
-                if (scanner != null && value != scannerValidation) {
+                if (started && value != core.isValidating()) {
                     throw new SAXNotSupportedException(
                             "Cannot change " + name + " once parsing has started");
                 }
-                scannerValidation = value;
+                core.setValidating(value);
                 break;
 
             case "http://xml.org/sax/features/external-general-entities":
-                scannerExternalGeneralEntities = value;
+                core.setExternalGeneralEntities(value);
                 break;
 
             case "http://xml.org/sax/features/external-parameter-entities":
-                scannerExternalParameterEntities = value;
+                core.setExternalParameterEntities(value);
                 break;
 
             case "http://apache.org/xml/features/disallow-doctype-decl":
-                scannerDisallowDoctypeDecl = value;
+                core.setDisallowDoctypeDecl(value);
                 break;
 
             case "http://xml.org/sax/features/resolve-dtd-uris":
-                scannerResolveDTDURIs = value;
+                core.setResolveDTDURIs(value);
                 break;
 
             case "http://xml.org/sax/features/string-interning":
-                scannerStringInterning = value;
+                stringInterning = value;
                 break;
 
             case "http://xml.org/sax/features/xmlns-uris":
-                scannerXmlnsUris = value;
+                core.setXmlnsUris(value);
                 break;
 
             // Read-only features (throw exception if trying to change)
@@ -793,15 +692,10 @@ public class Parser implements XMLReader, PSVIProvider {
 
             // JAXP secure processing
             case "http://javax.xml.XMLConstants/feature/secure-processing":
-                if (value) {
-                    scannerExternalGeneralEntities = false;
-                    scannerExternalParameterEntities = false;
-                    scannerAccessExternalDTD = "";
-                } else {
-                    scannerExternalGeneralEntities = true;
-                    scannerExternalParameterEntities = true;
-                    scannerAccessExternalDTD = "all";
-                }
+                // One SAX feature, three native settings.
+                core.setExternalGeneralEntities(!value);
+                core.setExternalParameterEntities(!value);
+                core.setAccessExternalDTD(value ? "" : "all");
                 break;
 
             // Unsupported features
@@ -853,16 +747,16 @@ public class Parser implements XMLReader, PSVIProvider {
     @Override
     public Object getProperty(String name) throws SAXNotRecognizedException, SAXNotSupportedException {
         if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
-            return scannerLexicalHandler;
+            return lexicalHandler;
         }
         if ("http://xml.org/sax/properties/declaration-handler".equals(name)) {
-            return scannerDeclHandler;
+            return declHandler;
         }
         if ("http://javax.xml.XMLConstants/property/accessExternalDTD".equals(name)) {
-            return scannerAccessExternalDTD;
+            return core.getAccessExternalDTD();
         }
         if ("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit".equals(name)) {
-            return scannerEntityExpansionLimit;
+            return core.getEntityExpansionLimit();
         }
         throw new SAXNotRecognizedException("Property not recognized: " + name);
     }
@@ -882,9 +776,9 @@ public class Parser implements XMLReader, PSVIProvider {
     public void setProperty(String name, Object value) throws SAXNotRecognizedException, SAXNotSupportedException {
         if ("http://xml.org/sax/properties/lexical-handler".equals(name)) {
             if (value == null || value instanceof LexicalHandler) {
-                scannerLexicalHandler = (LexicalHandler) value;
-                if (scannerAdapter != null) {
-                    scannerAdapter.setLexicalHandler(scannerLexicalHandler);
+                lexicalHandler = (LexicalHandler) value;
+                if (adapter != null) {
+                    adapter.setLexicalHandler(lexicalHandler);
                 }
                 return;
             }
@@ -892,9 +786,9 @@ public class Parser implements XMLReader, PSVIProvider {
         }
         if ("http://xml.org/sax/properties/declaration-handler".equals(name)) {
             if (value == null || value instanceof DeclHandler) {
-                scannerDeclHandler = (DeclHandler) value;
-                if (scannerAdapter != null) {
-                    scannerAdapter.setDeclHandler(scannerDeclHandler);
+                declHandler = (DeclHandler) value;
+                if (adapter != null) {
+                    adapter.setDeclHandler(declHandler);
                 }
                 return;
             }
@@ -902,14 +796,14 @@ public class Parser implements XMLReader, PSVIProvider {
         }
         if ("http://javax.xml.XMLConstants/property/accessExternalDTD".equals(name)) {
             if (value instanceof String) {
-                scannerAccessExternalDTD = (String) value;
+                core.setAccessExternalDTD((String) value);
                 return;
             }
             throw new SAXNotSupportedException("Value must be a String");
         }
         if ("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit".equals(name)) {
             if (value instanceof Integer) {
-                scannerEntityExpansionLimit = (Integer) value;
+                core.setEntityExpansionLimit((Integer) value);
                 return;
             }
             throw new SAXNotSupportedException("Value must be an Integer");
@@ -950,12 +844,12 @@ public class Parser implements XMLReader, PSVIProvider {
      * @throws SAXException if reset fails
      */
     public void reset() throws SAXException {
-        // Scanner has no reset() of its own (inherently single-document) -
-        // ensureScannerReady() rebuilds a fresh scanner/decoder pair from
-        // the still-held scannerXxx configuration on the next receive().
-        scanner = null;
-        scannerAdapter = null;
-        decoder = null;
+        // The adapter is single-document, like the pipeline inside the
+        // native parser: prepare() makes a new one from the handlers still
+        // held here when the next document starts.
+        core.reset();
+        adapter = null;
+        started = false;
     }
 
     // ========================================================================
@@ -966,8 +860,7 @@ public class Parser implements XMLReader, PSVIProvider {
      * Sets the public identifier for the document.
      *
      * <p>The public identifier is used for error reporting and may be used
-     * by entity resolvers. This delegates to the external entity decoder
-     * which provides location information.
+     * by entity resolvers.
      *
      * <p>If parsing via {@link #parse(InputSource)}, the public ID from the
      * InputSource takes precedence over this setting.
@@ -975,15 +868,14 @@ public class Parser implements XMLReader, PSVIProvider {
      * @param publicId the public identifier, or null if not available
      */
     public void setPublicId(String publicId) {
-        scannerPublicId = publicId;
+        core.setPublicId(publicId);
     }
 
     /**
      * Sets the system identifier for the document.
      *
      * <p>The system identifier (typically a URL) is used for resolving
-     * relative URIs and for error reporting. This delegates to the external
-     * entity decoder which provides location information.
+     * relative URIs and for error reporting.
      *
      * <p>If parsing via {@link #parse(InputSource)}, the system ID from the
      * InputSource takes precedence over this setting.
@@ -991,7 +883,7 @@ public class Parser implements XMLReader, PSVIProvider {
      * @param systemId the system identifier, or null if not available
      */
     public void setSystemId(String systemId) {
-        scannerSystemId = systemId;
+        core.setSystemId(systemId);
     }
 
     /**
@@ -1000,7 +892,7 @@ public class Parser implements XMLReader, PSVIProvider {
      * <p>This is an advanced API that allows streaming data to the parser
      * in chunks without using an InputStream. The data buffer should be
      * prepared for reading (position set to start of data, limit set to
-     * end of data). This delegates directly to the underlying decoder.
+     * end of data). This delegates to {@link XMLParser#receive(ByteBuffer)}.
      *
      * <p>Multiple invocations of this method may occur to supply the
      * complete document content. The parser will handle buffer underflow
@@ -1030,8 +922,10 @@ public class Parser implements XMLReader, PSVIProvider {
      * @throws IllegalStateException if called after {@link #close()}
      */
     public void receive(ByteBuffer data) throws SAXException {
-        ensureScannerReady();
-        decoder.receive(data);
+        if (!started) {
+            prepare();
+        }
+        core.receive(data);
     }
 
     /**
@@ -1040,40 +934,40 @@ public class Parser implements XMLReader, PSVIProvider {
      * <p>This method must be called after the last {@link #receive} call
      * to signal the end of the document. The parser will process any
      * remaining buffered data and generate final SAX events (such as
-     * endDocument). This delegates to the decoder which will flush to
-     * the scanner.
+     * endDocument).
      *
      * <p>After this method is called, you can call {@link #reset()} to
      * prepare the parser for reuse with another document.
      *
-     * <p>If there is incomplete data (e.g., an unclosed element), this
-     * method will throw a SAXException.
+     * <p>If there is incomplete data (e.g., an unclosed element, or no
+     * data at all), this method will throw a SAXException.
      *
      * @throws SAXException if there is incomplete or invalid data
-     * @throws IllegalStateException if called without prior {@link #receive}
      */
     public void close() throws SAXException {
-        // Scanner's own close() (invoked via decoder.close()) validates that
-        // parsing is complete (no unclosed constructs).
-        decoder.close();
+        if (!started) {
+            prepare();
+        }
+        // Validates that parsing is complete (no unclosed constructs).
+        core.close();
     }
 
     /**
-     * Gets the public identifier from the decoder.
+     * Gets the public identifier of the document.
      *
      * @return the public identifier, or null if not set
      */
     public String getPublicId() {
-        return scannerPublicId;
+        return core.getPublicId();
     }
 
     /**
-     * Gets the system identifier from the decoder.
+     * Gets the system identifier of the document.
      *
      * @return the system identifier, or null if not set
      */
     public String getSystemId() {
-        return scannerSystemId;
+        return core.getSystemId();
     }
 
     // ========================================================================
@@ -1107,7 +1001,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public ValidationSource getValidationSource() {
-        return (scanner != null && scanner.hasDoctype())
+        return core.hasDoctype()
             ? ValidationSource.DTD
             : ValidationSource.NONE;
     }
@@ -1127,10 +1021,10 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     @Override
     public String getDTDAttributeType(int attrIndex) {
-        // scannerAdapter implements Attributes2 over the element
-        // currently being reported (see SAXAdapter's class Javadoc).
-        if (scannerAdapter != null && attrIndex >= 0 && attrIndex < scannerAdapter.getLength()) {
-            return scannerAdapter.getType(attrIndex);
+        // The adapter implements Attributes2 over the element currently
+        // being reported (see SAXAdapter's class Javadoc).
+        if (adapter != null && attrIndex >= 0 && attrIndex < adapter.getLength()) {
+            return adapter.getType(attrIndex);
         }
         return "CDATA";
     }

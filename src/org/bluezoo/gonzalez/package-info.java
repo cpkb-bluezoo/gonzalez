@@ -47,7 +47,7 @@
  *   <li><b>Full XML 1.0/1.1 support:</b> Including DTD, namespaces, and
  *       entity expansion</li>
  *   <li><b>100% conformant</b> to W3C XML Conformance Test Suite</li>
- *   <li><b>Fast:</b> Can achieve 7× the speed of the default Java SAX parser
+ *   <li><b>Fast:</b> Can achieve 7&times; the speed of the default Java SAX parser
  *       for small documents</li>
  *   <li><b>Small:</b> only 200KB jar</li>
  *   <li><b>Zero dependency:</b> no external libraries used</li>
@@ -210,7 +210,11 @@
  *
  * <h2>Architecture</h2>
  *
- * <p>Internally, Gonzalez uses a streaming pipeline:
+ * <p>{@link org.bluezoo.gonzalez.XMLParser} is the native parser: bytes
+ * in, {@link org.bluezoo.gonzalez.XMLHandler} events out, configured with
+ * typed setters. {@link org.bluezoo.gonzalez.Parser} is the SAX2 wrapper
+ * around it, mapping feature and property URIs onto those setters.
+ * Internally, Gonzalez uses a streaming pipeline:
  *
  * <ol>
  *   <li>{@link org.bluezoo.gonzalez.ExternalEntityDecoder} - Converts bytes
@@ -223,6 +227,7 @@
  *
  * @author Chris Burdess
  * @see org.bluezoo.gonzalez.Parser
+ * @see org.bluezoo.gonzalez.XMLParser
  * @see org.bluezoo.gonzalez.XMLWriter
  * @see org.bluezoo.gonzalez.IndentConfig
  * @see org.xml.sax.XMLReader

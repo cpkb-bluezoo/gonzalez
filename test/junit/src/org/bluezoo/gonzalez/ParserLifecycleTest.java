@@ -296,6 +296,47 @@ public class ParserLifecycleTest {
         handler.verify();
     }
 
+    // ========== No data at all ==========
+    //
+    // An empty document is not well-formed, and must be reported as such
+    // whichever way the parser is told that there is nothing to read.
+
+    @Test
+    public void testCloseWithoutDataIsNotWellFormed() throws Exception {
+        Parser parser = new Parser();
+        parser.setContentHandler(new DefaultHandler());
+        try {
+            parser.close();
+            fail("Expected SAXException: an empty document is not well-formed");
+        } catch (SAXException e) {
+            // expected
+        }
+    }
+
+    @Test
+    public void testEmptyChannelIsNotWellFormed() throws Exception {
+        Parser parser = new Parser();
+        parser.setContentHandler(new DefaultHandler());
+        try {
+            parser.parse(java.nio.channels.Channels.newChannel(new ByteArrayInputStream(new byte[0])));
+            fail("Expected SAXException: an empty document is not well-formed");
+        } catch (SAXException e) {
+            // expected
+        }
+    }
+
+    @Test
+    public void testEmptyStreamIsNotWellFormed() throws Exception {
+        Parser parser = new Parser();
+        parser.setContentHandler(new DefaultHandler());
+        try {
+            parser.parse(new InputSource(new ByteArrayInputStream(new byte[0])));
+            fail("Expected SAXException: an empty document is not well-formed");
+        } catch (SAXException e) {
+            // expected
+        }
+    }
+
     // ========== Parse SystemId (from ParseSystemIdTest) ==========
 
     @Test

@@ -21,32 +21,29 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
-import org.bluezoo.gonzalez.Parser;
 import org.bluezoo.gonzalez.XMLHandler;
-import org.xml.sax.SAXException;
+import org.bluezoo.gonzalez.XMLParser;
 
 /**
  * Factory for Gonzalez parsers used to load secondary transform documents.
  *
  * <p>Matches the secure defaults DocumentLoader previously applied through
- * the platform SAXParserFactory: namespaces on, secure processing on, and
- * external entities off.
+ * the platform SAXParserFactory: namespaces on, and no external entity or
+ * external DTD access. These are the native parser's own defaults; they
+ * are set explicitly here so that this class states what it relies on.
  */
 public final class SecureGonzalezParser {
 
     private SecureGonzalezParser() {
     }
 
-    public static Parser create(XMLHandler handler) throws SAXException {
-        Parser parser = new Parser();
-        parser.setFeature("http://xml.org/sax/features/namespaces", true);
-        parser.setFeature(
-                "http://javax.xml.XMLConstants/feature/secure-processing", true);
-        parser.setFeature(
-                "http://xml.org/sax/features/external-general-entities", false);
-        parser.setFeature(
-                "http://xml.org/sax/features/external-parameter-entities", false);
-        parser.setXMLHandler(handler);
+    public static XMLParser create(XMLHandler handler) {
+        XMLParser parser = new XMLParser();
+        parser.setNamespaceAware(true);
+        parser.setExternalGeneralEntities(false);
+        parser.setExternalParameterEntities(false);
+        parser.setAccessExternalDTD("");
+        parser.setHandler(handler);
         return parser;
     }
 }

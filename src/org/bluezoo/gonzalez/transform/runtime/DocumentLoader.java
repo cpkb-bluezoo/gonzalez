@@ -21,12 +21,11 @@
 
 package org.bluezoo.gonzalez.transform.runtime;
 
-import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.XMLParser;
 import org.bluezoo.gonzalez.XMLHandler;
 import org.bluezoo.gonzalez.transform.xpath.type.NodeType;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNodeWithBaseURI;
-import org.xml.sax.InputSource;
 import org.xml.sax.Locator;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXParseException;
@@ -167,11 +166,10 @@ public final class DocumentLoader {
             URL url = resolved.toURL();
             DocumentTreeBuilder builder = new DocumentTreeBuilder(
                     absoluteUri, stripSpace, preserveSpace);
-            Parser parser = SecureGonzalezParser.create(builder);
+            XMLParser parser = SecureGonzalezParser.create(builder);
+            parser.setSystemId(absoluteUri);
             try (InputStream in = url.openStream()) {
-                InputSource source = new InputSource(in);
-                source.setSystemId(absoluteUri);
-                parser.parse(source);
+                parser.parse(in);
             }
             
             XPathNode root = builder.getRoot();
@@ -285,13 +283,12 @@ public final class DocumentLoader {
         try {
             DocumentTreeBuilder builder = new DocumentTreeBuilder(
                     baseUri, stripSpace, preserveSpace);
-            Parser parser = SecureGonzalezParser.create(builder);
-            InputSource source = new InputSource(new ByteArrayInputStream(
-                    xml.getBytes(StandardCharsets.UTF_8)));
+            XMLParser parser = SecureGonzalezParser.create(builder);
             if (baseUri != null) {
-                source.setSystemId(baseUri);
+                parser.setSystemId(baseUri);
             }
-            parser.parse(source);
+            parser.parse(new ByteArrayInputStream(
+                    xml.getBytes(StandardCharsets.UTF_8)));
             return builder.getRoot();
         } catch (SAXException e) {
             throw e;

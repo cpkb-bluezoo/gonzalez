@@ -83,9 +83,11 @@ evolve between Gonzalez releases.
 
 When namespace processing is enabled, `NamespaceFilter` translates `xmlns`
 attributes into namespace events and can retain the original attributes when
-`namespace-prefixes` is enabled. A handler installed with
-`Parser.setXMLHandler` consumes this stream directly. On the standard SAX path,
-`SAXAdapter` resolves names, assembles the SAX `Attributes2` view, and
+`namespace-prefixes` is enabled. A handler given to `XMLParser`, the native
+parser, consumes this stream directly. `Parser`, the SAX `XMLReader`, is a
+wrapper around the same `XMLParser`: it maps SAX feature and property URIs onto
+the native parser's typed settings, and on the standard SAX path installs
+`SAXAdapter`, which resolves names, assembles the SAX `Attributes2` view, and
 dispatches `ContentHandler`, `LexicalHandler`, `DeclHandler`, `DTDHandler` and
 `ErrorHandler` callbacks. The native event stream does not construct or expose
 intermediate token objects.
@@ -164,23 +166,34 @@ parser.close();
 ### Native XMLHandler Usage
 
 Native consumers can bypass `SAXAdapter` and receive the Scanner's streaming
-event vocabulary directly:
+event vocabulary directly. `XMLParser` is the native parser: it has no SAX
+feature or property URIs, only typed settings, and reports to one `XMLHandler`:
 
 ```java
-Parser parser = new Parser();
-XMLHandler nativeHandler = createNativeHandler();
-parser.setXMLHandler(nativeHandler);
+XMLParser parser = new XMLParser();
+parser.setHandler(createNativeHandler());
+parser.setNamespaceAware(true);       // the default
+parser.setDisallowDoctypeDecl(true);
 
-parser.receive(byteBuffer1);
-parser.receive(byteBuffer2);
+ByteBuffer buffer = ByteBuffer.allocate(8192);
+while (channel.read(buffer) != -1) {
+    buffer.flip();
+    parser.receive(buffer);
+    buffer.compact();                 // keep any bytes not yet consumed
+}
 parser.close();
 ```
 
-Set the handler before parsing starts. When non-null, it receives content,
-lexical, declaration, DTD and error events instead of the configured SAX
-handlers. Namespace events pass through `NamespaceFilter` when namespace
-processing is enabled. The setting survives `Parser.reset()`; pass `null`
-before the next parse to restore the SAX path.
+`parse(InputStream)` and `parse(ReadableByteChannel)` run the same loop for
+callers that are content to block. Set the handler before parsing starts.
+Namespace events pass through `NamespaceFilter` when namespace processing is
+enabled. Settings and the handler survive `reset()`.
+
+A native handler can also be installed on the SAX `Parser` with
+`Parser.setXMLHandler`, for code that is handed an `XMLReader` or an
+`InputSource`. When non-null, it receives content, lexical, declaration, DTD
+and error events instead of the configured SAX handlers. The setting survives
+`Parser.reset()`; pass `null` before the next parse to restore the SAX path.
 
 `XMLHandler` is intended for Gonzalez modules and tightly integrated
 applications that benefit from streamed `CharBuffer` content and attributes.
