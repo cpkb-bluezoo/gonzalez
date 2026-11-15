@@ -942,7 +942,7 @@ public final class LocationPath implements Expr {
      *
      * @return true if context-independent
      */
-    public boolean isContextIndependent() {
+    private boolean isContextIndependent() {
         if (!absolute) {
             return false;
         }
@@ -977,7 +977,7 @@ public final class LocationPath implements Expr {
      *
      * @return true if parent-relative memoization is safe
      */
-    public boolean isParentRelativeMemoizable() {
+    private boolean isParentRelativeMemoizable() {
         if (absolute || steps.isEmpty()) {
             return false;
         }

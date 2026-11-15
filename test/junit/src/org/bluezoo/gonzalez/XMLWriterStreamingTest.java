@@ -42,6 +42,8 @@ import static org.junit.Assert.fail;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
+// The whole-value write methods are deprecated but still supported, so they stay covered.
+@SuppressWarnings("deprecation")
 public class XMLWriterStreamingTest {
 
     private static final String EMOJI = new String(Character.toChars(0x1F600));

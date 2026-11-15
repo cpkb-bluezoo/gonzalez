@@ -19,6 +19,8 @@ import static org.junit.Assert.*;
  *
  * @author Chris Burdess
  */
+// The whole-value write methods are deprecated but still supported, so they stay covered.
+@SuppressWarnings("deprecation")
 public class XMLWriterTest {
 
     private String write(WriterAction action) throws Exception {

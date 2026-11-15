@@ -35,6 +35,14 @@ All notable changes to Gonzalez will be documented in this file.
   package overview and the README, which cleared or replaced the buffer,
   now show the read, flip, receive, compact loop.
 
+- **`XMLWriter` whole-value methods are deprecated.** The three
+  `writeAttribute` overloads, `writeComment(String)` and
+  `writeProcessingInstruction(String, String)` still work, but each now
+  points to its streaming counterpart (`writeStartAttribute`,
+  `writeAttributeContent` and `writeEndAttribute`, and likewise for comments
+  and processing instructions), which never need the whole value in hand.
+  The README and Javadoc examples use the streaming calls.
+
 - **Corrected `XMLWriter` documentation.** The README described `XMLWriter`
   as implementing the SAX2 interfaces and showed it installed as a
   `ContentHandler`, which no longer compiled. It now covers the `write*`

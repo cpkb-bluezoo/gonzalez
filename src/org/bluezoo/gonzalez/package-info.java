@@ -211,7 +211,9 @@
  * writer.writeStartElement("root");
  * writer.writeStartElement("ns", "child", "http://example.com/ns");
  * writer.writeNamespace("ns", "http://example.com/ns");
- * writer.writeAttribute("id", "1");
+ * writer.writeStartAttribute("id");
+ * writer.writeAttributeContent("1");
+ * writer.writeEndAttribute();
  * writer.writeCharacters("Hello World");
  * writer.writeEndElement();
  * writer.writeEndElement();

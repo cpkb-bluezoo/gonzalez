@@ -68,7 +68,9 @@ import java.util.Map;
  * writer.writeStartElement("root");
  * writer.writeNamespace("ns", "http://example.com/ns");
  * writer.writeStartElement("ns", "child", "http://example.com/ns");
- * writer.writeAttribute("id", "1");
+ * writer.writeStartAttribute("id");
+ * writer.writeAttributeContent("1");
+ * writer.writeEndAttribute();
  * writer.writeCharacters("Hello World");
  * writer.writeEndElement();
  * writer.writeEndElement();
@@ -539,10 +541,15 @@ public class XMLWriter {
      * <p>Must be called while a start tag is open (after a {@code writeStartElement}
      * and before any content).
      *
+     * @deprecated Use {@link #writeStartAttribute(String)},
+     *             {@link #writeAttributeContent(CharSequence)} and
+     *             {@link #writeEndAttribute()} instead, so that the value
+     *             need not be held whole.
      * @param localName the attribute local name
      * @param value the attribute value
      * @throws IOException if there is an error writing data or no start tag is open
      */
+    @Deprecated
     public void writeAttribute(String localName, String value) throws IOException {
         if (!pendingStartTag) {
             throw new IOException("writeAttribute() called outside of start element");
@@ -556,11 +563,16 @@ public class XMLWriter {
      * Writes a namespaced attribute. The prefix is resolved from the current
      * namespace context.
      *
+     * @deprecated Use {@link #writeStartAttribute(String)},
+     *             {@link #writeAttributeContent(CharSequence)} and
+     *             {@link #writeEndAttribute()} instead, so that the value
+     *             need not be held whole.
      * @param namespaceURI the attribute namespace URI
      * @param localName the attribute local name
      * @param value the attribute value
      * @throws IOException if there is an error writing data or no start tag is open
      */
+    @Deprecated
     public void writeAttribute(String namespaceURI, String localName, String value)
             throws IOException {
         if (!pendingStartTag) {
@@ -587,12 +599,17 @@ public class XMLWriter {
     /**
      * Writes a namespaced attribute with an explicit prefix.
      *
+     * @deprecated Use {@link #writeStartAttribute(String)},
+     *             {@link #writeAttributeContent(CharSequence)} and
+     *             {@link #writeEndAttribute()} instead, so that the value
+     *             need not be held whole.
      * @param prefix the attribute namespace prefix, or empty string
      * @param localName the attribute local name
      * @param namespaceURI the attribute namespace URI
      * @param value the attribute value
      * @throws IOException if there is an error writing data or no start tag is open
      */
+    @Deprecated
     public void writeAttribute(String prefix, String localName, String namespaceURI,
             String value) throws IOException {
         if (!pendingStartTag) {
@@ -856,9 +873,14 @@ public class XMLWriter {
     /**
      * Writes a comment.
      *
+     * @deprecated Use {@link #writeStartComment()},
+     *             {@link #writeCommentContent(CharSequence)} and
+     *             {@link #writeEndComment()} instead, so that the text
+     *             need not be held whole.
      * @param text the comment text
      * @throws IOException if there is an error writing data
      */
+    @Deprecated
     public void writeComment(String text) throws IOException {
         writeStartComment();
         writeCommentContent(text);
@@ -962,16 +984,22 @@ public class XMLWriter {
      * @throws IOException if there is an error writing data
      */
     public void writeProcessingInstruction(String target) throws IOException {
-        writeProcessingInstruction(target, null);
+        writeStartProcessingInstruction(target);
+        writeEndProcessingInstruction();
     }
 
     /**
      * Writes a processing instruction with optional data.
      *
+     * @deprecated Use {@link #writeStartProcessingInstruction(String)},
+     *             {@link #writeProcessingInstructionContent(CharSequence)} and
+     *             {@link #writeEndProcessingInstruction()} instead, so that
+     *             the data need not be held whole.
      * @param target the PI target
      * @param data the PI data, or null for no data
      * @throws IOException if there is an error writing data
      */
+    @Deprecated
     public void writeProcessingInstruction(String target, String data) throws IOException {
         writeStartProcessingInstruction(target);
         if (data != null) {

@@ -1387,7 +1387,10 @@ public class Parser implements XMLReader, PSVIProvider {
     /**
      * SAX adapter that delegates SAX events to XMLWriter's write* API.
      * Used by the CLI tool for pretty-printing XML files.
+     * SAX reports each attribute value, comment and processing instruction
+     * whole, so the whole-value write methods are the right ones here.
      */
+    @SuppressWarnings("deprecation")
     static class XMLWriterSAXAdapter extends org.xml.sax.helpers.DefaultHandler
             implements org.xml.sax.ext.LexicalHandler, DTDHandler,
                        org.xml.sax.ext.DeclHandler {

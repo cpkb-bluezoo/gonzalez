@@ -2291,7 +2291,7 @@ public final class CompiledStylesheet {
      *
      * @param accumulators the internal accumulators (may be null)
      */
-    public void setInternalAccumulators(
+    void setInternalAccumulators(
             List<org.bluezoo.gonzalez.transform.runtime.InternalAccumulator> accumulators) {
         this.internalAccumulators = accumulators != null
                 ? java.util.Collections.unmodifiableList(
@@ -2316,7 +2316,7 @@ public final class CompiledStylesheet {
      *
      * @return true if analysis reports {@code BufferingStrategy.NONE}
      */
-    public boolean shouldStreamPrimarySource() {
+    boolean shouldStreamPrimarySource() {
         StreamabilityAnalyzer.StylesheetStreamability analysis = streamabilityAnalysis;
         return analysis != null && analysis.isFullyStreamable();
     }

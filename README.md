@@ -30,7 +30,7 @@ streaming XML serialization to NIO channels.
 - Java NIO throughput: uses ByteBuffer for content I/O operations
 
 ### Serializer (XMLWriter)
-- streaming `write*` API: `writeStartElement`, `writeAttribute`, `writeCharacters` and so on
+- streaming `write*` API: `writeStartElement`, `writeStartAttribute`, `writeCharacters` and so on
 - NIO-first: writes to `WritableByteChannel` with automatic buffering
 - constant memory: text, attribute values, comments and PI data of any size
   can be written in pieces, and the buffer is sent whenever it fills
@@ -288,10 +288,14 @@ try (FileOutputStream fos = new FileOutputStream("output.xml")) {
 
     writer.writeStartElement("root");
     writer.writeDefaultNamespace("http://example.com/ns");
-    writer.writeAttribute("version", "1.0");
+    writer.writeStartAttribute("version");
+    writer.writeAttributeContent("1.0");
+    writer.writeEndAttribute();
 
     writer.writeStartElement("item");
-    writer.writeAttribute("id", "1");
+    writer.writeStartAttribute("id");
+    writer.writeAttributeContent("1");
+    writer.writeEndAttribute();
     writer.writeCharacters("Hello, World!");
     writer.writeEndElement();
 

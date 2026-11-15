@@ -225,6 +225,7 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     // ========== OutputHandler Implementation ==========
 
     @Override
+    @SuppressWarnings("deprecation") // value is already whole here
     public void startDocument() throws SAXException {
         try {
             if (!outputProperties.isOmitXmlDeclaration() && 
@@ -416,6 +417,7 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     }
 
     @Override
+    @SuppressWarnings("deprecation") // value is already whole here
     public void comment(String text) throws SAXException {
         flushPendingElement();
         try {
@@ -426,6 +428,7 @@ public final class XMLWriterOutputHandler implements OutputHandler {
     }
 
     @Override
+    @SuppressWarnings("deprecation") // value is already whole here
     public void processingInstruction(String target, String data) throws SAXException {
         flushPendingElement();
         try {
@@ -472,6 +475,7 @@ public final class XMLWriterOutputHandler implements OutputHandler {
      * Writes the pending start element tag with all buffered attributes and namespaces.
      * Performs namespace fixup if there are prefix conflicts.
      */
+    @SuppressWarnings("deprecation") // value is already whole here
     private void writePendingStartElement() throws SAXException {
         if (!inPendingElement) {
             return;

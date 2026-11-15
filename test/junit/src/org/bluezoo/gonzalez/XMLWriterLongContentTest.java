@@ -37,6 +37,8 @@ import static org.junit.Assert.assertEquals;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
+// The whole-value write methods are deprecated but still supported, so they stay covered.
+@SuppressWarnings("deprecation")
 public class XMLWriterLongContentTest {
 
     /** Several times the writer's default buffer of 4096 bytes. */
