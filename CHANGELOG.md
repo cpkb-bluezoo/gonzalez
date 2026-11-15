@@ -2,6 +2,183 @@
 
 All notable changes to Gonzalez will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Constant memory without a DTD.** A document with no DTD is now parsed in
+  memory bounded by the structural limits below, whatever its size and
+  however any part of it is padded. The scanner carries no more than one
+  name from one `receive` call to the next: white space inside tags is
+  consumed as it is scanned, the XML declaration is consumed as it arrives,
+  and the value of `xml:space` is streamed like any other attribute's.
+  DTD-typed and validated attribute values, DTD declarations and SAX
+  `Attributes` are still materialised.
+
+- **`Parser` is a SAX wrapper.** `Parser` keeps its public API but now owns
+  an `XMLParser` and translates feature and property URIs into calls on it.
+  Every setting is held once, in `XMLParser`. The XSLT runtime uses
+  `XMLParser` directly where it opens a stream itself.
+
+- **`XMLWriter` no longer grows its buffer.** The buffer is sent to the
+  channel whenever it fills, and is only replaced by a larger one for a
+  single item, such as a name, that would not fit in it empty. Before, it
+  grew to hold whatever one call wrote and never shrank. Runs of plain ASCII
+  in attribute values, comments, processing instructions and CDATA sections
+  are copied in bulk, which makes writing attributes about a third faster.
+
+- **The `receive` buffer contract is checked.** `receive` leaves at most an
+  incomplete character in the caller's buffer and expects the next call to
+  begin with it. A call that does not now throws `IllegalStateException`
+  naming `compact()` as the remedy, where before the lost bytes surfaced
+  later as an error in the document. The examples in the Javadoc, the
+  package overview and the README, which cleared or replaced the buffer,
+  now show the read, flip, receive, compact loop.
+
+- **Corrected `XMLWriter` documentation.** The README described `XMLWriter`
+  as implementing the SAX2 interfaces and showed it installed as a
+  `ContentHandler`, which no longer compiled. It now covers the `write*`
+  methods, writing in pieces and `XMLWriterHandler`.
+
+### Added
+
+- **`XMLParser`, the native parser.** A parser without SAX: one
+  `XMLHandler`, typed setters in place of feature and property URIs,
+  `receive`/`close`/`reset`, and blocking `parse` methods for an
+  `InputStream` or a `ReadableByteChannel` that run the same receive loop.
+
+- **Structural limits.** `XMLParser` limits element depth (1,000 by
+  default), name length (4,096) and attributes per element (10,000),
+  alongside the existing entity expansion limit; zero or a negative value
+  removes a limit. The name length limit also covers the digits of a
+  character reference and the length of a namespace name. `Parser` maps the
+  JDK's property names onto them (`jdk.xml.maxElementDepth`,
+  `jdk.xml.maxXMLNameLimit`, `jdk.xml.elementAttributeLimit` and
+  `jdk.xml.entityExpansionLimit`, with their older
+  `http://www.oracle.com/xml/jaxp/properties/` forms), so configuration
+  written for the JDK parser carries over.
+
+- **Writing content in pieces.** An attribute value, a comment and the data
+  of a processing instruction can each be written to `XMLWriter` between a
+  start and an end call (`writeStartAttribute`, `writeAttributeContent`,
+  `writeEndAttribute`, and likewise for comments and processing
+  instructions), and `writeCharacters` accepts any `CharSequence`. The
+  pieces may divide a surrogate pair, the `--` of a comment or the `?>` of a
+  processing instruction.
+
+- **`XMLWriterHandler`.** An `XMLHandler` that passes each event to an
+  `XMLWriter` as it arrives and holds nothing, so that an `XMLParser` can
+  copy or re-encode a document in the memory it takes to parse it.
+
+### Security
+
+- **Hang on a long XML declaration.** An XML declaration longer than the
+  blocking parse methods' buffer, such as an ordinary one padded with white
+  space to 40 KB, made `parse` spin forever at 100% CPU. The declaration is
+  now consumed as it arrives, and the blocking loops fail if a buffer of
+  1 MiB still makes no progress.
+
+- **Unbounded memory.** A document of nothing but start tags, one enormous
+  name, an element with unlimited attributes, a tag padded with white space
+  or an unending namespace name each grew the parser's memory without
+  limit. All are now bounded by the structural limits above.
+
+- **Duplicate attributes were accepted.** An attribute repeated on an
+  element was not always rejected: the check compared names by reference
+  and so missed any name beyond the bounded name pool, as in
+  `<r ax="" bx="" cx="" dx="" ex="1" ex="2"/>`. A repeated namespace
+  declaration was accepted in namespace-aware mode, and a native
+  `XMLHandler` consumer got no check at all. The scanner now enforces the
+  constraint itself for every name and every consumer.
+
+- **Truncated documents were accepted.** A document that ended in an
+  unfinished comment, processing instruction or tag after the root element,
+  such as `<a/><!-- x`, was reported as complete. It is now a fatal error.
+
+### Fixed
+
+- Namespace constraints are enforced for native consumers. A document with
+  an unbound prefix, a malformed qualified name or two attributes with the
+  same expanded name was rejected through SAX but accepted by a native
+  `XMLHandler`, because the checks lived in the SAX adapter. They are now
+  made in the namespace filter ahead of every handler.
+
+- The data of a processing instruction no longer begins with white space.
+  Only the first white space character after the target was treated as the
+  separator, so `<?target   data?>` was reported with the data `"  data"`.
+
+- A specified attribute whose name was beyond the name pool was also given
+  its DTD default, as a second attribute.
+
+- Closing a parser that was never given any data, including parsing an empty
+  channel, threw `NullPointerException`. It is now reported as a document
+  that is not well-formed.
+
+- `XMLWriter` threw `BufferOverflowException` when a character outside ASCII
+  landed on the end of its buffer, which a few thousand accented letters in
+  one `writeCharacters` or `writeAttribute` call was enough to cause.
+
+- `XMLWriter` wrote the two halves of a surrogate pair separately when they
+  came in different `writeCharacters` calls, producing invalid UTF-8. The
+  `char[]` overload also read one char beyond its range when the range
+  ended on a high surrogate.
+
+- `XMLWriter` wrote a processing instruction inside a DTD before opening the
+  internal subset, producing a malformed DOCTYPE.
+
+- `XMLWriter` wrote entity values and system identifiers that did not read
+  back the same. `&` and `"` in an entity value were written as `&amp;` and
+  `&quot;`, which are not expanded in a declaration and so became part of
+  the value, turning a reference to another entity into text. They are now
+  character references. A quotation mark in a system or public identifier
+  is now handled by delimiting the literal with apostrophes.
+
+- `XMLWriter` wrote a carriage return in text as it was when writing
+  XML 1.0, to be read back as a line feed, and likewise a tab, line feed or
+  carriage return in a namespace name, read back as a space. All are now
+  character references.
+
+- `XMLWriter` did not notice `]]>` in a CDATA section when it was divided
+  between two `writeCharacters` calls.
+
+### Compatibility
+
+- No public class, constructor or method has been removed.
+
+- Documents that exceed a structural limit are now rejected: elements nested
+  more than 1,000 deep, a name or namespace name longer than 4,096
+  characters, or more than 10,000 attributes on an element. Raise or remove
+  the limit on `XMLParser`, or through the JDK property names on `Parser`,
+  to accept them.
+
+- Code that calls `receive` must `compact()` its buffer after each call and
+  not clear or replace it. Code that did not was already losing bytes at
+  some chunk boundaries; it now gets an `IllegalStateException`.
+
+- Processing instruction data no longer has leading white space. A consumer
+  that trimmed it is unaffected.
+
+- With namespace processing on, an attribute name that is not a qualified
+  name, such as `:a` or `a:b:c`, is now a fatal error. Element names were
+  already checked.
+
+- An end tag that names the wrong element and also has stray characters
+  after the name is now reported as mismatched and no longer as malformed.
+
+- `XMLWriter` output changes where it was previously wrong: a carriage
+  return in text and white space in a namespace name are written as
+  character references, entity values use `&#38;` and `&#34;`, and an
+  identifier containing a quotation mark is delimited by apostrophes. An
+  identifier containing both kinds of quotation mark cannot be written and
+  now throws `IOException`.
+
+- With indentation on, `XMLWriter` no longer writes a blank line between a
+  DTD that contains a comment and the root element.
+
+- In a CDATA section, `XMLWriter` now detects illegal content as it reaches
+  it, so the legal content before it in the same call has been written when
+  the `IOException` is thrown. Before, nothing from that call was written.
+
 ## [1.2.0] - 2026-07-19
 
 ### Changed
