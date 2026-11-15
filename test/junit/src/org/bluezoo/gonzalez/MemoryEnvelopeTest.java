@@ -151,6 +151,13 @@ public class MemoryEnvelopeTest {
     }
 
     @Test(timeout = 60000)
+    public void testWhitespaceBeforeProcessingInstructionData() throws Exception {
+        // It separates the target from the data and is part of neither.
+        Counts counts = parse("<r><?target", spaces(LARGE), "data?></r>");
+        assertEquals(4, counts.piData);
+    }
+
+    @Test(timeout = 60000)
     public void testCDATASection() throws Exception {
         Counts counts = parse("<r><![CDATA[", letters(LARGE), "]]></r>");
         assertEquals(LARGE, counts.text);

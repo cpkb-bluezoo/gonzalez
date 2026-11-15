@@ -2909,6 +2909,15 @@ class Scanner implements Locator2 {
      *  #scanPIData()}; cleared by whichever caller successfully resumes it. */
     private boolean inPI;
 
+    /** The white space that separates a processing instruction's target
+     *  from its data is still being passed over: the data has not begun.
+     *  Set by {@link #scanPI} once the first character of that white space
+     *  has been seen, and cleared by {@link #scanPIData()} at the first
+     *  character that is not white space. It is state of its own, and not
+     *  a loop in {@link #scanPI}, because the white space may be of any
+     *  length and is consumed as it arrives. */
+    private boolean inPISeparator;
+
     /**
      * Parses a {@code <?target ...?>} processing instruction's target,
      * {@code tagStart} positioned at the '&lt;'. The target name is atomic
@@ -2954,7 +2963,10 @@ class Scanner implements Locator2 {
             return false;
         }
         if (isWs(buf[p])) {
+            // The first of as much white space as there is: the rest is
+            // passed over by scanPIData, which may have to wait for it.
             p++;
+            inPISeparator = true;
         } else if (buf[p] != '?') {
             // Production 16: PI ::= '<?' PITarget (S (Char* - (Char* '?>'
             // Char*)))? '?>' - S is required before any data; "?" here means
@@ -2974,7 +2986,8 @@ class Scanner implements Locator2 {
 
     /**
      * Streams a processing instruction's data, {@link #pos} positioned just
-     * past its target (and separating whitespace, if any). Resumable like
+     * past its target, or within the white space that follows it (see
+     * {@link #inPISeparator}), none of which is data. Resumable like
      * {@link #scanAttributeValueStreaming()}: on underflow, whatever has
      * been confirmed so far is emitted via {@link XMLHandler#piData} with
      * {@code end=false} and {@link #pos} stays exactly where scanning
@@ -3001,6 +3014,19 @@ class Scanner implements Locator2 {
         // including that '?' when pos was (wrongly) advanced past it here
         // without first emitting.
         int p = pos;
+        if (inPISeparator) {
+            // XML 2.6: the S of production 16 is all of the white space
+            // after the target. It is consumed, not held, so however much
+            // there is costs nothing to wait through.
+            while (p < limit && isWs(buf[p])) {
+                p++;
+            }
+            pos = p;
+            if (p >= limit) {
+                return false;
+            }
+            inPISeparator = false;
+        }
         // Legality folded into the terminator scan - see scanCommentData.
         boolean[] legal = legalLiteralTable;
         while (true) {
