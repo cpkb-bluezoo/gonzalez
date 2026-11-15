@@ -140,6 +140,13 @@ public class XMLWriter {
     // CDATA state
     private boolean inCDATA = false;
 
+    /**
+     * A high surrogate that ended one call's character data, kept back so
+     * that it can be written as one character with the low surrogate that
+     * begins the next call's. Zero when there is none.
+     */
+    private char pendingHighSurrogate;
+
     // DOCTYPE state
     private boolean inDTD = false;
     private boolean dtdInternalSubsetOpen = false;
@@ -608,11 +615,11 @@ public class XMLWriter {
         if (text == null || text.isEmpty()) {
             return;
         }
-        closePendingStartTag(true);
+        closeStartTag(true);
         if (inCDATA) {
             char[] ch = text.toCharArray();
             validateCDATAContent(ch, 0, ch.length);
-            writeRawChars(ch, 0, ch.length);
+            writeCDATAChars(ch, 0, ch.length);
         } else {
             writeEscapedCharacters(text);
         }
@@ -637,10 +644,10 @@ public class XMLWriter {
         if (length == 0) {
             return;
         }
-        closePendingStartTag(true);
+        closeStartTag(true);
         if (inCDATA) {
             validateCDATAContent(ch, start, length);
-            writeRawChars(ch, start, length);
+            writeCDATAChars(ch, start, length);
         } else {
             writeEscapedCharacters(ch, start, length);
         }
@@ -686,6 +693,7 @@ public class XMLWriter {
      * @since 1.1
      */
     public void writeEndCDATA() throws IOException {
+        endCharacters();
         inCDATA = false;
         writeRawString("]]>");
         sendIfNeeded();
@@ -1088,7 +1096,9 @@ public class XMLWriter {
      * @throws IOException if there is an error sending data
      */
     public void flush() throws IOException {
-        closePendingStartTag(false);
+        // Not the end of the character data: more of it may follow, and
+        // half a surrogate pair is not yet something that can be sent.
+        closeStartTag(false);
         if (buffer.position() > 0) {
             send();
         }
@@ -1104,6 +1114,7 @@ public class XMLWriter {
      * @throws IOException if there is an error flushing data
      */
     public void close() throws IOException {
+        endCharacters();
         flush();
     }
 
@@ -1275,11 +1286,40 @@ public class XMLWriter {
     }
 
     /**
-     * Closes a pending start tag by writing the closing '&gt;'.
+     * Ends whatever came before something that is not character data:
+     * finishes the character data, then closes a pending start tag by
+     * writing the closing '&gt;'.
      *
      * @param markContent if true, mark that the element has content
      */
     private void closePendingStartTag(boolean markContent) throws IOException {
+        endCharacters();
+        closeStartTag(markContent);
+    }
+
+    /**
+     * Finishes the character data written so far. A high surrogate kept
+     * back from the last call was not followed by its low surrogate, so
+     * it is written as it would have been in the middle of a call.
+     */
+    private void endCharacters() throws IOException {
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            if (inCDATA) {
+                writeRawChars(new char[] { high }, 0, 1);
+            } else {
+                writeEscapedCodePoint(high);
+            }
+        }
+    }
+
+    /**
+     * Closes a pending start tag by writing the closing '&gt;'.
+     *
+     * @param markContent if true, mark that the element has content
+     */
+    private void closeStartTag(boolean markContent) throws IOException {
         if (pendingStartTag) {
             writeRawString(">");
             pendingStartTag = false;
@@ -1412,6 +1452,30 @@ public class XMLWriter {
     }
 
     /**
+     * Writes the content of a CDATA section, already validated, keeping
+     * together a surrogate pair that this call and the one before or
+     * after it divide.
+     */
+    private void writeCDATAChars(char[] ch, int start, int length) throws IOException {
+        int end = start + length;
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            if (Character.isLowSurrogate(ch[start])) {
+                writeRawChars(new char[] { high, ch[start] }, 0, 2);
+                start++;
+            } else {
+                writeRawChars(new char[] { high }, 0, 1);
+            }
+        }
+        if (start < end && Character.isHighSurrogate(ch[end - 1])) {
+            pendingHighSurrogate = ch[end - 1];
+            end--;
+        }
+        writeRawChars(ch, start, end - start);
+    }
+
+    /**
      * Writes raw characters without escaping, using the configured charset.
      */
     private void writeRawChars(char[] ch, int start, int length) throws IOException {
@@ -1480,8 +1544,25 @@ public class XMLWriter {
      */
     private void writeEscapedCharacters(char[] ch, int start, int length) throws IOException {
         int end = start + length;
-        for (int i = start; i < end; ) {
-            int codePoint = Character.codePointAt(ch, i);
+        int i = start;
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            if (Character.isLowSurrogate(ch[i])) {
+                writeEscapedCodePoint(Character.toCodePoint(high, ch[i]));
+                i++;
+            } else {
+                writeEscapedCodePoint(high);
+            }
+        }
+        if (i < end && Character.isHighSurrogate(ch[end - 1])) {
+            // Its other half, if it has one, begins the next call.
+            pendingHighSurrogate = ch[end - 1];
+            end--;
+        }
+        while (i < end) {
+            // Bounded by end: what follows it in the array is not ours.
+            int codePoint = Character.codePointAt(ch, i, end);
             int charCount = Character.charCount(codePoint);
             writeEscapedCodePoint(codePoint);
             i += charCount;
@@ -1492,7 +1573,24 @@ public class XMLWriter {
      * Writes character content with XML escaping, without copying to a char[].
      */
     private void writeEscapedCharacters(String s) throws IOException {
-        for (int i = 0; i < s.length(); ) {
+        int end = s.length();
+        int i = 0;
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            if (Character.isLowSurrogate(s.charAt(0))) {
+                writeEscapedCodePoint(Character.toCodePoint(high, s.charAt(0)));
+                i++;
+            } else {
+                writeEscapedCodePoint(high);
+            }
+        }
+        if (i < end && Character.isHighSurrogate(s.charAt(end - 1))) {
+            // Its other half, if it has one, begins the next call.
+            pendingHighSurrogate = s.charAt(end - 1);
+            end--;
+        }
+        while (i < end) {
             int codePoint = s.codePointAt(i);
             int charCount = Character.charCount(codePoint);
             writeEscapedCodePoint(codePoint);
