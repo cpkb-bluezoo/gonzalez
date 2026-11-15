@@ -199,7 +199,10 @@ parser.close();
 `parse(InputStream)` and `parse(ReadableByteChannel)` run the same loop for
 callers that are content to block. Set the handler before parsing starts.
 Namespace events pass through `NamespaceFilter` when namespace processing is
-enabled. Settings and the handler survive `reset()`.
+enabled. It also enforces the constraints of Namespaces in XML, so a document
+with an unbound prefix, a malformed qualified name or two attributes with the
+same expanded name is rejected here exactly as it is through SAX. Settings and
+the handler survive `reset()`.
 
 A native handler can also be installed on the SAX `Parser` with
 `Parser.setXMLHandler`, for code that is handed an `XMLReader` or an

@@ -314,9 +314,8 @@ class SAXAdapter implements XMLHandler, Attributes2 {
      * <p>
      * No duplicate-qName check is made here: {@link Scanner} has already
      * rejected a repeated raw name (WFC "Unique Att Spec") before {@link
-     * #startAttribute} was called. Only {@link
-     * #resolveAttributeNamespaces}'s post-resolution scan below is still
-     * needed, to catch a same-namespace-different-prefix duplicate.
+     * #startAttribute} was called, and {@link NamespaceFilter} rejects two
+     * attributes that differ in prefix but not in namespace.
      */
     private void addCurrentAttribute(String valueStr) {
         String qName = currentAttributeName;
@@ -352,6 +351,12 @@ class SAXAdapter implements XMLHandler, Attributes2 {
      * {@code SAXAttributes.resolveAttributeNamespaces}, operating on {@link
      * #attrPool} instead. A no-op (single boolean check) unless this
      * element actually has a prefixed attribute.
+     * <p>
+     * This only resolves. Whether the names are legal - each prefix
+     * bound, no two attributes with the same expanded name - has already
+     * been decided by {@link NamespaceFilter}, which every namespace-aware
+     * pipeline has in front of its handler, so that the answer does not
+     * depend on which handler that is.
      */
     private void resolveAttributeNamespaces(NamespaceScopeTracker tracker) throws SAXException {
         if (!hasPrefixedAttributes) {
@@ -373,16 +378,6 @@ class SAXAdapter implements XMLHandler, Attributes2 {
                 }
                 attr.uri = uri;
                 attr.localName = localName;
-                for (int j = 0; j < attrCount; j++) {
-                    if (j == i) {
-                        continue;
-                    }
-                    Attr other = attrPool.get(j);
-                    if (other.localName.equals(localName) && other.uri.equals(uri)) {
-                        throw fatalError("Duplicate attribute by expanded name: {" + uri + "}" + localName
-                                + " (qName: " + qName + ")");
-                    }
-                }
             }
         }
     }
