@@ -79,7 +79,14 @@ import org.xml.sax.SAXException;
  * Each has a default suited to untrusted input, and zero or a negative
  * value removes it. Text, attribute values, comments and processing
  * instruction data need no limit: they are passed to the handler in
- * pieces and never held.
+ * pieces and never held. White space inside tags is not held either.
+ *
+ * <p>With these limits in place a document without a DTD is parsed in
+ * constant memory. Besides the stack of open element names and the
+ * attribute names of the current element, the parser holds only the data
+ * it was last given and, at most, one name that had not ended when that
+ * data did. A DTD is outside this guarantee: its declarations are read
+ * whole and kept.
  *
  * <p><b>Reuse.</b> One instance parses one document at a time. Call
  * {@link #reset()} after {@link #close()} (or after a failed parse) before
@@ -581,6 +588,16 @@ public final class XMLParser {
      */
     public boolean hasDoctype() {
         return scanner != null && scanner.hasDoctype();
+    }
+
+    /**
+     * Returns the capacity, in characters, of the buffer the scanner
+     * holds unscanned input in. Exists for tests of the memory envelope.
+     *
+     * @return the capacity, or zero if no document is being parsed
+     */
+    int scanBufferCapacity() {
+        return (scanner != null) ? scanner.getBufferCapacity() : 0;
     }
 
     // ===== Parsing =====

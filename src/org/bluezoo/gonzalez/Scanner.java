@@ -128,11 +128,19 @@ import org.xml.sax.ext.Locator2;
  * internal, self-compacting buffer and scans as much as it can. Every
  * production is written straight-line, "assume it all fits"; the only
  * suspend-awareness is a bounds check at each point more data could be
- * needed. Comments/PI/CDATA/end-tags/the element name itself are each a
- * single atomic emit: on running out of data mid-construct, scanning simply
- * rewinds to that construct's start and the whole thing is retried from
- * scratch once more data arrives - nothing has been emitted yet, so this is
- * always safe. Content and attribute-value scanning are different: since
+ * needed. A name (of an element, an attribute, an end tag, a processing
+ * instruction or a reference) and the few characters that open a
+ * comment, PI or CDATA section are each atomic: on running out of data
+ * part way through one, scanning simply rewinds to its start and the whole
+ * thing is retried from scratch once more data arrives - nothing has been
+ * emitted yet, so this is always safe. Nothing else is. In particular the
+ * white space inside a tag, which nobody is told about, is consumed as it
+ * is scanned and only the place reached is kept ({@link #tagStage}). So
+ * what is carried over from one {@link #receive(CharBuffer)} to the next
+ * is never more than one name, which {@link #maxNameLength} bounds, and
+ * {@link #buf} need never grow beyond that and the data it is given at a
+ * time. (A DTD is the exception: its declarations are scanned whole.)
+ * Content and attribute-value scanning are different: since
  * they stream multiple events per logical run (see above), once any event
  * has been emitted for a run there is no rewinding past it - {@link
  * #scanContent()} and {@link #scanAttributeValueStreaming()} both return
@@ -175,8 +183,43 @@ class Scanner implements Locator2 {
     private int pos;
     private int limit;
 
-    /** Coarse resumable mode: startElement has fired, resume the attribute loop. */
+    /** Coarse resumable mode: a tag is part scanned, and {@link
+     *  #scanAttributesAndTagEnd()} is to carry on with it. Nearly always
+     *  that is a start tag whose startElement has fired and whose
+     *  attribute loop is to be resumed; {@link #tagStage} says exactly
+     *  where, and also covers the end of an end tag. */
     private boolean inStartTag;
+
+    /**
+     * Where in a tag scanning stopped for want of input: one of the
+     * {@code TAG_} constants. White space inside a tag is never reported,
+     * so it is consumed as it is scanned and never looked at again, and
+     * this is all that is kept of it: whether there was any, and which
+     * part of the tag it belongs to. That is what stops a tag's white
+     * space having to be held, however much of it there is. {@link
+     * #TAG_FRESH} except between a call that ran out of input in one of
+     * these places and the call that resumes it, so the scanning methods
+     * read it once, on entry, and otherwise work with locals.
+     */
+    private int tagStage;
+
+    /** The attribute whose name has been scanned, when {@link #tagStage}
+     *  is {@link #TAG_AFTER_NAME} or {@link #TAG_AFTER_EQ}. */
+    private String pendingAttrName;
+
+    /** Before an attribute or the tag's end, with no white space since
+     *  the last token (the element name, or an attribute's value). */
+    private static final int TAG_FRESH = 0;
+    /** As {@link #TAG_FRESH}, but white space has been seen: what STag
+     *  needs to know to allow an attribute here. */
+    private static final int TAG_SPACE_SEEN = 1;
+    /** An attribute's name has been scanned; S? '=' is next. */
+    private static final int TAG_AFTER_NAME = 2;
+    /** An attribute's '=' has been scanned; S? and the quote are next. */
+    private static final int TAG_AFTER_EQ = 3;
+    /** An end tag's name has been scanned, matched and its element
+     *  popped; S? '>' is next - see {@link #scanEndTagTail()}. */
+    private static final int TAG_END_TAIL = 4;
 
     /** Finer resumable mode within the attribute loop: startAttribute() has
      *  fired for the current attribute and its value is being streamed;
@@ -1037,6 +1080,12 @@ class Scanner implements Locator2 {
     /** Declared notations: name -> external identifier. */
     Map<String, ExternalID> getNotationExternalIds() {
         return notationExternalIds;
+    }
+
+    /** The capacity of the scan buffer: what the scanner is holding on
+     *  to. Exists for tests of the memory envelope. */
+    int getBufferCapacity() {
+        return buf.length;
     }
 
     private void append(CharBuffer data) {
@@ -2072,98 +2121,140 @@ class Scanner implements Locator2 {
      * Scans attributes and the tag terminator ('&gt;' or '/&gt;'). Called
      * both immediately after {@link #scanStartTag} (fresh) and again by the
      * main loop whenever {@link #inStartTag} is still true at the start of a
-     * {@link #receive(CharBuffer)} call (resumed). Whitespace/name/'='/quote
-     * scanning for one attribute is atomic: on underflow there, {@code pos}
-     * rewinds to that attribute's start (nothing emitted yet for it, safe).
+     * {@link #receive(CharBuffer)} call (resumed). Only an attribute's name
+     * is atomic: on underflow part way through one, {@code pos} rewinds to
+     * the name's start. The white space around it and around its '=' is
+     * consumed as it is scanned and never looked at again ({@link
+     * #tagStage}), so that however much of it there is, none of it has to
+     * be held. The same resumption serves an end tag whose name has been
+     * scanned and whose '>' has not yet arrived.
      * Once {@link XMLHandler#startAttribute} has fired, though, this method
      * is committed - {@link #scanAttributeValueStreaming()} handles its own
      * resumption via {@link #inAttributeValue} instead of rewinding, since
      * value content may already have been emitted.
      */
     private boolean scanAttributesAndTagEnd() throws SAXException {
+        // Normally TAG_FRESH. Otherwise an earlier call ran out of input
+        // part way through the tag, and this one carries on from there.
+        int stage = tagStage;
+        String attrName = null;
+        if (stage != TAG_FRESH) {
+            tagStage = TAG_FRESH;
+            if (stage == TAG_END_TAIL) {
+                // Not a start tag at all: the end of an end tag, whose
+                // element is already closed.
+                if (!scanEndTagTail()) {
+                    tagStage = TAG_END_TAIL;
+                    return false;
+                }
+                return true;
+            }
+            attrName = pendingAttrName;
+            pendingAttrName = null;
+        }
         // Fixed for the duration of this start tag (including resumed
         // calls - the element is only popped by this method itself), so
         // resolved once rather than per attribute: the element's name and
         // its declared-attribute map (null in the common no-DTD case).
         String currentElementName = elementStack.get(elementStack.size() - 1);
         Map<String, DTDModel.AttDef> declaredAttrs = dtdModel.getAttributes(currentElementName);
+        boolean spaceSeen = (stage == TAG_SPACE_SEEN);
         while (true) {
-            int attrStart = pos;
-            while (pos < limit && isWs(buf[pos])) {
-                pos++;
-            }
-            if (pos >= limit) {
-                pos = attrStart;
-                return false;
-            }
-            char c = buf[pos];
-            if (pos == attrStart && isNameChar(c)) {
-                // STag ::= '<' Name (S Attribute)* S? '>' - S is mandatory
-                // before every Attribute, not just the first. This can only
-                // be reached from the second attribute onward: on the very
-                // first iteration, attrStart is wherever scanStartTag's own
-                // greedy name-char scan stopped, which by construction is
-                // never itself a name character.
-                throw handler.fatalError("White space is required between attributes");
-            }
-            if (c == '>') {
-                pos++;
-                applyAttributeDefaults(currentElementName);
-                handler.endAttributes();
-                return true;
-            }
-            if (c == '/') {
-                if (pos + 1 >= limit) {
-                    pos = attrStart;
+            if (stage <= TAG_SPACE_SEEN) {
+                int spaceStart = pos;
+                while (pos < limit && isWs(buf[pos])) {
+                    pos++;
+                }
+                if (pos > spaceStart) {
+                    spaceSeen = true;
+                }
+                if (pos >= limit) {
+                    if (spaceSeen) {
+                        tagStage = TAG_SPACE_SEEN;
+                    }
                     return false;
                 }
-                if (buf[pos + 1] != '>') {
+                char c = buf[pos];
+                if (c == '>') {
+                    pos++;
+                    applyAttributeDefaults(currentElementName);
+                    handler.endAttributes();
+                    return true;
+                }
+                if (c == '/') {
+                    if (pos + 1 >= limit) {
+                        // The '/' waits for its '>'.
+                        if (spaceSeen) {
+                            tagStage = TAG_SPACE_SEEN;
+                        }
+                        return false;
+                    }
+                    if (buf[pos + 1] != '>') {
+                        throw handler.fatalError("Malformed start tag");
+                    }
+                    pos += 2;
+                    applyAttributeDefaults(currentElementName);
+                    if (validationEnabled) {
+                        popAndValidateElement();
+                    }
+                    elementStack.remove(elementStack.size() - 1);
+                    rootEnded = elementStack.isEmpty();
+                    handler.endAttributes();
+                    handler.endElement();
+                    return true;
+                }
+                if (!spaceSeen && isNameChar(c)) {
+                    // STag ::= '<' Name (S Attribute)* S? '>' - S is mandatory
+                    // before every Attribute, not just the first. This can
+                    // only be reached from the second attribute onward: the
+                    // first follows the element name, whose own greedy
+                    // name-char scan stopped at a character that by
+                    // construction is not a name character.
+                    throw handler.fatalError("White space is required between attributes");
+                }
+
+                int nameStart = pos;
+                while (pos < limit && isNameChar(buf[pos])) {
+                    pos++;
+                }
+                checkNameLength(nameStart, pos);
+                if (pos >= limit) {
+                    // A name is scanned whole; the white space before it
+                    // is not scanned again.
+                    pos = nameStart;
+                    if (spaceSeen) {
+                        tagStage = TAG_SPACE_SEEN;
+                    }
+                    return false;
+                }
+                if (pos == nameStart) {
                     throw handler.fatalError("Malformed start tag");
                 }
-                pos += 2;
-                applyAttributeDefaults(currentElementName);
-                if (validationEnabled) {
-                    popAndValidateElement();
+                checkNameStartChar(nameStart);
+                attrName = namePool.internRange(buf, nameStart, pos - nameStart);
+            }
+
+            if (stage != TAG_AFTER_EQ) {
+                while (pos < limit && isWs(buf[pos])) {
+                    pos++;
                 }
-                elementStack.remove(elementStack.size() - 1);
-                rootEnded = elementStack.isEmpty();
-                handler.endAttributes();
-                handler.endElement();
-                return true;
-            }
-
-            int nameStart = pos;
-            while (pos < limit && isNameChar(buf[pos])) {
+                if (pos >= limit) {
+                    tagStage = TAG_AFTER_NAME;
+                    pendingAttrName = attrName;
+                    return false;
+                }
+                if (buf[pos] != '=') {
+                    throw handler.fatalError("Expected '=' after attribute name");
+                }
                 pos++;
             }
-            checkNameLength(nameStart, pos);
-            if (pos >= limit) {
-                pos = attrStart;
-                return false;
-            }
-            if (pos == nameStart) {
-                throw handler.fatalError("Malformed start tag");
-            }
-            checkNameStartChar(nameStart);
-            String attrName = namePool.internRange(buf, nameStart, pos - nameStart);
 
             while (pos < limit && isWs(buf[pos])) {
                 pos++;
             }
             if (pos >= limit) {
-                pos = attrStart;
-                return false;
-            }
-            if (buf[pos] != '=') {
-                throw handler.fatalError("Expected '=' after attribute name");
-            }
-            pos++;
-
-            while (pos < limit && isWs(buf[pos])) {
-                pos++;
-            }
-            if (pos >= limit) {
-                pos = attrStart;
+                tagStage = TAG_AFTER_EQ;
+                pendingAttrName = attrName;
                 return false;
             }
             char quote = buf[pos];
@@ -2171,9 +2262,12 @@ class Scanner implements Locator2 {
                 throw handler.fatalError("Expected quoted attribute value");
             }
             pos++;
+            stage = TAG_FRESH;
+            spaceSeen = false;
 
-            // Committed: nothing from here on rewinds to attrStart, so this
-            // is the one point each specified attribute passes exactly once.
+            // Committed: nothing before this point is ever scanned again,
+            // so this is the one point each specified attribute passes
+            // exactly once.
             if (!recordSeenAttributeName(attrName)) {
                 throw handler.fatalError("Duplicate attribute: " + attrName);
             }
@@ -2476,24 +2570,17 @@ class Scanner implements Locator2 {
             throw handler.fatalError("Malformed end tag");
         }
         checkNameStartChar(nameStart);
-        int nameEnd = p;
-        while (p < limit && isWs(buf[p])) {
-            p++;
-        }
-        if (p >= limit) {
-            pos = tagStart;
-            return false;
-        }
-        if (buf[p] != '>') {
-            throw handler.fatalError("Malformed end tag");
-        }
-        p++;
 
+        // The name is complete, so it is checked and the element closed
+        // now. What may follow is white space and then '>', and that is
+        // scanned separately so that the white space, which is of no
+        // interest to anyone, need not be held until the '>' arrives.
+        //
         // The end tag's name is never exposed through XMLHandler - endElement()
         // takes no arguments (see class Javadoc) - so it is purely internal WFC
         // bookkeeping and does not need to become a String at all unless there
         // is actually a mismatch to report.
-        int nameLen = nameEnd - nameStart;
+        int nameLen = p - nameStart;
         if (elementStack.isEmpty()) {
             throw handler.fatalError("End tag without matching start tag: " + new String(buf, nameStart, nameLen));
         }
@@ -2514,6 +2601,34 @@ class Scanner implements Locator2 {
         rootEnded = elementStack.isEmpty();
 
         pos = p;
+        if (!scanEndTagTail()) {
+            // Resumed through the same door as an unfinished start tag.
+            tagStage = TAG_END_TAIL;
+            inStartTag = true;
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Scans what follows an end tag's name: {@code S? '>'}, {@link #pos}
+     * positioned just past the name. The element has already been matched
+     * and closed by {@link #scanEndTag}; {@link XMLHandler#endElement} is
+     * reported here, once the tag really has ended. Resumable: white space
+     * is consumed as it is scanned, so on underflow {@link #pos} stays
+     * where scanning stopped and the caller records {@link #TAG_END_TAIL}.
+     */
+    private boolean scanEndTagTail() throws SAXException {
+        while (pos < limit && isWs(buf[pos])) {
+            pos++;
+        }
+        if (pos >= limit) {
+            return false;
+        }
+        if (buf[pos] != '>') {
+            throw handler.fatalError("Malformed end tag");
+        }
+        pos++;
         handler.endElement();
         return true;
     }
