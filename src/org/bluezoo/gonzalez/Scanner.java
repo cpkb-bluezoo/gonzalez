@@ -827,6 +827,15 @@ class Scanner implements Locator2 {
         if (!rootStarted) {
             throw handler.fatalError("Document must contain a root element");
         }
+        if (inComment || inPI || inCDATA || pos < limit) {
+            // After the root element there is no open element to give an
+            // unfinished construct away. A comment or processing
+            // instruction whose data was still being streamed is one;
+            // characters left unscanned are another, since everything
+            // complete has been consumed and what remains can only be the
+            // start of markup that never ended.
+            throw handler.fatalError("Document ended unexpectedly (unfinished markup after the root element)");
+        }
         checkEntityValuesDoNotReferenceUnparsedEntities();
         if (validationEnabled) {
             checkPendingIdrefs();
