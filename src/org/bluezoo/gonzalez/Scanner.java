@@ -3826,7 +3826,13 @@ class Scanner implements Locator2 {
             // The optional third element is the NDATA-declared notation name
             // (null for an ordinary, parsed external entity) - see {@link
             // #unparsedEntityDecl} firing at this map's eventual merge point.
-            pendingExternalNames.put(name, new String[] { extPublicId, extSystemId, ndataName });
+            // The fourth is baseSystemId's own value right now - this
+            // declaration's own location (the document for the internal
+            // subset, the DTD file for the external one) - because a
+            // relative extSystemId is relative to it, and the entity is
+            // not fetched until it is referenced, from wherever that is.
+            pendingExternalNames.put(name,
+                    new String[] { extPublicId, extSystemId, ndataName, baseSystemId });
             if (ndataName == null) {
                 handler.externalEntityDecl(name, extPublicId, extSystemId);
             }
@@ -5157,8 +5163,16 @@ class Scanner implements Locator2 {
             // followed by 'standalone' - close enough to reuse the same
             // strip logic; Scanner does not parse declarations itself either
             // way, per its established boundary).
-            replacementChars = XmlDeclUtil.stripXmlDeclaration(
-                    fetchExternalEntity(name, externalIds[0], externalIds[1]), handler);
+            String referenceBaseSystemId = baseSystemId;
+            if (externalIds[3] != null) {
+                baseSystemId = externalIds[3];
+            }
+            try {
+                replacementChars = XmlDeclUtil.stripXmlDeclaration(
+                        fetchExternalEntity(name, externalIds[0], externalIds[1]), handler);
+            } finally {
+                baseSystemId = referenceBaseSystemId;
+            }
         } else {
             replacementChars = generalEntities.get(name).toCharArray();
         }

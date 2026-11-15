@@ -111,7 +111,9 @@ All notable changes to Gonzalez will be documented in this file.
   fetched entity while it was being read, so `base-uri()` and the static
   base URI of a stylesheet that includes an entity were those of the
   referring document. A relative system identifier inside an external
-  entity now resolves against that entity.
+  entity now resolves against that entity, and one in an entity declaration
+  against the file that holds the declaration, so an entity declared in an
+  external DTD subset in another directory is found.
 
 - A pattern predicate that used `position()` or `last()` inside an `if`,
   `let`, `for`, sequence, filter or similar expression was evaluated as if

@@ -69,6 +69,47 @@ public class ExternalEntityBaseUriTest {
                 transform(main));
     }
 
+    /**
+     * A relative system identifier in an entity declaration is relative to
+     * the file that holds the declaration, here an external DTD subset in
+     * another directory, not to the document that refers to the entity.
+     */
+    @Test
+    public void entityDeclaredInExternalSubsetResolvesAgainstTheSubset()
+            throws Exception {
+        File dir = tempDir();
+        File sub = new File(dir, "x");
+        sub.mkdirs();
+        write(new File(sub, "ent.dtd"),
+                "<!ENTITY child SYSTEM 'part.xml'>");
+        write(new File(sub, "part.xml"), "<inner><deep/></inner>");
+        File main = new File(dir, "main.xml");
+        write(main,
+                "<?xml version='1.0'?>\n"
+                + "<!DOCTYPE test SYSTEM 'x/ent.dtd'>\n"
+                + "<test>&child;</test>");
+
+        // document | entity element | its child | no PI | last child of test
+        assertEquals("main.xml|part.xml|part.xml||part.xml", transform(main));
+    }
+
+    /**
+     * An entity declared in the internal subset is relative to the document.
+     */
+    @Test
+    public void entityDeclaredInInternalSubsetResolvesAgainstTheDocument()
+            throws Exception {
+        File dir = tempDir();
+        write(new File(dir, "part.xml"), "<inner><deep/></inner>");
+        File main = new File(dir, "main.xml");
+        write(main,
+                "<?xml version='1.0'?>\n"
+                + "<!DOCTYPE test [<!ENTITY child SYSTEM 'part.xml'>]>\n"
+                + "<test>&child;</test>");
+
+        assertEquals("main.xml|part.xml|part.xml||part.xml", transform(main));
+    }
+
     @Test
     public void nodeOutsideAnyEntityKeepsTheDocumentBase() throws Exception {
         File dir = tempDir();
