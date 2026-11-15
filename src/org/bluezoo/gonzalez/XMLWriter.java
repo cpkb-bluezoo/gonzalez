@@ -98,6 +98,9 @@ public class XMLWriter {
     private static final int DEFAULT_CAPACITY = 4096;
     private static final float SEND_THRESHOLD = 0.75f;
 
+    /** The most bytes one code point takes in UTF-8. */
+    private static final int MAX_UTF8_BYTES = 4;
+
     private final WritableByteChannel channel;
     private ByteBuffer buffer;
     private final int sendThreshold;
@@ -1627,12 +1630,14 @@ public class XMLWriter {
      */
     private void writeEncodedCodePoint(int codePoint) throws IOException {
         if (charset == StandardCharsets.UTF_8) {
+            ensureCapacity(MAX_UTF8_BYTES);
             writeUtf8CodePoint(codePoint);
             return;
         }
 
         if (charset == StandardCharsets.ISO_8859_1) {
             if (codePoint <= 0xFF) {
+                ensureCapacity(1);
                 buffer.put((byte) codePoint);
             } else {
                 writeCharacterReference(codePoint);
@@ -1649,9 +1654,8 @@ public class XMLWriter {
         CharsetEncoder encoder = charset.newEncoder();
         if (encoder.canEncode(cb)) {
             ByteBuffer encoded = encoder.encode(cb);
-            while (encoded.hasRemaining()) {
-                buffer.put(encoded.get());
-            }
+            ensureCapacity(encoded.remaining());
+            buffer.put(encoded);
         } else {
             writeCharacterReference(codePoint);
         }
@@ -1679,7 +1683,8 @@ public class XMLWriter {
     }
 
     /**
-     * Writes a code point as UTF-8 bytes.
+     * Writes a code point as UTF-8 bytes. At most {@link #MAX_UTF8_BYTES}:
+     * the caller guarantees that much room.
      */
     private void writeUtf8CodePoint(int codePoint) {
         if (codePoint < 0x80) {
