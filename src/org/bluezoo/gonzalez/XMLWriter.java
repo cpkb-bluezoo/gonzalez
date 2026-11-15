@@ -189,9 +189,10 @@ public class XMLWriter {
     private static final int RAW_PI = 1;
     private static final int RAW_CDATA = 2;
 
-    /** The comment being written in pieces is one that is left out (it is
-     *  in a part of the DTD that is not being written). */
-    private boolean skippingComment;
+    /** The comment or processing instruction being written in pieces is
+     *  one that is left out (it is in a part of the DTD that is not being
+     *  written). */
+    private boolean skipping;
 
     /** The comment so far ends with '-', or the processing instruction
      *  data so far with '?': what must not be followed by the character
@@ -875,18 +876,22 @@ public class XMLWriter {
      */
     public void writeStartComment() throws IOException {
         checkNothingOpen();
-        skippingComment = inDTD && !shouldWriteDeclaration();
-        if (!skippingComment) {
+        skipping = inDTD && !shouldWriteDeclaration();
+        if (!skipping) {
             closePendingStartTag(true);
 
             if (inDTD) {
                 openInternalSubsetIfNeeded();
             }
 
-            if (indentConfig != null && !atDocumentStart && !inDTD) {
-                writeIndent();
+            if (!inDTD) {
+                // Inside the DTD the document has still not started: the
+                // line the DTD ends with is the one the root goes on.
+                if (indentConfig != null && !atDocumentStart) {
+                    writeIndent();
+                }
+                atDocumentStart = false;
             }
-            atDocumentStart = false;
 
             writeRawString("<!--");
             endsWithDelimiterStart = false;
@@ -914,7 +919,7 @@ public class XMLWriter {
         if (open != OPEN_COMMENT) {
             throw new IOException("writeCommentContent() called without writeStartComment()");
         }
-        if (skippingComment) {
+        if (skipping) {
             return;
         }
         writeRawContent(content, RAW_COMMENT);
@@ -933,8 +938,8 @@ public class XMLWriter {
             throw new IOException("writeEndComment() called without writeStartComment()");
         }
         open = OPEN_NONE;
-        if (skippingComment) {
-            skippingComment = false;
+        if (skipping) {
+            skipping = false;
             return;
         }
         endRawContent(RAW_COMMENT);
@@ -986,17 +991,31 @@ public class XMLWriter {
      * @throws IOException if there is an error writing data
      */
     public void writeStartProcessingInstruction(String target) throws IOException {
-        closePendingStartTag(true);
+        checkNothingOpen();
+        skipping = inDTD && !shouldWriteDeclaration();
+        if (!skipping) {
+            closePendingStartTag(true);
 
-        if (indentConfig != null && !atDocumentStart) {
-            writeIndent();
+            if (inDTD) {
+                // Like a declaration or a comment, it can only go inside
+                // the internal subset.
+                openInternalSubsetIfNeeded();
+            }
+
+            if (!inDTD) {
+                // Inside the DTD the document has still not started: the
+                // line the DTD ends with is the one the root goes on.
+                if (indentConfig != null && !atDocumentStart) {
+                    writeIndent();
+                }
+                atDocumentStart = false;
+            }
+
+            writeRawString("<?");
+            writeRawString(target);
+            piHasData = false;
+            endsWithDelimiterStart = false;
         }
-        atDocumentStart = false;
-
-        writeRawString("<?");
-        writeRawString(target);
-        piHasData = false;
-        endsWithDelimiterStart = false;
         open = OPEN_PI;
     }
 
@@ -1023,7 +1042,7 @@ public class XMLWriter {
             throw new IOException(
                     "writeProcessingInstructionContent() called without writeStartProcessingInstruction()");
         }
-        if (content.length() == 0) {
+        if (skipping || content.length() == 0) {
             return;
         }
         if (!piHasData) {
@@ -1047,9 +1066,17 @@ public class XMLWriter {
             throw new IOException(
                     "writeEndProcessingInstruction() called without writeStartProcessingInstruction()");
         }
+        open = OPEN_NONE;
+        if (skipping) {
+            skipping = false;
+            return;
+        }
         endRawContent(RAW_PI);
         writeRawString("?>");
-        open = OPEN_NONE;
+
+        if (inDTD) {
+            writeRawString("\n");
+        }
 
         sendIfNeeded();
     }
