@@ -85,9 +85,11 @@ import org.xml.sax.SAXException;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class NamespaceFilter implements XMLHandler {
+class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
 
     private final XMLHandler delegate;
+    /** The delegate as a {@link CharArrayAttributeHandler}, or null if it is not one. */
+    private final CharArrayAttributeHandler delegateChars;
     private boolean xml11;
     private boolean namespacePrefixes;
     private boolean xmlnsUris;
@@ -209,6 +211,8 @@ class NamespaceFilter implements XMLHandler {
      */
     NamespaceFilter(XMLHandler delegate, boolean xml11) {
         this.delegate = delegate;
+        this.delegateChars = (delegate instanceof CharArrayAttributeHandler)
+                ? (CharArrayAttributeHandler) delegate : null;
         this.xml11 = xml11;
     }
 
@@ -308,6 +312,16 @@ class NamespaceFilter implements XMLHandler {
                 notePrefixedAttribute(name, kind, slot);
             }
             delegate.startAttribute(name, type, declared, specified);
+        }
+    }
+
+    @Override
+    public void attributeValueChars(char[] chars, int start, int length, boolean end)
+            throws SAXException {
+        if (!currentIsNamespaceDecl && delegateChars != null) {
+            delegateChars.attributeValueChars(chars, start, length, end);
+        } else {
+            attributeValueContent(CharBuffer.wrap(chars, start, length), end);
         }
     }
 

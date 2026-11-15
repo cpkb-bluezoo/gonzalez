@@ -564,20 +564,20 @@ difference, not as a like-for-like throughput comparison.
 
 | Corpus | Size | Gonzalez XMLHandler | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |
 |--------|-----:|--------------------:|-------------:|----------------:|----------:|------------------:|
-| Plain UTF-8 | 1.02 MiB | **1,043 MB/s** | 853 MB/s | 548 MB/s | 1,187 MB/s | 1,286 MB/s |
-| Attribute-heavy UTF-8 | 1.28 MiB | **727 MB/s** | 460 MB/s | 252 MB/s | 941 MB/s | 929 MB/s |
-| Whitespace-heavy UTF-8 | 0.94 MiB | **1,385 MB/s** | 1,204 MB/s | 696 MB/s | 1,334 MB/s | 1,585 MB/s |
-| Markup-heavy UTF-8 | 0.96 MiB | **1,234 MB/s** | 1,104 MB/s | 540 MB/s | 1,461 MB/s | 1,732 MB/s |
-| Multibyte UTF-8 | 0.49 MiB | **622 MB/s** | 515 MB/s | 332 MB/s | 741 MB/s | 784 MB/s |
-| Japanese UTF-16LE | 1.50 MiB | **793 MB/s** | 532 MB/s | 832 MB/s | 917 MB/s | 930 MB/s |
-| Japanese EUC-JP | 1.28 MiB | **503 MB/s** | 494 MB/s | 446 MB/s | 643 MB/s | 643 MB/s |
-| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **340 MB/s** | 279 MB/s | 149 MB/s | *887 MB/s†* | *904 MB/s†* |
+| Plain UTF-8 | 1.02 MiB | **1,045 MB/s** | 857 MB/s | 548 MB/s | 1,187 MB/s | 1,286 MB/s |
+| Attribute-heavy UTF-8 | 1.28 MiB | **739 MB/s** | 540 MB/s | 252 MB/s | 941 MB/s | 929 MB/s |
+| Whitespace-heavy UTF-8 | 0.94 MiB | **1,389 MB/s** | 1,206 MB/s | 696 MB/s | 1,334 MB/s | 1,585 MB/s |
+| Markup-heavy UTF-8 | 0.96 MiB | **1,234 MB/s** | 1,082 MB/s | 540 MB/s | 1,461 MB/s | 1,732 MB/s |
+| Multibyte UTF-8 | 0.49 MiB | **622 MB/s** | 516 MB/s | 332 MB/s | 741 MB/s | 784 MB/s |
+| Japanese UTF-16LE | 1.50 MiB | **792 MB/s** | 544 MB/s | 832 MB/s | 917 MB/s | 930 MB/s |
+| Japanese EUC-JP | 1.28 MiB | **511 MB/s** | 498 MB/s | 446 MB/s | 643 MB/s | 643 MB/s |
+| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **350 MB/s** | 287 MB/s | 149 MB/s | *887 MB/s†* | *904 MB/s†* |
 
 † Aalto's figures are non-validating: it skips the internal DTD declarations.
 
 Gonzalez SAX is faster than the JDK's Xerces on every corpus except UTF-16LE,
-where Xerces is about 56% faster, and the two are close on EUC-JP (Gonzalez
-about 11% faster). Aalto SAX is between about 1.1 and 2.0 times as fast as
+where Xerces is about 53% faster, and the two are close on EUC-JP (Gonzalez
+about 12% faster). Aalto SAX is between about 1.1 and 1.7 times as fast as
 Gonzalez SAX. Throughput is measured from encoded byte size, so UTF-16's MB/s
 also reflects that it uses more bytes for the same logical Japanese document.
 
@@ -589,17 +589,17 @@ narrows the gap:
 
 | Corpus | Gonzalez SAX | Aalto SAX |
 |--------|-------------:|----------:|
-| Plain UTF-8 | 836 MB/s | 1,109 MB/s |
-| Attribute-heavy UTF-8 | 460 MB/s | 705 MB/s |
-| Whitespace-heavy UTF-8 | 1,182 MB/s | 1,309 MB/s |
-| Markup-heavy UTF-8 | 1,081 MB/s | 1,404 MB/s |
-| Multibyte UTF-8 | 503 MB/s | 567 MB/s |
-| Japanese UTF-16LE | 526 MB/s | 754 MB/s |
-| Japanese EUC-JP | 487 MB/s | 561 MB/s |
-| XHTML internal DTD (not equivalent; see above) | 279 MB/s | *764 MB/s†* |
+| Plain UTF-8 | 846 MB/s | 1,109 MB/s |
+| Attribute-heavy UTF-8 | 528 MB/s | 705 MB/s |
+| Whitespace-heavy UTF-8 | 1,187 MB/s | 1,309 MB/s |
+| Markup-heavy UTF-8 | 1,070 MB/s | 1,404 MB/s |
+| Multibyte UTF-8 | 505 MB/s | 567 MB/s |
+| Japanese UTF-16LE | 545 MB/s | 754 MB/s |
+| Japanese EUC-JP | 492 MB/s | 561 MB/s |
+| XHTML internal DTD (not equivalent; see above) | 283 MB/s | *764 MB/s†* |
 
-Aalto remains faster, by between about 1.1 and 1.5 times, most on
-attribute-heavy UTF-8 and on UTF-16.
+Aalto remains faster, by between about 1.1 and 1.4 times, most on UTF-16 and
+on attribute-heavy, plain and markup-heavy UTF-8.
 
 The DTD behavior was verified from SAX events using
 `benchmark/external-compare/DtdProbe.java`: Gonzalez and JDK Xerces report

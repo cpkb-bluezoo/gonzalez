@@ -78,7 +78,7 @@ import org.xml.sax.ext.LexicalHandler;
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class SAXAdapter implements XMLHandler, Attributes2 {
+class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
 
     /**
      * One buffered attribute. Pooled and reused across {@link
@@ -318,6 +318,24 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         attr.specified = specified;
         currentAttr = attr;
         attributeValueFirstChunk = true;
+    }
+
+    @Override
+    public void attributeValueChars(char[] chars, int start, int length, boolean end)
+            throws SAXException {
+        if (attributeValueFirstChunk && end) {
+            // Common case, as in attributeValueContent: one chunk, no builder.
+            addCurrentAttribute(new String(chars, start, length));
+            return;
+        }
+        if (attributeValueFirstChunk) {
+            attributeValueBuilder.setLength(0);
+            attributeValueFirstChunk = false;
+        }
+        attributeValueBuilder.append(chars, start, length);
+        if (end) {
+            addCurrentAttribute(attributeValueBuilder.toString());
+        }
     }
 
     @Override

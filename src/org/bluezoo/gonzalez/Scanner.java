@@ -173,6 +173,8 @@ class Scanner implements Locator2 {
     private static final int INITIAL_CAPACITY = 8192;
 
     private final XMLHandler handler;
+    /** The handler as a {@link CharArrayAttributeHandler}, or null if it is not one. */
+    private final CharArrayAttributeHandler attributeChars;
     private final String locatorPublicId;
     private String encoding;
     private boolean documentStarted;
@@ -787,6 +789,8 @@ class Scanner implements Locator2 {
             boolean validationEnabled, boolean namespaceAware, ScannerSettings settings,
             boolean deferDocumentStartUntilEncoding) throws SAXException {
         this.handler = handler;
+        this.attributeChars = (handler instanceof CharArrayAttributeHandler)
+                ? (CharArrayAttributeHandler) handler : null;
         this.locatorPublicId = publicId;
         this.xml11 = xml11;
         this.entityResolver = entityResolver;
@@ -2623,7 +2627,7 @@ class Scanner implements Locator2 {
             }
             if (pos >= limit) {
                 if (pos > runStart) {
-                    emitAttributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), false);
+                    emitAttributeValueChars(runStart, pos - runStart, false);
                     attrValueRunOpen = true;
                 }
                 return false;
@@ -2637,7 +2641,7 @@ class Scanner implements Locator2 {
             }
             if (buf[pos] == quote) {
                 if (pos > runStart) {
-                    emitAttributeValueContent(CharBuffer.wrap(buf, runStart, pos - runStart), true);
+                    emitAttributeValueChars(runStart, pos - runStart, true);
                 } else {
                     // Fires at least once even for a value that is empty
                     // from the very start (attrValueRunOpen still false, no
@@ -2658,7 +2662,7 @@ class Scanner implements Locator2 {
             // rewind.
             int ampPos = pos;
             if (ampPos > runStart) {
-                emitAttributeValueContent(CharBuffer.wrap(buf, runStart, ampPos - runStart), false);
+                emitAttributeValueChars(runStart, ampPos - runStart, false);
                 attrValueRunOpen = true;
             }
             int refStatus = decodeEntityRef();
@@ -2722,6 +2726,21 @@ class Scanner implements Locator2 {
      * scanning (so by this point every whitespace char still present is
      * already a plain space).
      */
+    /**
+     * Reports {@code buf[start, start + length)} as a chunk of the current
+     * attribute's value. A handler that takes it as a range of the buffer,
+     * and a value that needs no normalising, avoid wrapping it in a
+     * {@link CharBuffer}; anything else is wrapped, and goes by {@link
+     * #emitAttributeValueContent}.
+     */
+    private void emitAttributeValueChars(int start, int length, boolean end) throws SAXException {
+        if (attributeChars != null && !normalizingCurrentAttribute) {
+            attributeChars.attributeValueChars(buf, start, length, end);
+        } else {
+            emitAttributeValueContent(CharBuffer.wrap(buf, start, length), end);
+        }
+    }
+
     private void emitAttributeValueContent(CharBuffer chunk, boolean end) throws SAXException {
         if (!normalizingCurrentAttribute) {
             handler.attributeValueContent(chunk, end);
