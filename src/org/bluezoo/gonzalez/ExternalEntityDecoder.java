@@ -61,6 +61,11 @@ import org.xml.sax.SAXException;
  * the buffer's position will point to the first unconsumed byte (which may be
  * part of an incomplete multi-byte character sequence). The caller must compact
  * the buffer before reading more data.
+ *
+ * <p>What is left unconsumed is never more than an incomplete character or an
+ * incomplete byte order mark. That holds for the declaration too: it is
+ * consumed as it arrives, by a parser that keeps its place between calls, and
+ * does not have to fit the caller's buffer.
  * 
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
@@ -186,7 +191,7 @@ class ExternalEntityDecoder {
             boolean isExternalEntity) {
         this.scanner = Objects.requireNonNull(scanner);
         this.isExternalEntity = isExternalEntity;
-        declParser = isExternalEntity ? new TextDeclParser() : new XMLDeclParser();
+        declParser = new DeclParser(isExternalEntity);
     }
     
     // ===== Accessors =====
@@ -273,6 +278,7 @@ class ExternalEntityDecoder {
      */
     public void reset() {
         state = State.INIT;
+        declParser.reset();
         // Keep previous charset/decoder for reuse if next document uses same encoding
         previousCharset = charset;
         charset = null;
@@ -387,72 +393,75 @@ class ExternalEntityDecoder {
     // ===== Declaration Parsing =====
     
     /**
-     * Parses the XML/text declaration directly from bytes.
+     * Parses the XML/text declaration directly from bytes. The declaration
+     * parser keeps its place between calls, so every complete character of
+     * the declaration is consumed as it arrives.
      * 
      * @return true if declaration parsing is complete, false if more data is needed
      */
     private boolean parseDeclaration(ByteBuffer data) throws SAXException {
-        int savedPos = data.position();
-        
-        try {
-            ReadResult result = declParser.receive(data);
-            
-            switch (result) {
-                case UNDERFLOW:
-                    // Need more data, position already restored by declParser
-                    data.position(savedPos);
-                    return false;
-                    
-                case FAILURE:
-                    // No declaration present, position restored by declParser
-                    // Use default charset (UTF-8 or BOM-indicated charset)
-                    setupCharsetDecoder(null);
-                    state = State.CONTENT;
-                    return true;
-                    
-                case OK:
-                    // Declaration parsed successfully
-                    String declEncoding = declParser.getEncoding();
-                    String declVersion = declParser.getVersion();
-                    Boolean declStandalone = declParser.getStandalone();
-                    
-                    // Handle version
-                    if (declVersion != null) {
-                        boolean entityXml11 = "1.1".equals(declVersion);
+        ReadResult result = declParser.receive(data);
 
-                        if (!isExternalEntity) {
-                            // Main document - sets the processor mode
-                            xml11 = entityXml11;
-                            scanner.setXml11(xml11);
-                        } else {
-                            // External entity TextDecl version - Scanner
-                            // fetches external entities itself today, so this
-                            // branch is unused by the production Parser path;
-                            // still apply the TextDecl's version to the scanner.
-                            xml11 = entityXml11;
-                            scanner.setXml11(xml11);
-                        }
+        switch (result) {
+            case UNDERFLOW:
+                // Need more data; all but an incomplete character consumed
+                return false;
+
+            case FAILURE:
+                // No declaration present, position restored by declParser
+                // Use default charset (UTF-8 or BOM-indicated charset)
+                setupCharsetDecoder(null);
+                state = State.CONTENT;
+                String replay = declParser.getReplay();
+                if (replay.length() > 0) {
+                    // Earlier calls consumed the start of what has turned
+                    // out not to be a declaration. The scanner gets those
+                    // characters first, by the same route as any others.
+                    decodeAndTokenize(ByteBuffer.wrap(replay.getBytes(charset)));
+                    if (declParser.isReplayRejected()) {
+                        // Not reached: the scanner refuses the reserved
+                        // target. It must not go on to see what follows,
+                        // because the replay is not all that was consumed.
+                        throw scanner.fatalError("Malformed XML declaration");
                     }
+                }
+                return true;
 
-                    // Handle standalone (document entity only - a TextDecl's
-                    // grammar has no SDDecl production at all, so declStandalone
-                    // is always null when isExternalEntity is true)
-                    if (declStandalone != null) {
-                        scanner.setStandalone(declStandalone.booleanValue());
-                    }
+            case OK:
+                // Declaration parsed successfully
+                String declEncoding = declParser.getEncoding();
+                String declVersion = declParser.getVersion();
+                Boolean declStandalone = declParser.getStandalone();
 
-                    // Setup charset decoder with declared encoding
-                    setupCharsetDecoder(declEncoding);
+                // Handle version
+                if (declVersion != null) {
+                    // Scanner fetches external entities itself today, so
+                    // only the document entity reaches here in production;
+                    // a TextDecl's version is applied the same way.
+                    xml11 = "1.1".equals(declVersion);
+                    scanner.setXml11(xml11);
+                }
 
+                // Handle standalone (document entity only - a TextDecl's
+                // grammar has no SDDecl production at all, so declStandalone
+                // is always null when isExternalEntity is true)
+                if (declStandalone != null) {
+                    scanner.setStandalone(declStandalone.booleanValue());
+                }
 
-                    state = State.CONTENT;
-                    return true;
-            }
-        } catch (IllegalArgumentException e) {
-            // Non-ASCII byte in declaration
-            throw scanner.fatalError(e.getMessage());
+                if (declParser.isEncodingTooLong()) {
+                    // No encoding has a name this long; say so without
+                    // repeating all of it.
+                    throw scanner.fatalError("Invalid or unsupported encoding: " + declEncoding + "...");
+                }
+
+                // Setup charset decoder with declared encoding
+                setupCharsetDecoder(declEncoding);
+
+                state = State.CONTENT;
+                return true;
         }
-        
+
         return false;
     }
     

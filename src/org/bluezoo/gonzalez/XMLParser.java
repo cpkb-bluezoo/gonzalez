@@ -90,6 +90,11 @@ public final class XMLParser {
      *  buffer is already held. */
     private static final int CHANNEL_BUFFER_SIZE = 8192;
 
+    /** The largest buffer the blocking {@code parse} methods will grow to
+     *  before concluding that the parser is not going to consume its
+     *  input - see {@link #makeRoom(ByteBuffer)}. */
+    private static final int MAX_PARSE_BUFFER_SIZE = 1 << 20;
+
     // ===== Configuration, read by open() =====
 
     private XMLHandler handler;
@@ -503,6 +508,15 @@ public final class XMLParser {
      * calling {@code compact()} and reading into the buffer). Events are
      * delivered to the handler during this call.
      *
+     * <p>The parser consumes all it can: what it leaves is at most an
+     * incomplete character or byte order mark, a few bytes, at any point
+     * in the document including its XML declaration. A buffer of any
+     * practical size therefore always has room for more. Checking that
+     * it does is nonetheless the caller's job, since only the caller
+     * knows its buffer: a caller that finds its buffer still full after
+     * this method returns must give the parser a larger one, or give up,
+     * and not call again with the same bytes.
+     *
      * @param data the bytes to parse
      * @throws SAXException if the document is not well-formed, or the
      *         handler throws
@@ -567,11 +581,18 @@ public final class XMLParser {
         } else {
             buffer.clear();
         }
-        byte[] array = buffer.array();
         // The buffer stays in write mode between iterations: its position
         // is the end of any bytes the parser left unconsumed.
         while (true) {
-            int bytesRead = in.read(array, buffer.position(), buffer.remaining());
+            if (!buffer.hasRemaining()) {
+                // The parser consumed nothing of a full buffer, so there
+                // is no room to read into. Whether progress is being made
+                // is for the caller of receive() to judge, and here that
+                // is this loop.
+                buffer = makeRoom(buffer);
+                parseBuffer = buffer;
+            }
+            int bytesRead = in.read(buffer.array(), buffer.position(), buffer.remaining());
             if (bytesRead > 0) {
                 buffer.position(buffer.position() + bytesRead);
             }
@@ -615,6 +636,11 @@ public final class XMLParser {
         // As for parse(InputStream): stop at end of channel even if bytes
         // remain, and let close() report them.
         while (true) {
+            if (!buffer.hasRemaining()) {
+                // No room to read into: see parse(InputStream).
+                buffer = makeRoom(buffer);
+                parseBuffer = buffer;
+            }
             int bytesRead = channel.read(buffer);
             if (buffer.position() > 0) {
                 buffer.flip();
@@ -626,6 +652,31 @@ public final class XMLParser {
             }
         }
         close();
+    }
+
+    /**
+     * Escalates when the parser has consumed nothing of a full buffer:
+     * returns a buffer of twice the capacity holding the same unconsumed
+     * bytes, in write mode, so that the next call presents the parser
+     * with more than it had. The parser leaves at most an incomplete
+     * character unconsumed, so this is not expected to be needed; it is
+     * what stands between a parser that fails to consume and a loop that
+     * reads nothing for ever.
+     *
+     * @param buffer a full buffer in write mode
+     * @return a larger buffer with the same content, in write mode
+     * @throws SAXException if the buffer is already as large as it is
+     *         allowed to become
+     */
+    static ByteBuffer makeRoom(ByteBuffer buffer) throws SAXException {
+        int capacity = buffer.capacity();
+        if (capacity >= MAX_PARSE_BUFFER_SIZE) {
+            throw new SAXException("The parser made no progress on " + capacity + " bytes of input");
+        }
+        ByteBuffer bigger = ByteBuffer.allocate(capacity * 2);
+        buffer.flip();
+        bigger.put(buffer);
+        return bigger;
     }
 
     /**
