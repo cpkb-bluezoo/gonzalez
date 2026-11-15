@@ -30,13 +30,23 @@ import org.bluezoo.gonzalez.transform.runtime.BasicTransformContext;
 import org.bluezoo.gonzalez.transform.runtime.TransformContext;
 import org.bluezoo.gonzalez.transform.xpath.XPathExpression;
 import org.bluezoo.gonzalez.transform.xpath.expr.BinaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.ContextItemExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Expr;
+import org.bluezoo.gonzalez.transform.xpath.expr.FilterExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.ForExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.FunctionCall;
+import org.bluezoo.gonzalez.transform.xpath.expr.IfExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.LetExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Literal;
 import org.bluezoo.gonzalez.transform.xpath.expr.LocationPath;
 import org.bluezoo.gonzalez.transform.xpath.expr.Operator;
+import org.bluezoo.gonzalez.transform.xpath.expr.PathExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.QuantifiedExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.SequenceExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.Step;
+import org.bluezoo.gonzalez.transform.xpath.expr.TypeExpr;
 import org.bluezoo.gonzalez.transform.xpath.expr.UnaryExpr;
+import org.bluezoo.gonzalez.transform.xpath.expr.VariableReference;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNode;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathNumber;
 import org.bluezoo.gonzalez.transform.xpath.type.XPathString;
@@ -327,6 +337,11 @@ abstract class AbstractPattern implements Pattern {
         return referencesPositionOrLast(expr);
     }
 
+    /**
+     * True when the expression may produce a number. An expression of a
+     * kind not recognised here is assumed to, so that the position is
+     * always worked out for it.
+     */
     private static boolean isNumericResult(Expr expr) {
         if (expr instanceof Literal) {
             return ((Literal) expr).getValue() instanceof XPathNumber;
@@ -341,7 +356,15 @@ abstract class AbstractPattern implements Pattern {
             Operator op = ((BinaryExpr) expr).getOperator();
             return isArithmeticOperator(op);
         }
-        return false;
+        if (expr instanceof LocationPath || expr instanceof ContextItemExpr) {
+            return false;
+        }
+        if (expr instanceof IfExpr) {
+            IfExpr ie = (IfExpr) expr;
+            return isNumericResult(ie.getThenExpr())
+                    || isNumericResult(ie.getElseExpr());
+        }
+        return true;
     }
 
     private static boolean isArithmeticOperator(Operator op) {
@@ -370,7 +393,20 @@ abstract class AbstractPattern implements Pattern {
                 || "max".equals(name);
     }
 
+    /**
+     * True when the expression may read the position or size of the
+     * context it is evaluated in. The predicate of a step in a path, and
+     * of a filter, has a context of its own, so it is not looked into. An
+     * expression of a kind not recognised here is assumed to read them.
+     */
     private static boolean referencesPositionOrLast(Expr expr) {
+        if (expr == null) {
+            return true;
+        }
+        if (expr instanceof Literal || expr instanceof VariableReference
+                || expr instanceof ContextItemExpr || expr instanceof LocationPath) {
+            return false;
+        }
         if (expr instanceof FunctionCall) {
             FunctionCall fc = (FunctionCall) expr;
             String name = fc.getLocalName();
@@ -393,7 +429,61 @@ abstract class AbstractPattern implements Pattern {
         if (expr instanceof UnaryExpr) {
             return referencesPositionOrLast(((UnaryExpr) expr).getOperand());
         }
-        return false;
+        if (expr instanceof IfExpr) {
+            IfExpr ie = (IfExpr) expr;
+            return referencesPositionOrLast(ie.getCondition())
+                    || referencesPositionOrLast(ie.getThenExpr())
+                    || referencesPositionOrLast(ie.getElseExpr());
+        }
+        if (expr instanceof SequenceExpr) {
+            List<Expr> items = ((SequenceExpr) expr).getItems();
+            for (int i = 0; i < items.size(); i++) {
+                if (referencesPositionOrLast(items.get(i))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (expr instanceof PathExpr) {
+            return referencesPositionOrLast(((PathExpr) expr).getFilter());
+        }
+        if (expr instanceof FilterExpr) {
+            return referencesPositionOrLast(((FilterExpr) expr).getPrimary());
+        }
+        if (expr instanceof TypeExpr) {
+            return referencesPositionOrLast(((TypeExpr) expr).getOperand());
+        }
+        if (expr instanceof LetExpr) {
+            LetExpr le = (LetExpr) expr;
+            List<LetExpr.Binding> bindings = le.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                if (referencesPositionOrLast(bindings.get(i).getValue())) {
+                    return true;
+                }
+            }
+            return referencesPositionOrLast(le.getReturnExpr());
+        }
+        if (expr instanceof ForExpr) {
+            ForExpr fe = (ForExpr) expr;
+            List<ForExpr.Binding> bindings = fe.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                if (referencesPositionOrLast(bindings.get(i).getSequence())) {
+                    return true;
+                }
+            }
+            return referencesPositionOrLast(fe.getReturnExpr());
+        }
+        if (expr instanceof QuantifiedExpr) {
+            QuantifiedExpr qe = (QuantifiedExpr) expr;
+            List<QuantifiedExpr.Binding> bindings = qe.getBindings();
+            for (int i = 0; i < bindings.size(); i++) {
+                if (referencesPositionOrLast(bindings.get(i).getSequence())) {
+                    return true;
+                }
+            }
+            return referencesPositionOrLast(qe.getSatisfiesExpr());
+        }
+        return true;
     }
 
     @Override

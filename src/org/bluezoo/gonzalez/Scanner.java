@@ -174,7 +174,6 @@ class Scanner implements Locator2 {
 
     private final XMLHandler handler;
     private final String locatorPublicId;
-    private final String locatorSystemId;
     private String encoding;
     private boolean documentStarted;
     private final boolean deferDocumentStartUntilEncoding;
@@ -787,7 +786,6 @@ class Scanner implements Locator2 {
             boolean deferDocumentStartUntilEncoding) throws SAXException {
         this.handler = handler;
         this.locatorPublicId = publicId;
-        this.locatorSystemId = baseSystemId;
         this.xml11 = xml11;
         this.entityResolver = entityResolver;
         this.baseSystemId = baseSystemId;
@@ -816,7 +814,7 @@ class Scanner implements Locator2 {
 
     @Override
     public String getSystemId() {
-        return locatorSystemId;
+        return baseSystemId;
     }
 
     @Override
@@ -5165,12 +5163,17 @@ class Scanner implements Locator2 {
             replacementChars = generalEntities.get(name).toCharArray();
         }
 
+        // The content of an external entity is read from where it was
+        // fetched, which is both what its own relative references resolve
+        // against and what the locator reports while it is being scanned.
+        String entityBaseSystemId = externalIds != null ? lastResolvedSystemId : null;
         entityExpansionStack.add(name);
         char[] savedBuf = buf;
         int savedPos = pos;
         int savedLimit = limit;
         boolean savedContentRunOpen = contentRunOpen;
         boolean savedAllowRestrictedCharInContent = allowRestrictedCharInContent;
+        String savedBaseSystemId = baseSystemId;
         int stackDepthAtEntry = elementStack.size();
 
         buf = replacementChars;
@@ -5178,6 +5181,9 @@ class Scanner implements Locator2 {
         limit = buf.length;
         contentRunOpen = false;
         allowRestrictedCharInContent = restrictedCharEntities.contains(name);
+        if (entityBaseSystemId != null) {
+            baseSystemId = entityBaseSystemId;
+        }
         entityStackFloors.add(stackDepthAtEntry);
         try {
             scan();
@@ -5206,6 +5212,7 @@ class Scanner implements Locator2 {
             limit = savedLimit;
             contentRunOpen = savedContentRunOpen;
             allowRestrictedCharInContent = savedAllowRestrictedCharInContent;
+            baseSystemId = savedBaseSystemId;
             entityExpansionStack.remove(entityExpansionStack.size() - 1);
             entityStackFloors.remove(entityStackFloors.size() - 1);
         }

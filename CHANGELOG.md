@@ -105,6 +105,25 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Fixed
 
+- The base URI of a node from an external parsed entity is now that entity's
+  location. The scanner's locator reported the document's system identifier
+  throughout, and it did not move the base for relative references to the
+  fetched entity while it was being read, so `base-uri()` and the static
+  base URI of a stylesheet that includes an entity were those of the
+  referring document. A relative system identifier inside an external
+  entity now resolves against that entity.
+
+- A pattern predicate that used `position()` or `last()` inside an `if`,
+  `let`, `for`, sequence, filter or similar expression was evaluated as if
+  the node were the only match, so `match="a/*[if (c) then last() else 1]"`
+  matched every child. The check for whether a predicate needs the position
+  and size now assumes it does for any expression it does not recognise.
+
+- `xsl:apply-templates` that selected a map, an array or an atomic value did
+  not bind the matched template's declared parameters, so `$p` was
+  undefined when its default was empty or its `xsl:param` was required. It
+  now binds them as for a node, including `XTDE0700` for a required one.
+
 - Namespace constraints are enforced for native consumers. A document with
   an unbound prefix, a malformed qualified name or two attributes with the
   same expanded name was rejected through SAX but accepted by a native

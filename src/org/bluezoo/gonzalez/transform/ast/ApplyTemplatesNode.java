@@ -153,18 +153,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                                     .pushVariableScope()
                                     .withCurrentTemplateRule(rule);
                                 
-                                // Set parameters
-                                for (WithParamNode param : params) {
-                                    if (!param.isTunnel()) {
-                                        try {
-                                            atomicContext = (TransformContext) atomicContext.withVariable(
-                                                null, param.getName(), param.evaluate(context));
-                                        } catch (XPathException e) {
-                                            throw new SAXException("Error evaluating param: " + e.getMessage(), e);
-                                        }
-                                    }
-                                }
-                                
+                                bindTemplateParams(rule, atomicContext, context, output);
                                 rule.getBody().execute(atomicContext, output);
                             }
                             atomicPosition++;
@@ -191,16 +180,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                                 .withPositionAndSize(1, 1)
                                 .pushVariableScope()
                                 .withCurrentTemplateRule(rule);
-                            for (WithParamNode param : params) {
-                                if (!param.isTunnel()) {
-                                    try {
-                                        itemContext = (TransformContext) itemContext.withVariable(
-                                            null, param.getName(), param.evaluate(context));
-                                    } catch (XPathException e) {
-                                        throw new SAXException("Error evaluating param: " + e.getMessage(), e);
-                                    }
-                                }
-                            }
+                            bindTemplateParams(rule, itemContext, context, output);
                             rule.getBody().execute(itemContext, output);
                         }
                     }
@@ -223,17 +203,7 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                                 .withPositionAndSize(1, 1)
                                 .pushVariableScope()
                                 .withCurrentTemplateRule(rule);
-                            for (WithParamNode param : params) {
-                                if (!param.isTunnel()) {
-                                    try {
-                                        itemContext = (TransformContext) itemContext.withVariable(
-                                            null, param.getName(), param.evaluate(context));
-                                    } catch (XPathException e) {
-                                        throw new SAXException(
-                                            "Error evaluating param: " + e.getMessage(), e);
-                                    }
-                                }
-                            }
+                            bindTemplateParams(rule, itemContext, context, output);
                             rule.getBody().execute(itemContext, output);
                         }
                         return;
@@ -878,6 +848,11 @@ public class ApplyTemplatesNode extends XSLTInstruction implements ExpressionHol
                     }
                 } else {
                     defaultValue = templateParam.evaluateDefaultContent(execCtx);
+                }
+                try {
+                    defaultValue = templateParam.coerceDefaultValue(defaultValue);
+                } catch (XPathException e) {
+                    throw new SAXException("Error coercing parameter default: " + e.getMessage(), e);
                 }
                 try {
                     defaultValue = templateParam.validateValue(defaultValue, "XTTE0600");
