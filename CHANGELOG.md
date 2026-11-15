@@ -115,6 +115,10 @@ All notable changes to Gonzalez will be documented in this file.
   against the file that holds the declaration, so an entity declared in an
   external DTD subset in another directory is found.
 
+- An initial mode that is the stylesheet's `default-mode` is no longer
+  rejected with `XTDE0045` when nothing else mentions it. The attribute
+  names the mode, so it is present, holding only the built-in rules.
+
 - A pattern predicate that used `position()` or `last()` inside an `if`,
   `let`, `for`, sequence, filter or similar expression was evaluated as if
   the node were the only match, so `match="a/*[if (c) then last() else 1]"`

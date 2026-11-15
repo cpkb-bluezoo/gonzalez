@@ -949,6 +949,11 @@ public class GonzalezTransformHandler extends DefaultHandler
             if (!modeDeclared && stylesheet.getModeDeclaration(initialMode) != null) {
                 modeDeclared = true;
             }
+            // The default-mode attribute names a mode, which is therefore present
+            // even if nothing else mentions it (it holds only the built-in rules).
+            if (!modeDeclared && initialMode.equals(stylesheet.getDefaultMode())) {
+                modeDeclared = true;
+            }
             if (!modeDeclared) {
                 throw new SAXException("XTDE0045: Initial mode '" + initialMode +
                     "' is not declared in the stylesheet");
