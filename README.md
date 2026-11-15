@@ -615,6 +615,14 @@ benchmark/external-compare/run.sh
 The script exits with an error if either variable is unset or does not name a
 file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
 
+`benchmark/external-compare/run-isolated.sh` runs each corpus and parser in a
+fresh JVM, several times, and reports the median; set `GONZALEZ_CLASSES` to
+compare another build of Gonzalez. Besides the empty handlers above it has
+`sax-touch` and `aalto-sax-touch` modes, whose handler reads every attribute
+and all text. They matter because Aalto's SAX wrapper decodes attribute values
+only when they are asked for, so it does less work than Gonzalez, which builds
+them as it goes, when the handler ignores them.
+
 ## Conformance
 
 Gonzalez has been tested with the W3C Conformance test suite xmlconf and

@@ -2,6 +2,28 @@
 
 All notable changes to Gonzalez will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- **Faster SAX parsing.** `SAXAdapter` keeps its element stack and attribute
+  list in arrays instead of `ArrayList`s, assembles each attribute in place
+  instead of copying it through intermediate fields, and remembers what an
+  element name resolves to for as long as the namespace bindings stay as they
+  are. With a handler that reads every attribute, SAX throughput rose by 4
+  to 27% across the benchmark corpora (the most on element-dense data, the
+  least on UTF-16), measured against 1.3.0 as the median of five fresh JVMs.
+
+- **Faster scanning of repetitive documents.** The scanner tries the name that
+  followed the previous attribute name (or the element name, for the first
+  attribute) last time, and the name that followed the previous start tag,
+  before scanning and interning a name. A name that matches and is followed by
+  something that is not a name character is accepted as it stands; anything
+  else takes the existing path, so what is reported does not change. Attribute-
+  heavy input is about 12% faster on the native path; a document whose
+  attributes come in a different order every time gains nothing and may be
+  about 2 to 3% slower.
+
 ## [1.3.0] - 2026-11-15
 
 ### Changed

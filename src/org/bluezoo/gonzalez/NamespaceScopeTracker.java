@@ -101,6 +101,13 @@ public class NamespaceScopeTracker {
      * If set, all strings will be interned for better performance.
      */
     private InternedStringPool internPool;
+
+    /**
+     * Changes whenever what a prefix is bound to may have changed, so that
+     * a result worked out from the bindings (such as what an element name
+     * resolves to) can be kept for as long as this stays the same.
+     */
+    private int bindingVersion;
     
     /**
      * Creates a new namespace scope tracker with pre-bound xml and xmlns prefixes.
@@ -164,6 +171,7 @@ public class NamespaceScopeTracker {
         // avoids allocating a KeySet iterator on every single element close.
         Scope scope = scopes.get(scopeDepth);
         if (scope.declarationCount > 0) {
+            bindingVersion++;
             for (String prefix : scope.bindings.keySet()) {
                 // Restore previous binding from outer scope (if any)
                 String outerBinding = findBindingInOuterScopes(prefix, scopeDepth - 1);
@@ -210,10 +218,22 @@ public class NamespaceScopeTracker {
         scope.bindings.put(prefix, uri);
         scope.declarationCount++;
         activeBindings.put(prefix, uri);
+        bindingVersion++;
         
         return true;
     }
     
+    /**
+     * Returns a number that changes whenever what a prefix is bound to may
+     * have changed, so that a result worked out from the bindings (such as
+     * what an element name resolves to) can be kept while it stays the same.
+     *
+     * @return the current binding version
+     */
+    public int getBindingVersion() {
+        return bindingVersion;
+    }
+
     /**
      * Gets the namespace URI bound to a prefix in the current scope.
      * 
@@ -406,6 +426,7 @@ public class NamespaceScopeTracker {
         scopes.clear();
         activeBindings.clear();
         scopeDepth = -1;
+        bindingVersion++;
         
         // Re-initialize root scope with pre-bindings
         pushContext();

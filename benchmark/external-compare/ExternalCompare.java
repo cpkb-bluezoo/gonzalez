@@ -80,14 +80,11 @@ public class ExternalCompare {
             double mb = bytes.length / (1024.0 * 1024.0);
 
             time(docType, "gonzalez-xmlhandler", bytes, mb, () -> {
-                XMLHandler handler = new NamespaceFilter(EMPTY_XML_HANDLER, false);
-                ScannerSettings settings = new ScannerSettings(
-                        false, false, false, true, "", ScannerSettings.DEFAULT_EXPANSION_LIMIT);
-                Scanner scanner = new Scanner(handler, false, null, null, null,
-                        false, true, settings, true);
-                ExternalEntityDecoder decoder = new ExternalEntityDecoder(scanner, null, null, false);
-                decoder.receive(ByteBuffer.wrap(bytes));
-                decoder.close();
+                XMLParser parser = new XMLParser();
+                parser.setNamespaceAware(true);
+                parser.setHandler(EMPTY_XML_HANDLER);
+                parser.receive(ByteBuffer.wrap(bytes));
+                parser.close();
             });
 
             time(docType, "gonzalez-sax", bytes, mb, () -> {

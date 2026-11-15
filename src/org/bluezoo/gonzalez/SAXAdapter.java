@@ -23,6 +23,7 @@ package org.bluezoo.gonzalez;
 
 import java.nio.CharBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
 
@@ -112,19 +113,38 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     private final QNamePool qnamePool;
 
     // This element's buffered attributes - see Attr's own Javadoc for the
-    // pooling design. attrCount is the "used" length; attrPool.size() is the
-    // high-water mark (>= attrCount always).
-    private final ArrayList<Attr> attrPool = new ArrayList<Attr>();
+    // pooling design. attrCount is the "used" length; the slots of attrs
+    // that are not null are the high-water mark (>= attrCount always).
+    private Attr[] attrs = new Attr[16];
     private int attrCount;
+    // The attribute being assembled: attrs[attrCount], not counted until
+    // its value is complete.
+    private Attr currentAttr;
+
+    // Whether a name has a colon in it, remembered by identity: names are
+    // interned, so a document asks the same few questions over and over.
+    private static final int COLON_CACHE_SIZE = 64;
+    private final String[] colonCacheNames = new String[COLON_CACHE_SIZE];
+    private final boolean[] colonCacheValues = new boolean[COLON_CACHE_SIZE];
     private boolean hasPrefixedAttributes;
 
-    // Element stack. qName is always pushed; uri/localName are only
-    // meaningful (and only pushed) in namespace-aware mode, so their depth
-    // can differ in bookkeeping detail from qNameStack's but always matches
-    // it in count.
-    private final ArrayList<String> qNameStack = new ArrayList<String>();
-    private final ArrayList<String> uriStack = new ArrayList<String>();
-    private final ArrayList<String> localNameStack = new ArrayList<String>();
+    // Element stack: three parallel arrays under one depth. qName is set
+    // when the element starts; uri/localName are only meaningful (and only
+    // set, at the end of the start tag) in namespace-aware mode. Plain
+    // arrays, since each element pushes and pops all three.
+    private String[] qNameStack = new String[32];
+    private String[] uriStack = new String[32];
+    private String[] localNameStack = new String[32];
+    private int elementDepth;
+
+    // What element names resolved to, kept while the namespace bindings stay
+    // as they were (see NamespaceScopeTracker#getBindingVersion): a small
+    // direct-mapped cache, qName -> (uri, localName).
+    private static final int ELEMENT_NAME_CACHE_SIZE = 64;
+    private final String[] elementNameCacheQName = new String[ELEMENT_NAME_CACHE_SIZE];
+    private final String[] elementNameCacheUri = new String[ELEMENT_NAME_CACHE_SIZE];
+    private final String[] elementNameCacheLocal = new String[ELEMENT_NAME_CACHE_SIZE];
+    private final int[] elementNameCacheVersion = new int[ELEMENT_NAME_CACHE_SIZE];
 
     // Reused across endElement() calls to avoid allocating a new list every
     // time just to reverse iteration order for endPrefixMapping.
@@ -139,10 +159,6 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     // the rarer multi-chunk case, and is a single reused field (not a pool)
     // since attributes are only ever assembled one at a time, never nested
     // or concurrent.
-    private String currentAttributeName;
-    private String currentAttributeType;
-    private boolean currentAttributeDeclared;
-    private boolean currentAttributeSpecified;
     private boolean attributeValueFirstChunk;
     private final StringBuilder attributeValueBuilder = new StringBuilder();
 
@@ -233,6 +249,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     @Override
     public void startDocument() throws SAXException {
+        elementDepth = 0;
         if (contentHandler != null) {
             contentHandler.startDocument();
         }
@@ -254,7 +271,15 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         // own Javadoc.
         attrCount = 0;
         hasPrefixedAttributes = false;
-        qNameStack.add(qName);
+        int depth = elementDepth;
+        if (depth == qNameStack.length) {
+            int capacity = depth * 2;
+            qNameStack = Arrays.copyOf(qNameStack, capacity);
+            uriStack = Arrays.copyOf(uriStack, capacity);
+            localNameStack = Arrays.copyOf(localNameStack, capacity);
+        }
+        qNameStack[depth] = qName;
+        elementDepth = depth + 1;
     }
 
     @Override
@@ -276,10 +301,22 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     @Override
     public void startAttribute(String name, String type, boolean declared, boolean specified)
             throws SAXException {
-        currentAttributeName = name;
-        currentAttributeType = type;
-        currentAttributeDeclared = declared;
-        currentAttributeSpecified = specified;
+        int index = attrCount;
+        if (index == attrs.length) {
+            attrs = Arrays.copyOf(attrs, index * 2);
+        }
+        Attr attr = attrs[index];
+        if (attr == null) {
+            attr = new Attr();
+            attrs[index] = attr;
+        }
+        attr.uri = "";
+        attr.localName = name;
+        attr.qName = name;
+        attr.type = type;
+        attr.declared = declared;
+        attr.specified = specified;
+        currentAttr = attr;
         attributeValueFirstChunk = true;
     }
 
@@ -306,7 +343,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     /**
      * Buffers the current attribute (name/type already captured by {@link
-     * #startAttribute}) into {@link #attrPool}. {@code uri=""} and {@code
+     * #startAttribute}) into {@link #attrs}. {@code uri=""} and {@code
      * localName=qName} for now, exactly as {@code ContentParser.
      * handleAttributeValue} does - resolved in {@link
      * #resolveAttributeNamespaces} below once all xmlns declarations for
@@ -318,21 +355,9 @@ class SAXAdapter implements XMLHandler, Attributes2 {
      * attributes that differ in prefix but not in namespace.
      */
     private void addCurrentAttribute(String valueStr) {
-        String qName = currentAttributeName;
-        Attr attr;
-        if (attrCount < attrPool.size()) {
-            attr = attrPool.get(attrCount);
-        } else {
-            attr = new Attr();
-            attrPool.add(attr);
-        }
-        attr.uri = "";
-        attr.localName = qName;
-        attr.qName = qName;
-        attr.type = currentAttributeType;
+        Attr attr = currentAttr;
         attr.value = valueStr;
-        attr.declared = currentAttributeDeclared;
-        attr.specified = currentAttributeSpecified;
+        String qName = attr.qName;
         if (namespaceAware && xmlnsUris
                 && ("xmlns".equals(qName) || qName.startsWith("xmlns:"))) {
             attr.uri = NamespaceScopeTracker.XMLNS_NAMESPACE_URI;
@@ -340,16 +365,27 @@ class SAXAdapter implements XMLHandler, Attributes2 {
             attr.localName = colon < 0 ? "xmlns" : qName.substring(colon + 1);
         }
         attrCount++;
-        if (qName.indexOf(':') >= 0) {
+        if (hasColon(qName)) {
             hasPrefixedAttributes = true;
         }
+    }
+
+    private boolean hasColon(String name) {
+        int slot = name.hashCode() & (COLON_CACHE_SIZE - 1);
+        if (colonCacheNames[slot] == name) {
+            return colonCacheValues[slot];
+        }
+        boolean colon = name.indexOf(':') >= 0;
+        colonCacheNames[slot] = name;
+        colonCacheValues[slot] = colon;
+        return colon;
     }
 
     /**
      * Resolves any prefixed attributes' {@code uri}/{@code localName} now
      * that every xmlns declaration on this element is known - ported from
      * {@code SAXAttributes.resolveAttributeNamespaces}, operating on {@link
-     * #attrPool} instead. A no-op (single boolean check) unless this
+     * #attrs} instead. A no-op (single boolean check) unless this
      * element actually has a prefixed attribute.
      * <p>
      * This only resolves. Whether the names are legal - each prefix
@@ -363,7 +399,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
             return;
         }
         for (int i = 0; i < attrCount; i++) {
-            Attr attr = attrPool.get(i);
+            Attr attr = attrs[i];
             String qName = attr.qName;
             int colonPos = qName.indexOf(':');
             if (colonPos > 0 && attr.uri.isEmpty()) {
@@ -384,7 +420,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     @Override
     public void endAttributes() throws SAXException {
-        String qName = qNameStack.get(qNameStack.size() - 1);
+        String qName = qNameStack[elementDepth - 1];
 
         if (namespaceTracker != null) {
             Iterator<Map.Entry<String, String>> declarations = namespaceTracker.getCurrentScopeDeclarations();
@@ -397,18 +433,36 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
             resolveAttributeNamespaces(namespaceTracker);
 
-            QName elementQName;
-            try {
-                elementQName = namespaceTracker.processName(qName, false, qnamePool);
-            } catch (NamespaceException e) {
-                throw fatalError(e.getMessage());
+            // What an element name resolves to depends only on the name
+            // and on the bindings in scope, and a document uses few names
+            // and rebinds seldom, so keep the answer while the bindings stay
+            // as they are. Names are interned, so identity is the test; one
+            // that is not is simply worked out again.
+            int version = namespaceTracker.getBindingVersion();
+            int slot = qName.hashCode() & (ELEMENT_NAME_CACHE_SIZE - 1);
+            String uri;
+            String localName;
+            if (elementNameCacheQName[slot] == qName && elementNameCacheVersion[slot] == version) {
+                uri = elementNameCacheUri[slot];
+                localName = elementNameCacheLocal[slot];
+            } else {
+                QName elementQName;
+                try {
+                    elementQName = namespaceTracker.processName(qName, false, qnamePool);
+                } catch (NamespaceException e) {
+                    throw fatalError(e.getMessage());
+                }
+                uri = elementQName.getURI();
+                localName = elementQName.getLocalName();
+                qnamePool.returnToPool(elementQName);
+                elementNameCacheQName[slot] = qName;
+                elementNameCacheUri[slot] = uri;
+                elementNameCacheLocal[slot] = localName;
+                elementNameCacheVersion[slot] = version;
             }
-            String uri = elementQName.getURI();
-            String localName = elementQName.getLocalName();
-            qnamePool.returnToPool(elementQName);
 
-            uriStack.add(uri);
-            localNameStack.add(localName);
+            uriStack[elementDepth - 1] = uri;
+            localNameStack[elementDepth - 1] = localName;
 
             if (contentHandler != null) {
                 contentHandler.startElement(uri, localName, qName, this);
@@ -451,15 +505,14 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     @Override
     public void endElement() throws SAXException {
-        int top = qNameStack.size() - 1;
-        String qName = qNameStack.remove(top);
+        int top = --elementDepth;
+        String qName = qNameStack[top];
 
         String uri = "";
         String localName = qName;
         if (namespaceTracker != null) {
-            int nsTop = uriStack.size() - 1;
-            uri = uriStack.remove(nsTop);
-            localName = localNameStack.remove(nsTop);
+            uri = uriStack[top];
+            localName = localNameStack[top];
         }
 
         if (contentHandler != null) {
@@ -689,7 +742,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     // ===== Attributes / Attributes2 =====
     //
-    // Implemented directly against attrPool/attrCount (see Attr's own
+    // Implemented directly against attrs/attrCount (see Attr's own
     // Javadoc) rather than delegating to SAXAttributes - this pipeline has
     // no DTD-backed lazy getType()/isDeclared() to offer (Scanner already
     // resolves an attribute's type before startAttribute ever sees it, and
@@ -698,7 +751,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     private int findIndexByQName(String qName) {
         for (int i = 0; i < attrCount; i++) {
-            if (attrPool.get(i).qName.equals(qName)) {
+            if (attrs[i].qName.equals(qName)) {
                 return i;
             }
         }
@@ -707,7 +760,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     private int findIndexByExpandedName(String uri, String localName) {
         for (int i = 0; i < attrCount; i++) {
-            Attr attr = attrPool.get(i);
+            Attr attr = attrs[i];
             if (attr.localName.equals(localName) && attr.uri.equals(uri)) {
                 return i;
             }
@@ -722,27 +775,27 @@ class SAXAdapter implements XMLHandler, Attributes2 {
 
     @Override
     public String getURI(int index) {
-        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).uri;
+        return (index < 0 || index >= attrCount) ? null : attrs[index].uri;
     }
 
     @Override
     public String getLocalName(int index) {
-        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).localName;
+        return (index < 0 || index >= attrCount) ? null : attrs[index].localName;
     }
 
     @Override
     public String getQName(int index) {
-        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).qName;
+        return (index < 0 || index >= attrCount) ? null : attrs[index].qName;
     }
 
     @Override
     public String getType(int index) {
-        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).type;
+        return (index < 0 || index >= attrCount) ? null : attrs[index].type;
     }
 
     @Override
     public String getValue(int index) {
-        return (index < 0 || index >= attrCount) ? null : attrPool.get(index).value;
+        return (index < 0 || index >= attrCount) ? null : attrs[index].value;
     }
 
     @Override
@@ -758,25 +811,25 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     @Override
     public String getType(String uri, String localName) {
         int i = findIndexByExpandedName(uri, localName);
-        return i < 0 ? null : attrPool.get(i).type;
+        return i < 0 ? null : attrs[i].type;
     }
 
     @Override
     public String getType(String qName) {
         int i = findIndexByQName(qName);
-        return i < 0 ? null : attrPool.get(i).type;
+        return i < 0 ? null : attrs[i].type;
     }
 
     @Override
     public String getValue(String uri, String localName) {
         int i = findIndexByExpandedName(uri, localName);
-        return i < 0 ? null : attrPool.get(i).value;
+        return i < 0 ? null : attrs[i].value;
     }
 
     @Override
     public String getValue(String qName) {
         int i = findIndexByQName(qName);
-        return i < 0 ? null : attrPool.get(i).value;
+        return i < 0 ? null : attrs[i].value;
     }
 
     @Override
@@ -784,7 +837,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         if (index < 0 || index >= attrCount) {
             throw new ArrayIndexOutOfBoundsException(index);
         }
-        return attrPool.get(index).declared;
+        return attrs[index].declared;
     }
 
     @Override
@@ -793,7 +846,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         if (i < 0) {
             throw new IllegalArgumentException("Unknown attribute: " + qName);
         }
-        return attrPool.get(i).declared;
+        return attrs[i].declared;
     }
 
     @Override
@@ -802,7 +855,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         if (i < 0) {
             throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
         }
-        return attrPool.get(i).declared;
+        return attrs[i].declared;
     }
 
     @Override
@@ -810,7 +863,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         if (index < 0 || index >= attrCount) {
             throw new ArrayIndexOutOfBoundsException(index);
         }
-        return attrPool.get(index).specified;
+        return attrs[index].specified;
     }
 
     @Override
@@ -819,7 +872,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         if (i < 0) {
             throw new IllegalArgumentException("Unknown attribute: " + qName);
         }
-        return attrPool.get(i).specified;
+        return attrs[i].specified;
     }
 
     @Override
@@ -828,7 +881,7 @@ class SAXAdapter implements XMLHandler, Attributes2 {
         if (i < 0) {
             throw new IllegalArgumentException("Unknown attribute: {" + uri + "}" + localName);
         }
-        return attrPool.get(i).specified;
+        return attrs[i].specified;
     }
 
 }

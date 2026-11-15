@@ -159,7 +159,7 @@ import org.xml.sax.ext.Locator2;
  * #namePool} ({@link PackedName}), which packs up to 12 characters per
  * candidate into primitive {@code long}s for quad-packed comparison instead
  * of a per-character hash-then-compare loop - see its own class Javadoc for
- * the design. The WFC element-type-match stack ({@link #elementStack})
+ * the design. The WFC element-type-match stack ({@link #elementNames})
  * stores the interned qName rather than a separate packed handle: since
  * both the pushed start-tag name and the compared end-tag name go through
  * the same pool, a correctly-matched tag pair is the same canonical String
@@ -306,11 +306,13 @@ class Scanner implements Locator2 {
     private int contentBracketRun;
 
     /** WFC "Element Type Match" stack of interned qNames. */
-    private final ArrayList<String> elementStack = new ArrayList<String>();
+    private String[] elementNames = new String[64];
+    /** How many elements are open: the first this many of {@link #elementNames}. */
+    private int elementDepth;
 
-    /** Content-model validator stack, parallel to {@link #elementStack}
+    /** Content-model validator stack, parallel to {@link #elementNames}
      *  ({@code validatorStack.get(i)} validates {@code
-     *  elementStack.get(i)}'s content) - null until first needed, so the
+     *  elementNames[i]}'s content) - null until first needed, so the
      *  overwhelmingly common (validation disabled) case pays nothing.
      *  Reuses {@link ContentModelValidator}/{@link ElementDeclaration}
      *  unchanged from the old tokenizer-based pipeline; see {@link
@@ -322,7 +324,7 @@ class Scanner implements Locator2 {
      *  first recording {@code qName} as a child of whatever validator was
      *  already on top (its parent) - both steps only when {@link
      *  #validationEnabled}, called from {@link #scanStartTag} before {@code
-     *  qName} is pushed onto {@link #elementStack}. An element with no
+     *  qName} is pushed onto {@link #elementNames}. An element with no
      *  {@code <!ELEMENT>} declaration at all is a VC "Element Valid"
      *  violation, reported once here, then treated as {@code ANY} so
      *  scanning continues without cascading further errors for its
@@ -615,16 +617,16 @@ class Scanner implements Locator2 {
      *  scan is fine - this is never more than a few names deep in practice. */
     private final ArrayList<String> entityExpansionStack = new ArrayList<String>();
 
-    /** {@link #elementStack} depth at entry to each currently-active general
+    /** {@link #elementNames} depth at entry to each currently-active general
      *  entity expansion in content (see {@link
      *  #expandGeneralEntityInContent}), one entry per {@link
      *  #entityExpansionStack} entry. An end tag encountered while inside an
      *  entity's replacement text must not close an element that was opened
-     *  <em>before</em> that entity started - i.e. {@link #elementStack}'s
+     *  <em>before</em> that entity started - i.e. {@link #elementNames}'s
      *  size must never drop to or below the innermost active entity's own
      *  floor - checked in {@link #scanEndTag}. This is a stronger,
      *  continuously-enforced condition than merely comparing {@link
-     *  #elementStack}'s size at entry and exit (which alone would miss the
+     *  #elementDepth}'s size at entry and exit (which alone would miss the
      *  classic {@code <!ENTITY e "</foo><foo>">} counter-example: the entity
      *  closes an outer element and re-opens a same-named one, so the net
      *  depth change is zero even though a boundary was still crossed). */
@@ -1028,7 +1030,7 @@ class Scanner implements Locator2 {
         if (!documentStarted) {
             startDocument();
         }
-        if (inStartTag || inAttributeValue || inDoctype || !elementStack.isEmpty()) {
+        if (inStartTag || inAttributeValue || inDoctype || elementDepth != 0) {
             throw handler.fatalError("Document ended unexpectedly (unclosed element or tag)");
         }
         if (!rootStarted) {
@@ -1730,14 +1732,14 @@ class Scanner implements Locator2 {
      * previous void-returning/{@code pos >= limit}-inferring version could
      * not distinguish from "nothing left to do").
      * <p>
-     * Nothing is emitted while {@link #elementStack} is empty (prolog or
+     * Nothing is emitted while {@link #elementNames} is empty (prolog or
      * epilog, per XML's {@code Misc*} production - only whitespace, comments
      * and PIs are legal there, and even whitespace is not reported as
      * {@link XMLHandler#characters} content by SAX-conforming parsers). The
      * text is still scanned and consumed, just not delivered.
      */
     private boolean scanContent() throws SAXException {
-        boolean insideDocument = !elementStack.isEmpty();
+        boolean insideDocument = elementDepth != 0;
         // An element declared with element-only content (no #PCDATA at
         // all) reports whitespace-only text via ignorableWhitespace()
         // instead of characters() - see emitContentRun(). Determined once
@@ -1769,7 +1771,7 @@ class Scanner implements Locator2 {
             }
             boolean runIsWhitespace = elementOnlyContent && pos > runStart && isWs(buf[runStart]);
             if (runIsWhitespace && standalone && validationEnabled && isCurrentElementDeclaredExternally()) {
-                String currentElement = elementStack.get(elementStack.size() - 1);
+                String currentElement = elementNames[elementDepth - 1];
                 handler.error("Validity Constraint: Standalone Document Declaration (Section 2.9). "
                         + "Document has standalone=\"yes\" but external DTD subset declares element \""
                         + currentElement + "\" with element-only content, "
@@ -1915,7 +1917,7 @@ class Scanner implements Locator2 {
      *  ANY}/{@code EMPTY} content types and for an element with no {@code
      *  <!ELEMENT>} declaration at all (including the common no-DTD case). */
     private boolean isCurrentElementContentElementOnly() {
-        String currentElement = elementStack.get(elementStack.size() - 1);
+        String currentElement = elementNames[elementDepth - 1];
         return dtdModel.getContentType(currentElement) == ElementDeclaration.ContentType.ELEMENT;
     }
 
@@ -1925,7 +1927,7 @@ class Scanner implements Locator2 {
      *  "Standalone Document Declaration" (Section 2.9), alongside {@link
      *  #isCurrentElementContentElementOnly}. */
     private boolean isCurrentElementDeclaredExternally() {
-        String currentElement = elementStack.get(elementStack.size() - 1);
+        String currentElement = elementNames[elementDepth - 1];
         ElementDeclaration decl = dtdModel.getElementDeclaration(currentElement);
         return decl != null && decl.fromExternalSubset;
     }
@@ -2168,14 +2170,14 @@ class Scanner implements Locator2 {
      *  Checked here, in {@link #scanMarkup} - the sole call site reached
      *  only from within {@link #scanContent} (never from DOCTYPE subset
      *  parsing, which calls {@link #scanComment}/{@link #scanPI} directly),
-     *  so {@link #elementStack} being non-empty here unambiguously means
+     *  so {@link #elementNames} being non-empty here unambiguously means
      *  "inside element content." */
     private void checkNotEmptyElementContent(String what) throws SAXException {
-        if (validationEnabled && !elementStack.isEmpty()
-                && dtdModel.getContentType(elementStack.get(elementStack.size() - 1))
+        if (validationEnabled && elementDepth != 0
+                && dtdModel.getContentType(elementNames[elementDepth - 1])
                         == ElementDeclaration.ContentType.EMPTY) {
             handler.error("Validity Constraint: Element Valid (Section 3.1). Element \""
-                    + elementStack.get(elementStack.size() - 1) + "\" is declared EMPTY but contains " + what + ".");
+                    + elementNames[elementDepth - 1] + "\" is declared EMPTY but contains " + what + ".");
         }
     }
 
@@ -2184,27 +2186,52 @@ class Scanner implements Locator2 {
     private boolean scanStartTag(int tagStart) throws SAXException {
         int p = tagStart + 1;
         int nameStart = p;
-        while (p < limit && isNameChar(buf[p])) {
-            p++;
+        // What followed the previous start tag's name last time is tried
+        // first, as for attribute names (see scanAttributesAndTagEnd): a
+        // name that equals it and is followed by something that is not a
+        // name character is that name, and valid for having been so.
+        String qName = null;
+        String previousStart = elementPredictPrevious;
+        int predictSlot = previousStart.hashCode() & (ELEMENT_PREDICT_SIZE - 1);
+        String predicted = elementPredictKeys[predictSlot] == previousStart
+                ? elementPredictNames[predictSlot] : null;
+        int predictedEnd;
+        if (predicted != null && (predictedEnd = p + predicted.length()) < limit
+                && regionEquals(buf, p, predicted)
+                && !NAME_CHAR_TABLE[buf[predictedEnd]]) {
+            p = predictedEnd;
+            qName = predicted;
+        } else {
+            while (p < limit && isNameChar(buf[p])) {
+                p++;
+            }
+            checkNameLength(nameStart, p);
+            if (p >= limit) {
+                pos = tagStart;
+                return false;
+            }
+            if (p == nameStart) {
+                throw handler.fatalError("Malformed start tag");
+            }
+            checkNameStartChar(nameStart);
         }
-        checkNameLength(nameStart, p);
-        if (p >= limit) {
-            pos = tagStart;
-            return false;
-        }
-        if (p == nameStart) {
-            throw handler.fatalError("Malformed start tag");
-        }
-        checkNameStartChar(nameStart);
         if (rootEnded) {
             // WFC "unique document element" (only one root element is
             // allowed) - a second start tag once the first has fully closed.
             throw handler.fatalError("A document may contain only one root element");
         }
-        if (elementStack.size() >= maxElementDepth) {
+        if (elementDepth >= maxElementDepth) {
             throw limitExceeded("Element depth limit", maxElementDepth, null);
         }
-        String qName = namePool.internRange(buf, nameStart, p - nameStart);
+        if (qName == null) {
+            qName = namePool.internRange(buf, nameStart, p - nameStart);
+            if (elementPredictNames[predictSlot] != qName
+                    || elementPredictKeys[predictSlot] != previousStart) {
+                elementPredictKeys[predictSlot] = previousStart;
+                elementPredictNames[predictSlot] = qName;
+            }
+        }
+        elementPredictPrevious = qName;
         if (!rootStarted) {
             // A document with no DOCTYPE at all may still be given an
             // external subset by an EntityResolver2 - asked for here, at
@@ -2228,10 +2255,43 @@ class Scanner implements Locator2 {
             pushElementValidator(qName);
         }
         pos = p;
-        elementStack.add(qName);
+        if (elementDepth == elementNames.length) {
+            elementNames = Arrays.copyOf(elementNames, elementDepth * 2);
+        }
+        elementNames[elementDepth++] = qName;
         resetSeenAttributeNames();
+        attrPredictPrevious = qName;
         handler.startElement(qName);
         inStartTag = true;
+        return true;
+    }
+
+    // ---- element name prediction (see scanStartTag) ----------------------
+
+    private static final int ELEMENT_PREDICT_SIZE = 256;
+    /** The start tag name each prediction follows: that of the previous start tag. */
+    private final String[] elementPredictKeys = new String[ELEMENT_PREDICT_SIZE];
+    /** The start tag name that last followed it. */
+    private final String[] elementPredictNames = new String[ELEMENT_PREDICT_SIZE];
+    /** The name of the previous start tag. */
+    private String elementPredictPrevious = "";
+
+    // ---- attribute name prediction (see scanAttributesAndTagEnd) ---------
+
+    private static final int ATTR_PREDICT_SIZE = 256;
+    /** The name each prediction follows: the previous attribute's, or the element's. */
+    private final String[] attrPredictKeys = new String[ATTR_PREDICT_SIZE];
+    /** The attribute name that last followed it. */
+    private final String[] attrPredictNames = new String[ATTR_PREDICT_SIZE];
+    /** What the next attribute name in this start tag follows. */
+    private String attrPredictPrevious = "";
+
+    private static boolean regionEquals(char[] a, int from, String b) {
+        for (int i = 0, n = b.length(); i < n; i++) {
+            if (a[from + i] != b.charAt(i)) {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -2328,7 +2388,7 @@ class Scanner implements Locator2 {
         // calls - the element is only popped by this method itself), so
         // resolved once rather than per attribute: the element's name and
         // its declared-attribute map (null in the common no-DTD case).
-        String currentElementName = elementStack.get(elementStack.size() - 1);
+        String currentElementName = elementNames[elementDepth - 1];
         Map<String, DTDModel.AttDef> declaredAttrs = dtdModel.getAttributes(currentElementName);
         boolean spaceSeen = (stage == TAG_SPACE_SEEN);
         while (true) {
@@ -2369,8 +2429,8 @@ class Scanner implements Locator2 {
                     if (validationEnabled) {
                         popAndValidateElement();
                     }
-                    elementStack.remove(elementStack.size() - 1);
-                    rootEnded = elementStack.isEmpty();
+                    elementDepth--;
+                    rootEnded = elementDepth == 0;
                     handler.endAttributes();
                     handler.endElement();
                     return true;
@@ -2386,24 +2446,49 @@ class Scanner implements Locator2 {
                 }
 
                 int nameStart = pos;
-                while (pos < limit && isNameChar(buf[pos])) {
-                    pos++;
-                }
-                checkNameLength(nameStart, pos);
-                if (pos >= limit) {
-                    // A name is scanned whole; the white space before it
-                    // is not scanned again.
-                    pos = nameStart;
-                    if (spaceSeen) {
-                        tagStage = TAG_SPACE_SEEN;
+                // Attribute names come in much the same order in every
+                // element of a kind, so what followed the previous name (or
+                // the element's own name, for the first) last time is
+                // tried first. A name that equals it, and is followed by
+                // something that is not a name character, is that name,
+                // and is valid for having been valid then: none of the
+                // scanning, checking and interning below is needed.
+                String previous = attrPredictPrevious;
+                int predictSlot = previous.hashCode() & (ATTR_PREDICT_SIZE - 1);
+                String predicted = attrPredictKeys[predictSlot] == previous
+                        ? attrPredictNames[predictSlot] : null;
+                int predictedEnd;
+                if (predicted != null && (predictedEnd = pos + predicted.length()) < limit
+                        && regionEquals(buf, pos, predicted)
+                        && !NAME_CHAR_TABLE[buf[predictedEnd]]) {
+                    pos = predictedEnd;
+                    attrName = predicted;
+                } else {
+                    while (pos < limit && isNameChar(buf[pos])) {
+                        pos++;
                     }
-                    return false;
+                    checkNameLength(nameStart, pos);
+                    if (pos >= limit) {
+                        // A name is scanned whole; the white space before it
+                        // is not scanned again.
+                        pos = nameStart;
+                        if (spaceSeen) {
+                            tagStage = TAG_SPACE_SEEN;
+                        }
+                        return false;
+                    }
+                    if (pos == nameStart) {
+                        throw handler.fatalError("Malformed start tag");
+                    }
+                    checkNameStartChar(nameStart);
+                    attrName = namePool.internRange(buf, nameStart, pos - nameStart);
+                    if (attrPredictNames[predictSlot] != attrName
+                            || attrPredictKeys[predictSlot] != previous) {
+                        attrPredictKeys[predictSlot] = previous;
+                        attrPredictNames[predictSlot] = attrName;
+                    }
                 }
-                if (pos == nameStart) {
-                    throw handler.fatalError("Malformed start tag");
-                }
-                checkNameStartChar(nameStart);
-                attrName = namePool.internRange(buf, nameStart, pos - nameStart);
+                attrPredictPrevious = attrName;
             }
 
             if (stage != TAG_AFTER_EQ) {
@@ -2747,19 +2832,19 @@ class Scanner implements Locator2 {
         // through to the general path below, unchanged, for correct error
         // reporting and resumption; the fast path itself never consumes
         // anything unless it fully succeeds.
-        int stackSize = elementStack.size();
+        int stackSize = elementDepth;
         if (stackSize > 0) {
-            String expected = elementStack.get(stackSize - 1);
+            String expected = elementNames[stackSize - 1];
             int afterName = nameStart + expected.length();
             if (afterName < limit && buf[afterName] == '>'
                     && rangeEquals(buf, nameStart, expected.length(), expected)
                     && (entityStackFloors.isEmpty()
                             || stackSize > entityStackFloors.get(entityStackFloors.size() - 1))) {
-                elementStack.remove(stackSize - 1);
+                elementDepth--;
                 if (validationEnabled) {
                     popAndValidateElement();
                 }
-                rootEnded = elementStack.isEmpty();
+                rootEnded = elementDepth == 0;
                 pos = afterName + 1;
                 handler.endElement();
                 return true;
@@ -2788,16 +2873,16 @@ class Scanner implements Locator2 {
         // bookkeeping and does not need to become a String at all unless there
         // is actually a mismatch to report.
         int nameLen = p - nameStart;
-        if (elementStack.isEmpty()) {
+        if (elementDepth == 0) {
             throw handler.fatalError("End tag without matching start tag: " + new String(buf, nameStart, nameLen));
         }
         if (!entityStackFloors.isEmpty()
-                && elementStack.size() <= entityStackFloors.get(entityStackFloors.size() - 1)) {
+                && elementDepth <= entityStackFloors.get(entityStackFloors.size() - 1)) {
             throw handler.fatalError("End tag </" + new String(buf, nameStart, nameLen)
                     + "> in an entity's replacement text must not close an element that was opened "
                     + "outside that entity (element boundaries must nest within entity boundaries)");
         }
-        String expected = elementStack.remove(elementStack.size() - 1);
+        String expected = elementNames[--elementDepth];
         if (!rangeEquals(buf, nameStart, nameLen, expected)) {
             throw handler.fatalError("Mismatched end tag: expected </" + expected + "> but found </"
                     + new String(buf, nameStart, nameLen) + ">");
@@ -2805,7 +2890,7 @@ class Scanner implements Locator2 {
         if (validationEnabled) {
             popAndValidateElement();
         }
-        rootEnded = elementStack.isEmpty();
+        rootEnded = elementDepth == 0;
 
         pos = p;
         if (!scanEndTagTail()) {
@@ -2969,7 +3054,7 @@ class Scanner implements Locator2 {
             pos = tagStart;
             return false;
         }
-        if (elementStack.isEmpty()) {
+        if (elementDepth == 0) {
             // CDATA sections are markup that can only appear within element
             // content - never in the prolog or epilog (Misc* allows only
             // Comment/PI/whitespace).
@@ -5276,7 +5361,7 @@ class Scanner implements Locator2 {
      * simply swapped to a private array holding the replacement text, {@link
      * #scan()} is re-entered exactly as the top-level driver does, and the
      * outer state is restored once the swapped-in buffer is fully drained.
-     * {@link #elementStack} is deliberately <em>not</em> swapped - it is
+     * {@link #elementNames} is deliberately <em>not</em> swapped - it is
      * shared across the boundary so an element opened inside the entity's
      * replacement text (entities used in content may contain markup, not
      * just character data) is matched by its end tag within that same
@@ -5358,7 +5443,7 @@ class Scanner implements Locator2 {
         boolean savedContentRunOpen = contentRunOpen;
         boolean savedAllowRestrictedCharInContent = allowRestrictedCharInContent;
         String savedBaseSystemId = baseSystemId;
-        int stackDepthAtEntry = elementStack.size();
+        int stackDepthAtEntry = elementDepth;
         LineState savedLines = saveLineState();
         if (externalIds != null) {
             startFreshLineCount(savedLines, entityLineOffset);
@@ -5380,7 +5465,7 @@ class Scanner implements Locator2 {
             if (pos != limit || inStartTag || inAttributeValue || inPI || inComment || inCDATA || inDoctype) {
                 throw handler.fatalError("Entity \"" + name + "\" replacement text is not well-formed");
             }
-            if (elementStack.size() != stackDepthAtEntry) {
+            if (elementDepth != stackDepthAtEntry) {
                 throw handler.fatalError("Well-Formedness Constraint: Parsed Entity (Section 4.1). Entity \""
                         + name + "\" replacement text is not well-formed: "
                         + "element boundaries must nest within entity boundaries");
