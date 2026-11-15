@@ -4,6 +4,14 @@ All notable changes to Gonzalez will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **A memory comparison.** `benchmark/external-compare/run-memory.sh` parses a
+  document with one very large text node, CDATA section, attribute value or
+  comment in a small heap with Gonzalez, JDK Xerces and Aalto, and says which
+  get to the end of it. The README shows the result: through the native
+  `XMLHandler` interface Gonzalez does, for all four.
+
 ### Changed
 
 - **Faster SAX parsing.** `SAXAdapter` keeps its element stack and attribute
