@@ -252,10 +252,10 @@
         <text x="0" y="0" class="stat-text"><tspan class="stat-strong">Faster</tspan> than JDK XML parsing</text>
       </g>
       <g class="fade-slide" style="animation-delay: 2s;">
-        <text x="0" y="20" class="stat-text"><tspan class="stat-strong">1879/1879</tspan> 100% W3C XML conformance tests pass</text>
+        <text x="0" y="20" class="stat-text"><tspan class="stat-strong">2359/2359</tspan> 100% W3C XML conformance tests pass</text>
       </g>
       <g class="fade-slide" style="animation-delay: 4s;">
-        <text x="0" y="40" class="stat-text"><tspan class="stat-strong">9418/9426</tspan> 99.9% W3C XSLT 3.0 conformance tests pass</text>
+        <text x="0" y="40" class="stat-text"><tspan class="stat-strong">9425/9425</tspan> 100% W3C XSLT 3.0 conformance tests pass</text>
       </g>
     </g>
 
