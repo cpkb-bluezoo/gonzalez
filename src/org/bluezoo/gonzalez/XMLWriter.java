@@ -1142,17 +1142,13 @@ public class XMLWriter {
 
         if (!standalone) {
             if (publicId != null) {
-                writeRawString(" PUBLIC \"");
-                writeEscapedId(publicId);
-                writeRawString("\" \"");
-                if (systemId != null) {
-                    writeEscapedId(systemId);
-                }
-                writeRawString("\"");
+                writeRawString(" PUBLIC ");
+                writeIdLiteral(publicId);
+                writeRawString(" ");
+                writeIdLiteral(systemId != null ? systemId : "");
             } else if (systemId != null) {
-                writeRawString(" SYSTEM \"");
-                writeEscapedId(systemId);
-                writeRawString("\"");
+                writeRawString(" SYSTEM ");
+                writeIdLiteral(systemId);
             }
         }
 
@@ -1291,15 +1287,13 @@ public class XMLWriter {
             writeRawString(name);
         }
         if (publicId != null) {
-            writeRawString(" PUBLIC \"");
-            writeEscapedId(publicId);
-            writeRawString("\" \"");
-            writeEscapedId(systemId);
-            writeRawString("\"");
+            writeRawString(" PUBLIC ");
+            writeIdLiteral(publicId);
+            writeRawString(" ");
+            writeIdLiteral(systemId);
         } else {
-            writeRawString(" SYSTEM \"");
-            writeEscapedId(systemId);
-            writeRawString("\"");
+            writeRawString(" SYSTEM ");
+            writeIdLiteral(systemId);
         }
         writeRawString(">\n");
         sendIfNeeded();
@@ -1324,18 +1318,15 @@ public class XMLWriter {
         writeRawString("  <!NOTATION ");
         writeRawString(name);
         if (publicId != null) {
-            writeRawString(" PUBLIC \"");
-            writeEscapedId(publicId);
-            writeRawString("\"");
+            writeRawString(" PUBLIC ");
+            writeIdLiteral(publicId);
             if (systemId != null) {
-                writeRawString(" \"");
-                writeEscapedId(systemId);
-                writeRawString("\"");
+                writeRawString(" ");
+                writeIdLiteral(systemId);
             }
         } else if (systemId != null) {
-            writeRawString(" SYSTEM \"");
-            writeEscapedId(systemId);
-            writeRawString("\"");
+            writeRawString(" SYSTEM ");
+            writeIdLiteral(systemId);
         }
         writeRawString(">\n");
         sendIfNeeded();
@@ -1361,15 +1352,13 @@ public class XMLWriter {
         writeRawString("  <!ENTITY ");
         writeRawString(name);
         if (publicId != null) {
-            writeRawString(" PUBLIC \"");
-            writeEscapedId(publicId);
-            writeRawString("\" \"");
-            writeEscapedId(systemId);
-            writeRawString("\"");
+            writeRawString(" PUBLIC ");
+            writeIdLiteral(publicId);
+            writeRawString(" ");
+            writeIdLiteral(systemId);
         } else {
-            writeRawString(" SYSTEM \"");
-            writeEscapedId(systemId);
-            writeRawString("\"");
+            writeRawString(" SYSTEM ");
+            writeIdLiteral(systemId);
         }
         writeRawString(" NDATA ");
         writeRawString(notationName);
@@ -2020,20 +2009,25 @@ public class XMLWriter {
     }
 
     /**
-     * Writes a system/public identifier, escaping double quotes
-     * to prevent identifier injection in DOCTYPE and entity declarations.
+     * Writes a system or public identifier as a quoted literal. No
+     * reference of any kind is recognised inside one, so a quotation mark
+     * in the identifier cannot be escaped: the literal is delimited with
+     * the other kind instead, which also keeps the identifier from ending
+     * the literal early. One containing both kinds cannot be written at
+     * all (and could not have been read from a document).
      */
-    private void writeEscapedId(String id) throws IOException {
-        int len = id.length();
-        int segStart = 0;
-        for (int i = 0; i < len; i++) {
-            if (id.charAt(i) == '"') {
-                writeRawString(id.substring(segStart, i));
-                writeRawString("&quot;");
-                segStart = i + 1;
+    private void writeIdLiteral(String id) throws IOException {
+        String quote = "\"";
+        if (id.indexOf('"') >= 0) {
+            if (id.indexOf('\'') >= 0) {
+                throw new IOException("An identifier containing both kinds of quotation mark"
+                        + " cannot be written: " + id);
             }
+            quote = "'";
         }
-        writeRawString(id.substring(segStart));
+        writeRawString(quote);
+        writeRawString(id);
+        writeRawString(quote);
     }
 
     /**
@@ -2208,22 +2202,27 @@ public class XMLWriter {
     }
 
     /**
-     * Writes an entity replacement value with escaping for DTD internal subset.
-     * Escapes &amp;, %, and " characters.
+     * Writes an entity's replacement text as the content of the literal
+     * that declares it.
+     *
+     * <p>A character that would mean something in the literal is written
+     * as a character reference, which is replaced when the declaration is
+     * read and so puts the character itself back into the replacement
+     * text: '&amp;' (which would begin a reference), '%' (a parameter
+     * entity reference), '"' (the end of the literal) and a carriage
+     * return (which would be read as a line feed). A general entity
+     * reference such as {@code &amp;amp;} will not do, because those are
+     * not replaced in a declaration but kept, as references, in the
+     * replacement text.
      */
     private void writeEscapedEntityValue(String s) throws IOException {
         for (int i = 0; i < s.length(); ) {
             int codePoint = s.codePointAt(i);
             int charCount = Character.charCount(codePoint);
 
-            if (codePoint == '&') {
-                writeRawString("&amp;");
-            } else if (codePoint == '%') {
-                writeRawString("&#37;");
-            } else if (codePoint == '"') {
-                writeRawString("&quot;");
-            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
-                       && codePoint != '\r') {
+            if (codePoint == '&' || codePoint == '%' || codePoint == '"' || codePoint == '\r') {
+                writeDecimalCharacterReference(codePoint);
+            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n') {
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
                 ensureCapacity(maxAsciiBytes);

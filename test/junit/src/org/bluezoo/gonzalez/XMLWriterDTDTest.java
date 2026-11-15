@@ -146,6 +146,115 @@ public class XMLWriterDTDTest {
         }
     }
 
+    // ===== Entity values =====
+
+    /**
+     * An entity's value is its replacement text. In the literal that
+     * declares it, a character reference is replaced when the declaration
+     * is read but a general entity reference is left for when the entity
+     * is used, so only the first puts a character into the value without
+     * that character meaning what it otherwise would there.
+     */
+    @Test
+    public void testEntityValueUsesCharacterReferences() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        XMLWriter writer = new XMLWriter(out);
+        writer.writeStartDTD("r", null, null);
+        writer.writeInternalEntityDecl("e", "a &amp; b \"q\" 'r' 100% x&f;y <z/> cr\rlf\ntab\t.");
+        writer.writeInternalEntityDecl("%p", "<!ELEMENT s ANY> %q; \"");
+        writer.writeEndDTD();
+        writer.writeStartElement("r");
+        writer.writeEndElement();
+        writer.close();
+        assertEquals("<!DOCTYPE r [\n"
+                + "  <!ENTITY e \"a &#38;amp; b &#34;q&#34; 'r' 100&#37; x&#38;f;y <z/> cr&#13;lf\ntab\t.\">\n"
+                + "  <!ENTITY % p \"<!ELEMENT s ANY> &#37;q; &#34;\">\n"
+                + "]><r/>", utf8(out));
+    }
+
+    @Test
+    public void testEntityValueIsReadBack() throws Exception {
+        String[] declarations = {
+            "<!ENTITY e \"plain\">",
+            "<!ENTITY e \"a &amp; b\">",
+            "<!ENTITY e \"a &#38;amp; b\">",
+            "<!ENTITY e \"say &quot;hi&quot; &#34;there&#34; 'x'\">",
+            "<!ENTITY e 'say \"hi\"'>",
+            "<!ENTITY e \"100&#37; &#x25;\">",
+            "<!ENTITY f \"F\"><!ENTITY e \"x&f;y\">",
+            "<!ENTITY e \"&lt;not a tag&gt; &amp;amp;\">",
+            "<!ENTITY e \"caf" + (char) 0xE9 + " &#x1F600;\">",
+        };
+        for (int d = 0; d < declarations.length; d++) {
+            String xml = "<!DOCTYPE r [" + declarations[d] + "]><r a=\"&e;\">&e;</r>";
+            String written = copy(xml);
+            assertEquals("declared by " + written, declared(xml), declared(written));
+            assertEquals("written as " + written, events(xml), events(written));
+            assertEquals("copied again", written, copy(written));
+        }
+    }
+
+    /** A carriage return can only be in a value by a character
+     *  reference, and has to be written as one to stay there: on its own
+     *  it would be read as the end of a line. */
+    @Test
+    public void testCarriageReturnInAnEntityValueIsReadBack() throws Exception {
+        String xml = "<!DOCTYPE r [<!ENTITY e \"cr&#13;lf&#10;tab&#9;nl\nend\">]><r/>";
+        String written = copy(xml);
+        assertEquals("[entity e = [cr\rlf\ntab\tnl\nend]]", declared(xml).toString());
+        assertEquals("declared by " + written, declared(xml), declared(written));
+    }
+
+    // ===== Identifiers =====
+
+    /**
+     * No reference of any kind is recognised in a system or public
+     * identifier, so a quotation mark in one can only be written by
+     * delimiting the literal with the other kind.
+     */
+    @Test
+    public void testIdentifierWithAQuotationMark() throws Exception {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        XMLWriter writer = new XMLWriter(out);
+        writer.writeStartDTD("r", "-//P's//EN", "a\"b.dtd");
+        writer.writeNotationDecl("n", null, "plain");
+        writer.writeNotationDecl("o", null, "it's");
+        writer.writeNotationDecl("p", "P's", "say \"x\"");
+        writer.writeExternalEntityDecl("e", null, "e\"1\".ent");
+        writer.writeUnparsedEntityDecl("u", null, "u\"1\".bin", "n");
+        writer.writeEndDTD();
+        writer.writeStartElement("r");
+        writer.writeEndElement();
+        writer.close();
+        assertEquals("<!DOCTYPE r PUBLIC \"-//P's//EN\" 'a\"b.dtd' [\n"
+                + "  <!NOTATION n SYSTEM \"plain\">\n"
+                + "  <!NOTATION o SYSTEM \"it's\">\n"
+                + "  <!NOTATION p PUBLIC \"P's\" 'say \"x\"'>\n"
+                + "  <!ENTITY e SYSTEM 'e\"1\".ent'>\n"
+                + "  <!ENTITY u SYSTEM 'u\"1\".bin' NDATA n>\n"
+                + "]><r/>", utf8(out));
+    }
+
+    @Test
+    public void testIdentifierWithBothQuotationMarksCannotBeWritten() throws Exception {
+        XMLWriter writer = new XMLWriter(new ByteArrayOutputStream());
+        writer.writeStartDTD("r", null, null);
+        try {
+            writer.writeNotationDecl("n", null, "it's \"x\"");
+            org.junit.Assert.fail("Expected IOException");
+        } catch (java.io.IOException e) {
+            org.junit.Assert.assertTrue("Was: " + e.getMessage(), e.getMessage().contains("quotation mark"));
+        }
+    }
+
+    @Test
+    public void testIdentifierWithAQuotationMarkIsReadBack() throws Exception {
+        String xml = "<!DOCTYPE r [<!NOTATION n SYSTEM 'say \"x\"'><!NOTATION o SYSTEM \"it's\">"
+                + "<!NOTATION p PUBLIC \"P's\">]><r/>";
+        String written = copy(xml);
+        assertEquals("declared by " + written, declared(xml), declared(written));
+    }
+
     // ===== Helpers =====
 
     private static String utf8(ByteArrayOutputStream out) {
@@ -172,12 +281,49 @@ public class XMLWriterDTDTest {
         return utf8(out);
     }
 
+    /** The events of a document, without the boundaries of its entities:
+     *  a copy has what each reference stood for in its place. */
     private static List<String> events(String xml) throws Exception {
         RecordingXMLHandler handler = new RecordingXMLHandler();
         XMLParser parser = new XMLParser();
         parser.setHandler(handler);
         parser.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
-        return new ArrayList<String>(handler.getEvents());
+        List<String> events = new ArrayList<String>();
+        List<String> recorded = handler.getEvents();
+        for (int i = 0; i < recorded.size(); i++) {
+            String event = recorded.get(i);
+            if (event.startsWith("startEntity:") || event.startsWith("endEntity:")) {
+                continue;
+            }
+            // Text either side of a boundary is one run of text without it.
+            int last = events.size() - 1;
+            if (event.startsWith("characters:") && last >= 0 && events.get(last).startsWith("characters:")) {
+                events.set(last, events.get(last) + event.substring("characters:".length()));
+            } else {
+                events.add(event);
+            }
+        }
+        return events;
+    }
+
+    /** What a document's DTD declares: each entity with its value, and
+     *  each notation with its identifiers. */
+    private static List<String> declared(String xml) throws Exception {
+        final List<String> declared = new ArrayList<String>();
+        XMLParser parser = new XMLParser();
+        parser.setHandler(new RecordingXMLHandler() {
+            @Override
+            public void internalEntityDecl(String name, String value) {
+                declared.add("entity " + name + " = [" + value + "]");
+            }
+
+            @Override
+            public void notationDecl(String name, String publicId, String systemId) {
+                declared.add("notation " + name + " public [" + publicId + "] system [" + systemId + "]");
+            }
+        });
+        parser.parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)));
+        return declared;
     }
 
 }
