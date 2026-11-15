@@ -317,6 +317,13 @@ public class GonzalezTransformerFactory extends SAXTransformerFactory {
         // Enable namespace processing - required for XSLT compilation
         reader.setFeature("http://xml.org/sax/features/namespaces", true);
         reader.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
+        // Source line numbers locate instructions in error messages and in
+        // the err:line-number of xsl:catch. Another parser has them already.
+        try {
+            reader.setFeature("http://bluezoo.org/gonzalez/features/line-numbers", true);
+        } catch (SAXException e) {
+            // not a Gonzalez parser
+        }
         
         // Configure entity processing based on accessExternalDTD setting
         boolean allowDTD = accessExternalDTD != null && !accessExternalDTD.isEmpty();

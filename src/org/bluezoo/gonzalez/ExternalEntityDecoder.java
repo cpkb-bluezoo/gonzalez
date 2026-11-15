@@ -458,6 +458,9 @@ class ExternalEntityDecoder {
                 // Setup charset decoder with declared encoding
                 setupCharsetDecoder(declEncoding);
 
+                // The declaration is not passed on, but its lines are lines.
+                scanner.addLinesBefore(declParser.getLineBreaks());
+
                 state = State.CONTENT;
                 return true;
         }

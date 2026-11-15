@@ -819,12 +819,159 @@ class Scanner implements Locator2 {
 
     @Override
     public int getLineNumber() {
-        return -1;
+        if (!trackLineNumbers) {
+            return -1;
+        }
+        if (lineFreeze > 0) {
+            return frozenLine;
+        }
+        countLinesUpTo(pos);
+        return (int) Math.min(Integer.MAX_VALUE, lineBase + countedLines + 1);
     }
 
     @Override
     public int getColumnNumber() {
-        return -1;
+        if (!trackLineNumbers) {
+            return -1;
+        }
+        if (lineFreeze > 0) {
+            return frozenColumn;
+        }
+        countLinesUpTo(pos);
+        return lastNewline >= 0 ? pos - lastNewline : colBase + pos + 1;
+    }
+
+    // ---- line and column tracking (off unless asked for) ----------------
+    //
+    // buf only ever holds text not yet consumed (append() drops the rest),
+    // so the line of buf[pos] is the number of line feeds dropped so far
+    // (lineBase) plus those in buf[0, pos), plus one. Line endings reach
+    // the scanner already normalized to a line feed. The count within buf
+    // is done on demand and resumed from where it left off, so asking for
+    // the location of every start tag costs one pass over the input in all,
+    // and not asking costs nothing. While the scanner reads a replacement
+    // text or a DTD that is not the document itself, the location is that
+    // of the reference to it (frozen), except for an external entity, which
+    // has lines of its own.
+
+    /** Whether {@link #getLineNumber} and {@link #getColumnNumber} work. */
+    private boolean trackLineNumbers;
+    /** Line feeds in the text already dropped from the front of {@link #buf}. */
+    private long lineBase;
+    /** Length of the current line within that dropped text. */
+    private int colBase;
+    /** {@code buf[0, countedPos)} has been counted... */
+    private int countedPos;
+    /** ...and holds this many line feeds... */
+    private int countedLines;
+    /** ...the last of them at this index, or -1 for none. */
+    private int lastNewline = -1;
+    /** Greater than zero while the location is that of a reference. */
+    private int lineFreeze;
+    private int frozenLine;
+    private int frozenColumn;
+
+    /** Turns line and column tracking on or off. Set before parsing. */
+    void setTrackLineNumbers(boolean track) {
+        this.trackLineNumbers = track;
+    }
+
+    /** Adds lines that came before the first character this scanner is
+     *  given, such as those of an XML declaration the decoder consumed. */
+    void addLinesBefore(int lines) {
+        lineBase += lines;
+    }
+
+    /** Counts the line feeds of {@code buf[countedPos, upTo)}. */
+    private void countLinesUpTo(int upTo) {
+        if (upTo < countedPos) {
+            // the scan position went back to retry a construct
+            countedPos = 0;
+            countedLines = 0;
+            lastNewline = -1;
+        }
+        char[] b = buf;
+        int lines = countedLines;
+        int last = lastNewline;
+        for (int i = countedPos; i < upTo; i++) {
+            if (b[i] == '\n') {
+                lines++;
+                last = i;
+            }
+        }
+        countedLines = lines;
+        lastNewline = last;
+        countedPos = upTo;
+    }
+
+    /** What {@link #saveLineState} saves and {@link #restoreLineState} restores. */
+    private static final class LineState {
+        long lineBase;
+        int colBase;
+        int countedPos;
+        int countedLines;
+        int lastNewline;
+        int lineFreeze;
+        int frozenLine;
+        int frozenColumn;
+    }
+
+    private LineState saveLineState() {
+        if (!trackLineNumbers) {
+            return null;
+        }
+        LineState st = new LineState();
+        st.lineBase = lineBase;
+        st.colBase = colBase;
+        st.countedPos = countedPos;
+        st.countedLines = countedLines;
+        st.lastNewline = lastNewline;
+        st.lineFreeze = lineFreeze;
+        st.frozenLine = frozenLine;
+        st.frozenColumn = frozenColumn;
+        return st;
+    }
+
+    private void restoreLineState(LineState st) {
+        if (st == null) {
+            return;
+        }
+        lineBase = st.lineBase;
+        colBase = st.colBase;
+        countedPos = st.countedPos;
+        countedLines = st.countedLines;
+        lastNewline = st.lastNewline;
+        lineFreeze = st.lineFreeze;
+        frozenLine = st.frozenLine;
+        frozenColumn = st.frozenColumn;
+    }
+
+    /** Fixes the location at where it is now, until the state is restored.
+     *  Call before replacing {@link #buf}. */
+    private void freezeLocation(LineState saved) {
+        if (saved == null) {
+            return;
+        }
+        int line = getLineNumber();
+        int column = getColumnNumber();
+        lineFreeze++;
+        frozenLine = line;
+        frozenColumn = column;
+    }
+
+    /** Starts the count again for text with lines of its own, whose first
+     *  character is on line {@code linesBefore + 1}. Call before replacing
+     *  {@link #buf}. */
+    private void startFreshLineCount(LineState saved, int linesBefore) {
+        if (saved == null) {
+            return;
+        }
+        lineBase = linesBefore;
+        colBase = 0;
+        countedPos = 0;
+        countedLines = 0;
+        lastNewline = -1;
+        lineFreeze = 0;
     }
 
     @Override
@@ -1108,6 +1255,14 @@ class Scanner implements Locator2 {
     private void append(CharBuffer data) {
         int needed = data.remaining();
         if (pos > 0) {
+            if (trackLineNumbers && lineFreeze == 0) {
+                countLinesUpTo(pos);
+                lineBase += countedLines;
+                colBase = lastNewline >= 0 ? pos - lastNewline - 1 : colBase + pos;
+                countedPos = 0;
+                countedLines = 0;
+                lastNewline = -1;
+            }
             int remaining = limit - pos;
             if (remaining > 0) {
                 System.arraycopy(buf, pos, buf, 0, remaining);
@@ -5138,6 +5293,7 @@ class Scanner implements Locator2 {
             return;
         }
         char[] replacementChars;
+        int entityLineOffset = 0;
         String[] externalIds = externalEntityNames.get(name);
         // Fired here, not any earlier - mirrors the old pipeline's own
         // placement: after the reference is confirmed referenceable (a
@@ -5168,8 +5324,16 @@ class Scanner implements Locator2 {
                 baseSystemId = externalIds[3];
             }
             try {
-                replacementChars = XmlDeclUtil.stripXmlDeclaration(
-                        fetchExternalEntity(name, externalIds[0], externalIds[1]), handler);
+                char[] fetched = fetchExternalEntity(name, externalIds[0], externalIds[1]);
+                replacementChars = XmlDeclUtil.stripXmlDeclaration(fetched, handler);
+                // The text declaration and the line breaks after it are
+                // gone, but the lines they were on are still counted.
+                int dropped = fetched.length - replacementChars.length;
+                for (int i = 0; i < dropped; i++) {
+                    if (fetched[i] == '\n') {
+                        entityLineOffset++;
+                    }
+                }
             } finally {
                 baseSystemId = referenceBaseSystemId;
             }
@@ -5189,6 +5353,12 @@ class Scanner implements Locator2 {
         boolean savedAllowRestrictedCharInContent = allowRestrictedCharInContent;
         String savedBaseSystemId = baseSystemId;
         int stackDepthAtEntry = elementStack.size();
+        LineState savedLines = saveLineState();
+        if (externalIds != null) {
+            startFreshLineCount(savedLines, entityLineOffset);
+        } else {
+            freezeLocation(savedLines);
+        }
 
         buf = replacementChars;
         pos = 0;
@@ -5227,6 +5397,7 @@ class Scanner implements Locator2 {
             contentRunOpen = savedContentRunOpen;
             allowRestrictedCharInContent = savedAllowRestrictedCharInContent;
             baseSystemId = savedBaseSystemId;
+            restoreLineState(savedLines);
             entityExpansionStack.remove(entityExpansionStack.size() - 1);
             entityStackFloors.remove(entityStackFloors.size() - 1);
         }
@@ -5613,6 +5784,8 @@ class Scanner implements Locator2 {
         int savedPos = pos;
         int savedLimit = limit;
         boolean savedParsingExternalContent = parsingExternalContent;
+        LineState savedLines = saveLineState();
+        freezeLocation(savedLines);
         buf = chars;
         pos = 0;
         limit = chars.length;
@@ -5653,6 +5826,7 @@ class Scanner implements Locator2 {
             pos = savedPos;
             limit = savedLimit;
             parsingExternalContent = savedParsingExternalContent;
+            restoreLineState(savedLines);
         }
     }
 
@@ -5914,6 +6088,8 @@ class Scanner implements Locator2 {
         int savedLimit = limit;
         boolean savedParsingExternalContent = parsingExternalContent;
         String savedBaseSystemId = baseSystemId;
+        LineState savedLines = saveLineState();
+        freezeLocation(savedLines);
         buf = replacementChars;
         pos = 0;
         limit = buf.length;
@@ -5946,6 +6122,7 @@ class Scanner implements Locator2 {
             limit = savedLimit;
             parsingExternalContent = savedParsingExternalContent;
             baseSystemId = savedBaseSystemId;
+            restoreLineState(savedLines);
             parameterEntityExpansionStack.remove(parameterEntityExpansionStack.size() - 1);
         }
         pos = resumeAt;
@@ -6047,6 +6224,12 @@ class Scanner implements Locator2 {
      * #pos}, at a local cursor of their own).
      */
     private int spliceIntoBuf(int start, int end, String replacement) {
+        if (start < countedPos) {
+            // text already counted has changed; count again from the start
+            countedPos = 0;
+            countedLines = 0;
+            lastNewline = -1;
+        }
         int oldSpan = end - start;
         int newSpan = replacement.length();
         int delta = newSpan - oldSpan;

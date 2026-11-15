@@ -595,6 +595,9 @@ public class Parser implements XMLReader, PSVIProvider {
             case "http://xml.org/sax/features/xmlns-uris":
                 return core.isXmlnsUris();
 
+            case LINE_NUMBERS_FEATURE:
+                return core.isLineNumbers();
+
             // Read-only features (report capabilities)
             case "http://xml.org/sax/features/lexical-handler":
             case "http://xml.org/sax/features/parameter-entities":
@@ -681,6 +684,10 @@ public class Parser implements XMLReader, PSVIProvider {
 
             case "http://xml.org/sax/features/xmlns-uris":
                 core.setXmlnsUris(value);
+                break;
+
+            case LINE_NUMBERS_FEATURE:
+                core.setLineNumbers(value);
                 break;
 
             // Read-only features (throw exception if trying to change)
@@ -806,6 +813,14 @@ public class Parser implements XMLReader, PSVIProvider {
     private static final int LIMIT_ATTRIBUTES = 3;
 
     private static final String JDK_LIMIT_PREFIX = "jdk.xml.";
+
+    /**
+     * Feature that makes the locator report line and column numbers, which
+     * it does not otherwise (see {@link XMLParser#setLineNumbers}). Off by
+     * default.
+     */
+    public static final String LINE_NUMBERS_FEATURE =
+        "http://bluezoo.org/gonzalez/features/line-numbers";
     private static final String LEGACY_LIMIT_PREFIX = "http://www.oracle.com/xml/jaxp/properties/";
 
     /**

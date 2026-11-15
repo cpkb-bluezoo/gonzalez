@@ -462,6 +462,29 @@ DTD. With namespace processing enabled it also covers the namespace name in a
 namespace declaration, the one attribute value that is reported whole and so
 has to be held. Zero or a negative value disables a limit.
 
+### Line and Column Numbers
+
+The locator the parser gives its handler reports -1 for the line and the
+column, unless asked otherwise, because working them out takes a pass over the
+characters of the document:
+
+```java
+// Native parser
+XMLParser parser = new XMLParser();
+parser.setLineNumbers(true);
+
+// SAX
+Parser reader = new Parser();
+reader.setFeature(Parser.LINE_NUMBERS_FEATURE, true);
+```
+
+Lines and columns count from 1, and a carriage return and line feed is one
+line break. The position is that of the parser when it reports the event, so
+for a start tag it is at the end of the tag. The text of an external entity has
+lines of its own; that of an internal entity is located at its reference. The
+XSLT compiler asks for them, so that an error is reported at the line of the
+instruction that caused it.
+
 ## Building
 
 Use ant to build the project:

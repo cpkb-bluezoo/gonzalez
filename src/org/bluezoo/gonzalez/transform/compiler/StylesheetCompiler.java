@@ -576,6 +576,7 @@ public class StylesheetCompiler extends DefaultHandler
         Parser parser = new Parser();
         parser.setFeature("http://xml.org/sax/features/namespaces", true);
         parser.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
+        parser.setFeature(Parser.LINE_NUMBERS_FEATURE, true);
         parser.setFeature(
                 "http://javax.xml.XMLConstants/feature/secure-processing", true);
         parser.setXMLHandler(compiler);

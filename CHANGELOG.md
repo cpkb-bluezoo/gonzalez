@@ -55,6 +55,13 @@ All notable changes to Gonzalez will be documented in this file.
   `receive`/`close`/`reset`, and blocking `parse` methods for an
   `InputStream` or a `ReadableByteChannel` that run the same receive loop.
 
+- **Line and column numbers.** `XMLParser.setLineNumbers(true)`, or the SAX
+  feature `Parser.LINE_NUMBERS_FEATURE`, makes the locator report them where
+  it reported -1. They are off by default, since counting takes a pass over
+  the input; nothing changes for a parser that does not ask. The XSLT
+  compiler asks, so `$err:line-number` in `xsl:catch` and the line in a
+  static error are those of the stylesheet instruction.
+
 - **Structural limits.** `XMLParser` limits element depth (1,000 by
   default), name length (4,096) and attributes per element (10,000),
   alongside the existing entity expansion limit; zero or a negative value

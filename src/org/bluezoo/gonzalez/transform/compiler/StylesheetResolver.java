@@ -293,6 +293,7 @@ public class StylesheetResolver {
                 reader = new Parser();
                 reader.setFeature("http://xml.org/sax/features/namespaces", true);
                 reader.setFeature("http://xml.org/sax/features/namespace-prefixes", false);
+                reader.setFeature(Parser.LINE_NUMBERS_FEATURE, true);
             }
             if (fragmentId != null && !fragmentId.isEmpty()) {
                 ((Parser) reader).setXMLHandler(
@@ -475,6 +476,13 @@ public class StylesheetResolver {
         } catch (Exception e) {
             // Fall back to default
             reader = XMLReaderFactory.createXMLReader();
+        }
+        // Source line numbers locate instructions in error messages and in
+        // the err:line-number of xsl:catch. Another parser has them already.
+        try {
+            reader.setFeature("http://bluezoo.org/gonzalez/features/line-numbers", true);
+        } catch (SAXException e) {
+            // not a Gonzalez parser
         }
         // Configure entity processing based on accessExternalDTD setting
         boolean allowDTD = accessExternalDTD != null && !accessExternalDTD.isEmpty();

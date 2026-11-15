@@ -132,6 +132,10 @@ final class DeclParser {
     private final String[] values = new String[NAMES.length];
     private boolean encodingTooLong;
 
+    /** Line breaks within the declaration so far; see {@link #getLineBreaks()}. */
+    private int lineBreaks;
+    private int previousChar;
+
     /** See {@link #getReplay()}. */
     private String replay = "";
     private boolean replayRejected;
@@ -170,8 +174,20 @@ final class DeclParser {
             values[i] = null;
         }
         encodingTooLong = false;
+        lineBreaks = 0;
+        previousChar = 0;
         replay = "";
         replayRejected = false;
+    }
+
+    /**
+     * Returns the number of line breaks inside the declaration (a carriage
+     * return, a line feed, or both together, being one), which are not
+     * passed on to the scanner but still count as lines of the document.
+     * Meaningful once {@link #receive} has returned {@link ReadResult#OK}.
+     */
+    int getLineBreaks() {
+        return lineBreaks;
     }
 
     /**
@@ -205,6 +221,10 @@ final class DeclParser {
             if (c == -1) {
                 return ReadResult.UNDERFLOW;
             }
+            if (c == '\r' || (c == '\n' && previousChar != '\r')) {
+                lineBreaks++;
+            }
+            previousChar = c;
             switch (state) {
                 case S_PROLOG:
                     if (c != PROLOG.charAt(matched)) {

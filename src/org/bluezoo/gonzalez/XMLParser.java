@@ -128,6 +128,7 @@ public final class XMLParser {
     private boolean externalParameterEntities;
     private boolean disallowDoctypeDecl;
     private boolean resolveDTDURIs = true;
+    private boolean lineNumbers;
     private String accessExternalDTD = "";
     private int entityExpansionLimit = ScannerSettings.DEFAULT_EXPANSION_LIMIT;
     private int maxElementDepth = ScannerSettings.DEFAULT_MAX_ELEMENT_DEPTH;
@@ -516,6 +517,34 @@ public final class XMLParser {
         this.maxAttributesPerElement = maxAttributesPerElement;
     }
 
+    /**
+     * Returns whether the locator reports line and column numbers.
+     *
+     * @return true if it does; false (the default) if it reports -1
+     */
+    public boolean isLineNumbers() {
+        return lineNumbers;
+    }
+
+    /**
+     * Sets whether the {@link org.xml.sax.Locator} given to the handler
+     * reports line and column numbers. They are off by default, because
+     * working them out takes a pass over the characters of the document,
+     * and the locator then reports -1 for both.
+     *
+     * <p>The position is that of the scan point when the event is
+     * reported, so that of the end of a start tag and not its beginning.
+     * Lines are counted from 1 after normalizing line endings, so that a
+     * carriage return and line feed is one line break. The text of an
+     * external entity has lines of its own; that of an internal entity is
+     * located at its reference.
+     *
+     * @param lineNumbers whether to work out line and column numbers
+     */
+    public void setLineNumbers(boolean lineNumbers) {
+        this.lineNumbers = lineNumbers;
+    }
+
     // ===== Document identity =====
 
     /**
@@ -867,6 +896,7 @@ public final class XMLParser {
                 maxAttributesPerElement);
         Scanner newScanner = new Scanner(target, false, entityResolver, publicId, systemId, validating,
                 namespaceAware, settings, true);
+        newScanner.setTrackLineNumbers(lineNumbers);
         ExternalEntityDecoder newDecoder = new ExternalEntityDecoder(newScanner, publicId, systemId, false);
         if (initialCharset != null) {
             newDecoder.setInitialCharset(initialCharset);
