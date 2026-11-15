@@ -156,12 +156,22 @@ parser.setPublicId("-//Example//DTD Example 1.0//EN");
 
 // Feed data as it arrives. Do this instead of parse() for non-blocking
 // behaviour
-parser.receive(byteBuffer1);
-parser.receive(byteBuffer2);
-// ...
-parser.close();
+ByteBuffer buffer = ByteBuffer.allocate(8192);
+while (channel.read(buffer) != -1) {
+    buffer.flip();
+    parser.receive(buffer);
+    buffer.compact();   // keep any bytes not yet consumed
+}
 // Signal end of document
+parser.close();
 ```
+
+The buffer is yours. The parser consumes all it can of each buffer and leaves
+at most the few bytes of an incomplete character, which must be at the start
+of the buffer on the next call: use `compact()`, not `clear()`, and do not
+pass a different buffer holding only the new data. If a call does not begin
+with the bytes the previous one left, the parser throws
+`IllegalStateException` instead of parsing a document with bytes missing.
 
 ### Native XMLHandler Usage
 

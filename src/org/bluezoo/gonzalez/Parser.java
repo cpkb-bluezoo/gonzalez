@@ -87,9 +87,13 @@ import org.xml.sax.ext.LexicalHandler;
  * parser.setContentHandler(myContentHandler);
  * parser.setSystemId("http://example.com/doc.xml");
  * 
- * // Feed data in chunks
- * ByteBuffer buffer = ByteBuffer.wrap(data);
- * parser.receive(buffer); // repeat while data is available
+ * // Feed data as it arrives
+ * ByteBuffer buffer = ByteBuffer.allocate(8192);
+ * while (channel.read(buffer) != -1) {
+ *     buffer.flip();
+ *     parser.receive(buffer);
+ *     buffer.compact(); // keep any bytes not yet consumed
+ * }
  * 
  * // Signal end of document
  * parser.close();
@@ -1006,8 +1010,13 @@ public class Parser implements XMLReader, PSVIProvider {
      * end of data). This delegates to {@link XMLParser#receive(ByteBuffer)}.
      *
      * <p>Multiple invocations of this method may occur to supply the
-     * complete document content. The parser will handle buffer underflow
-     * conditions automatically, requesting more data as needed.
+     * complete document content. On return the buffer's position is the
+     * first byte the parser has not consumed. That is at most the few
+     * bytes of an incomplete character, and the next call must begin with
+     * them: compact the buffer and read more data in after them. Clearing
+     * the buffer, or passing a different one holding only the new data,
+     * loses those bytes, and the next call then throws
+     * {@link IllegalStateException}.
      *
      * <p><b>Usage:</b>
      * <pre>
@@ -1015,11 +1024,12 @@ public class Parser implements XMLReader, PSVIProvider {
      * parser.setContentHandler(handler);
      * parser.setSystemId("http://example.com/doc.xml");
      *
-     * ByteBuffer data1 = ByteBuffer.wrap(bytes1);
-     * parser.receive(data1);
-     *
-     * ByteBuffer data2 = ByteBuffer.wrap(bytes2);
-     * parser.receive(data2);
+     * ByteBuffer buffer = ByteBuffer.allocate(8192);
+     * while (channel.read(buffer) != -1) {
+     *     buffer.flip();
+     *     parser.receive(buffer);
+     *     buffer.compact(); // keep any bytes not yet consumed
+     * }
      *
      * parser.close(); // Signal end of document
      * </pre>
@@ -1030,7 +1040,9 @@ public class Parser implements XMLReader, PSVIProvider {
      *
      * @param data a byte buffer ready for reading (position at start, limit at end)
      * @throws SAXException if a parsing error occurs
-     * @throws IllegalStateException if called after {@link #close()}
+     * @throws IllegalStateException if called after {@link #close()}, or
+     *         if the bytes the previous call left unconsumed are not at
+     *         the start of this buffer
      */
     public void receive(ByteBuffer data) throws SAXException {
         if (!started) {

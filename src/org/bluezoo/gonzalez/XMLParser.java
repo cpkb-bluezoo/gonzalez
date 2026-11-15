@@ -156,6 +156,16 @@ public final class XMLParser {
      *  documents. */
     private ByteBuffer parseBuffer;
 
+    /** How many bytes the last {@link #receive(ByteBuffer)} left
+     *  unconsumed in the caller's buffer. The next call must begin with
+     *  them. */
+    private int unconsumed;
+
+    /** The first of those bytes, up to the length of this array, so that
+     *  the next call can be checked against them. What is left is an
+     *  incomplete character, so this is ordinarily all of them. */
+    private final byte[] unconsumedBytes = new byte[8];
+
     /**
      * Creates a parser with the default (secure) configuration and no
      * handler.
@@ -627,17 +637,61 @@ public final class XMLParser {
      * this method returns must give the parser a larger one, or give up,
      * and not call again with the same bytes.
      *
+     * <p>A caller that clears or replaces its buffer between calls,
+     * instead of compacting it, loses the bytes that were left. The
+     * parser checks for this: if a call does not begin with the bytes
+     * the previous one left unconsumed, it throws
+     * {@link IllegalStateException}. That is a fault in the caller and
+     * not in the document, so it is not reported as a parsing error.
+     *
      * @param data the bytes to parse
      * @throws SAXException if the document is not well-formed, or the
      *         handler throws
-     * @throws IllegalStateException if no handler has been set, or the
-     *         document has already been closed
+     * @throws IllegalStateException if no handler has been set, the
+     *         document has already been closed, or the bytes left
+     *         unconsumed by the previous call are not at the start of
+     *         this one
      */
     public void receive(ByteBuffer data) throws SAXException {
         if (decoder == null) {
             open();
         }
+        if (unconsumed != 0) {
+            checkPresentedAgain(data);
+        }
         decoder.receive(data);
+        int left = data.remaining();
+        unconsumed = left;
+        if (left != 0) {
+            int position = data.position();
+            int kept = Math.min(left, unconsumedBytes.length);
+            for (int i = 0; i < kept; i++) {
+                unconsumedBytes[i] = data.get(position + i);
+            }
+        }
+    }
+
+    /**
+     * Checks that the buffer begins with the bytes the previous call left
+     * unconsumed.
+     */
+    private void checkPresentedAgain(ByteBuffer data) {
+        boolean presented = (data.remaining() >= unconsumed);
+        if (presented) {
+            int position = data.position();
+            int kept = Math.min(unconsumed, unconsumedBytes.length);
+            for (int i = 0; i < kept; i++) {
+                if (data.get(position + i) != unconsumedBytes[i]) {
+                    presented = false;
+                    break;
+                }
+            }
+        }
+        if (!presented) {
+            throw new IllegalStateException("The " + unconsumed + " unconsumed byte(s) left in the buffer by the"
+                    + " previous receive() are not at the start of this one. compact() the buffer after each"
+                    + " receive(), instead of clearing or replacing it, and read new data in after them.");
+        }
     }
 
     /**
@@ -667,6 +721,7 @@ public final class XMLParser {
         scanner = null;
         decoder = null;
         initialCharset = null;
+        unconsumed = 0;
     }
 
     /**

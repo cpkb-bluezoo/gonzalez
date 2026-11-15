@@ -194,7 +194,10 @@ public class XMLParserBenchmark {
             int len = Math.min(XERCES_CHUNK_SIZE, largeBytes.length - offset);
             ByteBuffer chunk = ByteBuffer.wrap(largeBytes, offset, len);
             parser.receive(chunk);
-            offset += len;
+            // Advance by what was consumed: the parser may leave the last
+            // bytes of a chunk (an incomplete character), and they must be
+            // at the start of the next one.
+            offset += len - chunk.remaining();
         }
         parser.close();
     }

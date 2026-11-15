@@ -72,37 +72,52 @@
  * parser.setPublicId("-//Example//DTD Example 1.0//EN");
  *
  * // Feed data as it arrives from network/channel
- * while (channel.read(buffer) > 0) {
+ * ByteBuffer buffer = ByteBuffer.allocate(8192);
+ * while (channel.read(buffer) != -1) {
  *     buffer.flip();
  *     parser.receive(buffer);
- *     buffer.clear();
+ *     buffer.compact(); // keep any bytes not yet consumed
  * }
  *
  * // Signal end of document
  * parser.close();
  * }</pre>
  *
+ * <p>The buffer is the caller's. The parser consumes all it can of what
+ * it is given and leaves at most the few bytes of an incomplete
+ * character, which must be at the start of the buffer on the next call:
+ * hence {@code compact()} and not {@code clear()}. A call that does not
+ * begin with the bytes left by the one before throws
+ * {@link java.lang.IllegalStateException}.
+ *
  * <h2>NIO Server Integration</h2>
  *
  * <p>Gonzalez is designed to integrate seamlessly with NIO selector-based
  * servers. The parser processes whatever data is available, fires SAX events
- * for complete tokens, and returns control immediately. Incomplete tokens are
- * buffered internally until the next {@code receive()} call.
+ * for what is complete, and returns control immediately. An incomplete
+ * construct is resumed on the next {@code receive()} call. Each connection
+ * needs its own parser and its own buffer, since a buffer may be holding
+ * the first bytes of a character between one read and the next.
  *
  * <pre>{@code
+ * // Once per connection, kept as the key's attachment:
+ * class Connection {
+ *     final Parser parser = new Parser();
+ *     final ByteBuffer buffer = ByteBuffer.allocate(8192);
+ * }
+ *
  * // In your selector loop, when data is ready:
  * SocketChannel channel = (SocketChannel) key.channel();
- * Parser parser = (Parser) key.attachment();
+ * Connection connection = (Connection) key.attachment();
  *
- * ByteBuffer buffer = ByteBuffer.allocate(8192);
- * int bytesRead = channel.read(buffer);
+ * int bytesRead = channel.read(connection.buffer);
  *
  * if (bytesRead > 0) {
- *     buffer.flip();
- *     parser.receive(buffer);
- *     buffer.compact();
+ *     connection.buffer.flip();
+ *     connection.parser.receive(connection.buffer);
+ *     connection.buffer.compact();
  * } else if (bytesRead == -1) {
- *     parser.close();  // End of stream
+ *     connection.parser.close();  // End of stream
  * }
  * }</pre>
  *
@@ -156,19 +171,14 @@
  * Parser parser = new Parser();
  * parser.setContentHandler(handler);
  *
- * // Parse first document stream
- * parser.receive(stream1chunk1);
- * parser.receive(stream1chunk2);
- * parser.receive(stream1chunk3);
- * parser.close();
+ * // Parse first document
+ * parser.parse(new InputSource(stream1));
  *
  * // Reset and parse another
  * parser.reset();
- * 
- * // Parse second documnent stream
- * parser.receive(stream2chunk1);
- * parser.receive(stream2chunk2);
- * parser.close();
+ *
+ * // Parse second document
+ * parser.parse(new InputSource(stream2));
  * }</pre>
  *
  * <h2>XML Serialization (XMLWriter)</h2>
