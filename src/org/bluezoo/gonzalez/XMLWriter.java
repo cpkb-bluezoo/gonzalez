@@ -340,8 +340,8 @@ public class XMLWriter {
     }
 
     /**
-     * Sets XML 1.1 output mode. When enabled, CR characters and C1 control
-     * characters are escaped as character references.
+     * Sets XML 1.1 output mode. When enabled, C1 control characters and
+     * the line separator U+2028 are escaped as character references.
      * Should be called before writing begins.
      *
      * @param xml11 true for XML 1.1 mode
@@ -2096,8 +2096,10 @@ public class XMLWriter {
             writeRawString("&gt;");
         } else if (codePoint == '&') {
             writeRawString("&amp;");
-        } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
-                   && (codePoint != '\r' || xml11)) {
+        } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n') {
+            // Including a carriage return, in either version of XML: one
+            // written as it is would be read as the end of a line, and so
+            // as a line feed (XML 2.11).
             writeCharacterReference(codePoint);
         } else if (codePoint < 0x80) {
             ensureCapacity(maxAsciiBytes);
@@ -2253,8 +2255,10 @@ public class XMLWriter {
                 writeRawString("&amp;");
             } else if (codePoint == '"') {
                 writeRawString("&quot;");
-            } else if (codePoint < 0x20 && codePoint != '\t' && codePoint != '\n'
-                       && codePoint != '\r') {
+            } else if (codePoint < 0x20) {
+                // Including tab, line feed and carriage return: this is
+                // an attribute value, where each would be read as a space
+                // (XML 3.3.3).
                 writeCharacterReference(codePoint);
             } else if (codePoint < 0x80) {
                 ensureCapacity(maxAsciiBytes);
