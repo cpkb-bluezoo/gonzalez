@@ -12,12 +12,15 @@
 
 package org.bluezoo.gonzalez;
 
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
 import java.nio.channels.Channels;
 import java.nio.channels.FileChannel;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -355,10 +358,28 @@ public class XMLConformanceTest {
         
         // Parse the index file using Gonzalez - use FileChannel for NIO-native input
         FileChannel channel = FileChannel.open(indexFile.toPath(), StandardOpenOption.READ);
-        InputSource source = new InputSource(Channels.newInputStream(channel));
+        InputSource source;
+        if (suiteName.startsWith("sun/")) {
+            // The Sun catalogues are fragments: a run of TEST elements with no
+            // root, which xmlconf.xml includes by entity. Parsed alone they are
+            // not well-formed, so give them the root they are included under.
+            String fragment = new String(Files.readAllBytes(indexFile.toPath()),
+                    StandardCharsets.UTF_8);
+            channel.close();
+            channel = null;
+            if (fragment.startsWith("<?xml")) {
+                fragment = fragment.substring(fragment.indexOf("?>") + 2);
+            }
+            source = new InputSource(new ByteArrayInputStream(
+                    ("<TESTCASES>" + fragment + "</TESTCASES>").getBytes(StandardCharsets.UTF_8)));
+        } else {
+            source = new InputSource(Channels.newInputStream(channel));
+        }
         source.setSystemId(indexFile.toURI().toString());
         parser.parse(source);
-        channel.close();
+        if (channel != null) {
+            channel.close();
+        }
         
         return tests;
     }

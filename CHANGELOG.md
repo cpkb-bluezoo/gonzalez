@@ -133,6 +133,12 @@ All notable changes to Gonzalez will be documented in this file.
   against the file that holds the declaration, so an entity declared in an
   external DTD subset in another directory is found.
 
+- A validating parser did not report an attribute that was not declared when
+  its element had no `ATTLIST` at all, so `xml:space` and `xml:lang`, which
+  need declaring like any other, passed. It also accepted a CDATA section,
+  even an empty one, in element-only or `EMPTY` content, though it is not
+  white space (the `S` production). Both are now validity errors.
+
 - A text declaration without an `encoding` is now a fatal error. The text
   declaration that may begin an external entity or an external DTD subset
   must give one (XML 4.3.1), though the XML declaration of the document need
@@ -230,6 +236,16 @@ All notable changes to Gonzalez will be documented in this file.
   identifier containing a quotation mark is delimited by apostrophes. An
   identifier containing both kinds of quotation mark cannot be written and
   now throws `IOException`.
+
+- A validating parser now reports more validity errors, through
+  `ErrorHandler.error` and so not fatally: an undeclared attribute on an
+  element with no `ATTLIST`, and a CDATA section in element-only or `EMPTY`
+  content. A document that was reported valid and has either is now reported
+  invalid. Without validation nothing changes.
+
+- The W3C conformance run now includes the Sun suites (`sun/valid`,
+  `sun/invalid` and `sun/not-wf`, 158 tests), which were never loaded, since
+  their catalogues are fragments without a root element.
 
 - An external entity or DTD subset that begins `<?xml version="1.0"?>`,
   with no `encoding`, is now rejected as XML requires; add the `encoding`

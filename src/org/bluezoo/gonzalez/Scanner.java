@@ -2448,7 +2448,7 @@ class Scanner implements Locator2 {
             }
             DTDModel.AttDef attrDef = declaredAttrs == null ? null : declaredAttrs.get(attrName);
             String attrType = attrDef == null ? "CDATA" : attrDef.type;
-            if (validationEnabled && attrDef == null && declaredAttrs != null) {
+            if (validationEnabled && attrDef == null) {
                 handler.error("Validity Constraint: Attribute Value Type (Section 3.3.1). Attribute \"" + attrName
                         + "\" is not declared for element \"" + currentElementName + "\".");
             }
@@ -2977,6 +2977,12 @@ class Scanner implements Locator2 {
                     "CDATA sections are only allowed within the document element");
         }
         handler.startCDATA();
+        if (validatorStack != null && !validatorStack.isEmpty()) {
+            String error = validatorStack.get(validatorStack.size() - 1).addCDATASection();
+            if (error != null) {
+                handler.error(error);
+            }
+        }
         pos = tagStart + CDATA_MARKER.length;
         cdataRunOpen = false;
         if (!scanCDATAContent()) {

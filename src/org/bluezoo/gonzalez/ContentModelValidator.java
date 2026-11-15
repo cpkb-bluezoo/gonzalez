@@ -97,6 +97,28 @@ class ContentModelValidator {
     }
     
     /**
+     * Records that a CDATA section was encountered. It is character data,
+     * and not the white space (production S) that element content allows,
+     * however little it holds, so it is valid only where text is.
+     *
+     * @return error message if validation fails, null if valid
+     */
+    public String addCDATASection() {
+        switch (elementDecl.contentType) {
+            case EMPTY:
+                return "Element '" + elementDecl.name + "' declared EMPTY but has a CDATA section";
+
+            case ELEMENT:
+                return "Element '" + elementDecl.name
+                        + "' has element-only content but contains a CDATA section "
+                        + "(which is not white space, even if it holds only that)";
+
+            default:
+                return null;
+        }
+    }
+
+    /**
      * Records that a child element was encountered.
      * 
      * @param childName the name of the child element
