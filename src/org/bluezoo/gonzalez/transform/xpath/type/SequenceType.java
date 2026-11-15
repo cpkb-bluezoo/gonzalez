@@ -2058,7 +2058,7 @@ public class SequenceType {
             return functionType(paramTypes, returnType, occ);
         }
 
-        java.util.List paramList = new java.util.ArrayList();
+        java.util.List<SequenceType> paramList = new java.util.ArrayList<SequenceType>();
         int start = 0;
         int depth = 0;
         for (int i = 0; i < inner.length(); i++) {

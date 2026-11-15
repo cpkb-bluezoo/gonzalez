@@ -2544,7 +2544,7 @@ public final class XPathParser {
         String namespaceURI = null;
         String localName = null;
         QName typeName = null;  // For element(name, type) or attribute(name, type)
-        List funcParamTypes = null;  // For function(T1, T2, ...) as R
+        List<SequenceType> funcParamTypes = null;  // For function(T1, T2, ...) as R
         SequenceType funcReturnType = null;
         
         XPathToken token = lexer.current();
@@ -2727,7 +2727,7 @@ public final class XPathParser {
                         expectToken(XPathToken.RPAREN, ")");
                     } else if (lexer.current() == XPathToken.RPAREN) {
                         // function() as R - zero-arity typed function
-                        funcParamTypes = new ArrayList();
+                        funcParamTypes = new ArrayList<SequenceType>();
                         lexer.advance();
                         if (lexer.current() == XPathToken.AS) {
                             lexer.advance();
@@ -2735,7 +2735,7 @@ public final class XPathParser {
                         }
                     } else {
                         // function(T1, T2, ...) as R
-                        funcParamTypes = new ArrayList();
+                        funcParamTypes = new ArrayList<SequenceType>();
                         funcParamTypes.add(parseSequenceType());
                         while (lexer.current() == XPathToken.COMMA) {
                             lexer.advance();

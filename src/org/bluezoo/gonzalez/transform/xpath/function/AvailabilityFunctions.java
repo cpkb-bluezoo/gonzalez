@@ -175,7 +175,7 @@ final class AvailabilityFunctions {
                     return XPathString.of("Gonzalez");
                 }
                 if ("product-version".equals(localName)) {
-                    return XPathString.of("1.1");
+                    return XPathString.of("1.3.0");
                 }
                 if ("is-schema-aware".equals(localName)) {
                     return XPathString.of("no");

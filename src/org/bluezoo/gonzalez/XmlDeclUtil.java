@@ -203,7 +203,9 @@ final class XmlDeclUtil {
      * treat as having no declaration at all - or if it has a {@code
      * standalone} pseudo-attribute (which {@code TextDecl ::= '<?xml'
      * VersionInfo? EncodingDecl S? '?>'}, XML 4.3.1, does not permit at all,
-     * unlike the main document's own {@code XMLDecl}), or if {@code
+     * unlike the main document's own {@code XMLDecl}), or if it has no {@code
+     * encoding} pseudo-attribute (which that production requires, and the
+     * main document's {@code XMLDecl} does not), or if {@code
      * version}/{@code encoding} appear out of that same production's order.
      */
     static char[] stripXmlDeclaration(char[] all, XMLHandler handler) throws SAXException {
@@ -226,6 +228,11 @@ final class XmlDeclUtil {
                 throw handler.fatalError(
                         "A text declaration's \"version\" pseudo-attribute, if present, must come "
                                 + "before \"encoding\" (TextDecl ::= '<?xml' VersionInfo? EncodingDecl S? '?>')");
+            }
+            if (encodingIdx < 0) {
+                throw handler.fatalError(
+                        "A text declaration must have an \"encoding\" pseudo-attribute "
+                                + "(TextDecl ::= '<?xml' VersionInfo? EncodingDecl S? '?>')");
             }
             start = j + 2;
             while (start < all.length && (all[start] == '\n' || all[start] == '\r')) {

@@ -2,9 +2,18 @@
 
 All notable changes to Gonzalez will be documented in this file.
 
-## [Unreleased]
+## [1.3.0] - 2026-11-15
 
 ### Changed
+
+- **Faster XSLT transformation.** Template rules are indexed by the name
+  they match, and by an `@attr = 'literal'` predicate, so that a stylesheet
+  with many rules no longer tests each in turn. Absolute and parent-relative
+  paths that do not depend on the context are evaluated once and reused,
+  `child::name` steps and simple pattern predicates take shorter routes, and
+  a node gets one context where it got several, with no variable scope
+  pushed where nothing declares a variable. `XSLT.md` has the comparison with other
+  processors.
 
 - **Constant memory without a DTD.** A document with no DTD is now parsed in
   memory bounded by the structural limits below, whatever its size and
@@ -49,6 +58,8 @@ All notable changes to Gonzalez will be documented in this file.
   methods, writing in pieces and `XMLWriterHandler`.
 
 ### Added
+
+- `SECURITY.md`, and scripts for publishing the three jars to Maven Central.
 
 - **`XMLParser`, the native parser.** A parser without SAX: one
   `XMLHandler`, typed setters in place of feature and property URIs,
@@ -122,6 +133,11 @@ All notable changes to Gonzalez will be documented in this file.
   against the file that holds the declaration, so an entity declared in an
   external DTD subset in another directory is found.
 
+- A text declaration without an `encoding` is now a fatal error. The text
+  declaration that may begin an external entity or an external DTD subset
+  must give one (XML 4.3.1), though the XML declaration of the document need
+  not, and a declaration with only a `version` was accepted.
+
 - An initial mode that is the stylesheet's `default-mode` is no longer
   rejected with `XTDE0045` when nothing else mentions it. The attribute
   names the mode, so it is present, holding only the built-in rules.
@@ -183,7 +199,10 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Compatibility
 
-- No public class, constructor or method has been removed.
+- No public class, constructor or method has been removed. The
+  `XMLWriter` methods that take a whole attribute value, comment or
+  processing instruction data are deprecated in favour of the ones that
+  take it in pieces, and still work.
 
 - Documents that exceed a structural limit are now rejected: elements nested
   more than 1,000 deep, a name or namespace name longer than 4,096
@@ -211,6 +230,23 @@ All notable changes to Gonzalez will be documented in this file.
   identifier containing a quotation mark is delimited by apostrophes. An
   identifier containing both kinds of quotation mark cannot be written and
   now throws `IOException`.
+
+- An external entity or DTD subset that begins `<?xml version="1.0"?>`,
+  with no `encoding`, is now rejected as XML requires; add the `encoding`
+  to its text declaration, or remove the declaration, to accept it.
+
+- A relative system identifier in an entity declaration is now resolved
+  against the file that holds the declaration, as XML requires, so an entity
+  declared in an external DTD subset in another directory is found where it
+  was not before. The locator's system identifier is that of an external
+  entity while its text is read, and the document's again after it.
+
+- XSLT: a pattern predicate that uses `position()` or `last()` inside an
+  `if`, `let`, `for` or similar expression now sees the real position and
+  size, so a stylesheet that relied on matching every node there matches
+  fewer. `xsl:apply-templates` on a map, an array or an atomic value now
+  binds a template's declared parameters, and a `default-mode` is accepted as
+  an initial mode.
 
 - With indentation on, `XMLWriter` no longer writes a blank line between a
   DTD that contains a comment and the root element.

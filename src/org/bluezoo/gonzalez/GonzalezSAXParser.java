@@ -26,9 +26,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import javax.xml.parsers.SAXParser;
-import org.xml.sax.HandlerBase;
 import org.xml.sax.InputSource;
-import org.xml.sax.Parser;
 import org.xml.sax.SAXException;
 import org.xml.sax.SAXNotRecognizedException;
 import org.xml.sax.SAXNotSupportedException;
@@ -54,6 +52,8 @@ import org.xml.sax.helpers.DefaultHandler;
  * @see GonzalezSAXParserFactory
  * @see org.bluezoo.gonzalez.Parser
  */
+// SAX1 (org.xml.sax.Parser, HandlerBase) is deprecated; the SAXParser contract
+// still has these methods, so they are named in full here, under this suppression.
 @SuppressWarnings("deprecation")
 public class GonzalezSAXParser extends SAXParser {
 
@@ -101,7 +101,7 @@ public class GonzalezSAXParser extends SAXParser {
      */
     @Override
     @Deprecated
-    public Parser getParser() throws SAXException {
+    public org.xml.sax.Parser getParser() throws SAXException {
         throw new SAXException("SAX1 Parser interface not supported; use getXMLReader()");
     }
 
@@ -206,13 +206,13 @@ public class GonzalezSAXParser extends SAXParser {
 
     @Override
     @Deprecated
-    public void parse(InputStream is, HandlerBase hb) throws SAXException, IOException {
+    public void parse(InputStream is, org.xml.sax.HandlerBase hb) throws SAXException, IOException {
         parse(new InputSource(is), hb);
     }
 
     @Override
     @Deprecated
-    public void parse(InputStream is, HandlerBase hb, String systemId) 
+    public void parse(InputStream is, org.xml.sax.HandlerBase hb, String systemId) 
             throws SAXException, IOException {
         InputSource source = new InputSource(is);
         source.setSystemId(systemId);
@@ -221,14 +221,14 @@ public class GonzalezSAXParser extends SAXParser {
 
     @Override
     @Deprecated
-    public void parse(String uri, HandlerBase hb) throws SAXException, IOException {
+    public void parse(String uri, org.xml.sax.HandlerBase hb) throws SAXException, IOException {
         InputSource source = new InputSource(uri);
         parse(source, hb);
     }
 
     @Override
     @Deprecated
-    public void parse(File f, HandlerBase hb) throws SAXException, IOException {
+    public void parse(File f, org.xml.sax.HandlerBase hb) throws SAXException, IOException {
         try (InputStream is = new FileInputStream(f)) {
             InputSource source = new InputSource(is);
             source.setSystemId(f.toURI().toString());
@@ -238,7 +238,7 @@ public class GonzalezSAXParser extends SAXParser {
 
     @Override
     @Deprecated
-    public void parse(InputSource is, HandlerBase hb) throws SAXException, IOException {
+    public void parse(InputSource is, org.xml.sax.HandlerBase hb) throws SAXException, IOException {
         throw new SAXException("SAX1 HandlerBase not supported; use DefaultHandler");
     }
 

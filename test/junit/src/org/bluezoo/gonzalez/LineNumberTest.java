@@ -167,7 +167,7 @@ public class LineNumberTest {
         dir.mkdirs();
         dir.deleteOnExit();
         File part = new File(dir, "part.xml");
-        write(part, "<?xml version='1.0'?>\n<p>\n\n  <q/>\n</p>");
+        write(part, "<?xml version='1.0' encoding='UTF-8'?>\n<p>\n\n  <q/>\n</p>");
         String xml = "<!DOCTYPE d [<!ENTITY e SYSTEM 'part.xml'>]>\n"
             + "<d>\n"
             + "&e;<y/>\n"
