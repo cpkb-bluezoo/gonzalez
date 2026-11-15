@@ -736,8 +736,30 @@ public class Parser implements XMLReader, PSVIProvider {
      *     <td>{@link Integer}</td>
      *     <td>Maximum entity expansions per document; 64,000 by default and
      *     zero for unlimited</td></tr>
+     * <tr><td>{@code jdk.xml.entityExpansionLimit}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>The same limit under its JDK name</td></tr>
+     * <tr><td>{@code jdk.xml.maxElementDepth}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Maximum element nesting depth; 1000 by default</td></tr>
+     * <tr><td>{@code jdk.xml.maxXMLNameLimit}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Maximum length of a name in characters; 4096 by default</td></tr>
+     * <tr><td>{@code jdk.xml.elementAttributeLimit}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Maximum number of attributes of one element; 10,000 by
+     *     default</td></tr>
      * </tbody>
      * </table>
+     *
+     * <p>The four {@code jdk.xml} limits are the JDK's own property names
+     * for the limits of {@link XMLParser}. Each is also recognised under
+     * its older name, {@code http://www.oracle.com/xml/jaxp/properties/}
+     * followed by the part after {@code jdk.xml.}. They may be set with an
+     * Integer or with a String holding a decimal number, zero or less
+     * means unlimited, and they are read back as an Integer. The defaults
+     * are Gonzalez's and not those of the JDK in use, and the
+     * {@code jdk.xml} system properties are not consulted.
      *
      * @param name the property URI
      * @return the current value of the property
@@ -758,7 +780,78 @@ public class Parser implements XMLReader, PSVIProvider {
         if ("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit".equals(name)) {
             return core.getEntityExpansionLimit();
         }
-        throw new SAXNotRecognizedException("Property not recognized: " + name);
+        switch (limitNamed(name)) {
+            case LIMIT_ENTITY_EXPANSION:
+                return core.getEntityExpansionLimit();
+            case LIMIT_ELEMENT_DEPTH:
+                return core.getMaxElementDepth();
+            case LIMIT_NAME_LENGTH:
+                return core.getMaxNameLength();
+            case LIMIT_ATTRIBUTES:
+                return core.getMaxAttributesPerElement();
+            default:
+                throw new SAXNotRecognizedException("Property not recognized: " + name);
+        }
+    }
+
+    // The limits of XMLParser that the JDK has a property name for.
+    private static final int LIMIT_NONE = -1;
+    private static final int LIMIT_ENTITY_EXPANSION = 0;
+    private static final int LIMIT_ELEMENT_DEPTH = 1;
+    private static final int LIMIT_NAME_LENGTH = 2;
+    private static final int LIMIT_ATTRIBUTES = 3;
+
+    private static final String JDK_LIMIT_PREFIX = "jdk.xml.";
+    private static final String LEGACY_LIMIT_PREFIX = "http://www.oracle.com/xml/jaxp/properties/";
+
+    /**
+     * Identifies a JDK limit property, under its current or its older
+     * name.
+     *
+     * @return one of the {@code LIMIT_} constants; {@link #LIMIT_NONE} if
+     *         the name is not that of a limit this parser has
+     */
+    private static int limitNamed(String name) {
+        String limit;
+        if (name == null) {
+            return LIMIT_NONE;
+        } else if (name.startsWith(JDK_LIMIT_PREFIX)) {
+            limit = name.substring(JDK_LIMIT_PREFIX.length());
+        } else if (name.startsWith(LEGACY_LIMIT_PREFIX)) {
+            limit = name.substring(LEGACY_LIMIT_PREFIX.length());
+        } else {
+            return LIMIT_NONE;
+        }
+        switch (limit) {
+            case "entityExpansionLimit":
+                return LIMIT_ENTITY_EXPANSION;
+            case "maxElementDepth":
+                return LIMIT_ELEMENT_DEPTH;
+            case "maxXMLNameLimit":
+                return LIMIT_NAME_LENGTH;
+            case "elementAttributeLimit":
+                return LIMIT_ATTRIBUTES;
+            default:
+                return LIMIT_NONE;
+        }
+    }
+
+    /**
+     * Reads the value given for a limit property: an Integer, or a String
+     * holding a decimal number as JAXP callers commonly pass.
+     */
+    private static int limitValue(String name, Object value) throws SAXNotSupportedException {
+        if (value instanceof Integer) {
+            return ((Integer) value).intValue();
+        }
+        if (value instanceof String) {
+            try {
+                return Integer.parseInt(((String) value).trim());
+            } catch (NumberFormatException e) {
+                throw new SAXNotSupportedException("Value of " + name + " is not a number: " + value);
+            }
+        }
+        throw new SAXNotSupportedException("Value of " + name + " must be an Integer or a numeric String");
     }
 
     /**
@@ -808,7 +901,25 @@ public class Parser implements XMLReader, PSVIProvider {
             }
             throw new SAXNotSupportedException("Value must be an Integer");
         }
-        throw new SAXNotRecognizedException("Property not recognized: " + name);
+        int limit = limitNamed(name);
+        if (limit == LIMIT_NONE) {
+            throw new SAXNotRecognizedException("Property not recognized: " + name);
+        }
+        int limitValue = limitValue(name, value);
+        switch (limit) {
+            case LIMIT_ENTITY_EXPANSION:
+                core.setEntityExpansionLimit(limitValue);
+                break;
+            case LIMIT_ELEMENT_DEPTH:
+                core.setMaxElementDepth(limitValue);
+                break;
+            case LIMIT_NAME_LENGTH:
+                core.setMaxNameLength(limitValue);
+                break;
+            default:
+                core.setMaxAttributesPerElement(limitValue);
+                break;
+        }
     }
 
     // ========================================================================

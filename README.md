@@ -333,6 +333,9 @@ Entity) attacks, SSRF, and entity expansion bombs.
 | `external-parameter-entities` | `false` | External DTD subsets are not loaded |
 | `accessExternalDTD` | `""` (none) | No protocols allowed for external DTD access |
 | Entity expansion limit | 64,000 | Protects against billion-laughs entity bombs |
+| Element depth limit | 1,000 | Bounds the stack of open elements |
+| Name length limit | 4,096 | Bounds what is held while a name is still arriving |
+| Attributes per element limit | 10,000 | Bounds the names remembered to detect duplicates |
 
 ### Enabling External Entities
 
@@ -389,6 +392,38 @@ parser.setProperty("http://www.nongnu.org/gonzalez/properties/entity-expansion-l
 ```
 
 Set to `0` to disable the limit (not recommended for untrusted input).
+
+### Structural Limits
+
+Text, attribute values, comments and processing instruction data are passed
+on in pieces and never held, so their size costs the parser nothing. What it
+must remember while it reads is bounded by three further limits. A document
+that exceeds one is rejected with a fatal error at the point where it does so:
+
+| Limit | `XMLParser` setter | SAX property | Default |
+|-------|--------------------|--------------|---------|
+| Element nesting depth | `setMaxElementDepth` | `jdk.xml.maxElementDepth` | 1,000 |
+| Length of a name, in characters | `setMaxNameLength` | `jdk.xml.maxXMLNameLimit` | 4,096 |
+| Attributes of one element | `setMaxAttributesPerElement` | `jdk.xml.elementAttributeLimit` | 10,000 |
+
+```java
+// Native parser
+XMLParser parser = new XMLParser();
+parser.setMaxElementDepth(200);
+
+// SAX: the JDK's property names, with an Integer or a numeric String
+Parser reader = new Parser();
+reader.setProperty("jdk.xml.maxElementDepth", 200);
+```
+
+The SAX properties are the JDK's own names for these limits, so configuration
+written for the JDK parser carries over; `jdk.xml.entityExpansionLimit` is
+accepted for the entity expansion limit in the same way, as are the older
+`http://www.oracle.com/xml/jaxp/properties/` forms of all four. The defaults
+are Gonzalez's own and do not follow the JDK in use, and the `jdk.xml` system
+properties are not read. The name length limit covers element and attribute
+names, processing instruction targets and references, but not names inside a
+DTD. Zero or a negative value disables a limit.
 
 ## Building
 

@@ -668,6 +668,13 @@ class Scanner implements Locator2 {
      *  caller not going through {@code Parser}. */
     private final ScannerSettings settings;
 
+    /** The limits of {@link #settings}, with "no limit" (zero or less)
+     *  turned into {@code Integer.MAX_VALUE} once, so that each check on
+     *  the scanning paths is a single comparison. */
+    private final int maxElementDepth;
+    private final int maxNameLength;
+    private final int maxAttributesPerElement;
+
     /** Convenience constructor for XML 1.0 with no external fetching
      *  capability (the common case, and every caller before this
      *  milestone). */
@@ -725,6 +732,10 @@ class Scanner implements Locator2 {
         this.validationEnabled = validationEnabled;
         this.namespaceAware = namespaceAware;
         this.settings = settings;
+        this.maxElementDepth = (settings.maxElementDepth > 0) ? settings.maxElementDepth : Integer.MAX_VALUE;
+        this.maxNameLength = (settings.maxNameLength > 0) ? settings.maxNameLength : Integer.MAX_VALUE;
+        this.maxAttributesPerElement = (settings.maxAttributesPerElement > 0)
+                ? settings.maxAttributesPerElement : Integer.MAX_VALUE;
         this.deferDocumentStartUntilEncoding = deferDocumentStartUntilEncoding;
         this.buf = new char[INITIAL_CAPACITY];
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
@@ -1747,6 +1758,39 @@ class Scanner implements Locator2 {
      * itself require further scanning (in content, it may contain markup).</li>
      * </ul>
      */
+    /**
+     * Enforces the name length limit. Called wherever a scan along a name
+     * stops, whether because the name ended or because the input did:
+     * a name is scanned whole, so one that is still growing is held in
+     * {@link #buf} until it ends, and this is what stops that being
+     * without bound.
+     *
+     * @param nameStart where the name began
+     * @param p where the scan stopped
+     */
+    private void checkNameLength(int nameStart, int p) throws SAXException {
+        if (p - nameStart > maxNameLength) {
+            throw limitExceeded("Name length limit", maxNameLength, null);
+        }
+    }
+
+    /**
+     * Builds the error for an exceeded limit. Kept out of line so that
+     * the checks themselves add a comparison and nothing else to the
+     * methods they sit in, which are the hottest in the scanner.
+     *
+     * @param what the name of the limit
+     * @param value its value
+     * @param element the element concerned, or null if that adds nothing
+     */
+    private SAXException limitExceeded(String what, int value, String element) throws SAXException {
+        String message = what + " (" + value + ") exceeded";
+        if (element != null) {
+            message = message + " for element " + element;
+        }
+        return handler.fatalError(message);
+    }
+
     private int decodeEntityRef() throws SAXException {
         int p = pos + 1;
         if (p >= limit) {
@@ -1772,6 +1816,11 @@ class Scanner implements Locator2 {
                     throw handler.fatalError("Malformed character reference");
                 }
                 p++;
+            }
+            // Any number of leading zeros is legal, so the digits need the
+            // same ceiling as a name.
+            if (p - digitsStart > maxNameLength) {
+                throw limitExceeded("Character reference: name length limit", maxNameLength, null);
             }
             if (p >= limit) {
                 return REF_NEED_MORE;
@@ -1808,6 +1857,7 @@ class Scanner implements Locator2 {
         while (p < limit && isNameChar(buf[p])) {
             p++;
         }
+        checkNameLength(nameStart, p);
         if (p >= limit) {
             return REF_NEED_MORE;
         }
@@ -1907,6 +1957,7 @@ class Scanner implements Locator2 {
         while (p < limit && isNameChar(buf[p])) {
             p++;
         }
+        checkNameLength(nameStart, p);
         if (p >= limit) {
             pos = tagStart;
             return false;
@@ -1919,6 +1970,9 @@ class Scanner implements Locator2 {
             // WFC "unique document element" (only one root element is
             // allowed) - a second start tag once the first has fully closed.
             throw handler.fatalError("A document may contain only one root element");
+        }
+        if (elementStack.size() >= maxElementDepth) {
+            throw limitExceeded("Element depth limit", maxElementDepth, null);
         }
         String qName = namePool.internRange(buf, nameStart, p - nameStart);
         if (!rootStarted) {
@@ -2073,6 +2127,7 @@ class Scanner implements Locator2 {
             while (pos < limit && isNameChar(buf[pos])) {
                 pos++;
             }
+            checkNameLength(nameStart, pos);
             if (pos >= limit) {
                 pos = attrStart;
                 return false;
@@ -2112,6 +2167,9 @@ class Scanner implements Locator2 {
             // is the one point each specified attribute passes exactly once.
             if (!recordSeenAttributeName(attrName)) {
                 throw handler.fatalError("Duplicate attribute: " + attrName);
+            }
+            if (seenAttributeNameCount > maxAttributesPerElement) {
+                throw limitExceeded("Attribute count limit", maxAttributesPerElement, currentElementName);
             }
             DTDModel.AttDef attrDef = declaredAttrs == null ? null : declaredAttrs.get(attrName);
             String attrType = attrDef == null ? "CDATA" : attrDef.type;
@@ -2400,6 +2458,7 @@ class Scanner implements Locator2 {
         while (p < limit && isNameChar(buf[p])) {
             p++;
         }
+        checkNameLength(nameStart, p);
         if (p >= limit) {
             pos = tagStart;
             return false;
@@ -2689,6 +2748,7 @@ class Scanner implements Locator2 {
         while (p < limit && isNameChar(buf[p])) {
             p++;
         }
+        checkNameLength(targetStart, p);
         if (p >= limit) {
             pos = tagStart;
             return false;

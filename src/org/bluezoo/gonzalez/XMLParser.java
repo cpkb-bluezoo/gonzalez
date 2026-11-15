@@ -69,6 +69,18 @@ import org.xml.sax.SAXException;
  * no protocol is allowed for external DTD access, and entity expansion is
  * limited.
  *
+ * <p><b>Limits.</b> What the parser has to remember while it reads is
+ * bounded by limits on how deeply elements nest
+ * ({@link #setMaxElementDepth}), how long a name is
+ * ({@link #setMaxNameLength}) and how many attributes one element has
+ * ({@link #setMaxAttributesPerElement}), alongside the limit on entity
+ * expansion ({@link #setEntityExpansionLimit}). A document that exceeds
+ * one is rejected with a fatal error at the point where it does so.
+ * Each has a default suited to untrusted input, and zero or a negative
+ * value removes it. Text, attribute values, comments and processing
+ * instruction data need no limit: they are passed to the handler in
+ * pieces and never held.
+ *
  * <p><b>Reuse.</b> One instance parses one document at a time. Call
  * {@link #reset()} after {@link #close()} (or after a failed parse) before
  * feeding the next document.
@@ -109,6 +121,9 @@ public final class XMLParser {
     private boolean resolveDTDURIs = true;
     private String accessExternalDTD = "";
     private int entityExpansionLimit = ScannerSettings.DEFAULT_EXPANSION_LIMIT;
+    private int maxElementDepth = ScannerSettings.DEFAULT_MAX_ELEMENT_DEPTH;
+    private int maxNameLength = ScannerSettings.DEFAULT_MAX_NAME_LENGTH;
+    private int maxAttributesPerElement = ScannerSettings.DEFAULT_MAX_ATTRIBUTES_PER_ELEMENT;
     private String publicId;
     private String systemId;
 
@@ -406,6 +421,77 @@ public final class XMLParser {
         this.entityExpansionLimit = entityExpansionLimit;
     }
 
+    // ===== Limits =====
+
+    /**
+     * Returns the maximum depth to which elements may nest.
+     *
+     * @return the limit; 1000 by default, zero or less for none
+     */
+    public int getMaxElementDepth() {
+        return maxElementDepth;
+    }
+
+    /**
+     * Sets the maximum number of elements that may be open at once: the
+     * root element is at depth 1. The parser has to remember the name of
+     * every open element to check that end tags match, and this bounds
+     * that. Zero or a negative value means unlimited.
+     *
+     * @param maxElementDepth the limit, or zero for none
+     */
+    public void setMaxElementDepth(int maxElementDepth) {
+        this.maxElementDepth = maxElementDepth;
+    }
+
+    /**
+     * Returns the maximum length of a name.
+     *
+     * @return the limit in characters; 4096 by default, zero or less for
+     *         none
+     */
+    public int getMaxNameLength() {
+        return maxNameLength;
+    }
+
+    /**
+     * Sets the maximum length, in characters, of an element name, an
+     * attribute name, a processing instruction target or the name in an
+     * entity reference, and of the digits of a character reference. A
+     * name is read whole before it is reported, so this bounds what the
+     * parser holds while a name is still arriving. Zero or a negative
+     * value means unlimited.
+     *
+     * <p>Names inside a DTD are not covered.
+     *
+     * @param maxNameLength the limit in characters, or zero for none
+     */
+    public void setMaxNameLength(int maxNameLength) {
+        this.maxNameLength = maxNameLength;
+    }
+
+    /**
+     * Returns the maximum number of attributes of one element.
+     *
+     * @return the limit; 10,000 by default, zero or less for none
+     */
+    public int getMaxAttributesPerElement() {
+        return maxAttributesPerElement;
+    }
+
+    /**
+     * Sets the maximum number of attributes that may be specified on one
+     * element, namespace declarations included. The parser remembers the
+     * attribute names of the element it is reading to check that none is
+     * repeated, and this bounds that. Attributes supplied as defaults by
+     * a DTD do not count. Zero or a negative value means unlimited.
+     *
+     * @param maxAttributesPerElement the limit, or zero for none
+     */
+    public void setMaxAttributesPerElement(int maxAttributesPerElement) {
+        this.maxAttributesPerElement = maxAttributesPerElement;
+    }
+
     // ===== Document identity =====
 
     /**
@@ -697,7 +783,8 @@ public final class XMLParser {
         }
         ScannerSettings settings = new ScannerSettings(externalGeneralEntities,
                 externalParameterEntities, disallowDoctypeDecl, resolveDTDURIs,
-                accessExternalDTD, entityExpansionLimit);
+                accessExternalDTD, entityExpansionLimit, maxElementDepth, maxNameLength,
+                maxAttributesPerElement);
         Scanner newScanner = new Scanner(target, false, entityResolver, publicId, systemId, validating,
                 namespaceAware, settings, true);
         ExternalEntityDecoder newDecoder = new ExternalEntityDecoder(newScanner, publicId, systemId, false);
