@@ -62,11 +62,14 @@ import org.xml.sax.ext.Locator2;
  * as a regular attribute (matching namespace-unaware behaviour); {@link
  * NamespaceFilter}, inserted in front of a namespace-aware consumer,
  * reroutes it to {@link XMLHandler#namespace} instead. Duplicate-attribute
- * detection (WFC "Unique Att Spec") is likewise enforced downstream, by
- * whatever consumes these events (see {@link SAXAdapter}'s reference-
- * equality scan against {@link #namePool}-interned names) - this class does
- * not need to track per-element attribute names itself for that purpose, so
- * it doesn't.
+ * detection (WFC "Unique Att Spec") is enforced here, by raw name, before
+ * {@link XMLHandler#startAttribute} fires (see {@link
+ * #recordSeenAttributeName}) - it is a well-formedness constraint, so every
+ * consumer of these events gets it, not only the SAX one. The namespace-
+ * level form of the same constraint (two attributes with different
+ * prefixes bound to one namespace name and the same local part) needs the
+ * element's namespace declarations and so stays with whichever downstream
+ * stage resolves them.
  * <p>
  * <b>DOCTYPE, entities, and DTD-driven behaviour.</b> {@code <!DOCTYPE ...>}
  * is recognised, including an optional external ID and an optional internal
@@ -310,30 +313,89 @@ class Scanner implements Locator2 {
     }
 
     /** Names of attributes specified on the start tag currently being
-     *  scanned, reset once per {@link #scanStartTag} - lets {@link
+     *  scanned, reset once per {@link #scanStartTag}. Serves two purposes:
+     *  WFC "Unique Att Spec" (a name may appear only once per start tag -
+     *  {@link #recordSeenAttributeName}), and letting {@link
      *  #applyAttributeDefaults} know which declared attributes were left
-     *  unspecified and need a default injected. A small reference-equality
-     *  linear scan rather than a {@code HashSet}: attribute counts per
-     *  element are typically tiny (1-20), where a hash table's bucket/
-     *  boxing overhead loses to a plain array scan - and every name that
-     *  ever reaches this array is guaranteed {@link #namePool}-interned
-     *  (both start-tag attribute names, in {@link
-     *  #scanAttributesAndTagEnd}, and ATTLIST-declared names, in {@link
-     *  #scanAttlistDeclaration}), so {@code ==} is a correct, not just
-     *  faster, replacement for {@code equals()}. */
+     *  unspecified and need a default injected ({@link #wasAttributeSeen}).
+     *  A small array rather than a {@code HashSet}: attribute counts per
+     *  element are typically tiny (1-20), where a hash table's bucket/boxing
+     *  overhead loses to a plain array.
+     *  <p>
+     *  Names are compared with {@link #sameName}, never by reference alone.
+     *  {@link #namePool} is deliberately bounded, so a name it has no room
+     *  for is a fresh {@code String} on every occurrence: two occurrences of
+     *  one such name are equal but not identical. */
     private String[] seenAttributeNames = new String[8];
     private int seenAttributeNameCount;
 
-    private void recordSeenAttributeName(String name) {
-        if (seenAttributeNameCount == seenAttributeNames.length) {
-            seenAttributeNames = Arrays.copyOf(seenAttributeNames, seenAttributeNames.length * 2);
+    /** One bit per name in {@link #seenAttributeNames}, out of 256, chosen
+     *  by the low eight bits of the name's hash code. Equal names have equal
+     *  hash codes and so share a bit: a name whose bit is still clear cannot
+     *  have been seen on this start tag, which settles nearly every
+     *  attribute without comparing it to the others at all. {@code String}
+     *  caches its hash code, so for a pooled name this costs a field read.
+     *  Cleared by {@link #resetSeenAttributeNames}. */
+    private final long[] seenAttributeNameBits = new long[4];
+
+    private void resetSeenAttributeNames() {
+        if (seenAttributeNameCount != 0) {
+            seenAttributeNameCount = 0;
+            long[] bits = seenAttributeNameBits;
+            bits[0] = 0L;
+            bits[1] = 0L;
+            bits[2] = 0L;
+            bits[3] = 0L;
         }
-        seenAttributeNames[seenAttributeNameCount++] = name;
+    }
+
+    /** True if {@code a} and {@code b} are the same name, {@code bHash}
+     *  being {@code b}'s hash code. Identity is only the fast path for two
+     *  names interned by {@link #namePool}; otherwise the (cached) hash
+     *  codes rule out almost every distinct pair before {@code equals} has
+     *  to be called at all. */
+    private static boolean sameName(String a, String b, int bHash) {
+        return a == b || (a.hashCode() == bHash && a.equals(b));
+    }
+
+    /** Records {@code name} as specified on the start tag currently being
+     *  scanned. Returns false, recording nothing, if it was already
+     *  specified there (WFC "Unique Att Spec" - the caller reports it).
+     *  Must only be called once the attribute is committed (its name, '='
+     *  and opening quote all scanned): everything before that point is
+     *  rescanned from the attribute's start when input runs out part way
+     *  through, and a name recorded on the abandoned attempt would make the
+     *  retry look like a duplicate of itself. */
+    private boolean recordSeenAttributeName(String name) {
+        int count = seenAttributeNameCount;
+        int hash = name.hashCode();
+        long[] bits = seenAttributeNameBits;
+        int word = (hash >>> 6) & 3;
+        long bit = 1L << (hash & 63);
+        if ((bits[word] & bit) != 0L) {
+            String[] seen = seenAttributeNames;
+            for (int i = 0; i < count; i++) {
+                if (sameName(seen[i], name, hash)) {
+                    return false;
+                }
+            }
+        }
+        bits[word] |= bit;
+        if (count == seenAttributeNames.length) {
+            seenAttributeNames = Arrays.copyOf(seenAttributeNames, count * 2);
+        }
+        seenAttributeNames[count] = name;
+        seenAttributeNameCount = count + 1;
+        return true;
     }
 
     private boolean wasAttributeSeen(String name) {
+        int hash = name.hashCode();
+        if ((seenAttributeNameBits[(hash >>> 6) & 3] & (1L << (hash & 63))) == 0L) {
+            return false;
+        }
         for (int i = 0; i < seenAttributeNameCount; i++) {
-            if (seenAttributeNames[i] == name) {
+            if (sameName(seenAttributeNames[i], name, hash)) {
                 return true;
             }
         }
@@ -1883,7 +1945,7 @@ class Scanner implements Locator2 {
         }
         pos = p;
         elementStack.add(qName);
-        seenAttributeNameCount = 0;
+        resetSeenAttributeNames();
         handler.startElement(qName);
         inStartTag = true;
         return true;
@@ -2020,7 +2082,6 @@ class Scanner implements Locator2 {
             }
             checkNameStartChar(nameStart);
             String attrName = namePool.internRange(buf, nameStart, pos - nameStart);
-            recordSeenAttributeName(attrName);
 
             while (pos < limit && isWs(buf[pos])) {
                 pos++;
@@ -2047,6 +2108,11 @@ class Scanner implements Locator2 {
             }
             pos++;
 
+            // Committed: nothing from here on rewinds to attrStart, so this
+            // is the one point each specified attribute passes exactly once.
+            if (!recordSeenAttributeName(attrName)) {
+                throw handler.fatalError("Duplicate attribute: " + attrName);
+            }
             DTDModel.AttDef attrDef = declaredAttrs == null ? null : declaredAttrs.get(attrName);
             String attrType = attrDef == null ? "CDATA" : attrDef.type;
             if (validationEnabled && attrDef == null && declaredAttrs != null) {

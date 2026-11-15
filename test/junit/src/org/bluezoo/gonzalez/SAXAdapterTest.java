@@ -311,22 +311,8 @@ public class SAXAdapterTest {
         assertEquals(expected, sink.getEvents());
     }
 
-    @Test
-    public void testDuplicateAttributeDetection_namespaceUnaware() throws Exception {
-        SAXAdapter adapter = new SAXAdapter(false);
-        RecordingSaxHandler sink = new RecordingSaxHandler();
-        adapter.setContentHandler(sink);
-
-        adapter.startDocument();
-        adapter.startElement("root");
-        attr(adapter, "attr", "v1");
-        try {
-            attr(adapter, "attr", "v2");
-            org.junit.Assert.fail("expected SAXException for duplicate attribute");
-        } catch (org.xml.sax.SAXException e) {
-            // expected - NamespaceException from SAXAttributes.addAttribute,
-            // wrapped via XMLHandler.fatalError()
-        }
-    }
+    // Duplicate attribute detection by raw name (WFC "Unique Att Spec") is
+    // enforced by Scanner, before SAXAdapter ever sees the attribute - see
+    // AttributeUniquenessTest and ParserNamespaceTest.
 
 }

@@ -59,11 +59,12 @@ import org.xml.sax.ext.LexicalHandler;
  * {@code SAXAttributes.clear()}, there is no per-attribute pool (a
  * {@link QNamePool} entry, a {@code StringBuilder}) to return, since {@link
  * Attr} doesn't use one; see {@link Attr}'s own Javadoc. Duplicate-attribute
- * detection ("WFC Unique Att Spec") is a reference-equality linear scan
- * rather than a hash-based check, since {@code Scanner.namePool} guarantees
- * every attribute name reaching {@link #startAttribute} is already interned
- * - the same technique {@code Scanner.wasAttributeSeen} uses for its own,
- * analogous check.
+ * detection by raw name (WFC "Unique Att Spec") is not this class's job:
+ * {@link Scanner} enforces it before {@link #startAttribute} is ever
+ * called, for every consumer of its events. Only the namespace-level form
+ * (same expanded name through different prefixes) is checked here, in
+ * {@link #resolveAttributeNamespaces}, since it depends on the namespace
+ * resolution this class performs.
  * <p>
  * Namespace resolution follows the same resolve-at-end-of-tag pattern as
  * {@code ContentParser.fireStartElement} (an xmlns declaration appearing
@@ -111,8 +112,8 @@ class SAXAdapter implements XMLHandler, Attributes2 {
     private final QNamePool qnamePool;
 
     // This element's buffered attributes - see Attr's own Javadoc for the
-    // pooling/duplicate-detection design. attrCount is the "used" length;
-    // attrPool.size() is the high-water mark (>= attrCount always).
+    // pooling design. attrCount is the "used" length; attrPool.size() is the
+    // high-water mark (>= attrCount always).
     private final ArrayList<Attr> attrPool = new ArrayList<Attr>();
     private int attrCount;
     private boolean hasPrefixedAttributes;
@@ -311,27 +312,14 @@ class SAXAdapter implements XMLHandler, Attributes2 {
      * #resolveAttributeNamespaces} below once all xmlns declarations for
      * this element are known, regardless of attribute order.
      * <p>
-     * Duplicate-name detection (WFC "Unique Att Spec") is a reference-
-     * equality scan against the qNames buffered so far: safe, not just
-     * fast, because {@code currentAttributeName} is always {@code
-     * Scanner.namePool}-interned by the time it reaches {@link
-     * #startAttribute} (same content always means the same {@code String}
-     * instance). This subsumes what {@code SAXAttributes.addAttribute}'s
-     * own (more expensive) "duplicate by expanded name" scan checked at
-     * add-time too: before any attribute is namespace-resolved, {@code uri}
-     * is {@code ""} and {@code localName} equals {@code qName} for every
-     * attribute, so "duplicate by expanded name" and "duplicate by qName"
-     * are the same check at this point - only {@link
-     * #resolveAttributeNamespaces}'s post-resolution scan below catches a
-     * genuine same-namespace-different-prefix duplicate.
+     * No duplicate-qName check is made here: {@link Scanner} has already
+     * rejected a repeated raw name (WFC "Unique Att Spec") before {@link
+     * #startAttribute} was called. Only {@link
+     * #resolveAttributeNamespaces}'s post-resolution scan below is still
+     * needed, to catch a same-namespace-different-prefix duplicate.
      */
-    private void addCurrentAttribute(String valueStr) throws SAXException {
+    private void addCurrentAttribute(String valueStr) {
         String qName = currentAttributeName;
-        for (int i = 0; i < attrCount; i++) {
-            if (attrPool.get(i).qName == qName) {
-                throw fatalError("Duplicate attribute: " + qName);
-            }
-        }
         Attr attr;
         if (attrCount < attrPool.size()) {
             attr = attrPool.get(attrCount);
