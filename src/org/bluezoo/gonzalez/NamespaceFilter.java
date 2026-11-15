@@ -44,6 +44,9 @@ import org.xml.sax.SAXException;
  * {@code xmlns}/{@code xmlns:prefix} attribute currently being streamed
  * in, exactly as {@link SAXAdapter} itself buffers a multi-chunk attribute
  * value - the first chunk with {@code end=true} needs no buffering at all.
+ * A namespace name is reported whole, so this is the one attribute value
+ * the native pipeline has to hold, and {@link #setMaxNamespaceLength}
+ * bounds it.
  * <p>
  * Namespace Constraint validation (reserved URI bindings, the empty-prefix
  * rule, the {@code xml}/{@code xmlns} prefix rules, and the XML 1.1-only
@@ -78,6 +81,9 @@ class NamespaceFilter implements XMLHandler {
     private boolean valueFirstChunk;
     private final StringBuilder valueBuilder = new StringBuilder();
 
+    /** The longest namespace name accepted, in characters. */
+    private int maxNamespaceLength = Integer.MAX_VALUE;
+
     /**
      * Creates a new filter.
      *
@@ -92,6 +98,18 @@ class NamespaceFilter implements XMLHandler {
 
     void setNamespacePrefixes(boolean namespacePrefixes) {
         this.namespacePrefixes = namespacePrefixes;
+    }
+
+    /**
+     * Limits the length of a namespace name. A declaration whose value is
+     * longer is a fatal error, raised as soon as the value has grown past
+     * the limit and not when it ends.
+     *
+     * @param maxNamespaceLength the limit in characters; zero or less for
+     *        none
+     */
+    void setMaxNamespaceLength(int maxNamespaceLength) {
+        this.maxNamespaceLength = (maxNamespaceLength > 0) ? maxNamespaceLength : Integer.MAX_VALUE;
     }
 
     void setXmlnsUris(boolean xmlnsUris) {
@@ -167,6 +185,9 @@ class NamespaceFilter implements XMLHandler {
             return;
         }
         if (valueFirstChunk && end) {
+            if (value.remaining() > maxNamespaceLength) {
+                throw namespaceTooLong();
+            }
             declareNamespace(currentAttrName, value.toString());
             return;
         }
@@ -174,10 +195,17 @@ class NamespaceFilter implements XMLHandler {
             valueBuilder.setLength(0);
             valueFirstChunk = false;
         }
+        if (value.remaining() > maxNamespaceLength - valueBuilder.length()) {
+            throw namespaceTooLong();
+        }
         valueBuilder.append(value);
         if (end) {
             declareNamespace(currentAttrName, valueBuilder.toString());
         }
+    }
+
+    private SAXException namespaceTooLong() throws SAXException {
+        return delegate.fatalError("Namespace name length limit (" + maxNamespaceLength + ") exceeded");
     }
 
     private void declareNamespace(String attrName, String uri) throws SAXException {

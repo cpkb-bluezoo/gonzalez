@@ -256,6 +256,25 @@ class Scanner implements Locator2 {
     private boolean collapseCurrentAttrValue;
     private final StringBuilder normalizeBuilder = new StringBuilder();
 
+    /** True while the attribute currently being scanned is {@code
+     *  xml:space} and nothing else requires its value whole (no
+     *  type-dependent collapse, no validation). Its value has to be
+     *  judged, but that takes only its first few characters: the value is
+     *  streamed like any other, and {@link #normalizeBuilder} is given no
+     *  more than {@link #XML_SPACE_KEPT} characters of it. Only meaningful
+     *  while {@link #normalizingCurrentAttribute} is true. */
+    private boolean streamingXmlSpace;
+
+    /** True if the {@code xml:space} value being streamed has turned out
+     *  longer than {@link #XML_SPACE_KEPT} characters, and so cannot be
+     *  one of the two it is allowed to be. */
+    private boolean xmlSpaceTooLong;
+
+    /** How much of an {@code xml:space} value is kept: more than enough
+     *  to tell "default" and "preserve" from anything else, and to quote
+     *  a wrong value in the error that reports it. */
+    private static final int XML_SPACE_KEPT = 32;
+
     /** The attribute currently being scanned's declaring element/name/type,
      *  remembered here (not just as locals in {@link
      *  #scanAttributesAndTagEnd}) because {@link #emitAttributeValueContent}
@@ -2288,6 +2307,8 @@ class Scanner implements Locator2 {
             normalizingCurrentAttribute = collapseCurrentAttrValue || validationEnabled || checkXmlSpace;
             if (normalizingCurrentAttribute) {
                 normalizeBuilder.setLength(0);
+                streamingXmlSpace = checkXmlSpace && !collapseCurrentAttrValue && !validationEnabled;
+                xmlSpaceTooLong = false;
                 if (validationEnabled || checkXmlSpace) {
                     currentAttrElementName = currentElementName;
                     currentAttrName = attrName;
@@ -2468,6 +2489,29 @@ class Scanner implements Locator2 {
             handler.attributeValueContent(chunk, end);
             return;
         }
+        if (streamingXmlSpace) {
+            // Judged from its first few characters, and otherwise passed
+            // straight on like any other value.
+            int room = XML_SPACE_KEPT - normalizeBuilder.length();
+            if (chunk.remaining() <= room) {
+                normalizeBuilder.append(chunk);
+            } else {
+                normalizeBuilder.append(chunk, 0, room);
+                xmlSpaceTooLong = true;
+            }
+            if (end) {
+                normalizingCurrentAttribute = false;
+                streamingXmlSpace = false;
+                String value = normalizeBuilder.toString();
+                if (xmlSpaceTooLong) {
+                    reportXmlSpaceValue(value + "...");
+                } else {
+                    checkXmlSpaceValue(value);
+                }
+            }
+            handler.attributeValueContent(chunk, end);
+            return;
+        }
         normalizeBuilder.append(chunk);
         if (end) {
             String value = collapseCurrentAttrValue ? collapseWhitespace(normalizeBuilder) : normalizeBuilder.toString();
@@ -2475,16 +2519,26 @@ class Scanner implements Locator2 {
             if (validationEnabled) {
                 checkAttributeValueVCs(currentAttrElementName, currentAttrName, currentAttrType, value);
             }
-            if ("xml:space".equals(currentAttrName) && !"default".equals(value) && !"preserve".equals(value)) {
-                // XML 2.10: xml:space's own value is constrained by the XML
-                // Recommendation itself, independent of any DTD declaration
-                // (and so checked unconditionally, not gated on
-                // validationEnabled the way DTD-driven VCs are).
-                handler.error("The \"xml:space\" attribute's value must be \"default\" or \"preserve\", not \""
-                        + value + "\".");
+            if ("xml:space".equals(currentAttrName)) {
+                checkXmlSpaceValue(value);
             }
             handler.attributeValueContent(CharBuffer.wrap(value), true);
         }
+    }
+
+    /** XML 2.10: xml:space's own value is constrained by the XML
+     *  Recommendation itself, independent of any DTD declaration (and so
+     *  checked unconditionally, not gated on validationEnabled the way
+     *  DTD-driven VCs are). */
+    private void checkXmlSpaceValue(String value) throws SAXException {
+        if (!"default".equals(value) && !"preserve".equals(value)) {
+            reportXmlSpaceValue(value);
+        }
+    }
+
+    private void reportXmlSpaceValue(String value) throws SAXException {
+        handler.error("The \"xml:space\" attribute's value must be \"default\" or \"preserve\", not \""
+                + value + "\".");
     }
 
     /** XML 3.3.3's type-dependent attribute value normalisation: trim

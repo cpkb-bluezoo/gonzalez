@@ -214,6 +214,62 @@ public class ParserLimitsTest {
         assertTrue("Was: " + message, message != null && message.contains("Character reference: name length limit"));
     }
 
+    /**
+     * A namespace name is reported whole, so it is the one attribute value
+     * that has to be held, and the name length limit is what bounds it.
+     */
+    @Test
+    public void testNameLengthAppliesToNamespaceNames() throws Exception {
+        XMLParser parser = new XMLParser();
+        parser.setMaxNameLength(16);
+        accept(parser, "<r xmlns=\"urn:" + name(12) + "\" xmlns:p='urn:" + name(12) + "'/>");
+        parser.reset();
+        reject(parser, "<r xmlns=\"urn:" + name(13) + "\"/>", "Namespace name length limit");
+        parser.reset();
+        reject(parser, "<r xmlns:p=\"urn:" + name(13) + "\"/>", "Namespace name length limit");
+        // A reference counts for what it expands to.
+        parser.reset();
+        accept(parser, "<r xmlns=\"urn:" + name(11) + "&amp;\"/>");
+        parser.reset();
+        reject(parser, "<r xmlns=\"urn:" + name(12) + "&amp;\"/>", "Namespace name length limit");
+
+        // Any other attribute value is streamed and has no limit.
+        parser.reset();
+        accept(parser, "<r a=\"urn:" + name(5000) + "\"/>");
+        // And without namespace processing, xmlns is any other attribute.
+        parser.reset();
+        parser.setNamespaceAware(false);
+        accept(parser, "<r xmlns=\"urn:" + name(5000) + "\"/>");
+    }
+
+    @Test
+    public void testDefaultNamespaceNameLength() throws Exception {
+        accept(new XMLParser(), "<r xmlns=\"urn:" + name(4092) + "\"/>");
+        reject(new XMLParser(), "<r xmlns=\"urn:" + name(4093) + "\"/>", "Namespace name length limit");
+        XMLParser unlimited = new XMLParser();
+        unlimited.setMaxNameLength(0);
+        accept(unlimited, "<r xmlns=\"urn:" + name(50000) + "\"/>");
+    }
+
+    @Test
+    public void testUnterminatedNamespaceNameIsRejectedWhileArriving() throws Exception {
+        XMLParser parser = new XMLParser();
+        parser.setHandler(new RecordingXMLHandler());
+        String message = null;
+        try {
+            ByteBuffer buffer = ByteBuffer.allocate(1024);
+            send(parser, buffer, "<r xmlns:p=\"urn:".getBytes(StandardCharsets.UTF_8));
+            byte[] more = name(400).getBytes(StandardCharsets.UTF_8);
+            for (int n = 0; n < 20; n++) {
+                send(parser, buffer, more);
+            }
+        } catch (SAXException e) {
+            message = e.getMessage();
+        }
+        assertTrue("Expected the limit from receive(), was: " + message,
+                message != null && message.contains("Namespace name length limit"));
+    }
+
     @Test
     public void testNameLengthUnlimited() throws Exception {
         XMLParser parser = new XMLParser();

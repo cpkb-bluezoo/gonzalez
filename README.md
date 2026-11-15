@@ -423,7 +423,9 @@ accepted for the entity expansion limit in the same way, as are the older
 are Gonzalez's own and do not follow the JDK in use, and the `jdk.xml` system
 properties are not read. The name length limit covers element and attribute
 names, processing instruction targets and references, but not names inside a
-DTD. Zero or a negative value disables a limit.
+DTD. With namespace processing enabled it also covers the namespace name in a
+namespace declaration, the one attribute value that is reported whole and so
+has to be held. Zero or a negative value disables a limit.
 
 ## Building
 

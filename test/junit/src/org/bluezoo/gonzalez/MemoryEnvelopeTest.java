@@ -40,6 +40,8 @@ import static org.junit.Assert.fail;
  * the scan buffer is still the size it started at. Nothing here is a
  * timing test, but a buffer that does not grow is also one that is never
  * rescanned from its start, which is what made these inputs quadratic.
+ * It also checks that nothing was gathered up elsewhere: no piece of
+ * content reaches the handler larger than that buffer.
  *
  * <p>The guarantee rests on the name length limit, which is left at its
  * default here. DTDs are outside it.
@@ -124,6 +126,16 @@ public class MemoryEnvelopeTest {
     public void testAttributeValue() throws Exception {
         Counts counts = parse("<r a=\"", letters(LARGE), "\"/>");
         assertEquals(LARGE, counts.attributeValue);
+    }
+
+    @Test(timeout = 60000)
+    public void testXmlSpaceAttributeValue() throws Exception {
+        // The parser checks this attribute's value itself, which is no
+        // reason to hold all of it. The value is wrong, but only a
+        // validity error, which this handler lets pass.
+        Counts counts = parse("<r xml:space=\"", letters(LARGE), "\"/>");
+        assertEquals(LARGE, counts.attributeValue);
+        assertEquals(1, counts.errors);
     }
 
     @Test(timeout = 60000)
@@ -233,6 +245,10 @@ public class MemoryEnvelopeTest {
             }
         }
         parser.close();
+        if (counts.largestChunk > initialCapacity) {
+            fail("The handler was given " + counts.largestChunk + " characters in one piece; the scan buffer is "
+                    + initialCapacity);
+        }
         return counts;
     }
 
@@ -245,6 +261,8 @@ public class MemoryEnvelopeTest {
         int attributeValue;
         int comment;
         int piData;
+        int errors;
+        int largestChunk;
         final StringBuilder attributes = new StringBuilder();
         private boolean keepValue;
 
@@ -285,6 +303,7 @@ public class MemoryEnvelopeTest {
         @Override
         public void attributeValueContent(CharBuffer value, boolean end) {
             attributeValue += value.remaining();
+            largestChunk = Math.max(largestChunk, value.remaining());
             if (keepValue) {
                 if (attributes.length() < 64) {
                     attributes.append(value);
@@ -302,6 +321,7 @@ public class MemoryEnvelopeTest {
         @Override
         public void characters(CharBuffer chunk, boolean ignorable, boolean end) {
             text += chunk.remaining();
+            largestChunk = Math.max(largestChunk, chunk.remaining());
         }
 
         @Override
@@ -316,6 +336,7 @@ public class MemoryEnvelopeTest {
         @Override
         public void commentData(CharBuffer chunk, boolean end) {
             comment += chunk.remaining();
+            largestChunk = Math.max(largestChunk, chunk.remaining());
         }
 
         @Override
@@ -357,6 +378,7 @@ public class MemoryEnvelopeTest {
         @Override
         public void piData(CharBuffer chunk, boolean end) {
             piData += chunk.remaining();
+            largestChunk = Math.max(largestChunk, chunk.remaining());
         }
 
         @Override
@@ -370,6 +392,7 @@ public class MemoryEnvelopeTest {
 
         @Override
         public void error(String message) {
+            errors++;
         }
     }
 

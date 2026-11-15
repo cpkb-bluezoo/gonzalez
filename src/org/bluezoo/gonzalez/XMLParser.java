@@ -80,6 +80,8 @@ import org.xml.sax.SAXException;
  * value removes it. Text, attribute values, comments and processing
  * instruction data need no limit: they are passed to the handler in
  * pieces and never held. White space inside tags is not held either.
+ * The one value that is held is a namespace name, which the name length
+ * limit also covers.
  *
  * <p>With these limits in place a document without a DTD is parsed in
  * constant memory. Besides the stack of open element names and the
@@ -469,6 +471,11 @@ public final class XMLParser {
      * parser holds while a name is still arriving. Zero or a negative
      * value means unlimited.
      *
+     * <p>With namespace processing enabled the same limit applies to the
+     * namespace name in a namespace declaration. Unlike any other
+     * attribute value it is reported whole, as one
+     * {@link XMLHandler#namespace} event, and so has to be held.
+     *
      * <p>Names inside a DTD are not covered.
      *
      * @param maxNameLength the limit in characters, or zero for none
@@ -796,6 +803,7 @@ public final class XMLParser {
             NamespaceFilter filter = new NamespaceFilter(target, false);
             filter.setNamespacePrefixes(namespacePrefixes);
             filter.setXmlnsUris(xmlnsUris);
+            filter.setMaxNamespaceLength(maxNameLength);
             target = filter;
         }
         ScannerSettings settings = new ScannerSettings(externalGeneralEntities,
