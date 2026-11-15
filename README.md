@@ -30,10 +30,12 @@ streaming XML serialization to NIO channels.
 - Java NIO throughput: uses ByteBuffer for content I/O operations
 
 ### Serializer (XMLWriter)
-- SAX2 native: implements `ContentHandler`, `LexicalHandler`, `DTDHandler`, `DeclHandler`
+- streaming `write*` API: `writeStartElement`, `writeAttribute`, `writeCharacters` and so on
 - NIO-first: writes to `WritableByteChannel` with automatic buffering
-- SAX pipeline ready: wire directly as parser event sink, no adapter needed
-- namespace-aware: full support for prefixed and default namespaces via `startPrefixMapping`
+- constant memory: text, attribute values, comments and PI data of any size
+  can be written in pieces, and the buffer is sent whenever it fills
+- parser pipeline: `XMLWriterHandler` connects an `XMLParser` directly to a writer
+- namespace-aware: full support for prefixed and default namespaces
 - DOCTYPE output: supports inline DTD declarations with standalone conversion mode
 - pretty-print: optional indentation via `IndentConfig`
 - empty element optimization: automatically emits `<foo/>` instead of `<foo></foo>`
@@ -268,55 +270,32 @@ XML 1.1 line-end delimiters are also supported in XML 1.1 documents.
 
 ### XMLWriter Usage
 
-The XMLWriter implements SAX2 interfaces directly, so it can be wired into a
-SAX pipeline as an event sink with no adapter:
+The XMLWriter has a `write*` API whose methods throw `IOException` directly.
+A start tag stays open until something other than an attribute or namespace
+declaration is written, and an element with no content is written in the
+self-closing form:
 
 ```java
-import org.bluezoo.gonzalez.Parser;
+import org.bluezoo.gonzalez.IndentConfig;
 import org.bluezoo.gonzalez.XMLWriter;
-
-// Parse and serialize: wire parser directly to writer
-Parser parser = new Parser();
-FileChannel channel = FileChannel.open(path, WRITE, CREATE);
-XMLWriter writer = new XMLWriter(channel);
-writer.setIndentConfig(IndentConfig.spaces2());
-
-parser.setContentHandler(writer);
-parser.setProperty("http://xml.org/sax/properties/lexical-handler", writer);
-parser.parse(inputSource);
-writer.close();
-```
-
-For standalone use, call SAX methods directly:
-
-```java
-import org.bluezoo.gonzalez.XMLWriter;
-import org.xml.sax.helpers.AttributesImpl;
 
 try (FileOutputStream fos = new FileOutputStream("output.xml")) {
     XMLWriter writer = new XMLWriter(fos);
     writer.setIndentConfig(IndentConfig.spaces2());
 
-    AttributesImpl atts = new AttributesImpl();
-    atts.addAttribute("", "version", "version", "CDATA", "1.0");
+    writer.writeStartElement("root");
+    writer.writeDefaultNamespace("http://example.com/ns");
+    writer.writeAttribute("version", "1.0");
 
-    writer.startDocument();
-    writer.startPrefixMapping("", "http://example.com/ns");
-    writer.startElement("http://example.com/ns", "root", "root", atts);
+    writer.writeStartElement("item");
+    writer.writeAttribute("id", "1");
+    writer.writeCharacters("Hello, World!");
+    writer.writeEndElement();
 
-    AttributesImpl itemAtts = new AttributesImpl();
-    itemAtts.addAttribute("", "id", "id", "CDATA", "1");
-    writer.startElement("http://example.com/ns", "item", "item", itemAtts);
-    char[] text = "Hello, World!".toCharArray();
-    writer.characters(text, 0, text.length);
-    writer.endElement("http://example.com/ns", "item", "item");
+    writer.writeStartElement("empty");
+    writer.writeEndElement();
 
-    writer.startElement("http://example.com/ns", "empty", "empty", new AttributesImpl());
-    writer.endElement("http://example.com/ns", "empty", "empty");
-
-    writer.endElement("http://example.com/ns", "root", "root");
-    writer.endPrefixMapping("");
-    writer.endDocument();
+    writer.writeEndElement();
     writer.close();
 }
 ```
@@ -328,6 +307,45 @@ Output:
   <empty/>
 </root>
 ```
+
+Content of any size can be written in pieces, so that neither the caller nor
+the writer holds the whole of it. Character data takes any number of
+`writeCharacters` calls; an attribute value, a comment and the data of a
+processing instruction are each written between a start and an end call:
+
+```java
+writer.writeStartElement("item");
+writer.writeStartAttribute("summary");
+writer.writeAttributeContent(firstPart);    // any CharSequence
+writer.writeAttributeContent(secondPart);
+writer.writeEndAttribute();
+```
+
+`writeStartComment` and `writeStartProcessingInstruction` work the same way.
+The writer sends its buffer to the channel whenever it fills, so its memory
+does not grow with what is written.
+
+To copy or re-encode a document, give an `XMLParser` an `XMLWriterHandler`.
+Every event goes to the writer as it is reported, in the pieces the parser
+reports it in, so the document is written in the same constant memory it is
+parsed in:
+
+```java
+import org.bluezoo.gonzalez.XMLParser;
+import org.bluezoo.gonzalez.XMLWriter;
+import org.bluezoo.gonzalez.XMLWriterHandler;
+
+XMLWriter writer = new XMLWriter(outputChannel);
+writer.setCharset(StandardCharsets.UTF_8);
+
+XMLParser parser = new XMLParser();
+parser.setHandler(new XMLWriterHandler(writer));
+parser.parse(inputChannel);         // or receive() as the data arrives
+```
+
+What is written is the document as the parser reports it: entity references
+are written as what they stand for, attributes defaulted by the DTD are
+written out, and no XML declaration is written.
 
 ## Security
 

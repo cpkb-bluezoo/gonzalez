@@ -218,6 +218,22 @@
  * writer.close();
  * }</pre>
  *
+ * <p>Text, attribute values, comments and the data of processing
+ * instructions can each be written in pieces (see
+ * {@link org.bluezoo.gonzalez.XMLWriter#writeStartAttribute}), and the
+ * writer sends its buffer whenever it fills, so its memory does not grow
+ * with what is written. {@link org.bluezoo.gonzalez.XMLWriterHandler}
+ * connects a parser to a writer, passing each event on as it is reported,
+ * so that a document is copied or re-encoded in the same constant memory
+ * it is parsed in:
+ *
+ * <pre>{@code
+ * XMLWriter writer = new XMLWriter(outputChannel);
+ * XMLParser parser = new XMLParser();
+ * parser.setHandler(new XMLWriterHandler(writer));
+ * parser.parse(inputChannel);
+ * }</pre>
+ *
  * <h2>Architecture</h2>
  *
  * <p>{@link org.bluezoo.gonzalez.XMLParser} is the native parser: bytes
@@ -239,6 +255,7 @@
  * @see org.bluezoo.gonzalez.Parser
  * @see org.bluezoo.gonzalez.XMLParser
  * @see org.bluezoo.gonzalez.XMLWriter
+ * @see org.bluezoo.gonzalez.XMLWriterHandler
  * @see org.bluezoo.gonzalez.IndentConfig
  * @see org.xml.sax.XMLReader
  * @see org.xml.sax.ContentHandler
