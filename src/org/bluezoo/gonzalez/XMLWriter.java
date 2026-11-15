@@ -28,6 +28,7 @@ import java.nio.CharBuffer;
 import java.nio.channels.WritableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.Collections;
@@ -74,6 +75,32 @@ import java.util.Map;
  * writer.close();
  * }</pre>
  *
+ * <h2>Writing Content in Pieces</h2>
+ * <p>
+ * Character data may be written in any number of {@code writeCharacters}
+ * calls. An attribute value, the text of a comment and the data of a
+ * processing instruction can be written in pieces too, between a start
+ * and an end call, so that neither the caller nor the writer ever holds
+ * the whole of one:
+ * <pre>{@code
+ * writer.writeStartElement("item");
+ * writer.writeStartAttribute("summary");
+ * writer.writeAttributeContent(firstPart);
+ * writer.writeAttributeContent(secondPart);
+ * writer.writeEndAttribute();
+ * }</pre>
+ * {@link #writeStartComment()} and
+ * {@link #writeStartProcessingInstruction(String)} work the same way.
+ * These are the counterparts of the events of {@link XMLHandler}, which
+ * reports each of them in pieces. The pieces may be any
+ * {@link CharSequence}, are not retained, and may divide a surrogate
+ * pair between them. Nothing else may be written until the end call has
+ * been made.
+ * <p>
+ * Whatever is written, the buffer is sent to the channel when it fills
+ * and does not grow with the content. It is replaced by a larger one only
+ * for a single item, such as a name, that would not fit in it empty.
+ *
  * <h2>DTD Output</h2>
  * <p>
  * The writer can serialize complete DOCTYPE declarations including element,
@@ -116,6 +143,9 @@ public class XMLWriter {
     // For UTF-8 each entry is a single byte; for UTF-16 two bytes; etc.
     private byte[][] encodedAscii;
     private int maxAsciiBytes;
+    /** Whether the charset encodes each ASCII character as the one byte
+     *  of the same value, as all but UTF-16, UTF-32 and EBCDIC do. */
+    private boolean asciiCompatible;
 
     // Element stack for tracking open elements
     private final Deque<ElementInfo> elementStack = new ArrayDeque<ElementInfo>();
@@ -146,6 +176,40 @@ public class XMLWriter {
      * begins the next call's. Zero when there is none.
      */
     private char pendingHighSurrogate;
+
+    // What is being written in pieces, between a writeStart and a writeEnd
+    private static final int OPEN_NONE = 0;
+    private static final int OPEN_ATTRIBUTE = 1;
+    private static final int OPEN_COMMENT = 2;
+    private static final int OPEN_PI = 3;
+    private int open = OPEN_NONE;
+
+    // Kinds of content that is written as it is, with no escaping
+    private static final int RAW_COMMENT = 0;
+    private static final int RAW_PI = 1;
+    private static final int RAW_CDATA = 2;
+
+    /** The comment being written in pieces is one that is left out (it is
+     *  in a part of the DTD that is not being written). */
+    private boolean skippingComment;
+
+    /** The comment so far ends with '-', or the processing instruction
+     *  data so far with '?': what must not be followed by the character
+     *  that would end the construct early. */
+    private boolean endsWithDelimiterStart;
+
+    /** Whether the processing instruction being written in pieces has any
+     *  data yet, and so the space that separates it from the target. */
+    private boolean piHasData;
+
+    /** How many ']' the CDATA section so far ends with, up to two. */
+    private int cdataBrackets;
+
+    // For a character the charset has no special case for, in content
+    // that cannot use a character reference in its place
+    private CharsetEncoder replacingEncoder;
+    private CharBuffer replacingIn;
+    private ByteBuffer replacingOut;
 
     // DOCTYPE state
     private boolean inDTD = false;
@@ -237,6 +301,11 @@ public class XMLWriter {
         this.indentConfig = indentConfig;
     }
 
+    private static final byte[] BOM_UTF16_BE = { (byte) 0xFE, (byte) 0xFF };
+    private static final byte[] BOM_UTF16_LE = { (byte) 0xFF, (byte) 0xFE };
+    private static final byte[] BOM_UTF32_BE = { (byte) 0x00, (byte) 0x00, (byte) 0xFE, (byte) 0xFF };
+    private static final byte[] BOM_UTF32_LE = { (byte) 0xFF, (byte) 0xFE, (byte) 0x00, (byte) 0x00 };
+
     /**
      * Sets the output character encoding.
      * Should be called before writing begins.
@@ -244,11 +313,6 @@ public class XMLWriter {
      * @param charset the character encoding, or null for UTF-8
      * @since 1.1
      */
-    private static final byte[] BOM_UTF16_BE = { (byte) 0xFE, (byte) 0xFF };
-    private static final byte[] BOM_UTF16_LE = { (byte) 0xFF, (byte) 0xFE };
-    private static final byte[] BOM_UTF32_BE = { (byte) 0x00, (byte) 0x00, (byte) 0xFE, (byte) 0xFF };
-    private static final byte[] BOM_UTF32_LE = { (byte) 0xFF, (byte) 0xFE, (byte) 0x00, (byte) 0x00 };
-
     public void setCharset(Charset charset) {
         if (charset == null) {
             charset = StandardCharsets.UTF_8;
@@ -270,6 +334,7 @@ public class XMLWriter {
             this.charset = charset;
             this.pendingBOM = null;
         }
+        replacingEncoder = null;
         initEncodedAscii();
     }
 
@@ -434,6 +499,7 @@ public class XMLWriter {
      * @throws IOException if there is an error writing data, or no element is open
      */
     public void writeEndElement() throws IOException {
+        checkNothingOpen();
         if (elementStack.isEmpty()) {
             throw new IOException("No open element to close");
         }
@@ -480,6 +546,7 @@ public class XMLWriter {
         if (!pendingStartTag) {
             throw new IOException("writeAttribute() called outside of start element");
         }
+        checkNothingOpen();
         writeAttributeOutput(localName, value);
         sendIfNeeded();
     }
@@ -498,6 +565,7 @@ public class XMLWriter {
         if (!pendingStartTag) {
             throw new IOException("writeAttribute() called outside of start element");
         }
+        checkNothingOpen();
 
         String prefix = null;
         if (namespaceURI != null && !namespaceURI.isEmpty()) {
@@ -529,6 +597,7 @@ public class XMLWriter {
         if (!pendingStartTag) {
             throw new IOException("writeAttribute() called outside of start element");
         }
+        checkNothingOpen();
 
         String qName;
         if (prefix != null && !prefix.isEmpty()) {
@@ -538,6 +607,68 @@ public class XMLWriter {
         }
 
         writeAttributeOutput(qName, value);
+        sendIfNeeded();
+    }
+
+    /**
+     * Starts an attribute whose value is supplied in pieces: writes the
+     * name and the opening quote. Follow it with any number of
+     * {@link #writeAttributeContent(CharSequence)} calls, then
+     * {@link #writeEndAttribute()}.
+     *
+     * <p>This is the counterpart of {@link XMLHandler#startAttribute}, so
+     * that a parser can feed a writer with neither holding the whole
+     * value. Must be called while a start tag is open, like
+     * {@link #writeAttribute(String, String)}.
+     *
+     * @param name the attribute name, with its prefix if it has one
+     * @throws IOException if there is an error writing data or no start tag is open
+     */
+    public void writeStartAttribute(String name) throws IOException {
+        if (!pendingStartTag) {
+            throw new IOException("writeStartAttribute() called outside of start element");
+        }
+        checkNothingOpen();
+        writeRawString(" ");
+        writeRawString(name);
+        writeRawString("=\"");
+        open = OPEN_ATTRIBUTE;
+    }
+
+    /**
+     * Writes the next characters of the value of an attribute started
+     * with {@link #writeStartAttribute(String)}, escaping them as needed.
+     * They are encoded and sent on as they are written, so the writer's
+     * buffer does not grow with the length of the value. The content is
+     * not retained, so the caller may reuse it as soon as this method
+     * returns. A surrogate pair may be split across two calls.
+     *
+     * @param content the characters to write
+     * @throws IOException if there is an error writing data or no
+     *         attribute has been started
+     */
+    public void writeAttributeContent(CharSequence content) throws IOException {
+        if (open != OPEN_ATTRIBUTE) {
+            throw new IOException("writeAttributeContent() called without writeStartAttribute()");
+        }
+        writeEscapedAttributeValue(content);
+        sendIfNeeded();
+    }
+
+    /**
+     * Ends an attribute started with {@link #writeStartAttribute(String)}:
+     * writes the closing quote.
+     *
+     * @throws IOException if there is an error writing data or no
+     *         attribute has been started
+     */
+    public void writeEndAttribute() throws IOException {
+        if (open != OPEN_ATTRIBUTE) {
+            throw new IOException("writeEndAttribute() called without writeStartAttribute()");
+        }
+        endAttributeValue();
+        writeRawString("\"");
+        open = OPEN_NONE;
         sendIfNeeded();
     }
 
@@ -558,6 +689,7 @@ public class XMLWriter {
         if (!pendingStartTag) {
             throw new IOException("writeNamespace() called outside of start element");
         }
+        checkNothingOpen();
         if (prefix == null || prefix.isEmpty()) {
             writeDefaultNamespace(namespaceURI);
             return;
@@ -579,6 +711,7 @@ public class XMLWriter {
         if (!pendingStartTag) {
             throw new IOException("writeDefaultNamespace() called outside of start element");
         }
+        checkNothingOpen();
         writeNamespaceDeclaration("", namespaceURI);
         mutableNamespaceScope().put("", namespaceURI != null ? namespaceURI : "");
     }
@@ -612,14 +745,33 @@ public class XMLWriter {
      *         contains illegal sequences
      */
     public void writeCharacters(String text) throws IOException {
-        if (text == null || text.isEmpty()) {
+        writeCharacters((CharSequence) text);
+    }
+
+    /**
+     * Writes character content from any sequence of characters, such as
+     * the {@link CharBuffer} that {@link XMLHandler#characters} is given.
+     * The content is not retained, so the caller may reuse it as soon as
+     * this method returns.
+     *
+     * <p>Character content may be written in any number of calls, and a
+     * surrogate pair may be split across two of them. Inside a CDATA
+     * section no escaping is performed, as for
+     * {@link #writeCharacters(String)}, and the end delimiter {@code ]]>}
+     * is refused even when it is divided between calls.
+     *
+     * @param text the character content
+     * @throws IOException if there is an error writing data, or if CDATA content
+     *         contains illegal sequences
+     */
+    public void writeCharacters(CharSequence text) throws IOException {
+        if (text == null || text.length() == 0) {
             return;
         }
+        checkNothingOpen();
         closeStartTag(true);
         if (inCDATA) {
-            char[] ch = text.toCharArray();
-            validateCDATAContent(ch, 0, ch.length);
-            writeCDATAChars(ch, 0, ch.length);
+            writeRawContent(text, RAW_CDATA);
         } else {
             writeEscapedCharacters(text);
         }
@@ -644,10 +796,10 @@ public class XMLWriter {
         if (length == 0) {
             return;
         }
+        checkNothingOpen();
         closeStartTag(true);
         if (inCDATA) {
-            validateCDATAContent(ch, start, length);
-            writeCDATAChars(ch, start, length);
+            writeRawContent(CharBuffer.wrap(ch, start, length), RAW_CDATA);
         } else {
             writeEscapedCharacters(ch, start, length);
         }
@@ -682,6 +834,7 @@ public class XMLWriter {
     public void writeStartCDATA() throws IOException {
         closePendingStartTag(true);
         inCDATA = true;
+        cdataBrackets = 0;
         writeRawString("<![CDATA[");
         sendIfNeeded();
     }
@@ -706,24 +859,88 @@ public class XMLWriter {
      * @throws IOException if there is an error writing data
      */
     public void writeComment(String text) throws IOException {
-        if (inDTD && !shouldWriteDeclaration()) {
+        writeStartComment();
+        writeCommentContent(text);
+        writeEndComment();
+    }
+
+    /**
+     * Starts a comment whose text is supplied in pieces: writes the
+     * opening {@code <!--}. Follow it with any number of
+     * {@link #writeCommentContent(CharSequence)} calls, then
+     * {@link #writeEndComment()}. This is the counterpart of
+     * {@link XMLHandler#startComment()}.
+     *
+     * @throws IOException if there is an error writing data
+     */
+    public void writeStartComment() throws IOException {
+        checkNothingOpen();
+        skippingComment = inDTD && !shouldWriteDeclaration();
+        if (!skippingComment) {
+            closePendingStartTag(true);
+
+            if (inDTD) {
+                openInternalSubsetIfNeeded();
+            }
+
+            if (indentConfig != null && !atDocumentStart && !inDTD) {
+                writeIndent();
+            }
+            atDocumentStart = false;
+
+            writeRawString("<!--");
+            endsWithDelimiterStart = false;
+        }
+        open = OPEN_COMMENT;
+    }
+
+    /**
+     * Writes the next characters of the text of a comment started with
+     * {@link #writeStartComment()}. They are encoded and sent on as they
+     * are written, so the writer's buffer does not grow with the length
+     * of the comment, and are not retained. A surrogate pair may be split
+     * across two calls.
+     *
+     * <p>A comment cannot contain {@code --} or end with {@code -}. As
+     * with {@link #writeComment(String)}, a space is written wherever
+     * that would otherwise happen, including where the two hyphens come
+     * in different calls.
+     *
+     * @param content the characters to write
+     * @throws IOException if there is an error writing data or no comment
+     *         has been started
+     */
+    public void writeCommentContent(CharSequence content) throws IOException {
+        if (open != OPEN_COMMENT) {
+            throw new IOException("writeCommentContent() called without writeStartComment()");
+        }
+        if (skippingComment) {
             return;
         }
+        writeRawContent(content, RAW_COMMENT);
+        sendIfNeeded();
+    }
 
-        closePendingStartTag(true);
-
-        if (inDTD) {
-            openInternalSubsetIfNeeded();
+    /**
+     * Ends a comment started with {@link #writeStartComment()}: writes
+     * the closing {@code -->}.
+     *
+     * @throws IOException if there is an error writing data or no comment
+     *         has been started
+     */
+    public void writeEndComment() throws IOException {
+        if (open != OPEN_COMMENT) {
+            throw new IOException("writeEndComment() called without writeStartComment()");
         }
-
-        if (indentConfig != null && !atDocumentStart && !inDTD) {
-            writeIndent();
+        open = OPEN_NONE;
+        if (skippingComment) {
+            skippingComment = false;
+            return;
         }
-        atDocumentStart = false;
-
-        writeRawString("<!--");
-        char[] ch = text.toCharArray();
-        writeCommentContent(ch, 0, ch.length);
+        endRawContent(RAW_COMMENT);
+        if (endsWithDelimiterStart) {
+            writeRawString(" ");
+        }
         writeRawString("-->");
 
         if (inDTD) {
@@ -751,6 +968,24 @@ public class XMLWriter {
      * @throws IOException if there is an error writing data
      */
     public void writeProcessingInstruction(String target, String data) throws IOException {
+        writeStartProcessingInstruction(target);
+        if (data != null) {
+            writeProcessingInstructionContent(data);
+        }
+        writeEndProcessingInstruction();
+    }
+
+    /**
+     * Starts a processing instruction whose data is supplied in pieces:
+     * writes the opening {@code <?} and the target. Follow it with any
+     * number of {@link #writeProcessingInstructionContent(CharSequence)}
+     * calls, then {@link #writeEndProcessingInstruction()}. This is the
+     * counterpart of {@link XMLHandler#piTarget(String)}.
+     *
+     * @param target the PI target
+     * @throws IOException if there is an error writing data
+     */
+    public void writeStartProcessingInstruction(String target) throws IOException {
         closePendingStartTag(true);
 
         if (indentConfig != null && !atDocumentStart) {
@@ -760,11 +995,61 @@ public class XMLWriter {
 
         writeRawString("<?");
         writeRawString(target);
-        if (data != null && !data.isEmpty()) {
-            writeRawString(" ");
-            writePIData(data);
+        piHasData = false;
+        endsWithDelimiterStart = false;
+        open = OPEN_PI;
+    }
+
+    /**
+     * Writes the next characters of the data of a processing instruction
+     * started with {@link #writeStartProcessingInstruction(String)}. They
+     * are encoded and sent on as they are written, so the writer's buffer
+     * does not grow with the length of the data, and are not retained. A
+     * surrogate pair may be split across two calls.
+     *
+     * <p>The space that separates the data from the target is written
+     * before the first character, so an instruction given no data has
+     * none. The data cannot contain {@code ?>}. As with
+     * {@link #writeProcessingInstruction(String, String)}, a space is
+     * written between the two characters wherever they occur, including
+     * where they come in different calls.
+     *
+     * @param content the characters to write
+     * @throws IOException if there is an error writing data or no
+     *         processing instruction has been started
+     */
+    public void writeProcessingInstructionContent(CharSequence content) throws IOException {
+        if (open != OPEN_PI) {
+            throw new IOException(
+                    "writeProcessingInstructionContent() called without writeStartProcessingInstruction()");
         }
+        if (content.length() == 0) {
+            return;
+        }
+        if (!piHasData) {
+            writeRawString(" ");
+            piHasData = true;
+        }
+        writeRawContent(content, RAW_PI);
+        sendIfNeeded();
+    }
+
+    /**
+     * Ends a processing instruction started with
+     * {@link #writeStartProcessingInstruction(String)}: writes the
+     * closing {@code ?>}.
+     *
+     * @throws IOException if there is an error writing data or no
+     *         processing instruction has been started
+     */
+    public void writeEndProcessingInstruction() throws IOException {
+        if (open != OPEN_PI) {
+            throw new IOException(
+                    "writeEndProcessingInstruction() called without writeStartProcessingInstruction()");
+        }
+        endRawContent(RAW_PI);
         writeRawString("?>");
+        open = OPEN_NONE;
 
         sendIfNeeded();
     }
@@ -921,6 +1206,7 @@ public class XMLWriter {
         if (value != null) {
             writeRawString(" \"");
             writeEscapedAttributeValue(value);
+            endAttributeValue();
             writeRawString("\"");
         }
         writeRawString(">\n");
@@ -1098,7 +1384,11 @@ public class XMLWriter {
     public void flush() throws IOException {
         // Not the end of the character data: more of it may follow, and
         // half a surrogate pair is not yet something that can be sent.
-        closeStartTag(false);
+        // Nor is a start tag finished while one of its attributes is
+        // still being written.
+        if (open == OPEN_NONE) {
+            closeStartTag(false);
+        }
         if (buffer.position() > 0) {
             send();
         }
@@ -1114,8 +1404,16 @@ public class XMLWriter {
      * @throws IOException if there is an error flushing data
      */
     public void close() throws IOException {
-        endCharacters();
+        if (open == OPEN_NONE) {
+            endCharacters();
+        }
         flush();
+    }
+
+    /** The capacity of the buffer, for tests: it is not meant to grow
+     *  with what is written. */
+    int bufferCapacity() {
+        return buffer.capacity();
     }
 
     // ========== Namespace Lookup ==========
@@ -1282,6 +1580,7 @@ public class XMLWriter {
         writeRawString(qName);
         writeRawString("=\"");
         writeEscapedAttributeValue(value);
+        endAttributeValue();
         writeRawString("\"");
     }
 
@@ -1293,8 +1592,35 @@ public class XMLWriter {
      * @param markContent if true, mark that the element has content
      */
     private void closePendingStartTag(boolean markContent) throws IOException {
+        checkNothingOpen();
         endCharacters();
         closeStartTag(markContent);
+    }
+
+    /**
+     * Refuses to write anything else in the middle of an attribute value,
+     * comment or processing instruction that is being written in pieces.
+     */
+    private void checkNothingOpen() throws IOException {
+        if (open != OPEN_NONE) {
+            throw unfinished();
+        }
+    }
+
+    private IOException unfinished() {
+        String end;
+        switch (open) {
+            case OPEN_ATTRIBUTE:
+                end = "writeEndAttribute()";
+                break;
+            case OPEN_COMMENT:
+                end = "writeEndComment()";
+                break;
+            default:
+                end = "writeEndProcessingInstruction()";
+                break;
+        }
+        return new IOException(end + " has not been called for the content being written in pieces");
     }
 
     /**
@@ -1307,7 +1633,7 @@ public class XMLWriter {
             char high = pendingHighSurrogate;
             pendingHighSurrogate = 0;
             if (inCDATA) {
-                writeRawChars(new char[] { high }, 0, 1);
+                writeRawContentCodePoint(high, RAW_CDATA);
             } else {
                 writeEscapedCodePoint(high);
             }
@@ -1361,6 +1687,52 @@ public class XMLWriter {
             encodedAscii[i] = s.getBytes(charset);
         }
         maxAsciiBytes = encodedAscii['<'].length;
+        asciiCompatible = true;
+        for (int i = 0; i < 128; i++) {
+            if (encodedAscii[i].length != 1 || encodedAscii[i][0] != i) {
+                asciiCompatible = false;
+                break;
+            }
+        }
+    }
+
+    /**
+     * Whether a character is written as itself wherever it appears:
+     * printable ASCII. What a particular kind of content treats specially
+     * among these, the caller excludes.
+     */
+    private static boolean isPlainAscii(char c) {
+        return c >= 0x20 && c < 0x7F;
+    }
+
+    /**
+     * Writes a run of ASCII characters as they are, a buffer's worth at
+     * a time.
+     *
+     * @param s the sequence the run is part of
+     * @param from the index of its first character
+     * @param to the index after its last
+     */
+    private void writePlainAscii(CharSequence s, int from, int to) throws IOException {
+        if (!asciiCompatible) {
+            while (from < to) {
+                ensureCapacity(maxAsciiBytes);
+                writeAscii(s.charAt(from++));
+            }
+            return;
+        }
+        while (from < to) {
+            ensureCapacity(1);
+            int position = buffer.position();
+            int n = Math.min(to - from, buffer.remaining());
+            byte[] bytes = buffer.array();
+            int offset = buffer.arrayOffset() + position;
+            for (int k = 0; k < n; k++) {
+                bytes[offset + k] = (byte) s.charAt(from + k);
+            }
+            buffer.position(position + n);
+            from += n;
+        }
     }
 
     /**
@@ -1416,9 +1788,124 @@ public class XMLWriter {
     }
 
     /**
-     * Validates that character content is legal inside a CDATA section.
-     * Checks for the forbidden "]]>" delimiter and for characters that are
-     * illegal in XML (which cannot be escaped inside CDATA).
+     * Writes content that is not escaped: the text of a comment, the data
+     * of a processing instruction or the content of a CDATA section. A
+     * high surrogate that ends it is kept back for the next call, as for
+     * character data.
+     *
+     * @param kind one of the RAW_ constants
+     */
+    private void writeRawContent(CharSequence s, int kind) throws IOException {
+        int end = s.length();
+        if (end == 0) {
+            return;
+        }
+        int i = 0;
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            char c = s.charAt(0);
+            if (Character.isLowSurrogate(c)) {
+                writeRawContentCodePoint(Character.toCodePoint(high, c), kind);
+                i++;
+            } else {
+                writeRawContentCodePoint(high, kind);
+            }
+        }
+        if (i < end && Character.isHighSurrogate(s.charAt(end - 1))) {
+            pendingHighSurrogate = s.charAt(end - 1);
+            end--;
+        }
+        // The characters that could, with another, end the construct.
+        char first;
+        char second;
+        switch (kind) {
+            case RAW_COMMENT:
+                first = '-';
+                second = '-';
+                break;
+            case RAW_PI:
+                first = '?';
+                second = '>';
+                break;
+            default:
+                first = ']';
+                second = '>';
+                break;
+        }
+        while (i < end) {
+            char c = s.charAt(i);
+            if (isPlainAscii(c) && c != first && c != second) {
+                // Most content is a run of these, with nothing to check.
+                int run = i + 1;
+                while (run < end) {
+                    c = s.charAt(run);
+                    if (!isPlainAscii(c) || c == first || c == second) {
+                        break;
+                    }
+                    run++;
+                }
+                writePlainAscii(s, i, run);
+                i = run;
+                endsWithDelimiterStart = false;
+                cdataBrackets = 0;
+                continue;
+            }
+            int codePoint = Character.codePointAt(s, i);
+            i += Character.charCount(codePoint);
+            writeRawContentCodePoint(codePoint, kind);
+        }
+    }
+
+    /**
+     * Finishes content written with {@link #writeRawContent}: a high
+     * surrogate kept back was not followed by its low surrogate.
+     */
+    private void endRawContent(int kind) throws IOException {
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            writeRawContentCodePoint(high, kind);
+        }
+    }
+
+    /**
+     * Writes one code point of unescaped content, keeping it from ending
+     * the construct it is in. Nothing can be done about that inside a
+     * CDATA section, where it is an error; in a comment or a processing
+     * instruction a space is written to keep the two characters of the
+     * closing delimiter apart.
+     */
+    private void writeRawContentCodePoint(int codePoint, int kind) throws IOException {
+        switch (kind) {
+            case RAW_COMMENT:
+                if (codePoint == '-') {
+                    if (endsWithDelimiterStart) {
+                        writeRawCodePoint(' ');
+                    }
+                    endsWithDelimiterStart = true;
+                } else {
+                    endsWithDelimiterStart = false;
+                }
+                break;
+            case RAW_PI:
+                if (codePoint == '>' && endsWithDelimiterStart) {
+                    writeRawCodePoint(' ');
+                }
+                endsWithDelimiterStart = (codePoint == '?');
+                break;
+            default:
+                checkCDATACodePoint(codePoint);
+                break;
+        }
+        writeRawCodePoint(codePoint);
+    }
+
+    /**
+     * Checks that a code point is legal as the next one in a CDATA
+     * section: that it does not complete the forbidden "]]>" delimiter,
+     * and is not a character that is illegal in XML (which cannot be
+     * escaped inside CDATA).
      *
      * <p>In XML 1.0, the illegal characters are U+0000 and the C0 controls
      * U+0001-U+0008, U+000B, U+000C, U+000E-U+001F (everything below U+0020
@@ -1426,100 +1913,83 @@ public class XMLWriter {
      * (except TAB, LF, CR) and C1 controls U+007F-U+009F are illegal because
      * they require character references which are not available in CDATA.
      */
-    private void validateCDATAContent(char[] ch, int start, int length) throws IOException {
-        int end = start + length;
-        for (int i = start; i < end; i++) {
-            char c = ch[i];
-
-            if (c == ']' && i + 2 < end && ch[i + 1] == ']' && ch[i + 2] == '>') {
-                throw new IOException("CDATA section must not contain \"]]>\"");
+    private void checkCDATACodePoint(int c) throws IOException {
+        if (c == '>' && cdataBrackets == 2) {
+            throw new IOException("CDATA section must not contain \"]]>\"");
+        }
+        if (c == ']') {
+            if (cdataBrackets < 2) {
+                cdataBrackets++;
             }
+        } else {
+            cdataBrackets = 0;
+        }
 
-            if (c == 0) {
-                throw new IOException("CDATA section must not contain the null character (U+0000)");
-            }
+        if (c == 0) {
+            throw new IOException("CDATA section must not contain the null character (U+0000)");
+        }
 
-            if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
-                throw new IOException("CDATA section must not contain control character (U+"
-                        + Integer.toHexString(c).toUpperCase() + ")");
-            }
+        if (c < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+            throw new IOException("CDATA section must not contain control character (U+"
+                    + Integer.toHexString(c).toUpperCase() + ")");
+        }
 
-            if (xml11 && c >= 0x7F && c <= 0x9F) {
-                throw new IOException("CDATA section must not contain C1 control character (U+00"
-                        + Integer.toHexString(c).toUpperCase() + ")");
-            }
+        if (xml11 && c >= 0x7F && c <= 0x9F) {
+            throw new IOException("CDATA section must not contain C1 control character (U+00"
+                    + Integer.toHexString(c).toUpperCase() + ")");
         }
     }
 
     /**
-     * Writes the content of a CDATA section, already validated, keeping
-     * together a surrogate pair that this call and the one before or
-     * after it divide.
+     * Writes one code point in the configured charset with no escaping.
+     * A character reference would not be recognised where this is used,
+     * so what the charset cannot represent is replaced as the charset's
+     * own encoder replaces it, usually with a question mark.
      */
-    private void writeCDATAChars(char[] ch, int start, int length) throws IOException {
-        int end = start + length;
-        if (pendingHighSurrogate != 0) {
-            char high = pendingHighSurrogate;
-            pendingHighSurrogate = 0;
-            if (Character.isLowSurrogate(ch[start])) {
-                writeRawChars(new char[] { high, ch[start] }, 0, 2);
-                start++;
-            } else {
-                writeRawChars(new char[] { high }, 0, 1);
-            }
-        }
-        if (start < end && Character.isHighSurrogate(ch[end - 1])) {
-            pendingHighSurrogate = ch[end - 1];
-            end--;
-        }
-        writeRawChars(ch, start, end - start);
-    }
-
-    /**
-     * Writes raw characters without escaping, using the configured charset.
-     */
-    private void writeRawChars(char[] ch, int start, int length) throws IOException {
-        String s = new String(ch, start, length);
-        byte[] bytes = s.getBytes(charset);
-        ensureCapacity(bytes.length);
-        buffer.put(bytes);
-    }
-
-    /**
-     * Writes comment content, sanitizing "--" sequences and trailing "-"
-     * to prevent comment injection (producing malformed output like "-->").
-     */
-    private void writeCommentContent(char[] ch, int start, int length) throws IOException {
-        int end = start + length;
-        int segStart = start;
-        for (int i = start; i < end; i++) {
-            if (ch[i] == '-' && i + 1 < end && ch[i + 1] == '-') {
-                writeRawChars(ch, segStart, i - segStart + 1);
-                writeRawString(" ");
-                segStart = i + 1;
-            }
-        }
-        writeRawChars(ch, segStart, end - segStart);
-        if (length > 0 && ch[end - 1] == '-') {
-            writeRawString(" ");
+    private void writeRawCodePoint(int codePoint) throws IOException {
+        if (codePoint < 0x80) {
+            ensureCapacity(maxAsciiBytes);
+            writeAscii(codePoint);
+        } else if (charset == StandardCharsets.UTF_8 && (codePoint < 0xD800 || codePoint > 0xDFFF)) {
+            ensureCapacity(MAX_UTF8_BYTES);
+            writeUtf8CodePoint(codePoint);
+        } else if (charset == StandardCharsets.ISO_8859_1 && codePoint <= 0xFF) {
+            ensureCapacity(1);
+            buffer.put((byte) codePoint);
+        } else {
+            writeReplacing(codePoint);
         }
     }
 
     /**
-     * Writes processing instruction data, sanitizing "?>" sequences
-     * to prevent PI injection (premature close of PI).
+     * Writes one code point through the charset's encoder, which
+     * substitutes its replacement for what it cannot encode.
      */
-    private void writePIData(String data) throws IOException {
-        int len = data.length();
-        int segStart = 0;
-        for (int i = 0; i < len - 1; i++) {
-            if (data.charAt(i) == '?' && data.charAt(i + 1) == '>') {
-                writeRawString(data.substring(segStart, i + 1));
-                writeRawString(" ");
-                segStart = i + 1;
-            }
+    private void writeReplacing(int codePoint) throws IOException {
+        if (replacingEncoder == null) {
+            replacingEncoder = charset.newEncoder()
+                    .onMalformedInput(CodingErrorAction.REPLACE)
+                    .onUnmappableCharacter(CodingErrorAction.REPLACE);
+            replacingIn = CharBuffer.allocate(2);
+            int most = (int) Math.ceil(2 * replacingEncoder.maxBytesPerChar())
+                    + replacingEncoder.replacement().length;
+            replacingOut = ByteBuffer.allocate(most + 8);
         }
-        writeRawString(data.substring(segStart));
+        replacingIn.clear();
+        if (codePoint >= 0x10000) {
+            replacingIn.put(Character.highSurrogate(codePoint));
+            replacingIn.put(Character.lowSurrogate(codePoint));
+        } else {
+            replacingIn.put((char) codePoint);
+        }
+        replacingIn.flip();
+        replacingOut.clear();
+        replacingEncoder.reset();
+        replacingEncoder.encode(replacingIn, replacingOut, true);
+        replacingEncoder.flush(replacingOut);
+        replacingOut.flip();
+        ensureCapacity(replacingOut.remaining());
+        buffer.put(replacingOut);
     }
 
     /**
@@ -1572,7 +2042,7 @@ public class XMLWriter {
     /**
      * Writes character content with XML escaping, without copying to a char[].
      */
-    private void writeEscapedCharacters(String s) throws IOException {
+    private void writeEscapedCharacters(CharSequence s) throws IOException {
         int end = s.length();
         int i = 0;
         if (pendingHighSurrogate != 0) {
@@ -1591,7 +2061,7 @@ public class XMLWriter {
             end--;
         }
         while (i < end) {
-            int codePoint = s.codePointAt(i);
+            int codePoint = Character.codePointAt(s, i);
             int charCount = Character.charCount(codePoint);
             writeEscapedCodePoint(codePoint);
             i += charCount;
@@ -1621,41 +2091,92 @@ public class XMLWriter {
     }
 
     /**
-     * Writes an attribute value with XML escaping (&lt;, &gt;, &amp;, &quot;).
+     * Writes an attribute value, or the next part of one, with XML
+     * escaping (&lt;, &gt;, &amp;, &quot;). A high surrogate that ends it
+     * is kept back for the next part, as for character data, so the value
+     * must be finished with {@link #endAttributeValue()}.
      */
-    private void writeEscapedAttributeValue(String s) throws IOException {
-        for (int i = 0; i < s.length(); ) {
-            int codePoint = s.codePointAt(i);
-            int charCount = Character.charCount(codePoint);
-
-            if (codePoint == '<') {
-                writeRawString("&lt;");
-            } else if (codePoint == '>') {
-                writeRawString("&gt;");
-            } else if (codePoint == '&') {
-                writeRawString("&amp;");
-            } else if (codePoint == '"') {
-                writeRawString("&quot;");
-            } else if (codePoint == '\t') {
-                writeDecimalCharacterReference(codePoint);
-            } else if (codePoint == '\n') {
-                writeDecimalCharacterReference(codePoint);
-            } else if (codePoint == '\r') {
-                writeDecimalCharacterReference(codePoint);
-            } else if (codePoint < 0x20) {
-                writeCharacterReference(codePoint);
-            } else if (codePoint < 0x80) {
-                ensureCapacity(maxAsciiBytes);
-                writeAscii(codePoint);
-            } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
-                writeCharacterReference(codePoint);
-            } else if (xml11 && codePoint == 0x2028) {
-                writeCharacterReference(codePoint);
+    private void writeEscapedAttributeValue(CharSequence s) throws IOException {
+        int end = s.length();
+        if (end == 0) {
+            return;
+        }
+        int i = 0;
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            char c = s.charAt(0);
+            if (Character.isLowSurrogate(c)) {
+                writeEscapedAttributeCodePoint(Character.toCodePoint(high, c));
+                i++;
             } else {
-                writeEncodedCodePoint(codePoint);
+                writeEscapedAttributeCodePoint(high);
             }
+        }
+        if (i < end && Character.isHighSurrogate(s.charAt(end - 1))) {
+            pendingHighSurrogate = s.charAt(end - 1);
+            end--;
+        }
+        while (i < end) {
+            char c = s.charAt(i);
+            if (isPlainAscii(c) && c != '<' && c != '>' && c != '&' && c != '"') {
+                // Most of a value is a run of these, written as they are.
+                int run = i + 1;
+                while (run < end) {
+                    c = s.charAt(run);
+                    if (!isPlainAscii(c) || c == '<' || c == '>' || c == '&' || c == '"') {
+                        break;
+                    }
+                    run++;
+                }
+                writePlainAscii(s, i, run);
+                i = run;
+                continue;
+            }
+            int codePoint = Character.codePointAt(s, i);
+            i += Character.charCount(codePoint);
+            writeEscapedAttributeCodePoint(codePoint);
+        }
+    }
 
-            i += charCount;
+    /**
+     * Finishes an attribute value: a high surrogate kept back was not
+     * followed by its low surrogate.
+     */
+    private void endAttributeValue() throws IOException {
+        if (pendingHighSurrogate != 0) {
+            char high = pendingHighSurrogate;
+            pendingHighSurrogate = 0;
+            writeEscapedAttributeCodePoint(high);
+        }
+    }
+
+    private void writeEscapedAttributeCodePoint(int codePoint) throws IOException {
+        if (codePoint == '<') {
+            writeRawString("&lt;");
+        } else if (codePoint == '>') {
+            writeRawString("&gt;");
+        } else if (codePoint == '&') {
+            writeRawString("&amp;");
+        } else if (codePoint == '"') {
+            writeRawString("&quot;");
+        } else if (codePoint == '\t') {
+            writeDecimalCharacterReference(codePoint);
+        } else if (codePoint == '\n') {
+            writeDecimalCharacterReference(codePoint);
+        } else if (codePoint == '\r') {
+            writeDecimalCharacterReference(codePoint);
+        } else if (codePoint < 0x20) {
+            writeCharacterReference(codePoint);
+        } else if (codePoint < 0x80) {
+            ensureCapacity(maxAsciiBytes);
+            writeAscii(codePoint);
+        } else if (xml11 && codePoint >= 0x7F && codePoint <= 0x9F) {
+            writeCharacterReference(codePoint);
+        } else if (xml11 && codePoint == 0x2028) {
+            writeCharacterReference(codePoint);
+        } else {
+            writeEncodedCodePoint(codePoint);
         }
     }
 
@@ -1802,17 +2323,21 @@ public class XMLWriter {
         }
     }
 
-    private void ensureCapacity(int needed) {
+    /**
+     * Makes sure there is room in the buffer for that many bytes. What is
+     * already in it is sent on to make the room, so the buffer does not
+     * grow with what is written; it is only replaced by a larger one for
+     * a single item that would not fit in it empty, such as a long name.
+     */
+    private void ensureCapacity(int needed) throws IOException {
         if (buffer.remaining() < needed) {
-            growBuffer(Math.max(buffer.capacity() * 2, buffer.position() + needed));
+            if (buffer.position() > 0) {
+                send();
+            }
+            if (buffer.capacity() < needed) {
+                buffer = ByteBuffer.allocate(Math.max(buffer.capacity() * 2, needed));
+            }
         }
-    }
-
-    private void growBuffer(int newCapacity) {
-        ByteBuffer newBuffer = ByteBuffer.allocate(newCapacity);
-        buffer.flip();
-        newBuffer.put(buffer);
-        buffer = newBuffer;
     }
 
     private void sendIfNeeded() throws IOException {
