@@ -529,24 +529,22 @@ Gonzalez supports the entire XML specification:
 
 ## Performance
 
-The current XML parser implementation was compared with the SAX parser bundled
-with JDK 21 (Xerces) and
-[aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.1-SNAPSHOT. All paths
-ran namespace-aware with an empty handler. The raw Gonzalez path is
-`ExternalEntityDecoder → Scanner → NamespaceFilter → XMLHandler`; it bypasses
-`SAXAdapter` while still performing byte decoding, XML grammar processing, DTD
-work and namespace declaration handling. Gonzalez SAX adds name resolution,
-`Attributes2` assembly and standard SAX callback adaptation. The
-`XMLHandler` column measures the public native SPI path; unlike SAX, that SPI
-is Gonzalez-specific and may evolve between releases.
+The XML parser was compared with the SAX parser bundled with JDK 25 (Xerces)
+and [aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.0. All paths ran
+namespace-aware. The `XMLHandler` column is the public native path: an
+`XMLParser` with an empty `XMLHandler`. It does byte decoding, XML grammar
+processing, DTD work and namespace declaration handling, but no SAX. Gonzalez
+SAX adds name resolution, `Attributes2` assembly and standard SAX callback
+adaptation. Unlike SAX, the native SPI is Gonzalez-specific and may evolve
+between releases.
 
 Aalto's lower-level StAX cursor is included as an additional reference point,
 but is not directly equivalent to SAX callback delivery.
 
-The figures below are median throughput across five fresh JVM runs. Each run
-used 20 warm-up parses followed by 30 measured parses. The original five
-documents are in `benchmark/resources`; `BenchmarkCorpora` deterministically
-generates three additional substantial documents:
+The figures below are median throughput across five fresh JVM runs, each with
+one corpus and one parser, 800 warm-up parses and then 500 measured parses.
+The original five documents are in `benchmark/resources`; `BenchmarkCorpora`
+deterministically generates three additional substantial documents:
 
 - the same 4,000-article Japanese document encoded as BOM-marked UTF-16LE and
   EUC-JP, isolating the two decoder paths as far as practical;
@@ -566,23 +564,42 @@ difference, not as a like-for-like throughput comparison.
 
 | Corpus | Size | Gonzalez XMLHandler | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |
 |--------|-----:|--------------------:|-------------:|----------------:|----------:|------------------:|
-| Plain UTF-8 | 1.02 MiB | **796 MB/s** | 536 MB/s | 510 MB/s | 1,163 MB/s | 1,227 MB/s |
-| Attribute-heavy UTF-8 | 1.28 MiB | **494 MB/s** | 360 MB/s | 246 MB/s | 990 MB/s | 974 MB/s |
-| Whitespace-heavy UTF-8 | 0.94 MiB | **1,183 MB/s** | 856 MB/s | 657 MB/s | 1,325 MB/s | 1,590 MB/s |
-| Markup-heavy UTF-8 | 0.96 MiB | **1,133 MB/s** | 863 MB/s | 372 MB/s | 1,365 MB/s | 1,614 MB/s |
-| Multibyte UTF-8 | 0.49 MiB | **529 MB/s** | 338 MB/s | 316 MB/s | 727 MB/s | 782 MB/s |
-| Japanese UTF-16LE | 1.50 MiB | **728 MB/s** | 566 MB/s | 774 MB/s | 898 MB/s | 853 MB/s |
-| Japanese EUC-JP | 1.28 MiB | **564 MB/s** | 442 MB/s | 424 MB/s | 640 MB/s | 618 MB/s |
-| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **296 MB/s** | 231 MB/s | 117 MB/s | *755 MB/s†* | *764 MB/s†* |
+| Plain UTF-8 | 1.02 MiB | **1,043 MB/s** | 853 MB/s | 548 MB/s | 1,187 MB/s | 1,286 MB/s |
+| Attribute-heavy UTF-8 | 1.28 MiB | **727 MB/s** | 460 MB/s | 252 MB/s | 941 MB/s | 929 MB/s |
+| Whitespace-heavy UTF-8 | 0.94 MiB | **1,385 MB/s** | 1,204 MB/s | 696 MB/s | 1,334 MB/s | 1,585 MB/s |
+| Markup-heavy UTF-8 | 0.96 MiB | **1,234 MB/s** | 1,104 MB/s | 540 MB/s | 1,461 MB/s | 1,732 MB/s |
+| Multibyte UTF-8 | 0.49 MiB | **622 MB/s** | 515 MB/s | 332 MB/s | 741 MB/s | 784 MB/s |
+| Japanese UTF-16LE | 1.50 MiB | **793 MB/s** | 532 MB/s | 832 MB/s | 917 MB/s | 930 MB/s |
+| Japanese EUC-JP | 1.28 MiB | **503 MB/s** | 494 MB/s | 446 MB/s | 643 MB/s | 643 MB/s |
+| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **340 MB/s** | 279 MB/s | 149 MB/s | *887 MB/s†* | *904 MB/s†* |
 
 † Aalto's figures are non-validating: it skips the internal DTD declarations.
 
-The non-UTF results differ materially from the original UTF-8 cases. JDK
-Xerces SAX is about 37% faster than Gonzalez SAX on UTF-16LE, while Gonzalez
-SAX is about 4% faster on EUC-JP. Aalto SAX is roughly 1.6 and 1.4 times as
-fast as Gonzalez SAX on those two encoding cases. Throughput is measured from
-encoded byte size, so UTF-16's MB/s also reflects that it uses more bytes for
-the same logical Japanese document.
+Gonzalez SAX is faster than the JDK's Xerces on every corpus except UTF-16LE,
+where Xerces is about 56% faster, and the two are close on EUC-JP (Gonzalez
+about 11% faster). Aalto SAX is between about 1.1 and 2.0 times as fast as
+Gonzalez SAX. Throughput is measured from encoded byte size, so UTF-16's MB/s
+also reflects that it uses more bytes for the same logical Japanese document.
+
+**What the handler does matters.** With an empty handler, Aalto's SAX wrapper
+does less work than Gonzalez, because it decodes an attribute value only when
+the handler asks for it, whereas Gonzalez builds each value as it scans. A
+handler that reads every attribute and all the text is closer to real use, and
+narrows the gap:
+
+| Corpus | Gonzalez SAX | Aalto SAX |
+|--------|-------------:|----------:|
+| Plain UTF-8 | 836 MB/s | 1,109 MB/s |
+| Attribute-heavy UTF-8 | 460 MB/s | 705 MB/s |
+| Whitespace-heavy UTF-8 | 1,182 MB/s | 1,309 MB/s |
+| Markup-heavy UTF-8 | 1,081 MB/s | 1,404 MB/s |
+| Multibyte UTF-8 | 503 MB/s | 567 MB/s |
+| Japanese UTF-16LE | 526 MB/s | 754 MB/s |
+| Japanese EUC-JP | 487 MB/s | 561 MB/s |
+| XHTML internal DTD (not equivalent; see above) | 279 MB/s | *764 MB/s†* |
+
+Aalto remains faster, by between about 1.1 and 1.5 times, most on
+attribute-heavy UTF-8 and on UTF-16.
 
 The DTD behavior was verified from SAX events using
 `benchmark/external-compare/DtdProbe.java`: Gonzalez and JDK Xerces report
@@ -609,19 +626,19 @@ run the script:
 ```sh
 export AALTO_JAR=/path/to/aalto-xml.jar
 export STAX2_JAR=/path/to/stax2-api.jar
-benchmark/external-compare/run.sh
+benchmark/external-compare/run-isolated.sh
 ```
 
-The script exits with an error if either variable is unset or does not name a
-file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
+`run-isolated.sh` runs each corpus and parser in a fresh JVM, five times by
+default, and reports the median; its arguments are the number of runs, and
+quoted lists of corpora and modes. Set `GONZALEZ_CLASSES` to compare another
+build of Gonzalez. Besides the empty handlers used for the first table it has
+`sax-touch` and `aalto-sax-touch` modes, which use a handler that reads every
+attribute and all text, as in the second. `benchmark/external-compare/run.sh`
+is a quicker single-JVM comparison that runs every parser in turn.
 
-`benchmark/external-compare/run-isolated.sh` runs each corpus and parser in a
-fresh JVM, several times, and reports the median; set `GONZALEZ_CLASSES` to
-compare another build of Gonzalez. Besides the empty handlers above it has
-`sax-touch` and `aalto-sax-touch` modes, whose handler reads every attribute
-and all text. They matter because Aalto's SAX wrapper decodes attribute values
-only when they are asked for, so it does less work than Gonzalez, which builds
-them as it goes, when the handler ignores them.
+The scripts exit with an error if either variable is unset or does not name a
+file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
 
 ## Conformance
 
