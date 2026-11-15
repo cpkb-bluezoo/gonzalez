@@ -231,6 +231,13 @@ parses schemas for type tests and substitution groups, but input documents are
 not validated against imported schemas. `validation="strict"` raises XTSE1660;
 `validation="lax"` and `validation="preserve"` are treated as `strip`.
 
+This departs from the specification, under which a Basic processor must
+reject any `xsl:import-schema` with XTSE1650. Gonzalez rejects only an
+inline schema and loads one named by `schema-location`, because type tests,
+substitution groups and the streaming test sets depend on it. The one
+conformance test that expects the error (`import-schema-191`) is skipped
+for that reason.
+
 #### Iterative Parser Design
 
 The XPath parser uses explicit stacks instead of recursion, consistent with
