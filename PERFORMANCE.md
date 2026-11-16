@@ -163,3 +163,64 @@ is a quicker single-JVM comparison that runs every parser in turn.
 
 The scripts exit with an error if either variable is unset or does not name a
 file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
+
+## Small documents
+
+The tables above are for documents of about a megabyte, where the time goes on
+scanning. A document of a few kilobytes is parsed in a few microseconds, and
+what dominates is what a parser does before it reads a byte. The figures below
+are microseconds per parse, the median of five fresh JVMs, each parsing the
+one document 200,000 times after 100,000 warm-up parses, on one thread. The SAX
+columns use the handler that reads every attribute and all the text, as in the
+second table above; the `XMLHandler` columns are the native path with an empty
+handler, and so do less than the SAX ones.
+
+| Document | Size | `XMLHandler`, new parser | `XMLHandler`, reused | SAX, new parser | SAX, reused | Aalto SAX |
+|----------|-----:|-------------------------:|---------------------:|----------------:|------------:|----------:|
+| `<a/>` | 4 bytes | 2.9 | 0.4 | 3.8 | 0.5 | 0.1 |
+| `small.xml` | 1.3 KB | 4.7 | 2.1 | 6.2 | 2.8 | 1.6 |
+| `attrs-small.xml` | 3.2 KB | 7.9 | 5.2 | 10.1 | 7.0 | 4.8 |
+| `books.xml` | 4.3 KB | 7.2 | 4.5 | 9.1 | 5.5 | 4.7 |
+
+A new parser is one made for the document, as `SAXParserFactory.newSAXParser()`
+or `new XMLParser()` gives you. A reused parser is one that is kept and
+`reset()` between documents. Aalto's figure is the same for both, because
+aalto-xml recycles its buffers in a `ThreadLocal`, and so a parser made for
+each document finds them already allocated.
+
+Gonzalez keeps nothing in a `ThreadLocal`. The memory a parser works in is
+allocated when it first parses a document and is the size you set (see
+[Buffer Sizes](SECURE-CONFIGURATION.md#buffer-sizes)), so a new parser
+allocates about 100 KB before it reads anything. The difference between the new
+and reused columns, between 2.5 and 3.5 microseconds whatever the document, is
+what a new parser spends allocating that memory and setting itself up, and it is most of
+the 2.9 microseconds it takes to parse `<a/>`. `reset()` keeps the buffers,
+which is what the reused columns show. An application that parses many small
+documents should keep a parser for each thread that parses and reset it between
+documents, and should set the buffer sizes to what its documents need if memory
+is dear.
+
+With that done, SAX through a reused Gonzalez parser is between 1.2 and 1.8
+times the time Aalto takes for the documents of a kilobyte or more, and closer
+the larger the document. For a parser made for each document the factor is
+between 1.9 and 3.9. A document of a few bytes is not a measure of anything
+useful: both are a fraction of a microsecond, and the difference is the cost
+of constructing the scanner, name filter and adapter that Gonzalez builds for
+each document.
+
+Two cautions. First, these are one thread parsing the same document over and
+over, which is as kind to the caches as a benchmark can be. Giving each parse
+a thread of its own makes every parser slower by one to three microseconds,
+because a new thread usually runs on a core whose caches hold something else.
+That narrows the ratios, as it adds about the same to each parser, but it is
+a cost of the thread and not of the parser, so it is not shown. Second, the
+documents are small and plain. They have no DTD, and the work that Gonzalez
+does for one is not in these figures.
+
+To reproduce them, with the same `AALTO_JAR` and `STAX2_JAR` variables as above:
+
+```sh
+UNIT=us benchmark/external-compare/run-isolated.sh 5 "tiny small books attrs-small" \
+    "xmlhandler xmlhandler-reuse sax-touch sax-touch-reuse aalto-sax-touch"
+```
+

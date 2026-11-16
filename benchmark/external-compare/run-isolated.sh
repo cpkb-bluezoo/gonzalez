@@ -6,6 +6,8 @@
 #   benchmark/external-compare/run-isolated.sh [reps] [corpora] [modes]
 #
 # corpora and modes are space-separated lists in quotes; the defaults are all.
+# Set UNIT=us to report microseconds per parse instead of MB/s, which suits the
+# small corpora (tiny small books attrs-small).
 # Set GONZALEZ_CLASSES to use another build of Gonzalez than build/core (for
 # comparing two versions of the code).
 set -euo pipefail
@@ -39,14 +41,18 @@ javac -cp "$CP" -d "$WORK" \
 
 printf "%-12s" "corpus"
 for mode in $MODES; do printf " %20s" "$mode"; done
-echo "   (median MB/s of $REPS fresh JVMs)"
+if [ "${UNIT:-}" = "us" ]; then
+    echo "   (median microseconds per parse of $REPS fresh JVMs)"
+else
+    echo "   (median MB/s of $REPS fresh JVMs)"
+fi
 for corpus in $CORPORA; do
     printf "%-12s" "$corpus"
     for mode in $MODES; do
         results=""
         for _ in $(seq 1 "$REPS"); do
             mbs=$(java -cp "$WORK:$CP" org.bluezoo.gonzalez.IsolatedAB "$corpus" "$mode" \
-                  | awk '{print $(NF-1)}')
+                  | awk -v unit="${UNIT:-}" '{ if (unit == "us") print $(NF-3) * 1000; else print $(NF-1) }')
             results="$results $mbs"
         done
         median=$(echo $results | tr ' ' '\n' | sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}')

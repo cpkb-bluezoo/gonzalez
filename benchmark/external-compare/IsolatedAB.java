@@ -31,6 +31,7 @@ import org.xml.sax.helpers.DefaultHandler;
  *   jdk                  the JDK's bundled SAX parser
  *   xmlhandler-reuse     as xmlhandler, one XMLParser reset after each document
  *   sax-touch-reuse      as sax-touch, one Parser reset after each document
+ *   aalto-sax-touch-reuse  as aalto-sax-touch, one SAXParser used for every document
  *   aalto-sax            aalto-xml SAX
  *   aalto-stax           aalto-xml StAX cursor
  *   sax-touch            Gonzalez Parser (SAX), the handler reading every
@@ -162,6 +163,15 @@ public class IsolatedAB {
                     SAXParser p = f.newSAXParser();
                     p.parse(new ByteArrayInputStream(bytes), h);
                 };
+            }
+            case "aalto-sax-touch-reuse": {
+                final SAXParserFactory f = new com.fasterxml.aalto.sax.SAXParserFactoryImpl();
+                f.setNamespaceAware(true);
+                final TouchHandler h = new TouchHandler();
+                final SAXParser p = f.newSAXParser();
+                // aalto-xml's SAXParser does not support reset(); it is simply
+                // used again.
+                return () -> p.parse(new ByteArrayInputStream(bytes), h);
             }
             case "jdk": {
                 final SAXParserFactory f = SAXParserFactory.newInstance();

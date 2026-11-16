@@ -235,13 +235,18 @@ about 1.1 and 1.7 times as fast as Gonzalez SAX. The native `XMLHandler` path
 is faster than Gonzalez SAX on every corpus, and the difference is what the
 SAX layer costs.
 
+For documents of a few kilobytes, what matters is the cost of setting up a
+parser: one that is kept and `reset()` between documents is within about 1.2
+to 1.8 times the time Aalto takes, and one made for each document is slower.
+
 That layer is also what lets the parser report every construct in pieces. In a
 32 MB heap, the native path parses a document with a single 256 MB text node,
 CDATA section, attribute value or comment; the other parsers compared manage
 fewer of these, and none manages all four.
 
 **[PERFORMANCE.md](PERFORMANCE.md)** has the throughput tables for eight
-corpora, the memory comparison, and how to reproduce both.
+corpora, the memory comparison, the figures for small documents, and how to
+reproduce them.
 
 ## Conformance
 
