@@ -48,19 +48,25 @@ difference, not as a like-for-like throughput comparison.
 | Multibyte UTF-8 | 0.49 MiB | **659 MB/s** | 554 MB/s | 335 MB/s | 755 MB/s | 798 MB/s |
 | Mostly ASCII with accents | 1.02 MiB | **870 MB/s** | 740 MB/s | 441 MB/s | 1,163 MB/s | 1,289 MB/s |
 | Japanese UTF-16LE | 1.50 MiB | **1,420 MB/s** | 1,132 MB/s | 815 MB/s | 922 MB/s | 911 MB/s |
-| Japanese EUC-JP | 1.28 MiB | **506 MB/s** | 487 MB/s | 442 MB/s | 653 MB/s | 644 MB/s |
+| Japanese EUC-JP | 1.28 MiB | **902 MB/s** | 765 MB/s | 430 MB/s | 639 MB/s | 648 MB/s |
 | XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **422 MB/s** | 332 MB/s | 150 MB/s | *899 MB/s†* | *904 MB/s†* |
 
 † Aalto's figures are non-validating: it skips the internal DTD declarations.
 
-Gonzalez SAX is faster than the JDK's Xerces on every corpus, and the two are
-close on EUC-JP (Gonzalez about 10% faster). Aalto SAX is between about 1.1 and
-1.8 times as fast as Gonzalez SAX on the UTF-8 and EUC-JP corpora; on UTF-16LE
-Gonzalez SAX is about 23% faster than Aalto. Throughput is measured from
+Gonzalez SAX is faster than the JDK's Xerces on every corpus. Aalto SAX is
+between about 1.1 and 1.8 times as fast as Gonzalez SAX on the UTF-8 corpora; on
+UTF-16LE Gonzalez SAX is about 23% faster than Aalto, and on EUC-JP about 20%
+faster. Throughput is measured from
 encoded byte size, so UTF-16's MB/s also reflects that it uses more bytes for
 the same logical Japanese document. UTF-16 is decoded by Gonzalez's own
 decoder, which copies the characters out of the input in bulk, where the JDK's
 takes about half the time of the whole parse to do the same.
+
+EUC-JP is decoded from tables, which are made once by asking the JDK's decoder
+what each sequence is, where the JDK's decoder took almost two thirds of the
+time of the whole parse to look each character up; anything that is not in the
+tables, an unassigned code or a sequence cut short, is given back to the JDK's
+decoder, so that errors are reported as they were.
 
 UTF-8 is decoded by the JDK's decoder up to the first byte that is not ASCII,
 and by Gonzalez's own from there. The JDK's is four times as fast as anything
@@ -85,13 +91,13 @@ narrows the gap:
 | Multibyte UTF-8 | 546 MB/s | 569 MB/s |
 | Mostly ASCII with accents | 731 MB/s | 1,081 MB/s |
 | Japanese UTF-16LE | 1,117 MB/s | 761 MB/s |
-| Japanese EUC-JP | 495 MB/s | 548 MB/s |
+| Japanese EUC-JP | 750 MB/s | 561 MB/s |
 | XHTML internal DTD (not equivalent; see above) | 326 MB/s | *752 MB/s†* |
 
-Aalto remains faster on the UTF-8 and EUC-JP corpora, by between about 1.0 and
-1.5 times, most on the accented document and on attribute-heavy, plain and
-markup-heavy UTF-8, and by little on multibyte UTF-8. On UTF-16LE Gonzalez is
-about 1.5 times as fast.
+Aalto remains faster on the UTF-8 corpora, by between about 1.0 and 1.5 times,
+most on the accented document and on attribute-heavy, plain and markup-heavy
+UTF-8, and by little on multibyte UTF-8. On UTF-16LE Gonzalez is about 1.5 times
+as fast, and on EUC-JP about 1.3 times.
 
 The DTD behavior was verified from SAX events using
 `benchmark/external-compare/DtdProbe.java`: Gonzalez and JDK Xerces report

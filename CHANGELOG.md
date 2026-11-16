@@ -34,6 +34,20 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Changed
 
+- **EUC-JP is decoded from tables.** The JDK's EUC-JP decoder looks each
+  character up through several layers of calls, and on a document of Japanese
+  text that was almost two thirds of the time of the whole parse. `EucJpDecoder`
+  looks the common sequences (JIS X 0208, JIS X 0212 and half-width katakana)
+  up directly. The tables are made once, when EUC-JP is first used, by asking
+  the JDK's own decoder what each sequence is, so the characters are always
+  those of the JDK in use. Anything that is not in them, an unassigned code, a
+  sequence cut short or the end of the output buffer, is given back to the
+  JDK's decoder, so every error and every wait for more input is as it was. The
+  byte-level scan for carriage returns is now used for EUC-JP too. On the
+  1.28 MB Japanese document, the native path rose from 510 to 902 MB/s and SAX
+  from 491 to 765 MB/s, which is now faster than Aalto's 639. Other encodings
+  are unchanged.
+
 - **UTF-8 with non-ASCII characters is decoded faster.** The JDK's UTF-8 decoder
   widens ASCII with a routine of the JVM's that is four times as fast as any
   loop in Java, but it calls it once for each piece of input, and decodes

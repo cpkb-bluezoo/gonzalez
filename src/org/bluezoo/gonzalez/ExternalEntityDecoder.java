@@ -543,6 +543,8 @@ class ExternalEntityDecoder {
                 decoder = new Utf16Decoder(charset, false);
             } else if (charset.equals(StandardCharsets.UTF_16BE)) {
                 decoder = new Utf16Decoder(charset, true);
+            } else if ("EUC-JP".equals(charset.name())) {
+                decoder = new EucJpDecoder(charset);
             } else if (charset.equals(StandardCharsets.UTF_8)) {
                 decoder = new Utf8Decoder();
                 asciiDecoder = charset.newDecoder()
@@ -558,11 +560,14 @@ class ExternalEntityDecoder {
         }
 
         // Bytes below 0x80 mean the same thing (identical code point) in each of
-        // these charsets, so the ASCII fast path below can widen them directly
-        // without going through the CharsetDecoder state machine at all.
+        // these charsets, and no sequence of two or more bytes decodes to a
+        // carriage return (in EUC-JP every byte of one is 0x80 or more), so a
+        // decoded U+000D can only come from a literal 0x0D byte, and the
+        // scan for one can be made on the bytes before they are decoded.
         asciiFastPathEligible = charset.equals(StandardCharsets.UTF_8)
             || charset.equals(StandardCharsets.US_ASCII)
-            || charset.equals(StandardCharsets.ISO_8859_1);
+            || charset.equals(StandardCharsets.ISO_8859_1)
+            || "EUC-JP".equals(charset.name());
     }
     
     /**

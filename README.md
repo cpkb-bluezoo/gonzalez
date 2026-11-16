@@ -231,8 +231,8 @@ Gonzalez supports the entire XML specification:
 Gonzalez was compared with the SAX parser bundled with JDK 25 (Xerces) and
 [aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.0. Through the SAX
 interface it is faster than Xerces on every corpus compared. Aalto is between
-about 1.1 and 1.8 times as fast as Gonzalez SAX on UTF-8 and EUC-JP text, and
-slower on UTF-16. The native `XMLHandler` path
+about 1.1 and 1.8 times as fast as Gonzalez SAX on UTF-8 text, and slower on
+UTF-16 and EUC-JP. The native `XMLHandler` path
 is faster than Gonzalez SAX on every corpus, and the difference is what the
 SAX layer costs.
 
