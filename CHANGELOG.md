@@ -27,6 +27,22 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Changed
 
+- **UTF-8 with non-ASCII characters is decoded faster.** The JDK's UTF-8 decoder
+  widens ASCII with a routine of the JVM's that is four times as fast as any
+  loop in Java, but it calls it once for each piece of input, and decodes
+  everything after the first byte that is not ASCII one character at a time. A
+  document of nearly all ASCII with a few accents, dashes or quotation marks
+  was parsed 40% slower than one with none. The new `Utf8Decoder` decodes
+  non-ASCII input at a speed that does not depend on how it is mixed, and
+  `ExternalEntityDecoder` uses the JDK's decoder up to the first non-ASCII
+  byte, which it finds in the scan for carriage returns that was already made,
+  and `Utf8Decoder` from there. `Utf8Decoder` follows Table 3-7 of the Unicode
+  Standard and reports what the JDK's decoder reports, including how much of a
+  malformed sequence is malformed and how soon. A document with an accented
+  letter in every 300 bytes goes from 626 to 882 MB/s on the native path and
+  from 556 to 740 on SAX. A document of dense multibyte text gains 5 to 7%,
+  and one that is all ASCII is unchanged.
+
 - **UTF-16 is decoded in bulk.** The JDK's UTF-16 decoder takes two bytes at a
   time through the buffer accessors, and on a document of Japanese text that
   was about half the time of the whole parse. A document of known byte order

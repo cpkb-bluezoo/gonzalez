@@ -22,7 +22,7 @@ import org.xml.sax.helpers.DefaultHandler;
  *
  *   java ... org.bluezoo.gonzalez.IsolatedAB &lt;corpus&gt; &lt;mode&gt;
  *
- * corpus: plain|attrs|whitespace|markup|multibyte|utf16|euc-jp|xhtml-dtd
+ * corpus: plain|attrs|whitespace|markup|multibyte|accent|utf16|euc-jp|xhtml-dtd
  *
  * mode:
  *   xmlhandler           Gonzalez XMLParser with an empty XMLHandler, defaults
@@ -93,9 +93,28 @@ public class IsolatedAB {
                 args[0], mode, avgMs, mb / (avgMs / 1000.0));
     }
 
+    /**
+     * The plain corpus with an e-acute (two bytes of UTF-8) after one space in
+     * every 300 bytes or so: text that is nearly all ASCII, as most is that is
+     * not in a language that is not, with the odd accented letter, dash or
+     * quotation mark in it.
+     */
+    private static byte[] accented(byte[] plain) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(plain.length + plain.length / 100);
+        for (int i = 0; i < plain.length; i++) {
+            out.write(plain[i]);
+            if (i % 300 == 299 && plain[i] == ' ') {
+                out.write(0xC3);
+                out.write(0xA9);
+            }
+        }
+        return out.toByteArray();
+    }
+
     private static byte[] corpus(String name) throws Exception {
         switch (name) {
             case "plain": return Files.readAllBytes(Paths.get("benchmark/resources/large.xml"));
+            case "accent": return accented(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")));
             case "utf16": return BenchmarkCorpora.japaneseUtf16();
             case "euc-jp": return BenchmarkCorpora.japaneseEucJp();
             case "xhtml-dtd": return BenchmarkCorpora.xhtmlInternalSubset();

@@ -124,6 +124,22 @@ class ExternalEntityDecoder {
     private CharsetDecoder decoder;
 
     /**
+     * For UTF-8 only, the JDK's own decoder, used for the stretch of input
+     * that is all ASCII: it widens ASCII with a routine of the JVM's that
+     * is four times as fast as anything written in Java, but only up to the
+     * first byte that is not ASCII, after which it is slower than {@link
+     * Utf8Decoder}, which {@link #decoder} is. Null for any other charset.
+     */
+    private CharsetDecoder asciiDecoder;
+
+    /**
+     * Where, in the input being decoded, the first byte at or above 0x80 is
+     * to be found, to within eight bytes; the end of the input if there is
+     * none. Set by {@link #scanBytes} for UTF-8.
+     */
+    private int nonAsciiAt;
+
+    /**
      * Working buffer for decoded character data.
      * Reused to avoid allocation on every receive() call.
      * Only allocated when actual decoding begins (after declaration).
@@ -293,8 +309,14 @@ class ExternalEntityDecoder {
         charset = null;
         bom = BOM.NONE;
         xml11 = false;
+        if (asciiDecoder != null) {
+            asciiDecoder.reset();
+        }
         if (decoder != null) {
             decoder.reset();
+            if (asciiDecoder != null) {
+                asciiDecoder.reset();
+            }
         }
         // Keep charBuffer allocated - just clear it
         if (charBuffer != null) {
@@ -516,10 +538,16 @@ class ExternalEntityDecoder {
         
         // Reuse existing decoder if charset unchanged, otherwise create new one
         if (decoder == null || !charset.equals(previousCharset)) {
+            asciiDecoder = null;
             if (charset.equals(StandardCharsets.UTF_16LE)) {
                 decoder = new Utf16Decoder(charset, false);
             } else if (charset.equals(StandardCharsets.UTF_16BE)) {
                 decoder = new Utf16Decoder(charset, true);
+            } else if (charset.equals(StandardCharsets.UTF_8)) {
+                decoder = new Utf8Decoder();
+                asciiDecoder = charset.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
             } else {
                 decoder = charset.newDecoder();
             }
@@ -619,17 +647,32 @@ class ExternalEntityDecoder {
         // cheaper than the per-char scan it replaces even when it doesn't
         // hit; absolute getLong() works identically for heap and direct
         // buffers and never disturbs the buffer's position.
-        boolean crFree = !xml11 && asciiFastPathEligible && !containsCarriageReturnByte(data);
+        boolean crFree = !xml11 && asciiFastPathEligible
+                && !scanBytes(data, asciiDecoder != null);
 
         // Process in chunks - decode, tokenize, compact, repeat. No manual
         // ASCII fast path here: the JDK's own decoders (UTF-8 in
         // particular) bulk-decode ASCII runs via the intrinsified,
         // vectorized JavaLangAccess.decodeASCII, which measured
         // consistently faster than a scalar byte-by-byte widening loop in
-        // front of it.
+        // front of it. That routine is used once per call, though, and
+        // the JDK's UTF-8 decoder goes on a character at a time from the
+        // first byte that is not ASCII, to the end of its input. So for
+        // UTF-8 the all-ASCII stretch at the start of the input is decoded
+        // by the JDK's decoder, which is fastest on it, and the rest by
+        // Utf8Decoder, which does not slow down for what is in it.
         while (data.hasRemaining()) {
+            boolean ascii = asciiDecoder != null && data.position() < nonAsciiAt;
+            int inputLimit = data.limit();
+            if (ascii) {
+                data.limit(nonAsciiAt);
+            }
+
             // Decode into charBuffer (from current position to limit)
-            CoderResult result = decoder.decode(data, charBuffer, false);
+            CoderResult result = (ascii ? asciiDecoder : decoder).decode(data, charBuffer, false);
+            if (ascii) {
+                data.limit(inputLimit);
+            }
 
             // Check for decoding errors
             if (result.isError()) {
@@ -662,7 +705,7 @@ class ExternalEntityDecoder {
             // sequence at the end of this chunk, which the caller may complete
             // with a later receive() call, or which close() will report as a
             // truncation error if no more data ever arrives).
-            if (result.isUnderflow()) {
+            if (result.isUnderflow() && !(ascii && data.hasRemaining())) {
                 break;
             }
         }
@@ -671,28 +714,57 @@ class ExternalEntityDecoder {
     }
 
     /**
-     * True if any byte in {@code data}'s remaining range is 0x0D (CR).
-     * Long-stride SWAR scan - 8 bytes per step via the classic
-     * zero-byte-in-a-word test - with a plain byte loop for the tail.
-     * Reads via absolute accessors only; {@code data}'s position and limit
-     * are untouched. Byte order is irrelevant: the test only asks whether
-     * any of the 8 lanes is zero after XORing with the CR pattern.
+     * One pass over {@code data}'s remaining bytes, learning two things at
+     * the cost of one: whether any is 0x0D (CR), which is the result, and,
+     * if {@code findNonAscii} is set, where the first byte at or above 0x80
+     * is, which is left in {@link #nonAsciiAt} to within eight bytes (the
+     * end of the input if there is none).
+     * <p>
+     * Long-stride SWAR scan - 8 bytes per step, with the classic
+     * zero-byte-in-a-word test for the CR and a mask for the high bits -
+     * with a plain byte loop for the tail. Reads via absolute accessors
+     * only; {@code data}'s position and limit are untouched. Byte order is
+     * irrelevant: each test asks only whether any of the 8 lanes matches.
+     * Without {@code findNonAscii} it stops at the first CR.
      */
-    private static boolean containsCarriageReturnByte(ByteBuffer data) {
+    private boolean scanBytes(ByteBuffer data, boolean findNonAscii) {
         int i = data.position();
         int limit = data.limit();
+        boolean cr = false;
+        int nonAscii = limit;
+        boolean seenNonAscii = !findNonAscii;
         for (int longEnd = limit - 7; i < longEnd; i += 8) {
-            long v = data.getLong(i) ^ 0x0D0D0D0D0D0D0D0DL;
+            long w = data.getLong(i);
+            long v = w ^ 0x0D0D0D0D0D0D0D0DL;
             if (((v - 0x0101010101010101L) & ~v & 0x8080808080808080L) != 0L) {
-                return true;
+                cr = true;
+                if (seenNonAscii) {
+                    nonAsciiAt = nonAscii;
+                    return true;
+                }
+            }
+            if (!seenNonAscii && (w & 0x8080808080808080L) != 0L) {
+                seenNonAscii = true;
+                nonAscii = i;
+                if (cr) {
+                    break;
+                }
             }
         }
-        for (; i < limit; i++) {
-            if (data.get(i) == 0x0D) {
-                return true;
+        if (i < limit && !(cr && seenNonAscii)) {
+            for (; i < limit; i++) {
+                byte b = data.get(i);
+                if (b == 0x0D) {
+                    cr = true;
+                }
+                if (!seenNonAscii && b < 0) {
+                    seenNonAscii = true;
+                    nonAscii = i;
+                }
             }
         }
-        return false;
+        nonAsciiAt = nonAscii;
+        return cr;
     }
 
     /**
@@ -712,7 +784,7 @@ class ExternalEntityDecoder {
      * for each CRLF encountered.
      *
      * @param crFree true when the caller has already proven (by byte-level
-     *         scan - see {@link #containsCarriageReturnByte}) that no '\r'
+     *         scan - see {@link #scanBytes}) that no '\r'
      *         can be present in this chunk and XML 1.1's NEL/LS rules do
      *         not apply, so the per-char scan below is skipped. {@link
      *         #lastChar} still matters: a '\r' that ended the previous
