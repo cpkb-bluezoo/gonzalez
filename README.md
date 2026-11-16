@@ -141,51 +141,23 @@ features, test methodology, and performance characteristics.
 
 ## Documentation
 
-- [Javadoc package and class documentation](https://cpkb-bluezoo.github.io/gonzalez/doc/)
-- [XSLT Transformer Documentation](XSLT.md)
+| Document | Contents |
+|----------|----------|
+| [USAGE.md](USAGE.md) | Parsing with SAX, native and JAXP interfaces; locations; `XMLWriter` |
+| [SECURE-CONFIGURATION.md](SECURE-CONFIGURATION.md) | Secure defaults, external entities, limits |
+| [PERFORMANCE.md](PERFORMANCE.md) | Throughput and memory comparisons, and how to reproduce them |
+| [XSLT.md](XSLT.md) | The XSLT transformer: design, features, testing |
+| [CHANGELOG.md](CHANGELOG.md) | What changed in each release |
+| [Javadoc](https://cpkb-bluezoo.github.io/gonzalez/doc/) | Package and class documentation |
 
 ## Usage
 
-```java
-Parser parser = new Parser();
-
-// Set handlers
-parser.setContentHandler(myContentHandler);
-
-// Set document identifiers (optional, for Locator reporting)
-parser.setSystemId("http://example.com/document.xml");
-parser.setPublicId("-//Example//DTD Example 1.0//EN");
-
-// Feed data as it arrives. Do this instead of parse() for non-blocking
-// behaviour
-ByteBuffer buffer = ByteBuffer.allocate(8192);
-while (channel.read(buffer) != -1) {
-    buffer.flip();
-    parser.receive(buffer);
-    buffer.compact();   // keep any bytes not yet consumed
-}
-// Signal end of document
-parser.close();
-```
-
-The buffer is yours. The parser consumes all it can of each buffer and leaves
-at most the few bytes of an incomplete character, which must be at the start
-of the buffer on the next call: use `compact()`, not `clear()`, and do not
-pass a different buffer holding only the new data. If a call does not begin
-with the bytes the previous one left, the parser throws
-`IllegalStateException` instead of parsing a document with bytes missing.
-
-### Native XMLHandler Usage
-
-Native consumers can bypass `SAXAdapter` and receive the Scanner's streaming
-event vocabulary directly. `XMLParser` is the native parser: it has no SAX
-feature or property URIs, only typed settings, and reports to one `XMLHandler`:
+The native parser, `XMLParser`, is fed bytes as they arrive and reports to an
+`XMLHandler`:
 
 ```java
 XMLParser parser = new XMLParser();
-parser.setHandler(createNativeHandler());
-parser.setNamespaceAware(true);       // the default
-parser.setDisallowDoctypeDecl(true);
+parser.setHandler(myHandler);
 
 ByteBuffer buffer = ByteBuffer.allocate(8192);
 while (channel.read(buffer) != -1) {
@@ -196,294 +168,21 @@ while (channel.read(buffer) != -1) {
 parser.close();
 ```
 
-`parse(InputStream)` and `parse(ReadableByteChannel)` run the same loop for
-callers that are content to block. Set the handler before parsing starts.
-Namespace events pass through `NamespaceFilter` when namespace processing is
-enabled. It also enforces the constraints of Namespaces in XML, so a document
-with an unbound prefix, a malformed qualified name or two attributes with the
-same expanded name is rejected here exactly as it is through SAX. Settings and
-the handler survive `reset()`.
-
-A native handler can also be installed on the SAX `Parser` with
-`Parser.setXMLHandler`, for code that is handed an `XMLReader` or an
-`InputSource`. When non-null, it receives content, lexical, declaration, DTD
-and error events instead of the configured SAX handlers. The setting survives
-`Parser.reset()`; pass `null` before the next parse to restore the SAX path.
-
-`XMLHandler` is intended for Gonzalez modules and tightly integrated
-applications that benefit from streamed `CharBuffer` content and attributes.
-It is a Gonzalez-specific evolving SPI, not a compatibility substitute for
-SAX. Use SAX/JAXP interfaces when a stable standards boundary is required.
-
-### JAXP Usage
-
-Gonzalez can also be used via the standard JAXP SAXParserFactory mechanism,
-making it a drop-in replacement for other SAX parsers:
-
-```java
-// Explicit factory selection
-SAXParserFactory factory = SAXParserFactory.newInstance(
-    "org.bluezoo.gonzalez.GonzalezSAXParserFactory", null);
-factory.setNamespaceAware(true);
-
-SAXParser parser = factory.newSAXParser();
-parser.parse(inputStream, myHandler);
-```
-
-Or set Gonzalez as the default SAX parser via system property:
-
-```java
-System.setProperty("javax.xml.parsers.SAXParserFactory",
-    "org.bluezoo.gonzalez.GonzalezSAXParserFactory");
-
-SAXParserFactory factory = SAXParserFactory.newInstance();
-SAXParser parser = factory.newSAXParser();
-parser.parse(inputStream, myHandler);
-```
-
-### Document Location Tracking
-
-The parser implements `org.xml.sax.ext.Locator2`. The locator is automatically
-passed to the ContentHandler via `setDocumentLocator()` before
-`startDocument()` is called.
-
-The locator reports:
-- System identifier (URI)
-- Public identifier
-- Character encoding
-- XML version
-
-Line and column positions are not currently tracked and are reported as `-1`.
-Set the system and public identifiers explicitly if you want them reported:
-
-```java
-parser.setSystemId("http://example.com/document.xml");
-parser.setPublicId("-//Example//DTD Example 1.0//EN");
-```
-
-Line endings are handled according to XML 1.0 specification section 2.11:
-- LF (U+000A)
-- CR (U+000D)
-- CRLF (CR followed by LF, treated as single line ending)
-
-The parser correctly handles CRLF sequences even when split across `receive()`
-boundaries.
-
-XML 1.1 line-end delimiters are also supported in XML 1.1 documents.
-
-### XMLWriter Usage
-
-The XMLWriter has a `write*` API whose methods throw `IOException` directly.
-A start tag stays open until something other than an attribute or namespace
-declaration is written, and an element with no content is written in the
-self-closing form:
-
-```java
-import org.bluezoo.gonzalez.IndentConfig;
-import org.bluezoo.gonzalez.XMLWriter;
-
-try (FileOutputStream fos = new FileOutputStream("output.xml")) {
-    XMLWriter writer = new XMLWriter(fos);
-    writer.setIndentConfig(IndentConfig.spaces2());
-
-    writer.writeStartElement("root");
-    writer.writeDefaultNamespace("http://example.com/ns");
-    writer.writeStartAttribute("version");
-    writer.writeAttributeContent("1.0");
-    writer.writeEndAttribute();
-
-    writer.writeStartElement("item");
-    writer.writeStartAttribute("id");
-    writer.writeAttributeContent("1");
-    writer.writeEndAttribute();
-    writer.writeCharacters("Hello, World!");
-    writer.writeEndElement();
-
-    writer.writeStartElement("empty");
-    writer.writeEndElement();
-
-    writer.writeEndElement();
-    writer.close();
-}
-```
-
-Output:
-```xml
-<root xmlns="http://example.com/ns" version="1.0">
-  <item id="1">Hello, World!</item>
-  <empty/>
-</root>
-```
-
-Content of any size can be written in pieces, so that neither the caller nor
-the writer holds the whole of it. Character data takes any number of
-`writeCharacters` calls; an attribute value, a comment and the data of a
-processing instruction are each written between a start and an end call:
-
-```java
-writer.writeStartElement("item");
-writer.writeStartAttribute("summary");
-writer.writeAttributeContent(firstPart);    // any CharSequence
-writer.writeAttributeContent(secondPart);
-writer.writeEndAttribute();
-```
-
-`writeStartComment` and `writeStartProcessingInstruction` work the same way.
-The writer sends its buffer to the channel whenever it fills, so its memory
-does not grow with what is written.
-
-To copy or re-encode a document, give an `XMLParser` an `XMLWriterHandler`.
-Every event goes to the writer as it is reported, in the pieces the parser
-reports it in, so the document is written in the same constant memory it is
-parsed in:
-
-```java
-import org.bluezoo.gonzalez.XMLParser;
-import org.bluezoo.gonzalez.XMLWriter;
-import org.bluezoo.gonzalez.XMLWriterHandler;
-
-XMLWriter writer = new XMLWriter(outputChannel);
-writer.setCharset(StandardCharsets.UTF_8);
-
-XMLParser parser = new XMLParser();
-parser.setHandler(new XMLWriterHandler(writer));
-parser.parse(inputChannel);         // or receive() as the data arrives
-```
-
-What is written is the document as the parser reports it: entity references
-are written as what they stand for, attributes defaulted by the DTD are
-written out, and no XML declaration is written.
+**[USAGE.md](USAGE.md)** covers the rest: the SAX `Parser` and its handlers,
+the native `XMLHandler` in more detail, JAXP, document locations and line
+numbers, and writing XML with `XMLWriter`.
 
 ## Security
 
 Gonzalez is **secure by default**. External entity processing and external DTD
 loading are disabled out of the box, protecting against XXE (XML External
-Entity) attacks, SSRF, and entity expansion bombs.
+Entity) attacks, SSRF, and entity expansion bombs, and the depth, name length
+and attribute count of a document are limited.
 
-### Default Security Settings
-
-| Setting | Default | Effect |
-|---------|---------|--------|
-| `external-general-entities` | `false` | External general entities are not resolved |
-| `external-parameter-entities` | `false` | External DTD subsets are not loaded |
-| `accessExternalDTD` | `""` (none) | No protocols allowed for external DTD access |
-| Entity expansion limit | 64,000 | Protects against billion-laughs entity bombs |
-| Element depth limit | 1,000 | Bounds the stack of open elements |
-| Name length limit | 4,096 | Bounds what is held while a name is still arriving |
-| Attributes per element limit | 10,000 | Bounds the names remembered to detect duplicates |
-
-### Enabling External Entities
-
-If you need to process documents with external DTDs or entity references, you
-must explicitly opt in to both the feature flags **and** the allowed protocols:
-
-```java
-Parser parser = new Parser();
-
-// Enable external entity processing
-parser.setFeature("http://xml.org/sax/features/external-general-entities", true);
-parser.setFeature("http://xml.org/sax/features/external-parameter-entities", true);
-
-// Allow specific protocols (required even when entities are enabled)
-parser.setProperty("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
-```
-
-The `accessExternalDTD` property accepts:
-- `""` -- no protocols allowed (default)
-- `"all"` -- all protocols allowed
-- Comma-separated list -- e.g. `"file"`, `"file,http,https"`
-
-### JAXP Secure Processing
-
-Gonzalez recognizes the standard JAXP `FEATURE_SECURE_PROCESSING` feature.
-Setting it to `false` enables external entities and sets `accessExternalDTD`
-to `"all"`:
-
-```java
-// Via SAXParserFactory
-SAXParserFactory factory = new GonzalezSAXParserFactory();
-factory.setFeature("http://javax.xml.XMLConstants/feature/secure-processing", false);
-SAXParser parser = factory.newSAXParser();
-```
-
-### XSLT Transformer Security
-
-The transformer factory also enforces secure defaults. To allow stylesheet
-and DTD loading from files:
-
-```java
-GonzalezTransformerFactory factory = new GonzalezTransformerFactory();
-factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalStylesheet", "file");
-factory.setAttribute("http://javax.xml.XMLConstants/property/accessExternalDTD", "file");
-```
-
-### Entity Expansion Limit
-
-The default limit of 64,000 entity expansions matches the JDK default and
-protects against entity expansion attacks (billion laughs). To adjust:
-
-```java
-parser.setProperty("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit", 100000);
-```
-
-Set to `0` to disable the limit (not recommended for untrusted input).
-
-### Structural Limits
-
-Text, attribute values, comments and processing instruction data are passed
-on in pieces and never held, so their size costs the parser nothing. What it
-must remember while it reads is bounded by three further limits. A document
-that exceeds one is rejected with a fatal error at the point where it does so:
-
-| Limit | `XMLParser` setter | SAX property | Default |
-|-------|--------------------|--------------|---------|
-| Element nesting depth | `setMaxElementDepth` | `jdk.xml.maxElementDepth` | 1,000 |
-| Length of a name, in characters | `setMaxNameLength` | `jdk.xml.maxXMLNameLimit` | 4,096 |
-| Attributes of one element | `setMaxAttributesPerElement` | `jdk.xml.elementAttributeLimit` | 10,000 |
-
-```java
-// Native parser
-XMLParser parser = new XMLParser();
-parser.setMaxElementDepth(200);
-
-// SAX: the JDK's property names, with an Integer or a numeric String
-Parser reader = new Parser();
-reader.setProperty("jdk.xml.maxElementDepth", 200);
-```
-
-The SAX properties are the JDK's own names for these limits, so configuration
-written for the JDK parser carries over; `jdk.xml.entityExpansionLimit` is
-accepted for the entity expansion limit in the same way, as are the older
-`http://www.oracle.com/xml/jaxp/properties/` forms of all four. The defaults
-are Gonzalez's own and do not follow the JDK in use, and the `jdk.xml` system
-properties are not read. The name length limit covers element and attribute
-names, processing instruction targets and references, but not names inside a
-DTD. With namespace processing enabled it also covers the namespace name in a
-namespace declaration, the one attribute value that is reported whole and so
-has to be held. Zero or a negative value disables a limit.
-
-### Line and Column Numbers
-
-The locator the parser gives its handler reports -1 for the line and the
-column, unless asked otherwise, because working them out takes a pass over the
-characters of the document:
-
-```java
-// Native parser
-XMLParser parser = new XMLParser();
-parser.setLineNumbers(true);
-
-// SAX
-Parser reader = new Parser();
-reader.setFeature(Parser.LINE_NUMBERS_FEATURE, true);
-```
-
-Lines and columns count from 1, and a carriage return and line feed is one
-line break. The position is that of the parser when it reports the event, so
-for a start tag it is at the end of the tag. The text of an external entity has
-lines of its own; that of an internal entity is located at its reference. The
-XSLT compiler asks for them, so that an error is reported at the line of the
-instruction that caused it.
+**[SECURE-CONFIGURATION.md](SECURE-CONFIGURATION.md)** lists the defaults, how
+to enable external entities and which protocols to allow, JAXP secure
+processing, the XSLT transformer's settings, and the structural limits.
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Building
 
@@ -529,167 +228,20 @@ Gonzalez supports the entire XML specification:
 
 ## Performance
 
-The XML parser was compared with the SAX parser bundled with JDK 25 (Xerces)
-and [aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.0. All paths ran
-namespace-aware. The `XMLHandler` column is the public native path: an
-`XMLParser` with an empty `XMLHandler`. It does byte decoding, XML grammar
-processing, DTD work and namespace declaration handling, but no SAX. Gonzalez
-SAX adds name resolution, `Attributes2` assembly and standard SAX callback
-adaptation. Unlike SAX, the native SPI is Gonzalez-specific and may evolve
-between releases.
+Gonzalez was compared with the SAX parser bundled with JDK 25 (Xerces) and
+[aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.0. Through the SAX
+interface it is faster than Xerces on most documents, and Aalto is between
+about 1.1 and 1.7 times as fast as Gonzalez SAX. The native `XMLHandler` path
+is faster than Gonzalez SAX on every corpus, and the difference is what the
+SAX layer costs.
 
-Aalto's lower-level StAX cursor is included as an additional reference point,
-but is not directly equivalent to SAX callback delivery.
+That layer is also what lets the parser report every construct in pieces. In a
+32 MB heap, the native path parses a document with a single 256 MB text node,
+CDATA section, attribute value or comment; the other parsers compared manage
+fewer of these, and none manages all four.
 
-The figures below are median throughput across five fresh JVM runs, each with
-one corpus and one parser, 800 warm-up parses and then 500 measured parses.
-The original five documents are in `benchmark/resources`; `BenchmarkCorpora`
-deterministically generates three additional substantial documents:
-
-- the same 4,000-article Japanese document encoded as BOM-marked UTF-16LE and
-  EUC-JP, isolating the two decoder paths as far as practical;
-- a 1,500-article XHTML-shaped document with a self-contained internal subset
-  declaring 33 elements, common and element-specific attributes, content
-  models, and character entities. It has no public or system identifier, so
-  no external subset is fetched.
-
-**Aalto is not a validating or DTD-processing parser.** Its SAX factory rejects
-validating mode, and its own `Attributes2` implementation states that DTD
-processing is absent. For the XHTML corpus, Aalto recognizes the DOCTYPE and
-emits `startDTD`/`endDTD`, but skips the internal declarations: it does not
-apply declared attribute types or defaults and cannot expand the declared
-general entities. Gonzalez and JDK Xerces parse and apply those declarations.
-The XHTML row is therefore included to expose this capability and cost
-difference, not as a like-for-like throughput comparison.
-
-| Corpus | Size | Gonzalez XMLHandler | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |
-|--------|-----:|--------------------:|-------------:|----------------:|----------:|------------------:|
-| Plain UTF-8 | 1.02 MiB | **1,045 MB/s** | 857 MB/s | 548 MB/s | 1,187 MB/s | 1,286 MB/s |
-| Attribute-heavy UTF-8 | 1.28 MiB | **739 MB/s** | 540 MB/s | 252 MB/s | 941 MB/s | 929 MB/s |
-| Whitespace-heavy UTF-8 | 0.94 MiB | **1,389 MB/s** | 1,206 MB/s | 696 MB/s | 1,334 MB/s | 1,585 MB/s |
-| Markup-heavy UTF-8 | 0.96 MiB | **1,234 MB/s** | 1,082 MB/s | 540 MB/s | 1,461 MB/s | 1,732 MB/s |
-| Multibyte UTF-8 | 0.49 MiB | **622 MB/s** | 516 MB/s | 332 MB/s | 741 MB/s | 784 MB/s |
-| Japanese UTF-16LE | 1.50 MiB | **792 MB/s** | 544 MB/s | 832 MB/s | 917 MB/s | 930 MB/s |
-| Japanese EUC-JP | 1.28 MiB | **511 MB/s** | 498 MB/s | 446 MB/s | 643 MB/s | 643 MB/s |
-| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **350 MB/s** | 287 MB/s | 149 MB/s | *887 MB/s†* | *904 MB/s†* |
-
-† Aalto's figures are non-validating: it skips the internal DTD declarations.
-
-Gonzalez SAX is faster than the JDK's Xerces on every corpus except UTF-16LE,
-where Xerces is about 53% faster, and the two are close on EUC-JP (Gonzalez
-about 12% faster). Aalto SAX is between about 1.1 and 1.7 times as fast as
-Gonzalez SAX. Throughput is measured from encoded byte size, so UTF-16's MB/s
-also reflects that it uses more bytes for the same logical Japanese document.
-
-**What the handler does matters.** With an empty handler, Aalto's SAX wrapper
-does less work than Gonzalez, because it decodes an attribute value only when
-the handler asks for it, whereas Gonzalez builds each value as it scans. A
-handler that reads every attribute and all the text is closer to real use, and
-narrows the gap:
-
-| Corpus | Gonzalez SAX | Aalto SAX |
-|--------|-------------:|----------:|
-| Plain UTF-8 | 846 MB/s | 1,109 MB/s |
-| Attribute-heavy UTF-8 | 528 MB/s | 705 MB/s |
-| Whitespace-heavy UTF-8 | 1,187 MB/s | 1,309 MB/s |
-| Markup-heavy UTF-8 | 1,070 MB/s | 1,404 MB/s |
-| Multibyte UTF-8 | 505 MB/s | 567 MB/s |
-| Japanese UTF-16LE | 545 MB/s | 754 MB/s |
-| Japanese EUC-JP | 492 MB/s | 561 MB/s |
-| XHTML internal DTD (not equivalent; see above) | 283 MB/s | *764 MB/s†* |
-
-Aalto remains faster, by between about 1.1 and 1.4 times, most on UTF-16 and
-on attribute-heavy, plain and markup-heavy UTF-8.
-
-The DTD behavior was verified from SAX events using
-`benchmark/external-compare/DtdProbe.java`: Gonzalez and JDK Xerces report
-`id` attributes with declared type `ID` and inject the DTD-defaulted,
-non-specified `type="text"` attribute on `<input>`. Aalto reports `id` as
-`CDATA` and omits the defaulted attribute. Its higher number on this row must
-not be interpreted as faster DTD processing, because it does not perform that
-processing.
-
-These are microbenchmarks, not application-level latency guarantees. Results
-depend on the JDK, hardware, handlers and document shape. Gonzalez's primary
-architectural advantages remain:
-
-- **Non-blocking document input**: `receive(ByteBuffer)` processes available
-  network data without dedicating a thread to wait for the rest of the
-  document. External entity resolution may still block when explicitly
-  enabled.
-- **Streaming memory use**: main-document bytes and character data are
-  processed in reusable chunks rather than loading the whole document. The
-  next section measures it.
-
-### What the throughput buys: memory
-
-Gonzalez separates scanning from SAX. The scanner reports every construct in
-pieces (the `XMLHandler` events, each with an `end` flag), and the SAX adapter
-is a layer on top of that. The layer costs throughput, which is most of the gap
-between the `XMLHandler` and SAX columns above. In exchange, for a document with
-no DTD the parser itself holds no more than a bounded amount of it, however
-large any one construct is. The other parsers compared do not manage that for
-every kind of construct, and the throughput comparison does not show it.
-
-`MemoryProbe` makes up a document with one very large construct as the parser
-reads it, so that nothing about the harness is large, and parses it in a JVM
-with a 32 MB heap. The table says whether each parser gets to the end of a
-256 MB construct:
-
-| Construct | Gonzalez `XMLHandler` | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |
-|-----------|:---------------------:|:------------:|:--------------:|:---------:|:-----------------:|
-| Text node | ok | ok | ok | out of memory | out of memory |
-| CDATA section | ok | ok | out of memory | out of memory | out of memory |
-| Attribute value | ok | out of memory | out of memory | out of memory | out of memory |
-| Comment | ok | out of memory | out of memory | out of memory | out of memory |
-| Many small elements (control) | ok | ok | ok | ok | ok |
-
-This is not only a matter of extreme sizes: a 16 MB construct in the same heap
-gives the same table, and at 4 MB every parser copes. Ordinary documents, made
-of many small constructs, are streamed by all of them; the difference is in what
-happens when a single text node, attribute value or comment is large.
-
-Two things in the table are limits of the SAX interface and not of Gonzalez.
-SAX hands a handler the whole value of an attribute as a `String` and the whole
-text of a comment as one array, so the adapter has to assemble them, and
-Gonzalez SAX runs out of memory on those just as the others do. It delivers
-text and CDATA in pieces, as SAX allows. The `XMLHandler` interface has no such
-requirement, which is why a native consumer, such as `XMLWriterHandler`
-copying a document, can process any of these in constant memory. The rest of
-what Gonzalez must remember is bounded by the structural limits described
-above.
-
-A document with a single construct that large is unusual, and this measures what
-a parser is able to do, not how typical documents behave. It is the reason for
-the layering all the same, and is what the SAX columns' lower throughput pays
-for. To run it:
-
-```sh
-benchmark/external-compare/run-memory.sh [megabytes] [heap]
-```
-
-with the same `AALTO_JAR` and `STAX2_JAR` variables; it defaults to 256 MB and a
-32 MB heap.
-
-To reproduce the comparison, set the external dependency jar locations and
-run the script:
-
-```sh
-export AALTO_JAR=/path/to/aalto-xml.jar
-export STAX2_JAR=/path/to/stax2-api.jar
-benchmark/external-compare/run-isolated.sh
-```
-
-`run-isolated.sh` runs each corpus and parser in a fresh JVM, five times by
-default, and reports the median; its arguments are the number of runs, and
-quoted lists of corpora and modes. Set `GONZALEZ_CLASSES` to compare another
-build of Gonzalez. Besides the empty handlers used for the first table it has
-`sax-touch` and `aalto-sax-touch` modes, which use a handler that reads every
-attribute and all text, as in the second. `benchmark/external-compare/run.sh`
-is a quicker single-JVM comparison that runs every parser in turn.
-
-The scripts exit with an error if either variable is unset or does not name a
-file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
+**[PERFORMANCE.md](PERFORMANCE.md)** has the throughput tables for eight
+corpora, the memory comparison, and how to reproduce both.
 
 ## Conformance
 
