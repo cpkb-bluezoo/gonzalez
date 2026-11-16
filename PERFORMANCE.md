@@ -41,22 +41,22 @@ difference, not as a like-for-like throughput comparison.
 
 | Corpus | Size | Gonzalez XMLHandler | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |
 |--------|-----:|--------------------:|-------------:|----------------:|----------:|------------------:|
-| Plain UTF-8 | 1.02 MiB | **1,045 MB/s** | 857 MB/s | 548 MB/s | 1,187 MB/s | 1,286 MB/s |
-| Attribute-heavy UTF-8 | 1.28 MiB | **739 MB/s** | 540 MB/s | 252 MB/s | 941 MB/s | 929 MB/s |
-| Whitespace-heavy UTF-8 | 0.94 MiB | **1,389 MB/s** | 1,206 MB/s | 696 MB/s | 1,334 MB/s | 1,585 MB/s |
-| Markup-heavy UTF-8 | 0.96 MiB | **1,234 MB/s** | 1,082 MB/s | 540 MB/s | 1,461 MB/s | 1,732 MB/s |
-| Multibyte UTF-8 | 0.49 MiB | **653 MB/s** | 531 MB/s | 334 MB/s | 740 MB/s | 792 MB/s |
-| Mostly ASCII with accents | 1.02 MiB | **882 MB/s** | 743 MB/s | 450 MB/s | 1,171 MB/s | 1,289 MB/s |
-| Japanese UTF-16LE | 1.50 MiB | **1,418 MB/s** | 1,147 MB/s | 828 MB/s | 918 MB/s | 912 MB/s |
-| Japanese EUC-JP | 1.28 MiB | **511 MB/s** | 498 MB/s | 446 MB/s | 643 MB/s | 643 MB/s |
-| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **350 MB/s** | 287 MB/s | 149 MB/s | *887 MB/s†* | *904 MB/s†* |
+| Plain UTF-8 | 1.02 MiB | **1,043 MB/s** | 856 MB/s | 554 MB/s | 1,197 MB/s | 1,264 MB/s |
+| Attribute-heavy UTF-8 | 1.28 MiB | **710 MB/s** | 533 MB/s | 256 MB/s | 947 MB/s | 943 MB/s |
+| Whitespace-heavy UTF-8 | 0.94 MiB | **1,363 MB/s** | 1,194 MB/s | 700 MB/s | 1,335 MB/s | 1,597 MB/s |
+| Markup-heavy UTF-8 | 0.96 MiB | **1,227 MB/s** | 1,074 MB/s | 526 MB/s | 1,463 MB/s | 1,723 MB/s |
+| Multibyte UTF-8 | 0.49 MiB | **659 MB/s** | 554 MB/s | 335 MB/s | 755 MB/s | 798 MB/s |
+| Mostly ASCII with accents | 1.02 MiB | **870 MB/s** | 740 MB/s | 441 MB/s | 1,163 MB/s | 1,289 MB/s |
+| Japanese UTF-16LE | 1.50 MiB | **1,420 MB/s** | 1,132 MB/s | 815 MB/s | 922 MB/s | 911 MB/s |
+| Japanese EUC-JP | 1.28 MiB | **506 MB/s** | 487 MB/s | 442 MB/s | 653 MB/s | 644 MB/s |
+| XHTML internal DTD (not equivalent; see above) | 1.19 MiB | **422 MB/s** | 332 MB/s | 150 MB/s | *899 MB/s†* | *904 MB/s†* |
 
 † Aalto's figures are non-validating: it skips the internal DTD declarations.
 
 Gonzalez SAX is faster than the JDK's Xerces on every corpus, and the two are
-close on EUC-JP (Gonzalez about 12% faster). Aalto SAX is between about 1.1 and
-1.7 times as fast as Gonzalez SAX on the UTF-8 and EUC-JP corpora; on UTF-16LE
-Gonzalez SAX is about 25% faster than Aalto. Throughput is measured from
+close on EUC-JP (Gonzalez about 10% faster). Aalto SAX is between about 1.1 and
+1.8 times as fast as Gonzalez SAX on the UTF-8 and EUC-JP corpora; on UTF-16LE
+Gonzalez SAX is about 23% faster than Aalto. Throughput is measured from
 encoded byte size, so UTF-16's MB/s also reflects that it uses more bytes for
 the same logical Japanese document. UTF-16 is decoded by Gonzalez's own
 decoder, which copies the characters out of the input in bulk, where the JDK's
@@ -78,19 +78,19 @@ narrows the gap:
 
 | Corpus | Gonzalez SAX | Aalto SAX |
 |--------|-------------:|----------:|
-| Plain UTF-8 | 846 MB/s | 1,109 MB/s |
-| Attribute-heavy UTF-8 | 528 MB/s | 705 MB/s |
-| Whitespace-heavy UTF-8 | 1,187 MB/s | 1,309 MB/s |
-| Markup-heavy UTF-8 | 1,070 MB/s | 1,404 MB/s |
-| Multibyte UTF-8 | 539 MB/s | 547 MB/s |
-| Mostly ASCII with accents | 740 MB/s | 1,107 MB/s |
-| Japanese UTF-16LE | 1,137 MB/s | 772 MB/s |
-| Japanese EUC-JP | 492 MB/s | 561 MB/s |
-| XHTML internal DTD (not equivalent; see above) | 283 MB/s | *764 MB/s†* |
+| Plain UTF-8 | 848 MB/s | 1,112 MB/s |
+| Attribute-heavy UTF-8 | 520 MB/s | 707 MB/s |
+| Whitespace-heavy UTF-8 | 1,199 MB/s | 1,315 MB/s |
+| Markup-heavy UTF-8 | 1,080 MB/s | 1,432 MB/s |
+| Multibyte UTF-8 | 546 MB/s | 569 MB/s |
+| Mostly ASCII with accents | 731 MB/s | 1,081 MB/s |
+| Japanese UTF-16LE | 1,117 MB/s | 761 MB/s |
+| Japanese EUC-JP | 495 MB/s | 548 MB/s |
+| XHTML internal DTD (not equivalent; see above) | 326 MB/s | *752 MB/s†* |
 
 Aalto remains faster on the UTF-8 and EUC-JP corpora, by between about 1.0 and
 1.5 times, most on the accented document and on attribute-heavy, plain and
-markup-heavy UTF-8, and not at all on multibyte UTF-8. On UTF-16LE Gonzalez is
+markup-heavy UTF-8, and by little on multibyte UTF-8. On UTF-16LE Gonzalez is
 about 1.5 times as fast.
 
 The DTD behavior was verified from SAX events using
@@ -180,66 +180,19 @@ build of Gonzalez. Besides the empty handlers used for the first table it has
 attribute and all text, as in the second. `benchmark/external-compare/run.sh`
 is a quicker single-JVM comparison that runs every parser in turn.
 
-The scripts exit with an error if either variable is unset or does not name a
-file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
-
-## Small documents
-
-The tables above are for documents of about a megabyte, where the time goes on
-scanning. A document of a few kilobytes is parsed in a few microseconds, and
-what dominates is what a parser does before it reads a byte. The figures below
-are microseconds per parse, the median of five fresh JVMs, each parsing the
-one document 200,000 times after 100,000 warm-up parses, on one thread. The SAX
-columns use the handler that reads every attribute and all the text, as in the
-second table above; the `XMLHandler` columns are the native path with an empty
-handler, and so do less than the SAX ones.
-
-| Document | Size | `XMLHandler`, new parser | `XMLHandler`, reused | SAX, new parser | SAX, reused | Aalto SAX |
-|----------|-----:|-------------------------:|---------------------:|----------------:|------------:|----------:|
-| `<a/>` | 4 bytes | 2.9 | 0.4 | 3.8 | 0.5 | 0.1 |
-| `small.xml` | 1.3 KB | 4.7 | 2.1 | 6.2 | 2.8 | 1.6 |
-| `attrs-small.xml` | 3.2 KB | 7.9 | 5.2 | 10.1 | 7.0 | 4.8 |
-| `books.xml` | 4.3 KB | 7.2 | 4.5 | 9.1 | 5.5 | 4.7 |
-
-A new parser is one made for the document, as `SAXParserFactory.newSAXParser()`
-or `new XMLParser()` gives you. A reused parser is one that is kept and
-`reset()` between documents. Aalto's figure is the same for both, because
-aalto-xml recycles its buffers in a `ThreadLocal`, and so a parser made for
-each document finds them already allocated.
-
-Gonzalez keeps nothing in a `ThreadLocal`. The memory a parser works in is
-allocated when it first parses a document and is the size you set (see
-[Buffer Sizes](SECURE-CONFIGURATION.md#buffer-sizes)), so a new parser
-allocates about 100 KB before it reads anything. The difference between the new
-and reused columns, between 2.5 and 3.5 microseconds whatever the document, is
-what a new parser spends allocating that memory and setting itself up, and it is most of
-the 2.9 microseconds it takes to parse `<a/>`. `reset()` keeps the buffers,
-which is what the reused columns show. An application that parses many small
-documents should keep a parser for each thread that parses and reset it between
-documents, and should set the buffer sizes to what its documents need if memory
-is dear.
-
-With that done, SAX through a reused Gonzalez parser is between 1.2 and 1.8
-times the time Aalto takes for the documents of a kilobyte or more, and closer
-the larger the document. For a parser made for each document the factor is
-between 1.9 and 3.9. A document of a few bytes is not a measure of anything
-useful: both are a fraction of a microsecond, and the difference is the cost
-of constructing the scanner, name filter and adapter that Gonzalez builds for
-each document.
-
-Two cautions. First, these are one thread parsing the same document over and
-over, which is as kind to the caches as a benchmark can be. Giving each parse
-a thread of its own makes every parser slower by one to three microseconds,
-because a new thread usually runs on a core whose caches hold something else.
-That narrows the ratios, as it adds about the same to each parser, but it is
-a cost of the thread and not of the parser, so it is not shown. Second, the
-documents are small and plain. They have no DTD, and the work that Gonzalez
-does for one is not in these figures.
-
-To reproduce them, with the same `AALTO_JAR` and `STAX2_JAR` variables as above:
+`benchmark/external-compare/performance-tables.sh` runs the whole comparison and
+prints the two tables above, as Markdown, with the commit, the JDK and the
+machine it was run on. The "Performance comparison" workflow runs it on GitHub
+for any branch, tag or commit, `main` unless another is given, and shows the
+tables on the summary page of the run: from the Actions tab, or with
 
 ```sh
-UNIT=us benchmark/external-compare/run-isolated.sh 5 "tiny small books attrs-small" \
-    "xmlhandler xmlhandler-reuse sax-touch sax-touch-reuse aalto-sax-touch"
+gh workflow run performance.yml -f ref=my-branch
 ```
 
+A hosted runner is shared with other work and is not the same machine from one
+run to the next, so compare the columns of one run with each other, and not
+its figures with those here or in another run.
+
+The scripts exit with an error if either variable is unset or does not name a
+file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.

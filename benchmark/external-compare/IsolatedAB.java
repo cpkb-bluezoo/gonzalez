@@ -72,6 +72,11 @@ public class IsolatedAB {
     public static void main(String[] args) throws Exception {
         byte[] bytes = corpus(args[0]);
         String mode = args[1];
+        if ("size".equals(mode)) {
+            // Not a parser: the size of the corpus in bytes, for the tables.
+            System.out.println(bytes.length);
+            return;
+        }
         double mb = bytes.length / (1024.0 * 1024.0);
         // A document of a few kilobytes is parsed in microseconds, so many
         // more parses are needed to warm up and to measure it.

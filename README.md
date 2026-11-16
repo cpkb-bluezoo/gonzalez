@@ -231,14 +231,10 @@ Gonzalez supports the entire XML specification:
 Gonzalez was compared with the SAX parser bundled with JDK 25 (Xerces) and
 [aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.0. Through the SAX
 interface it is faster than Xerces on every corpus compared. Aalto is between
-about 1.1 and 1.7 times as fast as Gonzalez SAX on UTF-8 and EUC-JP text, and
+about 1.1 and 1.8 times as fast as Gonzalez SAX on UTF-8 and EUC-JP text, and
 slower on UTF-16. The native `XMLHandler` path
 is faster than Gonzalez SAX on every corpus, and the difference is what the
 SAX layer costs.
-
-For documents of a few kilobytes, what matters is the cost of setting up a
-parser: one that is kept and `reset()` between documents is within about 1.2
-to 1.8 times the time Aalto takes, and one made for each document is slower.
 
 That layer is also what lets the parser report every construct in pieces. In a
 32 MB heap, the native path parses a document with a single 256 MB text node,
@@ -246,8 +242,7 @@ CDATA section, attribute value or comment; the other parsers compared manage
 fewer of these, and none manages all four.
 
 **[PERFORMANCE.md](PERFORMANCE.md)** has the throughput tables for eight
-corpora, the memory comparison, the figures for small documents, and how to
-reproduce them.
+corpora, the memory comparison, and how to reproduce them.
 
 ## Conformance
 

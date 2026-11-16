@@ -6,6 +6,13 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Added
 
+- **A workflow that runs the performance comparison.** The "Performance
+  comparison" workflow measures Gonzalez, the JDK's parser and aalto-xml on a
+  branch, tag or commit (`main` unless another is given), and prints the tables
+  of PERFORMANCE.md on the summary page of the run, from
+  `benchmark/external-compare/performance-tables.sh`, which does the same from a
+  command line. The figures in PERFORMANCE.md were remade with it.
+
 - **The sizes of the parser's own buffers are settings.** `XMLParser` has
   `setDecodeBufferSize`, `setScanBufferSize`, `setNameTableSize` and
   `setInputBufferSize` (with getters), and `Parser` the properties
