@@ -27,6 +27,18 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Changed
 
+- **UTF-16 is decoded in bulk.** The JDK's UTF-16 decoder takes two bytes at a
+  time through the buffer accessors, and on a document of Japanese text that
+  was about half the time of the whole parse. A document of known byte order
+  (from its byte order mark or its declared encoding of `UTF-16LE` or
+  `UTF-16BE`) is now decoded by `Utf16Decoder`, which copies the characters out
+  with one call that swaps the bytes and then checks that every surrogate has
+  its partner. It reports what the JDK's decoder reports, for the same input:
+  the same characters, the same refusal of an unpaired surrogate and the same
+  length of malformed input. On the 1.5 MB Japanese document, the native path
+  rose from 796 to 1,418 MB/s and SAX from 540 to 1,137 MB/s, which is now
+  faster than Xerces and Aalto. Other encodings are unchanged.
+
 - **A parser used for many documents allocates its buffers once.** The decoder's
   character buffer (64 KB), the scan buffer, the table of interned names and
   the stack of element names, which were allocated afresh for every document,

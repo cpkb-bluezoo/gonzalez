@@ -516,8 +516,14 @@ class ExternalEntityDecoder {
         
         // Reuse existing decoder if charset unchanged, otherwise create new one
         if (decoder == null || !charset.equals(previousCharset)) {
-            decoder = charset.newDecoder()
-                .onMalformedInput(CodingErrorAction.REPORT)
+            if (charset.equals(StandardCharsets.UTF_16LE)) {
+                decoder = new Utf16Decoder(charset, false);
+            } else if (charset.equals(StandardCharsets.UTF_16BE)) {
+                decoder = new Utf16Decoder(charset, true);
+            } else {
+                decoder = charset.newDecoder();
+            }
+            decoder.onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT);
         } else {
             decoder.reset();
