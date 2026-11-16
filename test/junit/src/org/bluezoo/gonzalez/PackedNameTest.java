@@ -184,4 +184,38 @@ public class PackedNameTest {
         assertSame(first, second);
     }
 
+
+    @Test
+    public void testNamesKeepTheirIdentityAmongOthersArriving() {
+        // Each name entered must be found again, as the same instance, however
+        // many others have been entered since.
+        PackedName pool = new PackedName();
+        int count = 150;
+        String[] first = new String[count];
+        for (int i = 0; i < count; i++) {
+            String name = (i % 3 == 0 ? "element-with-a-long-name-" : "n") + i;
+            first[i] = intern(pool, name);
+            assertEquals(name, first[i]);
+            // Everything entered so far is still found.
+            for (int j = 0; j <= i; j += 7) {
+                String again = (j % 3 == 0 ? "element-with-a-long-name-" : "n") + j;
+                assertSame("name " + again + " after " + (i + 1) + " names", first[j],
+                        intern(pool, again));
+            }
+        }
+    }
+
+    @Test
+    public void testTheTableIsTheSameSizeWhateverTheNames() {
+        // However many distinct names there are, the table does not change
+        // size: names it has no room for are made afresh, and are still right.
+        PackedName pool = new PackedName();
+        for (int round = 0; round < 3; round++) {
+            for (int i = 0; i < 20000; i++) {
+                String name = "name" + i;
+                assertEquals(name, intern(pool, name));
+            }
+        }
+        assertEquals(512, pool.capacity());
+    }
 }

@@ -747,6 +747,22 @@ public class Parser implements XMLReader, PSVIProvider {
      *     <td>{@link Integer}</td>
      *     <td>Maximum entity expansions per document; 64,000 by default and
      *     zero for unlimited</td></tr>
+     * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/scan-buffer-size}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Size of the scan buffer in characters; 8192 by default. See
+     *     {@link XMLParser#setScanBufferSize}</td></tr>
+     * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/decode-buffer-size}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Size of the buffer bytes are decoded into, in characters; 32,768
+     *     by default. See {@link XMLParser#setDecodeBufferSize}</td></tr>
+     * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/name-table-size}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Number of entries in the table of interned names; 512 by
+     *     default. See {@link XMLParser#setNameTableSize}</td></tr>
+     * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/input-buffer-size}</td>
+     *     <td>{@link Integer}</td>
+     *     <td>Size in bytes of the buffer {@code parse} reads into; 32,768 by
+     *     default. See {@link XMLParser#setInputBufferSize}</td></tr>
      * <tr><td>{@code jdk.xml.entityExpansionLimit}</td>
      *     <td>{@link Integer}</td>
      *     <td>The same limit under its JDK name</td></tr>
@@ -791,6 +807,20 @@ public class Parser implements XMLReader, PSVIProvider {
         if ("http://www.nongnu.org/gonzalez/properties/entity-expansion-limit".equals(name)) {
             return core.getEntityExpansionLimit();
         }
+        if (name != null && name.startsWith(MEMORY_PROPERTY_PREFIX)) {
+            switch (name.substring(MEMORY_PROPERTY_PREFIX.length())) {
+                case "scan-buffer-size":
+                    return core.getScanBufferSize();
+                case "decode-buffer-size":
+                    return core.getDecodeBufferSize();
+                case "name-table-size":
+                    return core.getNameTableSize();
+                case "input-buffer-size":
+                    return core.getInputBufferSize();
+                default:
+                    break;
+            }
+        }
         switch (limitNamed(name)) {
             case LIMIT_ENTITY_EXPANSION:
                 return core.getEntityExpansionLimit();
@@ -821,6 +851,7 @@ public class Parser implements XMLReader, PSVIProvider {
      */
     public static final String LINE_NUMBERS_FEATURE =
         "http://bluezoo.org/gonzalez/features/line-numbers";
+    private static final String MEMORY_PROPERTY_PREFIX = "http://www.nongnu.org/gonzalez/properties/";
     private static final String LEGACY_LIMIT_PREFIX = "http://www.oracle.com/xml/jaxp/properties/";
 
     /**
@@ -919,6 +950,32 @@ public class Parser implements XMLReader, PSVIProvider {
                 return;
             }
             throw new SAXNotSupportedException("Value must be an Integer");
+        }
+        if (name != null && name.startsWith(MEMORY_PROPERTY_PREFIX)) {
+            String which = name.substring(MEMORY_PROPERTY_PREFIX.length());
+            if ("scan-buffer-size".equals(which) || "decode-buffer-size".equals(which)
+                    || "name-table-size".equals(which) || "input-buffer-size".equals(which)) {
+                int size = limitValue(name, value);
+                try {
+                    switch (which) {
+                        case "scan-buffer-size":
+                            core.setScanBufferSize(size);
+                            break;
+                        case "decode-buffer-size":
+                            core.setDecodeBufferSize(size);
+                            break;
+                        case "name-table-size":
+                            core.setNameTableSize(size);
+                            break;
+                        default:
+                            core.setInputBufferSize(size);
+                            break;
+                    }
+                } catch (IllegalArgumentException e) {
+                    throw new SAXNotSupportedException(e.getMessage());
+                }
+                return;
+            }
         }
         int limit = limitNamed(name);
         if (limit == LIMIT_NONE) {

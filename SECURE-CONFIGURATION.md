@@ -109,3 +109,50 @@ names, processing instruction targets and references, but not names inside a
 DTD. With namespace processing enabled it also covers the namespace name in a
 namespace declaration, the one attribute value that is reported whole and so
 has to be held. Zero or a negative value disables a limit.
+
+## Buffer Sizes
+
+What a parser allocates is yours to size. The buffer you pass to
+`receive(ByteBuffer)` is your own, so its size is your choice. The buffers the
+parser allocates itself are allocated once, at the sizes below, and kept by
+`reset()`, so a parser used for many documents allocates none of them after
+the first. Each has a default that suits most uses:
+
+| Buffer | `XMLParser` setter | SAX property | Default |
+|--------|--------------------|--------------|---------|
+| Bytes decoded into characters | `setDecodeBufferSize` | `decode-buffer-size` | 32,768 characters (64 KB) |
+| Scan buffer | `setScanBufferSize` | `scan-buffer-size` | 8,192 characters (16 KB) |
+| Table of interned names | `setNameTableSize` | `name-table-size` | 512 entries (about 16 KB) |
+| Read buffer of `parse(InputStream)` and `parse(ReadableByteChannel)` | `setInputBufferSize` | `input-buffer-size` | 32,768 bytes |
+
+The SAX properties are in the namespace
+`http://www.nongnu.org/gonzalez/properties/` and take an Integer or a numeric
+String. A parser with the defaults holds about 100 KB, and a further 32 KB if
+it is asked to `parse` a stream.
+
+```java
+XMLParser parser = new XMLParser();
+parser.setDecodeBufferSize(4096);    // where memory is dear and parsers are many
+parser.setNameTableSize(64);         // a vocabulary of a few dozen names
+```
+
+The decode buffer is the largest, and the one to make smaller. Input is
+decoded and scanned in pieces of its size, so a smaller buffer makes no
+difference to what is reported, only to how many pieces there are. The scan
+buffer holds the data the parser was last given and any one name or declaration
+still arriving when that ended; a document that needs more (a name as long as
+the name length limit allows, or a large declaration in a DTD) makes it grow
+for that document, and it is put back to the size set when the document is
+done. The name table is the same size whatever the document: one with more
+distinct names than it has room for is parsed correctly, the names it has no
+room for being made afresh each time they occur.
+
+A change to a size takes effect with the next document. The smallest sizes
+allowed are 256 characters for the scan buffer, 16 characters for the decode
+buffer, 16 entries for the name table and 16 bytes for the read buffer; a
+smaller one is refused.
+
+A parser that is made for one document and discarded allocates these buffers
+for that document. To parse many documents, keep the parser and call `reset()`
+between them.
+

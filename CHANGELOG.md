@@ -6,6 +6,14 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Added
 
+- **The sizes of the parser's own buffers are settings.** `XMLParser` has
+  `setDecodeBufferSize`, `setScanBufferSize`, `setNameTableSize` and
+  `setInputBufferSize` (with getters), and `Parser` the properties
+  `http://www.nongnu.org/gonzalez/properties/decode-buffer-size`,
+  `scan-buffer-size`, `name-table-size` and `input-buffer-size`. The defaults
+  are the sizes already used, except that `parse(ReadableByteChannel)` reads
+  into 32 KB where it read into 8 KB. SECURE-CONFIGURATION.md describes them.
+
 - **A memory comparison.** `benchmark/external-compare/run-memory.sh` parses a
   document with one very large text node, CDATA section, attribute value or
   comment in a small heap with Gonzalez, JDK Xerces and Aalto, and says which
@@ -18,6 +26,25 @@ All notable changes to Gonzalez will be documented in this file.
   them and links to them.
 
 ### Changed
+
+- **A parser used for many documents allocates its buffers once.** The decoder's
+  character buffer (64 KB), the scan buffer, the table of interned names and
+  the stack of element names, which were allocated afresh for every document,
+  are kept by `XMLParser.reset()` (and so by `Parser.reset()`). Nothing about a
+  document is kept with them: each document still gets a new scanner, and the
+  buffers are written before they are read. A reused parser parses `<a/>`
+  through SAX in 0.6 microseconds instead of 3.8, a 1.3 KB document in 2.6
+  instead of 6.1, and a 4.4 KB one in 5.3 instead of 8.7. A parser used for a
+  single document allocates the same as before, and large documents are
+  parsed as fast as before.
+
+- **A better spread of names in the name table.** The table was indexed by
+  little more than the last character of each group of four, so that names
+  ending alike filled the probe limit and went uncached, though the table was
+  nearly empty. Names are now mixed before they are indexed, and eight probes
+  are allowed in place of four. A document with a few hundred distinct names
+  keeps nearly all of them; with 240 distinct names, 231 of 721 occurrences
+  were uncached before and none are now.
 
 - **Faster SAX parsing.** `SAXAdapter` keeps its element stack and attribute
   list in arrays instead of `ArrayList`s, assembles each attribute in place

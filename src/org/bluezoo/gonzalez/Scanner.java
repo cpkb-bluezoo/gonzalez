@@ -170,7 +170,8 @@ import org.xml.sax.ext.Locator2;
  */
 class Scanner implements Locator2 {
 
-    private static final int INITIAL_CAPACITY = 8192;
+    /** How many open elements the stack of their names starts with room for. */
+    static final int INITIAL_ELEMENT_DEPTH = 64;
 
     private final XMLHandler handler;
     /** The handler as a {@link CharArrayAttributeHandler}, or null if it is not one. */
@@ -181,6 +182,9 @@ class Scanner implements Locator2 {
     private final boolean deferDocumentStartUntilEncoding;
 
     private char[] buf;
+
+    /** Where {@link #buf} and {@link #elementNames} are kept for the next document. */
+    private final ScannerStorage storage;
     private int pos;
     private int limit;
 
@@ -308,7 +312,7 @@ class Scanner implements Locator2 {
     private int contentBracketRun;
 
     /** WFC "Element Type Match" stack of interned qNames. */
-    private String[] elementNames = new String[64];
+    private String[] elementNames;
     /** How many elements are open: the first this many of {@link #elementNames}. */
     private int elementDepth;
 
@@ -474,7 +478,7 @@ class Scanner implements Locator2 {
      * constantly throughout a document. See class Javadoc for the choice of
      * {@link PackedName} over {@link InternedStringPool}.
      */
-    private final PackedName namePool = new PackedName();
+    private final PackedName namePool;
 
     // ===== Entity reference buffers (see class Javadoc: "Zero allocation") =====
 
@@ -788,6 +792,19 @@ class Scanner implements Locator2 {
     Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String publicId, String baseSystemId,
             boolean validationEnabled, boolean namespaceAware, ScannerSettings settings,
             boolean deferDocumentStartUntilEncoding) throws SAXException {
+        this(handler, xml11, entityResolver, publicId, baseSystemId, validationEnabled, namespaceAware, settings,
+                deferDocumentStartUntilEncoding, new ScannerStorage());
+    }
+
+    /**
+     * @param storage the memory to work in, which the scanner leaves with
+     *        the buffers it has grown, for the next document's scanner to
+     *        take over; see {@link ScannerStorage}
+     */
+    Scanner(XMLHandler handler, boolean xml11, EntityResolver entityResolver, String publicId, String baseSystemId,
+            boolean validationEnabled, boolean namespaceAware, ScannerSettings settings,
+            boolean deferDocumentStartUntilEncoding, ScannerStorage storage) throws SAXException {
+        this.storage = storage;
         this.handler = handler;
         this.attributeChars = (handler instanceof CharArrayAttributeHandler)
                 ? (CharArrayAttributeHandler) handler : null;
@@ -803,7 +820,13 @@ class Scanner implements Locator2 {
         this.maxAttributesPerElement = (settings.maxAttributesPerElement > 0)
                 ? settings.maxAttributesPerElement : Integer.MAX_VALUE;
         this.deferDocumentStartUntilEncoding = deferDocumentStartUntilEncoding;
-        this.buf = new char[INITIAL_CAPACITY];
+        this.buf = storage.buf;
+        this.elementNames = storage.elementNames;
+        this.namePool = storage.names;
+        this.elementPredictKeys = storage.elementPredictKeys;
+        this.elementPredictNames = storage.elementPredictNames;
+        this.attrPredictKeys = storage.attrPredictKeys;
+        this.attrPredictNames = storage.attrPredictNames;
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
         this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
@@ -1282,6 +1305,7 @@ class Scanner implements Locator2 {
                 newCap *= 2;
             }
             buf = Arrays.copyOf(buf, newCap);
+            storage.buf = buf;
         }
         data.get(buf, limit, needed);
         limit += needed;
@@ -2261,6 +2285,7 @@ class Scanner implements Locator2 {
         pos = p;
         if (elementDepth == elementNames.length) {
             elementNames = Arrays.copyOf(elementNames, elementDepth * 2);
+            storage.elementNames = elementNames;
         }
         elementNames[elementDepth++] = qName;
         resetSeenAttributeNames();
@@ -2272,21 +2297,21 @@ class Scanner implements Locator2 {
 
     // ---- element name prediction (see scanStartTag) ----------------------
 
-    private static final int ELEMENT_PREDICT_SIZE = 256;
+    static final int ELEMENT_PREDICT_SIZE = 256;
     /** The start tag name each prediction follows: that of the previous start tag. */
-    private final String[] elementPredictKeys = new String[ELEMENT_PREDICT_SIZE];
+    private final String[] elementPredictKeys;
     /** The start tag name that last followed it. */
-    private final String[] elementPredictNames = new String[ELEMENT_PREDICT_SIZE];
+    private final String[] elementPredictNames;
     /** The name of the previous start tag. */
     private String elementPredictPrevious = "";
 
     // ---- attribute name prediction (see scanAttributesAndTagEnd) ---------
 
-    private static final int ATTR_PREDICT_SIZE = 256;
+    static final int ATTR_PREDICT_SIZE = 256;
     /** The name each prediction follows: the previous attribute's, or the element's. */
-    private final String[] attrPredictKeys = new String[ATTR_PREDICT_SIZE];
+    private final String[] attrPredictKeys;
     /** The attribute name that last followed it. */
-    private final String[] attrPredictNames = new String[ATTR_PREDICT_SIZE];
+    private final String[] attrPredictNames;
     /** What the next attribute name in this start tag follows. */
     private String attrPredictPrevious = "";
 
@@ -6345,6 +6370,7 @@ class Scanner implements Locator2 {
         int delta = newSpan - oldSpan;
         if (delta > 0 && limit + delta > buf.length) {
             buf = Arrays.copyOf(buf, Math.max(buf.length * 2, limit + delta));
+            storage.buf = buf;
         }
         System.arraycopy(buf, end, buf, start + newSpan, limit - end);
         replacement.getChars(0, newSpan, buf, start);

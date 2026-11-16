@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 
 import javax.xml.parsers.SAXParser;
@@ -28,6 +29,8 @@ import org.xml.sax.helpers.DefaultHandler;
  *   xmlhandler-nolimits  the same with the structural limits switched off
  *   sax                  Gonzalez Parser (SAX) with an empty DefaultHandler
  *   jdk                  the JDK's bundled SAX parser
+ *   xmlhandler-reuse     as xmlhandler, one XMLParser reset after each document
+ *   sax-touch-reuse      as sax-touch, one Parser reset after each document
  *   aalto-sax            aalto-xml SAX
  *   aalto-stax           aalto-xml StAX cursor
  *   sax-touch            Gonzalez Parser (SAX), the handler reading every
@@ -69,8 +72,11 @@ public class IsolatedAB {
         byte[] bytes = corpus(args[0]);
         String mode = args[1];
         double mb = bytes.length / (1024.0 * 1024.0);
-        int warmup = Integer.getInteger("warmup", 800);
-        int measured = Integer.getInteger("measured", 500);
+        // A document of a few kilobytes is parsed in microseconds, so many
+        // more parses are needed to warm up and to measure it.
+        boolean small = bytes.length < 16384;
+        int warmup = Integer.getInteger("warmup", small ? 100000 : 800);
+        int measured = Integer.getInteger("measured", small ? 200000 : 500);
         Parse parse = parser(mode, bytes);
         for (int i = 0; i < warmup; i++) {
             parse.run();
@@ -82,7 +88,7 @@ public class IsolatedAB {
             total += System.nanoTime() - t;
         }
         double avgMs = (total / (double) measured) / 1_000_000.0;
-        System.out.printf("%-12s %-20s %8.3f ms %8.1f MB/s%n",
+        System.out.printf("%-12s %-20s %10.4f ms %8.1f MB/s%n",
                 args[0], mode, avgMs, mb / (avgMs / 1000.0));
     }
 
@@ -92,7 +98,13 @@ public class IsolatedAB {
             case "utf16": return BenchmarkCorpora.japaneseUtf16();
             case "euc-jp": return BenchmarkCorpora.japaneseEucJp();
             case "xhtml-dtd": return BenchmarkCorpora.xhtmlInternalSubset();
-            default: return Files.readAllBytes(Paths.get("benchmark/resources/" + name + "-large.xml"));
+            case "tiny": return "<a/>".getBytes("UTF-8");
+            case "small": case "small-ns": case "books":
+                return Files.readAllBytes(Paths.get("benchmark/resources/" + name + ".xml"));
+            default:
+                Path large = Paths.get("benchmark/resources/" + name + "-large.xml");
+                return Files.readAllBytes(Files.exists(large) ? large
+                        : Paths.get("benchmark/resources/" + name + ".xml"));
         }
     }
 
@@ -106,6 +118,26 @@ public class IsolatedAB {
                 return () -> xmlHandler(bytes, true);
             case "xmlhandler-nolimits":
                 return () -> xmlHandler(bytes, false);
+            case "xmlhandler-reuse": {
+                final XMLParser parser = new XMLParser();
+                parser.setNamespaceAware(true);
+                parser.setHandler(EMPTY);
+                return () -> {
+                    parser.receive(ByteBuffer.wrap(bytes));
+                    parser.close();
+                    parser.reset();
+                };
+            }
+            case "sax-touch-reuse": {
+                final TouchHandler h = new TouchHandler();
+                final Parser reader = new Parser();
+                reader.setFeature("http://xml.org/sax/features/namespaces", true);
+                reader.setContentHandler(h);
+                return () -> {
+                    reader.parse(new org.xml.sax.InputSource(new ByteArrayInputStream(bytes)));
+                    reader.reset();
+                };
+            }
             case "sax":
                 return () -> {
                     org.xml.sax.XMLReader reader = new Parser();

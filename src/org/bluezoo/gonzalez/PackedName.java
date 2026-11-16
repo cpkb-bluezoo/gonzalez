@@ -50,7 +50,7 @@ import java.nio.CharBuffer;
  */
 class PackedName {
 
-    private static final int MAX_PROBES = 4;
+    private static final int MAX_PROBES = 8;
     private static final int DENSE_CHARS = 12;
 
     private final long[] q0;
@@ -60,12 +60,17 @@ class PackedName {
     private final String[] values;
     private final int mask;
 
+    /** How many entries the table has room for, for tests. */
+    int capacity() {
+        return values.length;
+    }
+
     PackedName() {
         this(512);
     }
 
     PackedName(int initialCapacity) {
-        int capacity = nextPowerOfTwo(Math.max(256, initialCapacity));
+        int capacity = nextPowerOfTwo(Math.max(ScannerStorage.MIN_NAME_TABLE, initialCapacity));
         this.mask = capacity - 1;
         this.q0 = new long[capacity];
         this.q1 = new long[capacity];
@@ -96,6 +101,16 @@ class PackedName {
         return internRange(copy, 0, len);
     }
 
+    /** The hash of the twelve characters the quads hold, and the length.
+     *  The table is indexed by the low bits of it, and a quad holds its
+     *  characters sixteen bits apart, so that a plain sum would let little
+     *  but the last character of each quad decide where a name goes; the
+     *  multiplication and the shift bring all of them down to the low bits. */
+    private static int mix(long p0, long p1, long p2, int len) {
+        long h = (p0 * 31 + p1 * 17 + p2 * 7 + len) * 0x9E3779B97F4A7C15L;
+        return (int) (h >>> 32);
+    }
+
     /**
      * Interns a name directly from a char-array range - same contract as
      * {@link #intern(CharBuffer)} minus the window unwrapping, for callers
@@ -118,7 +133,7 @@ class PackedName {
                 p2 = (p2 << 16) | c;
             }
         }
-        int hash = (int) (p0 * 31 + p1 * 17 + p2 * 7) + len;
+        int hash = mix(p0, p1, p2, len);
         if (len > DENSE_CHARS) {
             for (int i = DENSE_CHARS; i < len; i++) {
                 hash = hash * 31 + buf[start + i];

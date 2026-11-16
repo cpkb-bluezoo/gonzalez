@@ -187,6 +187,15 @@ class ExternalEntityDecoder {
      * @param systemId system identifier for this entity (may be null)
      * @param isExternalEntity true if this is an external parsed entity, false for document entity
      */
+    /**
+     * Has the decoder fill the given buffer instead of one of its own, so
+     * that a parser used for many documents allocates it once, and the
+     * caller decides its size.
+     */
+    void useCharBuffer(CharBuffer buffer) {
+        this.charBuffer = buffer;
+    }
+
     public ExternalEntityDecoder(Scanner scanner, String publicId, String systemId,
             boolean isExternalEntity) {
         this.scanner = Objects.requireNonNull(scanner);
@@ -575,7 +584,7 @@ class ExternalEntityDecoder {
      * Maximum CharBuffer size. Processing is done incrementally to avoid
      * allocating a buffer sized for the entire input.
      */
-    private static final int MAX_CHAR_BUFFER = 32768;
+    private static final int MAX_CHAR_BUFFER = ScannerStorage.DEFAULT_DECODE_BUFFER;
     
     /**
      * Decodes bytes to characters and sends to tokenizer.

@@ -90,6 +90,17 @@ import org.xml.sax.SAXException;
  * data did. A DTD is outside this guarantee: its declarations are read
  * whole and kept.
  *
+ * <p><b>Memory.</b> What the parser allocates is yours to size. The buffer
+ * you pass to {@link #receive(ByteBuffer)} is your own, and the buffer the
+ * blocking {@code parse} methods read into is set by
+ * {@link #setInputBufferSize}. Inside, the buffer that bytes are decoded
+ * into ({@link #setDecodeBufferSize}), the scan buffer
+ * ({@link #setScanBufferSize}) and the table of interned names
+ * ({@link #setNameTableSize}) are allocated once, at the sizes set, and kept
+ * by {@link #reset()}, so that a parser used for many documents allocates
+ * none of them again. The defaults suit most uses; with the limits above,
+ * they are the whole of what a document without a DTD costs.
+ *
  * <p><b>Reuse.</b> One instance parses one document at a time. Call
  * {@link #reset()} after {@link #close()} (or after a failed parse) before
  * feeding the next document.
@@ -104,12 +115,12 @@ import org.xml.sax.SAXException;
  */
 public final class XMLParser {
 
-    /** Buffer size for {@link #parse(InputStream)}. */
-    private static final int STREAM_BUFFER_SIZE = 32768;
+    /** The default size of the buffer {@link #parse(InputStream)} and
+     *  {@link #parse(ReadableByteChannel)} read into. */
+    private static final int DEFAULT_INPUT_BUFFER_SIZE = 32768;
 
-    /** Buffer size for {@link #parse(ReadableByteChannel)} when no larger
-     *  buffer is already held. */
-    private static final int CHANNEL_BUFFER_SIZE = 8192;
+    /** The smallest input buffer. */
+    private static final int MIN_INPUT_BUFFER_SIZE = 16;
 
     /** The largest buffer the blocking {@code parse} methods will grow to
      *  before concluding that the parser is not going to consume its
@@ -133,6 +144,10 @@ public final class XMLParser {
     private int entityExpansionLimit = ScannerSettings.DEFAULT_EXPANSION_LIMIT;
     private int maxElementDepth = ScannerSettings.DEFAULT_MAX_ELEMENT_DEPTH;
     private int maxNameLength = ScannerSettings.DEFAULT_MAX_NAME_LENGTH;
+    private int scanBufferSize = ScannerStorage.DEFAULT_SCAN_BUFFER;
+    private int decodeBufferSize = ScannerStorage.DEFAULT_DECODE_BUFFER;
+    private int nameTableSize = ScannerStorage.DEFAULT_NAME_TABLE;
+    private int inputBufferSize = DEFAULT_INPUT_BUFFER_SIZE;
     private int maxAttributesPerElement = ScannerSettings.DEFAULT_MAX_ATTRIBUTES_PER_ELEMENT;
     private String publicId;
     private String systemId;
@@ -156,6 +171,9 @@ public final class XMLParser {
     /** Buffer for the blocking {@code parse} methods, kept across
      *  documents. */
     private ByteBuffer parseBuffer;
+
+    /** The memory the scanner works in, kept from one document to the next. */
+    private ScannerStorage storage;
 
     /** How many bytes the last {@link #receive(ByteBuffer)} left
      *  unconsumed in the caller's buffer. The next call must begin with
@@ -517,6 +535,120 @@ public final class XMLParser {
         this.maxAttributesPerElement = maxAttributesPerElement;
     }
 
+    // ===== Memory =====
+
+    private static int atLeast(String what, int value, int minimum) {
+        if (value < minimum) {
+            throw new IllegalArgumentException(what + " must be at least " + minimum + ": " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Returns the size of the scan buffer.
+     *
+     * @return the size in characters; 8192 by default
+     */
+    public int getScanBufferSize() {
+        return scanBufferSize;
+    }
+
+    /**
+     * Sets the size of the scan buffer: the characters the parser holds
+     * while it reads, which is the data it was last given and any one name
+     * or declaration still arriving when that data ended. It is allocated
+     * once and kept from one document to the next. A document that needs
+     * more (a name as long as the name length limit allows, or a large
+     * DTD declaration) makes it grow for that document, and it is put back
+     * to this size when the document is done. The buffer you pass to
+     * {@link #receive(ByteBuffer)} is yours, and its size is your choice.
+     *
+     * <p>A size smaller than the usual makes no difference to what is
+     * reported, only to how often the buffer has to grow.
+     *
+     * @param scanBufferSize the size in characters, at least 256
+     * @throws IllegalArgumentException if it is smaller than that
+     */
+    public void setScanBufferSize(int scanBufferSize) {
+        this.scanBufferSize = atLeast("The scan buffer size", scanBufferSize,
+                ScannerStorage.MIN_SCAN_BUFFER);
+    }
+
+    /**
+     * Returns the size of the buffer the decoder fills.
+     *
+     * @return the size in characters; 32,768 (64 KB) by default
+     */
+    public int getDecodeBufferSize() {
+        return decodeBufferSize;
+    }
+
+    /**
+     * Sets the size of the buffer that bytes are decoded into before they
+     * are scanned. Input is decoded and scanned in pieces of this size, so
+     * it is the largest part of what the parser allocates, and the one to
+     * make smaller where memory is dear and many parsers are held at once.
+     * It is allocated once and kept from one document to the next.
+     *
+     * @param decodeBufferSize the size in characters, at least 16
+     * @throws IllegalArgumentException if it is smaller than that
+     */
+    public void setDecodeBufferSize(int decodeBufferSize) {
+        this.decodeBufferSize = atLeast("The decode buffer size", decodeBufferSize,
+                ScannerStorage.MIN_DECODE_BUFFER);
+    }
+
+    /**
+     * Returns the size of the table of interned names.
+     *
+     * @return the number of entries; 512 by default
+     */
+    public int getNameTableSize() {
+        return nameTableSize;
+    }
+
+    /**
+     * Sets the size of the table in which element names, attribute names
+     * and processing instruction targets are interned, so that a name used
+     * again is the same {@code String} and costs no allocation. The size is
+     * fixed, whatever the document: a document with more distinct names
+     * than the table has room for is parsed correctly, the names it has no
+     * room for being made afresh each time. It is rounded up to a power of
+     * two, and a table of 512 suits documents with up to a few hundred
+     * distinct names.
+     *
+     * @param nameTableSize the number of entries, at least 16
+     * @throws IllegalArgumentException if it is smaller than that
+     */
+    public void setNameTableSize(int nameTableSize) {
+        this.nameTableSize = atLeast("The name table size", nameTableSize,
+                ScannerStorage.MIN_NAME_TABLE);
+    }
+
+    /**
+     * Returns the size of the buffer that the blocking {@code parse}
+     * methods read into.
+     *
+     * @return the size in bytes; 32,768 by default
+     */
+    public int getInputBufferSize() {
+        return inputBufferSize;
+    }
+
+    /**
+     * Sets the size of the buffer that {@link #parse(InputStream)} and
+     * {@link #parse(ReadableByteChannel)} read into. It has no part in
+     * {@link #receive(ByteBuffer)}, where the buffer is yours. It is kept
+     * from one document to the next.
+     *
+     * @param inputBufferSize the size in bytes, at least 16
+     * @throws IllegalArgumentException if it is smaller than that
+     */
+    public void setInputBufferSize(int inputBufferSize) {
+        this.inputBufferSize = atLeast("The input buffer size", inputBufferSize,
+                MIN_INPUT_BUFFER_SIZE);
+    }
+
     /**
      * Returns whether the locator reports line and column numbers.
      *
@@ -642,6 +774,14 @@ public final class XMLParser {
      *
      * @return the capacity, or zero if no document is being parsed
      */
+    int decodeBufferCapacity() {
+        return (storage != null) ? storage.decodeBufferCapacity() : 0;
+    }
+
+    int nameTableCapacity() {
+        return (storage != null) ? storage.names.capacity() : 0;
+    }
+
     int scanBufferCapacity() {
         return (scanner != null) ? scanner.getBufferCapacity() : 0;
     }
@@ -751,6 +891,9 @@ public final class XMLParser {
         decoder = null;
         initialCharset = null;
         unconsumed = 0;
+        if (storage != null) {
+            storage.trim();
+        }
     }
 
     /**
@@ -769,8 +912,8 @@ public final class XMLParser {
             throw new IllegalArgumentException("InputStream cannot be null");
         }
         ByteBuffer buffer = parseBuffer;
-        if (buffer == null || buffer.capacity() < STREAM_BUFFER_SIZE) {
-            buffer = ByteBuffer.allocate(STREAM_BUFFER_SIZE);
+        if (buffer == null || buffer.capacity() != inputBufferSize) {
+            buffer = ByteBuffer.allocate(inputBufferSize);
             parseBuffer = buffer;
         } else {
             buffer.clear();
@@ -821,8 +964,8 @@ public final class XMLParser {
             throw new IllegalArgumentException("Channel cannot be null");
         }
         ByteBuffer buffer = parseBuffer;
-        if (buffer == null) {
-            buffer = ByteBuffer.allocate(CHANNEL_BUFFER_SIZE);
+        if (buffer == null || buffer.capacity() != inputBufferSize) {
+            buffer = ByteBuffer.allocate(inputBufferSize);
             parseBuffer = buffer;
         } else {
             buffer.clear();
@@ -894,10 +1037,14 @@ public final class XMLParser {
                 externalParameterEntities, disallowDoctypeDecl, resolveDTDURIs,
                 accessExternalDTD, entityExpansionLimit, maxElementDepth, maxNameLength,
                 maxAttributesPerElement);
+        if (storage == null || !storage.hasSizes(scanBufferSize, decodeBufferSize, nameTableSize)) {
+            storage = new ScannerStorage(scanBufferSize, decodeBufferSize, nameTableSize);
+        }
         Scanner newScanner = new Scanner(target, false, entityResolver, publicId, systemId, validating,
-                namespaceAware, settings, true);
+                namespaceAware, settings, true, storage);
         newScanner.setTrackLineNumbers(lineNumbers);
         ExternalEntityDecoder newDecoder = new ExternalEntityDecoder(newScanner, publicId, systemId, false);
+        newDecoder.useCharBuffer(storage.decodeBuffer());
         if (initialCharset != null) {
             newDecoder.setInitialCharset(initialCharset);
             initialCharset = null;
