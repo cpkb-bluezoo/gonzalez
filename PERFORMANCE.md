@@ -115,10 +115,10 @@ JDK's own routine does.
 
 ## SAX
 
-The same documents through SAX, with a handler that reads every attribute and
-all the text, for the same reason as above: with an empty handler Aalto's SAX
-wrapper does less work than Gonzalez, because it decodes an attribute value only
-when the handler asks for it, whereas Gonzalez builds each value as it scans.
+The same documents through SAX. The handler does what the use of a SAX parser
+is: for every element it reads the names, for every attribute in the
+`Attributes` it is given it reads the name and the value, and it reads the text
+that it is given.
 
 | Corpus | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Gonzalez / Aalto |
 |--------|-------------:|---------------:|----------:|-----------------:|
@@ -273,8 +273,8 @@ quoted lists of corpora and modes. Set `GONZALEZ_CLASSES` to compare another
 build of Gonzalez. The modes of the first table are `xmlhandler-sum` and
 `aalto-stax-sum`, and those of the second `sax-touch`, `jdk-touch` and
 `aalto-sax-touch`. The modes `xmlhandler`, `sax` and `jdk`, with empty handlers,
-and `aalto-stax`, which only steps the cursor through the events and reads
-nothing, do less work than the others and are not comparable with them.
+and `aalto-stax`, which only steps the cursor through the events, read nothing
+of what they are given and are not comparable with the others.
 `performance-tables.sh` takes the number of runs and a file for the tables, and
 includes the French and German novels when they are in `benchmark/corpora` (or
 `FRENCH_XML` and `GERMAN_XML` name a French and a German document of your own).

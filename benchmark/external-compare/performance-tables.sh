@@ -185,9 +185,10 @@ echo
 log "SAX..."
 echo "### SAX"
 echo
-echo "The same documents through SAX, with a handler that reads every attribute and"
-echo "all the text. (An empty handler does less work with Aalto, which decodes an"
-echo "attribute value only when asked.)"
+echo "The same documents through SAX. The handler does what the use of a SAX parser"
+echo "is: for every element it reads the names, for every attribute in the"
+echo "\`Attributes\` it is given it reads the name and the value, and it reads the"
+echo "text that it is given."
 echo
 echo "| Corpus | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Gonzalez / Aalto |"
 echo "|--------|-------------:|---------------:|----------:|-----------------:|"
