@@ -23,8 +23,8 @@ import org.xml.sax.helpers.DefaultHandler;
  *   java ... org.bluezoo.gonzalez.IsolatedAB &lt;corpus&gt; &lt;mode&gt;
  *
  * corpus: plain|attrs|whitespace|markup|multibyte|accent|utf16|euc-jp|xhtml-dtd
- *         french and german (a document each, named by the environment
- *         variables FRENCH_XML and GERMAN_XML); and, made from the plain
+ *         french and german (a novel each, which ant download-corpora puts in
+ *         benchmark/corpora, or that FRENCH_XML and GERMAN_XML name); and, made from the plain
  *         corpus or generated, to see how kinds of text with non-ASCII
  *         characters in it are parsed: latin (a French-like accent on every
  *         e), latin-light (on every second e), odd-word (English with a
@@ -208,17 +208,20 @@ public class IsolatedAB {
     }
 
     /**
-     * The path in an environment variable, for a corpus that is real text and
-     * so is not kept with the code: the corpora "french" and "german" are each
-     * a document that the caller has, such as a novel from the ELTeC
-     * collection (public domain TEI XML in each language).
+     * A corpus of real text, which is not kept with the code: the path in the
+     * environment variable if it is set, and otherwise the document that
+     * {@code ant download-corpora} puts in {@code benchmark/corpora}.
      */
-    private static String fromEnvironment(String name) {
-        String path = System.getenv(name);
-        if (path == null || path.isEmpty()) {
-            throw new IllegalStateException("Set " + name + " to the path of an XML document");
+    private static String realDocument(String variable, String downloaded) {
+        String path = System.getenv(variable);
+        if (path != null && !path.isEmpty()) {
+            return path;
         }
-        return path;
+        if (Files.exists(Paths.get(downloaded))) {
+            return downloaded;
+        }
+        throw new IllegalStateException("Run ant download-corpora, or set " + variable
+                + " to the path of an XML document");
     }
 
     private static byte[] corpus(String name) throws Exception {
@@ -236,8 +239,8 @@ public class IsolatedAB {
                 return withNonAscii(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")), 60,
                         new int[] { 0xF0, 0x9F, 0x98, 0x80 }, false);
             case "mathml": return mathml();
-            case "french": return Files.readAllBytes(Paths.get(fromEnvironment("FRENCH_XML")));
-            case "german": return Files.readAllBytes(Paths.get(fromEnvironment("GERMAN_XML")));
+            case "french": return Files.readAllBytes(Paths.get(realDocument("FRENCH_XML", "benchmark/corpora/FRA03601_Proust.xml")));
+            case "german": return Files.readAllBytes(Paths.get(realDocument("GERMAN_XML", "benchmark/corpora/DEU037.xml")));
             case "plain": return Files.readAllBytes(Paths.get("benchmark/resources/large.xml"));
             case "accent": return accented(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")));
             case "utf16": return BenchmarkCorpora.japaneseUtf16();

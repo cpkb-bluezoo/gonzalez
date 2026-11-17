@@ -9,9 +9,9 @@
 # which is what the figures in PERFORMANCE.md are. Set AALTO_JAR and
 # STAX2_JAR to the dependency jars, as for run-isolated.sh, and
 # GONZALEZ_CLASSES to measure a build other than build/core. To try it out
-# more quickly, CORPORA="plain accent" runs only the corpora named. The two
-# real documents are measured, as well as the others, when FRENCH_XML and
-# GERMAN_XML are set to the paths of a French and a German document.
+# more quickly, CORPORA="plain accent" runs only the corpora named. The French
+# and German novels of benchmark/corpora (ant download-corpora) are measured,
+# as well as the others, when they are there.
 #
 # BENCH_REF, if set, is how the commit is described in the heading, for a run
 # in which git does not know it as a branch.
@@ -23,10 +23,13 @@ cd "$REPO_ROOT"
 REPS="${1:-5}"
 RUN=benchmark/external-compare/run-isolated.sh
 # The two real documents, a French and a German novel, are not kept with the
-# code: they are measured too if FRENCH_XML and GERMAN_XML name them.
+# code. They are measured too when they have been downloaded (ant
+# download-corpora puts them in benchmark/corpora), or are named by FRENCH_XML
+# and GERMAN_XML.
 if [ -z "${CORPORA:-}" ]; then
     CORPORA="plain attrs whitespace markup multibyte accent latin-light latin odd-word emoji mathml utf16 euc-jp xhtml-dtd"
-    if [ -n "${FRENCH_XML:-}" ] && [ -n "${GERMAN_XML:-}" ]; then
+    if [ -f "${FRENCH_XML:-benchmark/corpora/FRA03601_Proust.xml}" ] \
+            && [ -f "${GERMAN_XML:-benchmark/corpora/DEU037.xml}" ]; then
         CORPORA="$CORPORA french german"
     fi
 fi

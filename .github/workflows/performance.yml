@@ -73,6 +73,9 @@ jobs:
           echo "AALTO_JAR=$dir/aalto-xml-$AALTO_VERSION.jar" >> "$GITHUB_ENV"
           echo "STAX2_JAR=$dir/stax2-api-$STAX2_VERSION.jar" >> "$GITHUB_ENV"
 
+      - name: Fetch the French and German novels
+        run: ant -q download-corpora
+
       - name: Run the comparison
         env:
           BENCH_REF: ${{ inputs.ref }}

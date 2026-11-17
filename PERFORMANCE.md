@@ -35,11 +35,13 @@ measured from the encoded size of the document. The documents are:
   character of text;
 - two real documents, a French and a German novel of about 1 MB each from the
   [ELTeC](https://github.com/COST-ELTeC) collection of public domain novels in
-  TEI XML. They are not kept here: the harness reads them from the paths in
-  `FRENCH_XML` and `GERMAN_XML`, and the table script measures them when those
-  are set. Their accented letters are about one in 35 bytes in the French and
-  one in 48 in the German, lighter than the generated documents with an
-  accent on every e.
+  TEI XML (`FRA03601_Proust.xml` and `DEU037.xml`). They are not kept in this
+  repository: `ant download-corpora` fetches them into `benchmark/corpora`,
+  each from a fixed commit of its collection and checked against its SHA-256,
+  and the harness and the table script measure them when they are there.
+  Their accented letters are about one in 35 bytes in the French and one in 48
+  in the German, lighter than the generated documents with an accent on every
+  e.
 
 ## Native interfaces
 
@@ -243,8 +245,10 @@ every parser in turn.
 
 `benchmark/external-compare/performance-tables.sh` runs the whole comparison and
 prints the two tables above, as Markdown, with the commit, the JDK and the
-machine it was run on. To include the French and German novels, set
-`FRENCH_XML` and `GERMAN_XML` to the paths of a French and a German document. The "Performance comparison" workflow runs it on GitHub
+machine it was run on. It includes the French and German novels when
+`ant download-corpora` has fetched them (or `FRENCH_XML` and `GERMAN_XML` name
+a French and a German document of your own), and the workflow fetches them
+first. The "Performance comparison" workflow runs it on GitHub
 for any branch, tag or commit, `main` unless another is given, and shows the
 tables on the summary page of the run: from the Actions tab, or with
 

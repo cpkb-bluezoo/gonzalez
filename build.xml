@@ -668,6 +668,51 @@
     <echo message='JMH libraries downloaded to lib/'/>
   </target>
 
+  <!-- Real documents for the comparison with other parsers
+       (benchmark/external-compare): a French and a German novel in TEI XML
+       from the ELTeC collections (github.com/COST-ELTeC; the texts are in the
+       public domain, and the German markup is CC BY 4.0). They are downloaded
+       and not kept in the repository, each from a fixed commit of its
+       collection, and checked against the SHA-256 of the document that was
+       measured, so that a build cannot be measuring other text. -->
+  <property name='benchmark.corpora' location='benchmark/corpora'/>
+  <property name='eltec.fra.commit' value='83f0a43fdb967cd1db646027a1a237307e4924a1'/>
+  <property name='eltec.deu.commit' value='dd1529ae19fda711fa23c908f86bfa6e474e9412'/>
+  <property name='eltec.fra.file' value='FRA03601_Proust.xml'/>
+  <property name='eltec.deu.file' value='DEU037.xml'/>
+  <property name='eltec.fra.sha256' value='eae4b3d3b7424e3da9e2e8e1b1f58fa640b8dc8470aaf9c733c33459fa6d2996'/>
+  <property name='eltec.deu.sha256' value='2a39aadd9294e43b6bf8f075916e83642ea6532bd82688a2579e27e05d9479af'/>
+
+  <macrodef name='fetch-document'>
+    <attribute name='url'/>
+    <attribute name='file'/>
+    <attribute name='sha256'/>
+    <sequential>
+      <get src='@{url}' dest='${benchmark.corpora}/@{file}' skipexisting='true' verbose='true'/>
+      <checksum file='${benchmark.corpora}/@{file}' algorithm='SHA-256'
+                property='@{sha256}' verifyproperty='checked.@{file}'/>
+      <condition property='valid.@{file}'>
+        <equals arg1='${checked.@{file}}' arg2='true'/>
+      </condition>
+      <!-- a document that is not the one measured is not kept to be used -->
+      <delete file='${benchmark.corpora}/@{file}' unless:set='valid.@{file}' xmlns:unless='ant:unless'/>
+      <fail message='@{file} is not the document expected (SHA-256 @{sha256}); it has been removed.'
+            unless='valid.@{file}'/>
+    </sequential>
+  </macrodef>
+
+  <target name='download-corpora'
+          description='Download the French and German novels for the parser comparison'>
+    <mkdir dir='${benchmark.corpora}'/>
+    <fetch-document
+        url='https://raw.githubusercontent.com/COST-ELTeC/ELTeC-fra/${eltec.fra.commit}/level1/${eltec.fra.file}'
+        file='${eltec.fra.file}' sha256='${eltec.fra.sha256}'/>
+    <fetch-document
+        url='https://raw.githubusercontent.com/COST-ELTeC/ELTeC-deu/${eltec.deu.commit}/level1/${eltec.deu.file}'
+        file='${eltec.deu.file}' sha256='${eltec.deu.sha256}'/>
+    <echo message='French and German documents are in ${benchmark.corpora}'/>
+  </target>
+
   <target name='build-benchmark' depends='build,download-jmh' description='Compile JMH benchmarks'>
     <mkdir dir='${benchmark.build}'/>
     <javac srcdir='${benchmark.src}' 
@@ -687,7 +732,7 @@
     <echo message='Benchmark classes compiled to ${benchmark.build}'/>
   </target>
 
-  <target name='benchmark' depends='build-benchmark' description='Run JMH benchmarks'>
+  <target name='benchmark' depends='build-benchmark,download-corpora' description='Run JMH benchmarks'>
     <echo message='Running JMH benchmarks...'/>
     <echo message='This may take several minutes to complete.'/>
     <echo message=''/>

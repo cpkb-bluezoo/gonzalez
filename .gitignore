@@ -42,6 +42,9 @@ xslconf/
 /temp.out
 /try*.out
 
+# Real documents for the parser comparison, downloaded by ant download-corpora
+benchmark/corpora/
+
 # XSLT bake-off build artifacts
 benchmark/xslt-compare/classes/
 benchmark/xslt-compare/out/
