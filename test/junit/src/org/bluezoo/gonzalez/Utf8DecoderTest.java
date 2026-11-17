@@ -123,6 +123,33 @@ public class Utf8DecoderTest {
         }
     }
 
+    /**
+     * Runs of ASCII are copied by a method of their own, which is given how many
+     * it may copy, so the runs are of every length, ending at the input, at the
+     * output and at a byte that is not UTF-8.
+     */
+    @Test
+    public void runsOfAsciiOfEveryLength() {
+        int[] chunks = { 7, 64, 100, 1000, 40000 };
+        int[] outs = { 3, 47, 48, 49, 64, 4096 };
+        for (int run = 1; run <= 130; run++) {
+            StringBuilder sb = new StringBuilder();
+            for (int part = 0; part < 4; part++) {
+                for (int i = 0; i < run; i++) {
+                    sb.append((char) ('a' + (i + part) % 26));
+                }
+                sb.append(part % 2 == 0 ? "\u00e9" : "\ud83d\ude00");
+            }
+            byte[] data = sb.toString().getBytes(StandardCharsets.UTF_8);
+            same("run " + run, data, chunks, outs, BOTH);
+
+            byte[] bad = new byte[data.length + 1];
+            System.arraycopy(data, 0, bad, 0, data.length);
+            bad[data.length] = (byte) 0xFF;
+            same("run " + run + " then bad", bad, chunks, outs, BOTH);
+        }
+    }
+
     @Test
     public void emptyAndTiny() {
         same("empty", new byte[0], CHUNKS, OUTS, BOTH);

@@ -28,8 +28,9 @@ import org.xml.sax.helpers.DefaultHandler;
  *         corpus or generated, to see how kinds of text with non-ASCII
  *         characters in it are parsed: latin (a French-like accent on every
  *         e), latin-light (on every second e), odd-word (English with a
- *         foreign word now and then), emoji (casual English) and mathml
- *         (many symbols among much markup)
+ *         foreign word now and then), emoji (casual English), mathml (many
+ *         symbols among much markup, in one tree that declares the namespace
+ *         once) and mathml-redeclared (many trees, each declaring it)
  *
  * mode:
  *   xmlhandler           Gonzalez XMLParser with an empty XMLHandler, defaults
@@ -169,14 +170,24 @@ public class IsolatedAB {
      * Unicode's mathematical blocks, three bytes each), in the nesting that
      * MathML has, so that there is a good deal of markup for each character
      * of text and a non-ASCII symbol every few elements.
+     *
+     * @param redeclared false for one {@code math} element, with the namespace
+     *        declared once, on it, which every element under it inherits, as
+     *        MathML is usually written; true for many of them in a document,
+     *        each declaring it again, as the equations of a page are when each
+     *        is made separately, which changes what a name means at the start
+     *        and end of every one
      */
-    private static byte[] mathml() throws Exception {
+    private static byte[] mathml(boolean redeclared) throws Exception {
         String[] identifiers = { "x", "y", "n", "\u03b1", "\u03b2", "\u03c0", "\u03b8", "a", "\u03bb" };
         String[] operators = { "+", "=", "\u2212", "\u00d7", "\u2062", "\u2211", "\u222b", "\u2264", "\u2192", "(", ")" };
         java.util.Random random = new java.util.Random(7);
-        StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<doc>\n");
+        StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        sb.append(redeclared ? "<doc>\n" : "<math xmlns=\"http://www.w3.org/1998/Math/MathML\">\n");
         while (sb.length() < 1200000) {
-            sb.append("  <math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mrow>\n");
+            sb.append(redeclared
+                    ? "  <math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mrow>\n"
+                    : "  <mrow>\n");
             int terms = 4 + random.nextInt(8);
             for (int t = 0; t < terms; t++) {
                 switch (random.nextInt(5)) {
@@ -201,9 +212,9 @@ public class IsolatedAB {
                         break;
                 }
             }
-            sb.append("  </mrow></math>\n");
+            sb.append(redeclared ? "  </mrow></math>\n" : "  </mrow>\n");
         }
-        sb.append("</doc>\n");
+        sb.append(redeclared ? "</doc>\n" : "</math>\n");
         return sb.toString().getBytes("UTF-8");
     }
 
@@ -238,7 +249,8 @@ public class IsolatedAB {
             case "emoji":
                 return withNonAscii(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")), 60,
                         new int[] { 0xF0, 0x9F, 0x98, 0x80 }, false);
-            case "mathml": return mathml();
+            case "mathml": return mathml(false);
+            case "mathml-redeclared": return mathml(true);
             case "french": return Files.readAllBytes(Paths.get(realDocument("FRENCH_XML", "benchmark/corpora/FRA03601_Proust.xml")));
             case "german": return Files.readAllBytes(Paths.get(realDocument("GERMAN_XML", "benchmark/corpora/DEU037.xml")));
             case "plain": return Files.readAllBytes(Paths.get("benchmark/resources/large.xml"));

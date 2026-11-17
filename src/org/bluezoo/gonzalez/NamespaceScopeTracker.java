@@ -21,7 +21,9 @@
 
 package org.bluezoo.gonzalez;
 
+import java.util.AbstractMap;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -65,16 +67,38 @@ public class NamespaceScopeTracker {
      * Represents a namespace scope level.
      * Each element introduces a new scope that may declare new namespace bindings.
      */
-    private static class Scope {
-        /** Prefix-to-URI mappings declared at this level */
-        final Map<String, String> bindings;
-        
-        /** Number of declarations at this level (for efficient iteration) */
+    private static final class Scope {
+        /**
+         * The prefixes declared at this level, and the URIs they are bound to,
+         * in the order they were declared, as {@code declarationCount} entries
+         * of two parallel arrays. A level declares few (most declare none), so
+         * a search of them is cheaper than a hash map, which costs an iterator
+         * to walk and has to be cleared to be reused.
+         */
+        String[] prefixes = new String[2];
+        String[] uris = new String[2];
+
+        /** Number of declarations at this level */
         int declarationCount;
-        
-        Scope() {
-            this.bindings = new HashMap<>();
-            this.declarationCount = 0;
+
+        /** The index of {@code prefix} here, or -1. */
+        int indexOf(String prefix) {
+            for (int i = 0; i < declarationCount; i++) {
+                if (prefixes[i].equals(prefix)) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
+        void add(String prefix, String uri) {
+            if (declarationCount == prefixes.length) {
+                prefixes = Arrays.copyOf(prefixes, declarationCount * 2);
+                uris = Arrays.copyOf(uris, declarationCount * 2);
+            }
+            prefixes[declarationCount] = prefix;
+            uris[declarationCount] = uri;
+            declarationCount++;
         }
     }
     
@@ -83,7 +107,7 @@ public class NamespaceScopeTracker {
      * Index 0 is the root scope (contains xml and xmlns pre-bindings).
      * Index scopeDepth is the current scope.
      */
-    private final ArrayList<Scope> scopes;
+    private Scope[] scopes = new Scope[16];
     
     /**
      * Current scope depth (0 = root scope, increments with each element).
@@ -113,7 +137,6 @@ public class NamespaceScopeTracker {
      * Creates a new namespace scope tracker with pre-bound xml and xmlns prefixes.
      */
     public NamespaceScopeTracker() {
-        this.scopes = new ArrayList<>();
         this.scopeDepth = -1; // Will become 0 on first pushContext()
         this.activeBindings = new HashMap<>();
         
@@ -141,19 +164,15 @@ public class NamespaceScopeTracker {
     public void pushContext() {
         scopeDepth++;
 
-        // Reuse existing scope object if available, otherwise create new
-        if (scopeDepth < scopes.size()) {
-            Scope scope = scopes.get(scopeDepth);
-            // Most elements declare no namespaces, so declarationCount is almost always
-            // already 0 here (the invariant declarationCount==0 iff bindings is empty is
-            // maintained below and in declarePrefix()) - skip the clear() call entirely
-            // rather than relying on HashMap's own internal empty-check.
-            if (scope.declarationCount > 0) {
-                scope.bindings.clear();
-                scope.declarationCount = 0;
-            }
+        // Reuse the scope object of this depth if there is one, otherwise make one
+        if (scopeDepth == scopes.length) {
+            scopes = Arrays.copyOf(scopes, scopeDepth * 2);
+        }
+        Scope scope = scopes[scopeDepth];
+        if (scope == null) {
+            scopes[scopeDepth] = new Scope();
         } else {
-            scopes.add(new Scope());
+            scope.declarationCount = 0;
         }
     }
 
@@ -169,10 +188,12 @@ public class NamespaceScopeTracker {
         // Remove bindings declared at this level from activeBindings.
         // Skip entirely when nothing was declared at this depth (the common case) -
         // avoids allocating a KeySet iterator on every single element close.
-        Scope scope = scopes.get(scopeDepth);
-        if (scope.declarationCount > 0) {
+        Scope scope = scopes[scopeDepth];
+        int declared = scope.declarationCount;
+        if (declared > 0) {
             bindingVersion++;
-            for (String prefix : scope.bindings.keySet()) {
+            for (int i = 0; i < declared; i++) {
+                String prefix = scope.prefixes[i];
                 // Restore previous binding from outer scope (if any)
                 String outerBinding = findBindingInOuterScopes(prefix, scopeDepth - 1);
                 if (outerBinding != null) {
@@ -206,17 +227,18 @@ public class NamespaceScopeTracker {
             uri = internPool.intern(uri);
         }
         
-        Scope scope = scopes.get(scopeDepth);
+        Scope scope = scopes[scopeDepth];
         
         // Check if already declared at this level with same URI
-        String existing = scope.bindings.get(prefix);
-        if (uri.equals(existing)) {
-            return false; // Same binding, not new
+        int index = scope.indexOf(prefix);
+        if (index >= 0) {
+            if (uri.equals(scope.uris[index])) {
+                return false; // Same binding, not new
+            }
+            scope.uris[index] = uri;
+        } else {
+            scope.add(prefix, uri);
         }
-        
-        // Add/update binding
-        scope.bindings.put(prefix, uri);
-        scope.declarationCount++;
         activeBindings.put(prefix, uri);
         bindingVersion++;
         
@@ -316,11 +338,48 @@ public class NamespaceScopeTracker {
         // Called on every element start/end to fire (start|end)PrefixMapping. Most
         // elements declare no namespaces, so avoid allocating a HashMap entrySet
         // iterator for the (very common) empty case.
-        Scope scope = scopes.get(scopeDepth);
+        Scope scope = scopes[scopeDepth];
         if (scope.declarationCount == 0) {
             return Collections.emptyIterator();
         }
-        return scope.bindings.entrySet().iterator();
+        ArrayList<Map.Entry<String, String>> entries = new ArrayList<>(scope.declarationCount);
+        for (int i = 0; i < scope.declarationCount; i++) {
+            entries.add(new AbstractMap.SimpleImmutableEntry<String, String>(scope.prefixes[i], scope.uris[i]));
+        }
+        return entries.iterator();
+    }
+
+    /**
+     * The number of namespace declarations made at the current scope level
+     * only, which {@link #getCurrentScopePrefix} and {@link
+     * #getCurrentScopeURI} give by index, in the order they were declared.
+     * This is called on every element, to report the prefixes it declares, so
+     * it allocates nothing.
+     *
+     * @return the number of declarations, usually none
+     */
+    public int getCurrentScopeDeclarationCount() {
+        return scopeDepth < 0 ? 0 : scopes[scopeDepth].declarationCount;
+    }
+
+    /**
+     * The prefix of the {@code index}th declaration at the current scope level.
+     *
+     * @param index from 0 to {@link #getCurrentScopeDeclarationCount()} - 1
+     * @return the prefix, which is empty for the default namespace
+     */
+    public String getCurrentScopePrefix(int index) {
+        return scopes[scopeDepth].prefixes[index];
+    }
+
+    /**
+     * The namespace URI of the {@code index}th declaration at the current scope level.
+     *
+     * @param index from 0 to {@link #getCurrentScopeDeclarationCount()} - 1
+     * @return the URI
+     */
+    public String getCurrentScopeURI(int index) {
+        return scopes[scopeDepth].uris[index];
     }
     
     /**
@@ -423,7 +482,6 @@ public class NamespaceScopeTracker {
      * Removes all scopes except the root scope with pre-bound xml and xmlns.
      */
     public void reset() {
-        scopes.clear();
         activeBindings.clear();
         scopeDepth = -1;
         bindingVersion++;
@@ -440,9 +498,10 @@ public class NamespaceScopeTracker {
      */
     private String findBindingInOuterScopes(String prefix, int maxDepth) {
         for (int i = maxDepth; i >= 0; i--) {
-            String uri = scopes.get(i).bindings.get(prefix);
-            if (uri != null) {
-                return uri;
+            Scope scope = scopes[i];
+            int index = scope.indexOf(prefix);
+            if (index >= 0) {
+                return scope.uris[index];
             }
         }
         return null;

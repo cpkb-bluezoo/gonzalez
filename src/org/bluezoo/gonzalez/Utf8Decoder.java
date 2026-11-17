@@ -54,6 +54,27 @@ final class Utf8Decoder extends CharsetDecoder {
         super(StandardCharsets.UTF_8, 1.0f, 3.0f);
     }
 
+    /**
+     * Copies the bytes at {@code sp} to characters at {@code dp} up to the first
+     * that is not ASCII, or {@code max} of them, and returns how many it did. A
+     * method of its own, and not a loop in {@link #decodeLoop}, so that it is
+     * compiled by itself, with a profile of its own: the speed of the decoder
+     * on text with a few non-ASCII characters in it was twice as much in one
+     * JVM as in another, with the same input, when it was.
+     */
+    private static int copyAscii(byte[] src, int sp, char[] dst, int dp, int max) {
+        int n = 0;
+        while (n < max) {
+            int b = src[sp + n];
+            if (b < 0) {
+                break;
+            }
+            dst[dp + n] = (char) b;
+            n++;
+        }
+        return n;
+    }
+
     private static boolean isContinuation(int b) {
         return (b & 0xC0) == 0x80;
     }
@@ -95,15 +116,9 @@ final class Utf8Decoder extends CharsetDecoder {
         while (sp < safeSl && dp < safeDl) {
             int b1 = src[sp];
             if (b1 >= 0) {
-                int end = Math.min(safeSl, sp + (safeDl - dp));
-                while (sp < end) {
-                    int b = src[sp];
-                    if (b < 0) {
-                        break;
-                    }
-                    dst[dp++] = (char) b;
-                    sp++;
-                }
+                int n = copyAscii(src, sp, dst, dp, Math.min(safeSl, sp + (safeDl - dp)) - sp);
+                sp += n;
+                dp += n;
             } else if (b1 < -32) {
                 int b2 = src[sp + 1];
                 if (b1 < -62 || !isContinuation(b2)) {

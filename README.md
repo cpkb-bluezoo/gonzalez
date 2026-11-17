@@ -233,10 +233,10 @@ Gonzalez was compared with the SAX parser bundled with JDK 25 (Xerces) and
 `XMLHandler` interface, against Aalto's StAX cursor with a consumer that reads
 all the content on both sides, it is faster on markup-heavy, attribute-heavy and
 multibyte UTF-8 (by up to about 1.2 times), and on UTF-16 and EUC-JP (by 1.7 to
-1.9 times), and level or up to about 1.2 times slower on text with accented
+1.9 times), and level or up to about 1.15 times slower on text with accented
 letters in it, such as French and English with the odd accent. Through SAX it
-is between 1.4 and 2.4 times as fast as Xerces on every document compared, and
-Aalto SAX is between about 1.1 and 1.8 times as fast as Gonzalez SAX on UTF-8
+is between 1.4 and 2.5 times as fast as Xerces on every document compared, and
+Aalto SAX is between about 1.1 and 1.5 times as fast as Gonzalez SAX on UTF-8
 text and slower on UTF-16 and EUC-JP. The difference between the native
 interface and SAX is what the SAX layer costs.
 
@@ -245,7 +245,7 @@ That layer is also what lets the parser report every construct in pieces. In a
 CDATA section, attribute value or comment; the other parsers compared manage
 fewer of these, and none manages all four.
 
-**[PERFORMANCE.md](PERFORMANCE.md)** has the throughput tables for sixteen
+**[PERFORMANCE.md](PERFORMANCE.md)** has the throughput tables for seventeen
 documents, the memory comparison, and how to reproduce them.
 
 ## Conformance

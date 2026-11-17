@@ -22,10 +22,7 @@
 package org.bluezoo.gonzalez;
 
 import java.nio.CharBuffer;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Iterator;
-import java.util.Map;
 
 import org.xml.sax.ContentHandler;
 import org.xml.sax.DTDHandler;
@@ -147,7 +144,6 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
 
     // Reused across endElement() calls to avoid allocating a new list every
     // time just to reverse iteration order for endPrefixMapping.
-    private final ArrayList<String> endedPrefixesBuffer = new ArrayList<String>();
 
     // Current attribute being assembled from startAttribute()/
     // attributeValueContent() calls. attributeValueFirstChunk is true only
@@ -452,11 +448,10 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
         String qName = qNameStack[elementDepth - 1];
 
         if (namespaceTracker != null) {
-            Iterator<Map.Entry<String, String>> declarations = namespaceTracker.getCurrentScopeDeclarations();
-            while (declarations.hasNext()) {
-                Map.Entry<String, String> entry = declarations.next();
-                if (contentHandler != null) {
-                    contentHandler.startPrefixMapping(entry.getKey(), entry.getValue());
+            if (contentHandler != null) {
+                for (int i = 0, n = namespaceTracker.getCurrentScopeDeclarationCount(); i < n; i++) {
+                    contentHandler.startPrefixMapping(
+                            namespaceTracker.getCurrentScopePrefix(i), namespaceTracker.getCurrentScopeURI(i));
                 }
             }
 
@@ -549,15 +544,10 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
         }
 
         if (namespaceTracker != null) {
-            endedPrefixesBuffer.clear();
-            Iterator<Map.Entry<String, String>> declarations = namespaceTracker.getCurrentScopeDeclarations();
-            while (declarations.hasNext()) {
-                endedPrefixesBuffer.add(declarations.next().getKey());
-            }
             if (contentHandler != null) {
                 // Reverse order, matching ContentParser.fireStartElement/fireEndElement.
-                for (int i = endedPrefixesBuffer.size() - 1; i >= 0; i--) {
-                    contentHandler.endPrefixMapping(endedPrefixesBuffer.get(i));
+                for (int i = namespaceTracker.getCurrentScopeDeclarationCount() - 1; i >= 0; i--) {
+                    contentHandler.endPrefixMapping(namespaceTracker.getCurrentScopePrefix(i));
                 }
             }
             namespaceTracker.popContext();
