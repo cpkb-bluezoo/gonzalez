@@ -217,18 +217,53 @@ the layering all the same, and is what the SAX columns' lower throughput pays
 for. To run it:
 
 ```sh
-benchmark/external-compare/run-memory.sh [megabytes] [heap]
+ant benchmark-memory
 ```
 
-with the same `AALTO_JAR` and `STAX2_JAR` variables; it defaults to 256 MB and a
-32 MB heap.
+The construct is 256 MB and the heap 32 MB unless `-Dbenchmark.memory.mb=N` and
+`-Dbenchmark.memory.heap=Nm` say otherwise. The target runs
+`benchmark/external-compare/run-memory.sh`, which takes the same two as
+arguments, and needs `AALTO_JAR` and `STAX2_JAR` when run on its own.
 
-To reproduce the comparison, set the external dependency jar locations and
-run the script:
+To reproduce the comparison:
 
 ```sh
-export AALTO_JAR=/path/to/aalto-xml.jar
-export STAX2_JAR=/path/to/stax2-api.jar
+ant benchmark-compare
+```
+
+The target builds Gonzalez, fetches what it is measured against (aalto-xml, into
+`lib`) and the documents it is measured on (the French and German novels, into
+`benchmark/corpora`), each download checked against a SHA-256, runs the whole
+comparison, each figure in fresh JVMs, and prints the tables above, as Markdown,
+with the commit, the JDK and the machine it was run on. It takes a long time,
+and writes the tables to `build/performance.md`. `-Dbenchmark.reps=N` is how
+many fresh JVMs each figure is the median of (five by default),
+`-Dbenchmark.compare.corpora="plain french"` runs only some of the documents,
+and `-Dbenchmark.report=FILE` says where the tables are written. `ant
+download-comparison-deps` and `ant download-corpora` fetch their parts on
+their own.
+
+The "Performance comparison" workflow runs the same target on GitHub for any
+branch, tag or commit, `main` unless another is given, and shows the tables on
+the summary page of the run: from the Actions tab, or with
+
+```sh
+gh workflow run performance.yml -f ref=my-branch
+```
+
+A hosted runner is shared with other work and is not the same machine from one
+run to the next, so compare the columns of one run with each other, and not
+its figures with those here or in another run.
+
+For more control, the scripts that the target runs are in
+`benchmark/external-compare`. They need `AALTO_JAR` and `STAX2_JAR` to name the
+jars (after `ant download-comparison-deps`, `lib/aalto-xml-1.4.0.jar` and
+`lib/stax2-api-4.3.0.jar`), and exit with an error if either is unset or does
+not name a file:
+
+```sh
+export AALTO_JAR=lib/aalto-xml-1.4.0.jar
+export STAX2_JAR=lib/stax2-api-4.3.0.jar
 benchmark/external-compare/run-isolated.sh
 ```
 
@@ -240,25 +275,8 @@ build of Gonzalez. The modes of the first table are `xmlhandler-sum` and
 `aalto-sax-touch`. The modes `xmlhandler`, `sax` and `jdk`, with empty handlers,
 and `aalto-stax`, which only steps the cursor through the events and reads
 nothing, do less work than the others and are not comparable with them.
+`performance-tables.sh` takes the number of runs and a file for the tables, and
+includes the French and German novels when they are in `benchmark/corpora` (or
+`FRENCH_XML` and `GERMAN_XML` name a French and a German document of your own).
 `benchmark/external-compare/run.sh` is a quicker single-JVM comparison that runs
-every parser in turn.
-
-`benchmark/external-compare/performance-tables.sh` runs the whole comparison and
-prints the two tables above, as Markdown, with the commit, the JDK and the
-machine it was run on. It includes the French and German novels when
-`ant download-corpora` has fetched them (or `FRENCH_XML` and `GERMAN_XML` name
-a French and a German document of your own), and the workflow fetches them
-first. The "Performance comparison" workflow runs it on GitHub
-for any branch, tag or commit, `main` unless another is given, and shows the
-tables on the summary page of the run: from the Actions tab, or with
-
-```sh
-gh workflow run performance.yml -f ref=my-branch
-```
-
-A hosted runner is shared with other work and is not the same machine from one
-run to the next, so compare the columns of one run with each other, and not
-its figures with those here or in another run.
-
-The scripts exit with an error if either variable is unset or does not name a
-file. `benchmark/external-compare/run-dtd-probe.sh` uses the same variables.
+every parser in turn, and `run-dtd-probe.sh` uses the same variables.

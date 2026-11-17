@@ -2,7 +2,8 @@ name: Performance comparison
 
 # Compares Gonzalez with the JDK's parser and aalto-xml, and prints the tables
 # of PERFORMANCE.md for the branch, tag or commit asked for: the main branch
-# unless another is given. It is run by hand, from the Actions tab or with
+# unless another is given. It runs "ant benchmark-compare" of that commit, so
+# the commit must have the target. It is run by hand, from the Actions tab or with
 #
 #   gh workflow run performance.yml -f ref=my-branch
 #
@@ -33,10 +34,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  AALTO_VERSION: '1.4.0'
-  STAX2_VERSION: '4.3.0'
-
 jobs:
   compare:
     runs-on: ubuntu-latest
@@ -54,41 +51,19 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
 
-      - name: Fetch the parsers to compare with
-        run: |
-          set -euo pipefail
-          dir="$RUNNER_TEMP/comparison"
-          mkdir -p "$dir"
-          central=https://repo1.maven.org/maven2
-          fetch() {
-            # fetch <path under Maven Central>: the jar, checked against the
-            # SHA-1 that Maven Central publishes beside it
-            local file="$dir/$(basename "$1")"
-            curl -fsSL "$central/$1" -o "$file"
-            curl -fsSL "$central/$1.sha1" -o "$file.sha1"
-            echo "$(cut -d' ' -f1 "$file.sha1")  $file" | sha1sum -c -
-          }
-          fetch "com/fasterxml/aalto-xml/$AALTO_VERSION/aalto-xml-$AALTO_VERSION.jar"
-          fetch "org/codehaus/woodstox/stax2-api/$STAX2_VERSION/stax2-api-$STAX2_VERSION.jar"
-          echo "AALTO_JAR=$dir/aalto-xml-$AALTO_VERSION.jar" >> "$GITHUB_ENV"
-          echo "STAX2_JAR=$dir/stax2-api-$STAX2_VERSION.jar" >> "$GITHUB_ENV"
-
-      - name: Fetch the French and German novels
-        run: ant -q download-corpora
-
+      # The build does the rest: it fetches aalto-xml and the French and German
+      # novels, each checked against a checksum, and runs the comparison.
       - name: Run the comparison
         env:
           BENCH_REF: ${{ inputs.ref }}
           REPS: ${{ inputs.reps }}
-        run: |
-          set -euo pipefail
-          benchmark/external-compare/performance-tables.sh "$REPS" | tee performance.md
+        run: ant benchmark-compare -Dbenchmark.reps="$REPS"
 
       - name: Show the tables on the summary page
-        run: cat performance.md >> "$GITHUB_STEP_SUMMARY"
+        run: cat build/performance.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the tables
         uses: actions/upload-artifact@v4
         with:
           name: performance-${{ github.run_id }}
-          path: performance.md
+          path: build/performance.md

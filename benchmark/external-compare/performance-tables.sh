@@ -1,9 +1,10 @@
 #!/bin/bash
 # Runs the comparison with the JDK's parser and aalto-xml and prints the tables
-# of PERFORMANCE.md, as Markdown, to standard output. Progress goes to
-# standard error.
+# of PERFORMANCE.md, as Markdown, to standard output, or to the file named by
+# the second argument. Progress goes to standard error. The usual way to run it
+# is "ant benchmark-compare", which fetches what it needs first.
 #
-#   benchmark/external-compare/performance-tables.sh [reps]
+#   benchmark/external-compare/performance-tables.sh [reps [report-file]]
 #
 # reps is how many fresh JVMs each figure is the median of; the default is 5,
 # which is what the figures in PERFORMANCE.md are. Set AALTO_JAR and
@@ -21,6 +22,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
 REPS="${1:-5}"
+if [ -n "${2:-}" ]; then
+    exec > "$2"
+fi
 RUN=benchmark/external-compare/run-isolated.sh
 # The two real documents, a French and a German novel, are not kept with the
 # code. They are measured too when they have been downloaded (ant
@@ -146,6 +150,14 @@ for c in $CORPORA; do
 done
 OTHERS="${OTHERS# }"
 
+# cells for the corpora other than the DTD one, of which there may be none (and
+# an empty list would be taken by run-isolated.sh to mean all of them)
+others_cells() {
+    if [ -n "$OTHERS" ]; then
+        cells "$OTHERS" "$1"
+    fi
+}
+
 # ---- the native interfaces -----------------------------------------------
 
 log "Native interfaces..."
@@ -158,7 +170,7 @@ echo "values, and the length of every name. Throughput is of the encoded documen
 echo
 echo "| Corpus | Size | Gonzalez XMLHandler | Aalto StAX cursor | Gonzalez / Aalto |"
 echo "|--------|-----:|--------------------:|------------------:|-----------------:|"
-cells "$OTHERS" "xmlhandler-sum aalto-stax-sum" | while read -r corpus a b; do
+others_cells "xmlhandler-sum aalto-stax-sum" | while read -r corpus a b; do
     bytes="$(size "$corpus")"
     awk -v label="$(name_of "$corpus")" -v size="$(mib "$bytes")" \
         -v a="$a" -v b="$b" "$awk_fmt"'
@@ -179,7 +191,7 @@ echo "attribute value only when asked.)"
 echo
 echo "| Corpus | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Gonzalez / Aalto |"
 echo "|--------|-------------:|---------------:|----------:|-----------------:|"
-cells "$OTHERS" "sax-touch jdk-touch aalto-sax-touch" | while read -r corpus a b c; do
+others_cells "sax-touch jdk-touch aalto-sax-touch" | while read -r corpus a b c; do
     awk -v label="$(name_of "$corpus")" -v a="$a" -v b="$b" -v c="$c" "$awk_fmt"'
         BEGIN {
             printf "| %s | %s MB/s | %s MB/s | %s MB/s | %.2f |\n", label, fmt(a), fmt(b), fmt(c), a / c

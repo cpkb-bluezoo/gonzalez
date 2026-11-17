@@ -683,20 +683,22 @@
   <property name='eltec.fra.sha256' value='eae4b3d3b7424e3da9e2e8e1b1f58fa640b8dc8470aaf9c733c33459fa6d2996'/>
   <property name='eltec.deu.sha256' value='2a39aadd9294e43b6bf8f075916e83642ea6532bd82688a2579e27e05d9479af'/>
 
-  <macrodef name='fetch-document'>
+  <!-- A download that is checked against a SHA-256 before it is used: kept if
+       it matches, and deleted, with the build failing, if it does not. -->
+  <macrodef name='fetch-verified'>
     <attribute name='url'/>
+    <attribute name='dir'/>
     <attribute name='file'/>
     <attribute name='sha256'/>
     <sequential>
-      <get src='@{url}' dest='${benchmark.corpora}/@{file}' skipexisting='true' verbose='true'/>
-      <checksum file='${benchmark.corpora}/@{file}' algorithm='SHA-256'
+      <get src='@{url}' dest='@{dir}/@{file}' skipexisting='true' verbose='true'/>
+      <checksum file='@{dir}/@{file}' algorithm='SHA-256'
                 property='@{sha256}' verifyproperty='checked.@{file}'/>
       <condition property='valid.@{file}'>
         <equals arg1='${checked.@{file}}' arg2='true'/>
       </condition>
-      <!-- a document that is not the one measured is not kept to be used -->
-      <delete file='${benchmark.corpora}/@{file}' unless:set='valid.@{file}' xmlns:unless='ant:unless'/>
-      <fail message='@{file} is not the document expected (SHA-256 @{sha256}); it has been removed.'
+      <delete file='@{dir}/@{file}' unless:set='valid.@{file}' xmlns:unless='ant:unless'/>
+      <fail message='@{file} is not the file expected (SHA-256 @{sha256}); it has been removed.'
             unless='valid.@{file}'/>
     </sequential>
   </macrodef>
@@ -704,13 +706,82 @@
   <target name='download-corpora'
           description='Download the French and German novels for the parser comparison'>
     <mkdir dir='${benchmark.corpora}'/>
-    <fetch-document
+    <fetch-verified
         url='https://raw.githubusercontent.com/COST-ELTeC/ELTeC-fra/${eltec.fra.commit}/level1/${eltec.fra.file}'
-        file='${eltec.fra.file}' sha256='${eltec.fra.sha256}'/>
-    <fetch-document
+        dir='${benchmark.corpora}' file='${eltec.fra.file}' sha256='${eltec.fra.sha256}'/>
+    <fetch-verified
         url='https://raw.githubusercontent.com/COST-ELTeC/ELTeC-deu/${eltec.deu.commit}/level1/${eltec.deu.file}'
-        file='${eltec.deu.file}' sha256='${eltec.deu.sha256}'/>
+        dir='${benchmark.corpora}' file='${eltec.deu.file}' sha256='${eltec.deu.sha256}'/>
     <echo message='French and German documents are in ${benchmark.corpora}'/>
+  </target>
+
+  <!-- The parser that Gonzalez is compared with (and its API jar). Not a
+       product dependency: only the comparison uses them, checked against the
+       SHA-256 of the jars published on Maven Central. -->
+  <property name='aalto.version' value='1.4.0'/>
+  <property name='stax2.version' value='4.3.0'/>
+  <property name='aalto.jar' location='${lib}/aalto-xml-${aalto.version}.jar'/>
+  <property name='stax2.jar' location='${lib}/stax2-api-${stax2.version}.jar'/>
+  <property name='aalto.sha256' value='1811be73195cad1d11f609c1f6527ca74a4ae1484bef73c6acaa0491991e5765'/>
+  <property name='stax2.sha256' value='7c805f36129ea9fa42b696093b7ae1eb20bb6ccec65c8280d6f33db5609ca5e1'/>
+
+  <target name='download-comparison-deps' description='Download aalto-xml, which the comparison measures Gonzalez against'>
+    <mkdir dir='${lib}'/>
+    <fetch-verified
+        url='https://repo1.maven.org/maven2/com/fasterxml/aalto-xml/${aalto.version}/aalto-xml-${aalto.version}.jar'
+        dir='${lib}' file='aalto-xml-${aalto.version}.jar' sha256='${aalto.sha256}'/>
+    <fetch-verified
+        url='https://repo1.maven.org/maven2/org/codehaus/woodstox/stax2-api/${stax2.version}/stax2-api-${stax2.version}.jar'
+        dir='${lib}' file='stax2-api-${stax2.version}.jar' sha256='${stax2.sha256}'/>
+  </target>
+
+  <!-- The comparison with the JDK's parser and aalto-xml: builds Gonzalez,
+       fetches what it is measured against and the documents it is measured on,
+       and runs benchmark/external-compare/performance-tables.sh, which prints
+       the tables of PERFORMANCE.md (it can be run on its own for more control).
+       -Dbenchmark.reps=N is how many fresh JVMs each figure is the median of,
+       -Dbenchmark.compare.corpora="plain accent" limits it to some of the
+       documents, and -Dbenchmark.report=FILE is where the tables are written. -->
+  <property name='benchmark.reps' value='5'/>
+  <property name='benchmark.compare.corpora' value=''/>
+  <property name='benchmark.report' location='${build}/performance.md'/>
+
+  <target name='benchmark-compare'
+          depends='build-core,download-comparison-deps,download-corpora'
+          description='Compare with the JDK parser and aalto-xml; tables are printed and written to build/performance.md'>
+    <mkdir dir='${build}'/>
+    <echo message='Comparing, with ${benchmark.reps} JVMs for each figure. This takes a long time.'/>
+    <exec executable='bash' dir='${basedir}' failonerror='true'>
+      <arg value='benchmark/external-compare/performance-tables.sh'/>
+      <arg value='${benchmark.reps}'/>
+      <arg value='${benchmark.report}'/>
+      <env key='AALTO_JAR' file='${aalto.jar}'/>
+      <env key='STAX2_JAR' file='${stax2.jar}'/>
+      <env key='GONZALEZ_CLASSES' file='${build.core}'/>
+      <env key='CORPORA' value='${benchmark.compare.corpora}'/>
+    </exec>
+    <concat><fileset file='${benchmark.report}'/></concat>
+    <echo message='The tables are in ${benchmark.report}'/>
+  </target>
+
+  <!-- Which parsers get to the end of one very large construct (a text node, a
+       CDATA section, an attribute value, a comment) in a small heap, by
+       benchmark/external-compare/run-memory.sh. -Dbenchmark.memory.mb=N is the
+       size of the construct and -Dbenchmark.memory.heap=Nm the heap. -->
+  <property name='benchmark.memory.mb' value='256'/>
+  <property name='benchmark.memory.heap' value='32m'/>
+
+  <target name='benchmark-memory'
+          depends='build-core,download-comparison-deps'
+          description='Compare how the parsers cope with one very large construct in a small heap'>
+    <exec executable='bash' dir='${basedir}' failonerror='true'>
+      <arg value='benchmark/external-compare/run-memory.sh'/>
+      <arg value='${benchmark.memory.mb}'/>
+      <arg value='${benchmark.memory.heap}'/>
+      <env key='AALTO_JAR' file='${aalto.jar}'/>
+      <env key='STAX2_JAR' file='${stax2.jar}'/>
+      <env key='GONZALEZ_CLASSES' file='${build.core}'/>
+    </exec>
   </target>
 
   <target name='build-benchmark' depends='build,download-jmh' description='Compile JMH benchmarks'>

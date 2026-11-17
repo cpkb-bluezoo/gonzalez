@@ -6,12 +6,17 @@ All notable changes to Gonzalez will be documented in this file.
 
 ### Added
 
-- **A workflow that runs the performance comparison.** The "Performance
-  comparison" workflow measures Gonzalez, the JDK's parser and aalto-xml on a
-  branch, tag or commit (`main` unless another is given), and prints the tables
-  of PERFORMANCE.md on the summary page of the run, from
-  `benchmark/external-compare/performance-tables.sh`, which does the same from a
-  command line. The figures in PERFORMANCE.md were remade with it.
+- **`ant benchmark-compare`, and a workflow that runs it.** The target builds
+  Gonzalez, fetches aalto-xml and the French and German novels (`ant
+  download-comparison-deps` and `ant download-corpora`, each download checked
+  against a SHA-256), runs the comparison with the JDK's parser and aalto-xml,
+  and prints the tables of PERFORMANCE.md, which it writes to
+  `build/performance.md`. The "Performance comparison" workflow runs it on a
+  branch, tag or commit (`main` unless another is given) and shows the tables
+  on the summary page of the run. The figures in PERFORMANCE.md were remade
+  with it.
+  `ant benchmark-memory` runs the memory comparison of PERFORMANCE.md the
+  same way.
 
 - **The sizes of the parser's own buffers are settings.** `XMLParser` has
   `setDecodeBufferSize`, `setScanBufferSize`, `setNameTableSize` and
@@ -160,7 +165,7 @@ All notable changes to Gonzalez will be documented in this file.
   and a French and a German novel that `ant download-corpora` fetches (the
   `benchmark` target needs it) into `benchmark/corpora`, each from a fixed
   commit of its ELTeC collection and checked against its SHA-256, and that
-  the harness, `performance-tables.sh` and the workflow then use.
+  the harness and `performance-tables.sh` then use.
   `IsolatedAB` has the new modes `xmlhandler-sum`,
   `aalto-stax-sum` and `jdk-touch`, and `performance-tables.sh` prints the
   tables.
