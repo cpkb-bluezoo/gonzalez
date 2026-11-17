@@ -23,6 +23,13 @@ import org.xml.sax.helpers.DefaultHandler;
  *   java ... org.bluezoo.gonzalez.IsolatedAB &lt;corpus&gt; &lt;mode&gt;
  *
  * corpus: plain|attrs|whitespace|markup|multibyte|accent|utf16|euc-jp|xhtml-dtd
+ *         french and german (a document each, named by the environment
+ *         variables FRENCH_XML and GERMAN_XML); and, made from the plain
+ *         corpus or generated, to see how kinds of text with non-ASCII
+ *         characters in it are parsed: latin (a French-like accent on every
+ *         e), latin-light (on every second e), odd-word (English with a
+ *         foreign word now and then), emoji (casual English) and mathml
+ *         (many symbols among much markup)
  *
  * mode:
  *   xmlhandler           Gonzalez XMLParser with an empty XMLHandler, defaults
@@ -33,9 +40,13 @@ import org.xml.sax.helpers.DefaultHandler;
  *   sax-touch-reuse      as sax-touch, one Parser reset after each document
  *   aalto-sax-touch-reuse  as aalto-sax-touch, one SAXParser used for every document
  *   aalto-sax            aalto-xml SAX
- *   aalto-stax           aalto-xml StAX cursor
+ *   aalto-stax           aalto-xml StAX cursor, only stepping it (reads nothing, so it does less
+ *                        than xmlhandler, which has already decoded all it hands over)
+ *   xmlhandler-sum       Gonzalez XMLParser whose handler reads every character and name
+ *   aalto-stax-sum       aalto-xml StAX cursor, the loop reading the same: native against native
  *   sax-touch            Gonzalez Parser (SAX), the handler reading every
  *                        attribute name and value and the length of all text
+ *   jdk-touch            the JDK's SAX parser, the same handler
  *   aalto-sax-touch      aalto-xml SAX, the same handler
  *
  * The "touch" modes matter because a handler that ignores its attributes
@@ -116,8 +127,117 @@ public class IsolatedAB {
         return out.toByteArray();
     }
 
+    /**
+     * The plain corpus with its text changed as another kind of text is: only
+     * what is between tags is touched, so that markup stays well-formed.
+     *
+     * @param every a change is made at every {@code every}th place where one
+     *        can be (a letter e, or a space), counting the text only
+     * @param letterE true to put {@code sequence} in place of the letter e
+     *        (as an accented e is in French), false to put it after a space
+     */
+    private static byte[] withNonAscii(byte[] plain, int every, int[] sequence, boolean letterE) {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream(plain.length + plain.length / 8);
+        boolean inTag = false;
+        int places = 0;
+        for (int i = 0; i < plain.length; i++) {
+            byte b = plain[i];
+            if (b == '<') {
+                inTag = true;
+            }
+            boolean place = !inTag && (letterE ? b == 'e' : b == ' ');
+            if (place && ++places % every == 0) {
+                if (!letterE) {
+                    out.write(b);
+                }
+                for (int x : sequence) {
+                    out.write(x);
+                }
+            } else {
+                out.write(b);
+            }
+            if (b == '>') {
+                inTag = false;
+            }
+        }
+        return out.toByteArray();
+    }
+
+    /**
+     * Mathematical markup: a few thousand small expressions of identifiers
+     * (Latin and Greek), numbers and operators (some of them the symbols of
+     * Unicode's mathematical blocks, three bytes each), in the nesting that
+     * MathML has, so that there is a good deal of markup for each character
+     * of text and a non-ASCII symbol every few elements.
+     */
+    private static byte[] mathml() throws Exception {
+        String[] identifiers = { "x", "y", "n", "\u03b1", "\u03b2", "\u03c0", "\u03b8", "a", "\u03bb" };
+        String[] operators = { "+", "=", "\u2212", "\u00d7", "\u2062", "\u2211", "\u222b", "\u2264", "\u2192", "(", ")" };
+        java.util.Random random = new java.util.Random(7);
+        StringBuilder sb = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<doc>\n");
+        while (sb.length() < 1200000) {
+            sb.append("  <math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mrow>\n");
+            int terms = 4 + random.nextInt(8);
+            for (int t = 0; t < terms; t++) {
+                switch (random.nextInt(5)) {
+                    case 0:
+                        sb.append("    <mi>").append(identifiers[random.nextInt(identifiers.length)]).append("</mi>\n");
+                        break;
+                    case 1:
+                        sb.append("    <mo>").append(operators[random.nextInt(operators.length)]).append("</mo>\n");
+                        break;
+                    case 2:
+                        sb.append("    <mn>").append(random.nextInt(100)).append("</mn>\n");
+                        break;
+                    case 3:
+                        sb.append("    <msup><mi>").append(identifiers[random.nextInt(identifiers.length)])
+                            .append("</mi><mn>").append(2 + random.nextInt(8)).append("</mn></msup>\n");
+                        break;
+                    default:
+                        sb.append("    <mfrac><mrow><mi>").append(identifiers[random.nextInt(identifiers.length)])
+                            .append("</mi><mo>").append(operators[random.nextInt(operators.length)])
+                            .append("</mo><mn>1</mn></mrow><mrow><mi>")
+                            .append(identifiers[random.nextInt(identifiers.length)]).append("</mi></mrow></mfrac>\n");
+                        break;
+                }
+            }
+            sb.append("  </mrow></math>\n");
+        }
+        sb.append("</doc>\n");
+        return sb.toString().getBytes("UTF-8");
+    }
+
+    /**
+     * The path in an environment variable, for a corpus that is real text and
+     * so is not kept with the code: the corpora "french" and "german" are each
+     * a document that the caller has, such as a novel from the ELTeC
+     * collection (public domain TEI XML in each language).
+     */
+    private static String fromEnvironment(String name) {
+        String path = System.getenv(name);
+        if (path == null || path.isEmpty()) {
+            throw new IllegalStateException("Set " + name + " to the path of an XML document");
+        }
+        return path;
+    }
+
     private static byte[] corpus(String name) throws Exception {
         switch (name) {
+            case "latin":
+                return withNonAscii(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")), 1,
+                        new int[] { 0xC3, 0xA9 }, true);
+            case "latin-light":
+                return withNonAscii(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")), 2,
+                        new int[] { 0xC3, 0xA9 }, true);
+            case "odd-word":
+                return withNonAscii(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")), 250,
+                        new int[] { 0xC3, 0xA9 }, false);
+            case "emoji":
+                return withNonAscii(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")), 60,
+                        new int[] { 0xF0, 0x9F, 0x98, 0x80 }, false);
+            case "mathml": return mathml();
+            case "french": return Files.readAllBytes(Paths.get(fromEnvironment("FRENCH_XML")));
+            case "german": return Files.readAllBytes(Paths.get(fromEnvironment("GERMAN_XML")));
             case "plain": return Files.readAllBytes(Paths.get("benchmark/resources/large.xml"));
             case "accent": return accented(Files.readAllBytes(Paths.get("benchmark/resources/large.xml")));
             case "utf16": return BenchmarkCorpora.japaneseUtf16();
@@ -215,6 +335,15 @@ public class IsolatedAB {
                     p.parse(new ByteArrayInputStream(bytes), EMPTY_SAX);
                 };
             }
+            case "jdk-touch": {
+                final SAXParserFactory f = SAXParserFactory.newInstance();
+                f.setNamespaceAware(true);
+                final TouchHandler h = new TouchHandler();
+                return () -> {
+                    SAXParser p = f.newSAXParser();
+                    p.parse(new ByteArrayInputStream(bytes), h);
+                };
+            }
             case "aalto-sax": {
                 final SAXParserFactory f = new com.fasterxml.aalto.sax.SAXParserFactoryImpl();
                 f.setNamespaceAware(true);
@@ -222,6 +351,14 @@ public class IsolatedAB {
                     SAXParser p = f.newSAXParser();
                     p.parse(new ByteArrayInputStream(bytes), EMPTY_SAX);
                 };
+            }
+            case "xmlhandler-sum": {
+                final SumHandler sum = new SumHandler();
+                return () -> xmlHandler(bytes, true, sum);
+            }
+            case "aalto-stax-sum": {
+                final XMLInputFactory f = new com.fasterxml.aalto.stax.InputFactoryImpl();
+                return () -> aaltoStaxSum(f, bytes);
             }
             case "aalto-stax": {
                 final XMLInputFactory f = new com.fasterxml.aalto.stax.InputFactoryImpl();
@@ -239,9 +376,13 @@ public class IsolatedAB {
     }
 
     private static void xmlHandler(byte[] bytes, boolean limits) throws Exception {
+        xmlHandler(bytes, limits, EMPTY);
+    }
+
+    private static void xmlHandler(byte[] bytes, boolean limits, XMLHandler handler) throws Exception {
         XMLParser parser = new XMLParser();
         parser.setNamespaceAware(true);
-        parser.setHandler(EMPTY);
+        parser.setHandler(handler);
         Integer decodeBuffer = Integer.getInteger("decodebuf");
         if (decodeBuffer != null) {
             parser.setDecodeBufferSize(decodeBuffer);
@@ -255,7 +396,100 @@ public class IsolatedAB {
         parser.close();
     }
 
-    private static final class EmptyHandler implements XMLHandler {
+    /**
+     * What a consumer of the native interface does with what it is given at
+     * the least: reads every character of text, comments, processing
+     * instruction data and attribute values, and the length of every name,
+     * and keeps the sum so that none of it is left undone.
+     */
+    private static final class SumHandler extends EmptyHandler {
+        long sink;
+
+        private void sum(CharBuffer text) {
+            if (text.hasArray()) {
+                char[] array = text.array();
+                int end = text.arrayOffset() + text.limit();
+                long total = 0;
+                for (int i = text.arrayOffset() + text.position(); i < end; i++) {
+                    total += array[i];
+                }
+                sink += total;
+            } else {
+                for (int i = text.position(); i < text.limit(); i++) {
+                    sink += text.get(i);
+                }
+            }
+        }
+
+        @Override public void startElement(String qName) { sink += qName.length(); }
+        @Override public void namespace(String prefix, String uri) { sink += prefix.length() + uri.length(); }
+        @Override public void startAttribute(String name, String type, boolean declared, boolean specified) {
+            sink += name.length();
+        }
+        @Override public void attributeValueContent(CharBuffer value, boolean end) { sum(value); }
+        @Override public void characters(CharBuffer text, boolean ignorable, boolean end) { sum(text); }
+        @Override public void commentData(CharBuffer text, boolean end) { sum(text); }
+        @Override public void piTarget(String target) { sink += target.length(); }
+        @Override public void piData(CharBuffer data, boolean end) { sum(data); }
+    }
+
+    private static long staxSink;
+    private static final boolean ATTRIBUTE_LENGTH_ONLY = Boolean.getBoolean("attrlength");
+
+    /** The same consumer work through Aalto's StAX cursor, its native interface. */
+    private static void aaltoStaxSum(XMLInputFactory factory, byte[] bytes) throws Exception {
+        XMLStreamReader r = factory.createXMLStreamReader(new ByteArrayInputStream(bytes));
+        long sink = 0;
+        while (r.hasNext()) {
+            switch (r.next()) {
+                case javax.xml.stream.XMLStreamConstants.START_ELEMENT:
+                    sink += r.getLocalName().length();
+                    for (int i = 0, n = r.getAttributeCount(); i < n; i++) {
+                        sink += r.getAttributeLocalName(i).length();
+                        String value = r.getAttributeValue(i);
+                        if (ATTRIBUTE_LENGTH_ONLY) {
+                            // Bounds the cost of reading a String with charAt, which a
+                            // consumer of Aalto's attribute values may not need to do.
+                            sink += value.length();
+                            continue;
+                        }
+                        for (int j = 0, m = value.length(); j < m; j++) {
+                            sink += value.charAt(j);
+                        }
+                    }
+                    for (int i = 0, n = r.getNamespaceCount(); i < n; i++) {
+                        String prefix = r.getNamespacePrefix(i);
+                        sink += (prefix == null ? 0 : prefix.length()) + r.getNamespaceURI(i).length();
+                    }
+                    break;
+                case javax.xml.stream.XMLStreamConstants.CHARACTERS:
+                case javax.xml.stream.XMLStreamConstants.CDATA:
+                case javax.xml.stream.XMLStreamConstants.SPACE:
+                case javax.xml.stream.XMLStreamConstants.COMMENT: {
+                    char[] text = r.getTextCharacters();
+                    int start = r.getTextStart();
+                    int end = start + r.getTextLength();
+                    for (int i = start; i < end; i++) {
+                        sink += text[i];
+                    }
+                    break;
+                }
+                case javax.xml.stream.XMLStreamConstants.PROCESSING_INSTRUCTION:
+                    sink += r.getPITarget().length();
+                    String data = r.getPIData();
+                    for (int j = 0, m = data.length(); j < m; j++) {
+                        sink += data.charAt(j);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        r.close();
+        staxSink += sink;
+    }
+
+    private static class EmptyHandler implements XMLHandler {
         @Override public void setLocator(Locator locator) { }
         @Override public void setXml11(boolean xml11) { }
         @Override public void startDocument() { }

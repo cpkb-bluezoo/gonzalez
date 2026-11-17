@@ -9,8 +9,9 @@
 # which is what the figures in PERFORMANCE.md are. Set AALTO_JAR and
 # STAX2_JAR to the dependency jars, as for run-isolated.sh, and
 # GONZALEZ_CLASSES to measure a build other than build/core. To try it out
-# more quickly, CORPORA="plain accent" runs only the corpora named, of those
-# in the first table below.
+# more quickly, CORPORA="plain accent" runs only the corpora named. The two
+# real documents are measured, as well as the others, when FRENCH_XML and
+# GERMAN_XML are set to the paths of a French and a German document.
 #
 # BENCH_REF, if set, is how the commit is described in the heading, for a run
 # in which git does not know it as a branch.
@@ -21,7 +22,14 @@ cd "$REPO_ROOT"
 
 REPS="${1:-5}"
 RUN=benchmark/external-compare/run-isolated.sh
-CORPORA="${CORPORA:-plain attrs whitespace markup multibyte accent utf16 euc-jp xhtml-dtd}"
+# The two real documents, a French and a German novel, are not kept with the
+# code: they are measured too if FRENCH_XML and GERMAN_XML name them.
+if [ -z "${CORPORA:-}" ]; then
+    CORPORA="plain attrs whitespace markup multibyte accent latin-light latin odd-word emoji mathml utf16 euc-jp xhtml-dtd"
+    if [ -n "${FRENCH_XML:-}" ] && [ -n "${GERMAN_XML:-}" ]; then
+        CORPORA="$CORPORA french german"
+    fi
+fi
 
 log() { echo "$@" >&2; }
 
@@ -99,9 +107,16 @@ name_of() {
         markup) echo "Markup-heavy UTF-8" ;;
         multibyte) echo "Multibyte UTF-8" ;;
         accent) echo "Mostly ASCII with accents" ;;
+        latin-light) echo "Accent on every second e (German-like)" ;;
+        latin) echo "Accent on every e (French-like)" ;;
+        odd-word) echo "English with the odd foreign word" ;;
+        emoji) echo "English with emoji" ;;
+        mathml) echo "MathML (generated)" ;;
+        french) echo "French novel (ELTeC)" ;;
+        german) echo "German novel (ELTeC)" ;;
         utf16) echo "Japanese UTF-16LE" ;;
         euc-jp) echo "Japanese EUC-JP" ;;
-        xhtml-dtd) echo "XHTML internal DTD (not equivalent)" ;;
+        xhtml-dtd) echo "XHTML with an internal DTD subset" ;;
         *) echo "$1" ;;
     esac
 }
@@ -109,51 +124,76 @@ name_of() {
 # mib <bytes>
 mib() { awk -v b="$1" 'BEGIN { printf "%.2f MiB", b / 1048576 }'; }
 
-# ---- throughput, empty handlers ------------------------------------------
+# ---- which corpora ---------------------------------------------------------
 
-log "Throughput with empty handlers..."
-echo "### Throughput"
+# The document with an internal DTD subset is not measured against Aalto, which
+# is not a validating parser and does not process the subset (see the note
+# under the SAX table), nor in the native table, in which Xerces, the other
+# parser that does process it, has no counterpart. It is in the SAX table, for
+# Gonzalez and Xerces.
+DTD=xhtml-dtd
+OTHERS=""
+HAS_DTD=no
+for c in $CORPORA; do
+    if [ "$c" = "$DTD" ]; then
+        HAS_DTD=yes
+    else
+        OTHERS="$OTHERS $c"
+    fi
+done
+OTHERS="${OTHERS# }"
+
+# ---- the native interfaces -----------------------------------------------
+
+log "Native interfaces..."
+echo "### Native interfaces"
 echo
-echo "The SAX parsers are given an empty handler; the \`XMLHandler\` column is the"
-echo "native path with an empty \`XMLHandler\`."
+echo "Gonzalez's \`XMLHandler\` against Aalto's StAX cursor, each the parser's own"
+echo "interface and the most direct. The consumer of each reads what it is given:"
+echo "every character of text, comments, processing instruction data and attribute"
+echo "values, and the length of every name. Throughput is of the encoded document."
 echo
-echo "| Corpus | Size | Gonzalez XMLHandler | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Aalto StAX cursor |"
-echo "|--------|-----:|--------------------:|-------------:|----------------:|----------:|------------------:|"
-cells "$CORPORA" "xmlhandler sax jdk aalto-sax aalto-stax" | while read -r corpus a b c d e; do
-    label="$(name_of "$corpus")"
+echo "| Corpus | Size | Gonzalez XMLHandler | Aalto StAX cursor | Gonzalez / Aalto |"
+echo "|--------|-----:|--------------------:|------------------:|-----------------:|"
+cells "$OTHERS" "xmlhandler-sum aalto-stax-sum" | while read -r corpus a b; do
     bytes="$(size "$corpus")"
-    awk -v label="$label" -v size="$(mib "$bytes")" -v corpus="$corpus" \
-        -v a="$a" -v b="$b" -v c="$c" -v d="$d" -v e="$e" "$awk_fmt"'
+    awk -v label="$(name_of "$corpus")" -v size="$(mib "$bytes")" \
+        -v a="$a" -v b="$b" "$awk_fmt"'
         BEGIN {
-            # aalto-xml does not process the DTD, so its figures there are
-            # not like for like
-            ad = fmt(d) " MB/s"; ae = fmt(e) " MB/s"
-            if (corpus == "xhtml-dtd") { ad = "*" ad "†*"; ae = "*" ae "†*" }
-            printf "| %s | %s | **%s MB/s** | %s MB/s | %s MB/s | %s | %s |\n",
-                label, size, fmt(a), fmt(b), fmt(c), ad, ae
+            printf "| %s | %s | %s MB/s | %s MB/s | %.2f |\n", label, size, fmt(a), fmt(b), a / b
         }'
 done
-case " $CORPORA " in
-    *" xhtml-dtd "*)
-        echo
-        echo "† Aalto's figures are non-validating: it skips the internal DTD declarations."
-        ;;
-esac
 echo
 
-# ---- throughput, a handler that reads everything --------------------------
+# ---- SAX ------------------------------------------------------------------
 
-log "Throughput with a handler that reads everything..."
-echo "### Throughput with a handler that reads every attribute and all the text"
+log "SAX..."
+echo "### SAX"
 echo
-echo "| Corpus | Gonzalez SAX | Aalto SAX |"
-echo "|--------|-------------:|----------:|"
-cells "$CORPORA" "sax-touch aalto-sax-touch" | while read -r corpus a b; do
-    awk -v label="$(name_of "$corpus")" -v corpus="$corpus" -v a="$a" -v b="$b" "$awk_fmt"'
+echo "The same documents through SAX, with a handler that reads every attribute and"
+echo "all the text. (An empty handler does less work with Aalto, which decodes an"
+echo "attribute value only when asked.)"
+echo
+echo "| Corpus | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Gonzalez / Aalto |"
+echo "|--------|-------------:|---------------:|----------:|-----------------:|"
+cells "$OTHERS" "sax-touch jdk-touch aalto-sax-touch" | while read -r corpus a b c; do
+    awk -v label="$(name_of "$corpus")" -v a="$a" -v b="$b" -v c="$c" "$awk_fmt"'
         BEGIN {
-            ab = fmt(b) " MB/s"
-            if (corpus == "xhtml-dtd") ab = "*" ab "†*"
-            printf "| %s | %s MB/s | %s |\n", label, fmt(a), ab
+            printf "| %s | %s MB/s | %s MB/s | %s MB/s | %.2f |\n", label, fmt(a), fmt(b), fmt(c), a / c
         }'
 done
+if [ "$HAS_DTD" = yes ]; then
+    cells "$DTD" "sax-touch jdk-touch" | while read -r corpus a b; do
+        awk -v label="$(name_of "$corpus")" -v a="$a" -v b="$b" "$awk_fmt"'
+            BEGIN {
+                printf "| %s | %s MB/s | %s MB/s | *not compared†* | |\n", label, fmt(a), fmt(b)
+            }'
+    done
+    echo
+    echo "† Aalto is not compared on this document. It is not a validating parser and"
+    echo "does not process a DTD subset: it recognises the DOCTYPE but skips the"
+    echo "internal declarations, so it neither applies declared attribute types and"
+    echo "defaults nor expands the declared entities, as Gonzalez and Xerces do, and"
+    echo "its throughput would be for less work."
+fi
 echo
