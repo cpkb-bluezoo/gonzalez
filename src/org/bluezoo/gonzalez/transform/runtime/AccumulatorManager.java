@@ -146,7 +146,11 @@ public final class AccumulatorManager {
         this.beforeValues = other.beforeValues;
         this.afterValues = other.afterValues;
         this.traversedDocuments = other.traversedDocuments;
-        this.evaluatingAccumulators = other.evaluatingAccumulators;
+        // Not shared: it records what this manager is working out now, and
+        // the branches of an xsl:fork run at the same time. Sharing it made a
+        // branch that read an accumulator look like a cycle whenever another
+        // branch was in the middle of evaluating that accumulator's rule.
+        this.evaluatingAccumulators = new HashSet<>();
 
         for (Map.Entry<String, AccumulatorState> entry : other.accumulators.entrySet()) {
             this.accumulators.put(entry.getKey(), new AccumulatorState(entry.getValue()));

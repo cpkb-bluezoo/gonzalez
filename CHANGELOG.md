@@ -130,6 +130,18 @@ All notable changes to Gonzalez will be documented in this file.
   attributes come in a different order every time gains nothing and may be
   about 2 to 3% slower.
 
+### Fixed
+
+- **An `xsl:fork` could report a cycle between accumulators that was not
+  there.** The branches of a fork run at the same time, each with its own copy
+  of the accumulators, but the copies shared the record of which accumulators
+  were being worked out, which is what the check for an accumulator that
+  depends on itself (XTDE3400) looks at. A branch that read an accumulator
+  while another branch was in the middle of that accumulator's rule was
+  stopped with a false "cyclic dependency" error. The W3C test `si-fork-816`
+  failed in this way in about half of its runs. Each copy now has its own
+  record.
+
 ## [1.3.0] - 2026-11-15
 
 ### Changed
