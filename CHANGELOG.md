@@ -19,7 +19,9 @@ All notable changes to Gonzalez will be documented in this file.
   `http://www.nongnu.org/gonzalez/properties/decode-buffer-size`,
   `scan-buffer-size`, `name-table-size` and `input-buffer-size`. The defaults
   are the sizes already used, except that `parse(ReadableByteChannel)` reads
-  into 32 KB where it read into 8 KB. SECURE-CONFIGURATION.md describes them.
+  into 32 KB where it read into 8 KB, and that the decode buffer is 16,384
+  characters (32 KB) where it was 32,768 (64 KB), for the reason given under
+  Changed. SECURE-CONFIGURATION.md describes them.
 
 - **A memory comparison.** `benchmark/external-compare/run-memory.sh` parses a
   document with one very large text node, CDATA section, attribute value or
@@ -33,6 +35,17 @@ All notable changes to Gonzalez will be documented in this file.
   them and links to them.
 
 ### Changed
+
+- **A smaller decode buffer by default.** Input is decoded and scanned in
+  pieces of the size of the decode buffer, which was 32,768 characters (64 KB).
+  At 16,384 (32 KB) text that is mostly ASCII is parsed 3 to 5% faster, on the
+  native path and through SAX, probably because each piece is then scanned from
+  the processor's first-level cache; every other corpus measured is unchanged.
+  It also takes 32 KB less for each parser. A smaller size is not better: at
+  8,192 a document with a DTD of some kilobytes was 9% slower, as a declaration
+  has to be tried again for each piece that does not end it. The size remains a
+  setting (`setDecodeBufferSize`), and a smaller one still reports exactly the
+  same.
 
 - **EUC-JP is decoded from tables.** The JDK's EUC-JP decoder looks each
   character up through several layers of calls, and on a document of Japanese

@@ -120,14 +120,14 @@ the first. Each has a default that suits most uses:
 
 | Buffer | `XMLParser` setter | SAX property | Default |
 |--------|--------------------|--------------|---------|
-| Bytes decoded into characters | `setDecodeBufferSize` | `decode-buffer-size` | 32,768 characters (64 KB) |
+| Bytes decoded into characters | `setDecodeBufferSize` | `decode-buffer-size` | 16,384 characters (32 KB) |
 | Scan buffer | `setScanBufferSize` | `scan-buffer-size` | 8,192 characters (16 KB) |
 | Table of interned names | `setNameTableSize` | `name-table-size` | 512 entries (about 16 KB) |
 | Read buffer of `parse(InputStream)` and `parse(ReadableByteChannel)` | `setInputBufferSize` | `input-buffer-size` | 32,768 bytes |
 
 The SAX properties are in the namespace
 `http://www.nongnu.org/gonzalez/properties/` and take an Integer or a numeric
-String. A parser with the defaults holds about 100 KB, and a further 32 KB if
+String. A parser with the defaults holds about 70 KB, and a further 32 KB if
 it is asked to `parse` a stream.
 
 ```java
@@ -136,9 +136,12 @@ parser.setDecodeBufferSize(4096);    // where memory is dear and parsers are man
 parser.setNameTableSize(64);         // a vocabulary of a few dozen names
 ```
 
-The decode buffer is the largest, and the one to make smaller. Input is
-decoded and scanned in pieces of its size, so a smaller buffer makes no
-difference to what is reported, only to how many pieces there are. The scan
+Input is decoded and scanned in pieces of the size of the decode buffer, so
+a smaller buffer makes no difference to what is reported, only to how many
+pieces there are. A larger one is no faster, as a piece that fits in the
+processor's first-level cache is scanned from there; a much smaller one is
+slower on a document with a large DTD, as a declaration that the scanner needs
+all of is tried again for each piece that does not end it. The scan
 buffer holds the data the parser was last given and any one name or declaration
 still arriving when that ended; a document that needs more (a name as long as
 the name length limit allows, or a large declaration in a DTD) makes it grow

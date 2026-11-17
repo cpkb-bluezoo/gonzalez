@@ -103,7 +103,7 @@ public class MemorySettingsTest {
     public void theDefaultsAreTheDocumentedOnes() {
         XMLParser parser = new XMLParser();
         assertEquals(8192, parser.getScanBufferSize());
-        assertEquals(32768, parser.getDecodeBufferSize());
+        assertEquals(16384, parser.getDecodeBufferSize());
         assertEquals(512, parser.getNameTableSize());
         assertEquals(32768, parser.getInputBufferSize());
     }

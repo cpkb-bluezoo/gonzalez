@@ -175,6 +175,16 @@ public class IsolatedAB {
                 return () -> {
                     org.xml.sax.XMLReader reader = new Parser();
                     reader.setFeature("http://xml.org/sax/features/namespaces", true);
+                    Integer decodeBuffer = Integer.getInteger("decodebuf");
+                    if (decodeBuffer != null) {
+                        reader.setProperty("http://www.nongnu.org/gonzalez/properties/decode-buffer-size",
+                                decodeBuffer);
+                    }
+                    Integer inputBuffer = Integer.getInteger("inputbuf");
+                    if (inputBuffer != null) {
+                        reader.setProperty("http://www.nongnu.org/gonzalez/properties/input-buffer-size",
+                                inputBuffer);
+                    }
                     reader.setContentHandler(h);
                     reader.parse(new org.xml.sax.InputSource(new ByteArrayInputStream(bytes)));
                 };
@@ -232,6 +242,10 @@ public class IsolatedAB {
         XMLParser parser = new XMLParser();
         parser.setNamespaceAware(true);
         parser.setHandler(EMPTY);
+        Integer decodeBuffer = Integer.getInteger("decodebuf");
+        if (decodeBuffer != null) {
+            parser.setDecodeBufferSize(decodeBuffer);
+        }
         if (!limits) {
             parser.setMaxElementDepth(0);
             parser.setMaxNameLength(0);

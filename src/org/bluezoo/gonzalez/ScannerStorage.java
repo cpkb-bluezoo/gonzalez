@@ -47,7 +47,7 @@ final class ScannerStorage {
     static final int DEFAULT_SCAN_BUFFER = 8192;
 
     /** The decoder's character buffer's default size, in characters. */
-    static final int DEFAULT_DECODE_BUFFER = 32768;
+    static final int DEFAULT_DECODE_BUFFER = 16384;
 
     /** The name table's default size, in entries. */
     static final int DEFAULT_NAME_TABLE = 512;

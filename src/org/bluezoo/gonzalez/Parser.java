@@ -753,7 +753,7 @@ public class Parser implements XMLReader, PSVIProvider {
      *     {@link XMLParser#setScanBufferSize}</td></tr>
      * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/decode-buffer-size}</td>
      *     <td>{@link Integer}</td>
-     *     <td>Size of the buffer bytes are decoded into, in characters; 32,768
+     *     <td>Size of the buffer bytes are decoded into, in characters; 16,384
      *     by default. See {@link XMLParser#setDecodeBufferSize}</td></tr>
      * <tr><td>{@code http://www.nongnu.org/gonzalez/properties/name-table-size}</td>
      *     <td>{@link Integer}</td>
