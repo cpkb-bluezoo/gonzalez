@@ -273,8 +273,6 @@ Gonzalez. The modes of the first table are `xmlhandler-sum` and
 `aalto-sax-touch`. The modes `xmlhandler`, `sax` and `jdk`, with empty handlers,
 and `aalto-stax`, which only steps the cursor through the events, read nothing
 of what they are given and are not comparable with the others.
-`ant benchmark-compare-quick` is a quick look at every parser in one JVM that
-uses those modes, so its figures are not comparable with the tables.
 `ant benchmark-dtd-probe` shows which parsers process an internal DTD subset,
 which is why Aalto is not compared on that document.
 

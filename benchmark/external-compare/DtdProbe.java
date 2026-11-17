@@ -1,10 +1,10 @@
 /*
  * DtdProbe.java
  *
- * Diagnostic companion to ExternalCompare: rather than measuring throughput,
- * it inspects the SAX events each parser produces for the XHTML internal-subset
- * corpus, to establish whether the internal DTD subset is actually being
- * processed. Three facts in that corpus exist only in the DTD:
+ * Diagnostic companion to the throughput comparison (IsolatedAB): rather than
+ * measuring throughput, it inspects the SAX events each parser produces for
+ * the XHTML internal-subset corpus, to establish whether the internal DTD
+ * subset is actually being processed. Three facts in that corpus exist only in the DTD:
  *
  *   - <input> carries only id/name in the instance, but the DTD declares
  *     "type CDATA \"text\"" - a DTD-processing parser reports a defaulted

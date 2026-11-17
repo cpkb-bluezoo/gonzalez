@@ -797,15 +797,6 @@
     </comparison-script>
   </target>
 
-  <!-- A quick look, every parser in turn in one JVM (run.sh): with empty handlers
-       and an Aalto cursor that is only stepped through the events, so its figures
-       are not comparable with the tables of benchmark-compare. -->
-  <target name='benchmark-compare-quick'
-          depends='build-core,download-comparison-deps'
-          description='A quick look at throughput in one JVM, with empty handlers (not comparable with benchmark-compare)'>
-    <comparison-script script='run.sh'/>
-  </target>
-
   <!-- Whether each parser processes the internal DTD subset (run-dtd-probe.sh):
        what each reports for the XHTML document, which is the reason Aalto is
        not compared on it. -->

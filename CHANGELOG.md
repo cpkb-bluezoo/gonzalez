@@ -16,9 +16,9 @@ All notable changes to Gonzalez will be documented in this file.
   on the summary page of the run. The figures in PERFORMANCE.md were remade
   with it.
   `ant benchmark-memory` runs the memory comparison of PERFORMANCE.md the
-  same way, and `ant benchmark-isolated`, `ant benchmark-compare-quick` and
-  `ant benchmark-dtd-probe` the other scripts of `benchmark/external-compare`,
-  so that every benchmark task is run from `build.xml`.
+  same way, and `ant benchmark-isolated` and `ant benchmark-dtd-probe` the
+  other scripts of `benchmark/external-compare`, so that every benchmark task
+  is run from `build.xml`.
 
 - **The sizes of the parser's own buffers are settings.** `XMLParser` has
   `setDecodeBufferSize`, `setScanBufferSize`, `setNameTableSize` and
@@ -170,7 +170,10 @@ All notable changes to Gonzalez will be documented in this file.
   the harness and `performance-tables.sh` then use.
   `IsolatedAB` has the new modes `xmlhandler-sum`,
   `aalto-stax-sum` and `jdk-touch`, and `performance-tables.sh` prints the
-  tables.
+  tables. The quick single-JVM comparison, `ExternalCompare` and `run.sh`, is
+  removed: it had empty handlers and an Aalto cursor that was only stepped, so
+  its figures were not comparable with the tables, and `ant benchmark-isolated`
+  does the same job with the same consumers.
 
 ### Fixed
 

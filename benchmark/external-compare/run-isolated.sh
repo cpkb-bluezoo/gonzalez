@@ -1,8 +1,8 @@
 #!/bin/bash
 # Fresh-JVM throughput comparison: for each corpus and mode, runs IsolatedAB
 # in a new JVM REPS times and reports the median MB/s. Set AALTO_JAR and
-# STAX2_JAR to the dependency jars, as for run.sh, or run "ant
-# benchmark-isolated", which fetches them.
+# STAX2_JAR to the dependency jars, or run "ant benchmark-isolated", which
+# fetches them.
 #
 #   benchmark/external-compare/run-isolated.sh [reps] [corpora] [modes]
 #
