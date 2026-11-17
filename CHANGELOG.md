@@ -129,6 +129,24 @@ All notable changes to Gonzalez will be documented in this file.
   heavy input is about 12% faster on the native path; a document whose
   attributes come in a different order every time gains nothing and may be
   about 2 to 3% slower.
+- **Comments, CDATA sections and processing instructions are scanned with one
+  table read for each character.** The scan for the end of each did two tests
+  for every character, one for the character that begins the terminator and one
+  for whether the character is legal, where text and attribute values did one.
+  The two are now one, from a table of flags. On a document that is mostly
+  comments, CDATA sections and processing instructions this is about 13%
+  faster on the native path and 12% through SAX; other documents are not
+  affected. What is accepted and refused is as it was.
+- **Fewer references are stored for each attribute in the SAX layer.** Under
+  G1, the JDK's default collector, a reference stored in an object that has
+  been around for a while costs a write barrier, and each attribute made about
+  nine such stores, most of them of what the slot already held. An attribute's
+  name and type are now kept only for a namespace declaration, which is the only
+  thing that reads them back, the attribute being assembled is found by its
+  index and not by a field, and a pooled slot or the record of names seen is
+  written only when it differs from what it holds. Attribute-heavy documents
+  are about 6% faster through SAX under G1, and are unchanged on the native
+  path and under the other collectors.
 
 ### Fixed
 

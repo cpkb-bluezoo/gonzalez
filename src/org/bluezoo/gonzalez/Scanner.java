@@ -453,7 +453,10 @@ class Scanner implements Locator2 {
         if (count == seenAttributeNames.length) {
             seenAttributeNames = Arrays.copyOf(seenAttributeNames, count * 2);
         }
-        seenAttributeNames[count] = name;
+        String[] names = seenAttributeNames;
+        if (names[count] != name) {
+            names[count] = name;
+        }
         seenAttributeNameCount = count + 1;
         return true;
     }
@@ -830,7 +833,7 @@ class Scanner implements Locator2 {
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
         this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
-        this.legalLiteralTable = xml11 ? LEGAL_LITERAL_XML11 : LEGAL_LITERAL_XML10;
+        this.markupStopTable = xml11 ? MARKUP_STOP_XML11 : MARKUP_STOP_XML10;
         if (!deferDocumentStartUntilEncoding) {
             startDocument();
         }
@@ -1032,7 +1035,7 @@ class Scanner implements Locator2 {
     private boolean[] contentStopTable;
     private boolean[] quotAttrStopTable;
     private boolean[] aposAttrStopTable;
-    private boolean[] legalLiteralTable;
+    private byte[] markupStopTable;
 
     /**
      * Feeds more decoded character data to the scanner. May be called
@@ -1192,7 +1195,7 @@ class Scanner implements Locator2 {
         this.contentStopTable = xml11 ? CONTENT_STOP_XML11 : CONTENT_STOP_XML10;
         this.quotAttrStopTable = xml11 ? QUOT_ATTR_STOP_XML11 : QUOT_ATTR_STOP_XML10;
         this.aposAttrStopTable = xml11 ? APOS_ATTR_STOP_XML11 : APOS_ATTR_STOP_XML10;
-        this.legalLiteralTable = xml11 ? LEGAL_LITERAL_XML11 : LEGAL_LITERAL_XML10;
+        this.markupStopTable = xml11 ? MARKUP_STOP_XML11 : MARKUP_STOP_XML10;
         handler.setXml11(xml11);
     }
 
@@ -1423,7 +1426,8 @@ class Scanner implements Locator2 {
     private static final boolean[] APOS_ATTR_STOP_XML10 = new boolean[0x10000];
     private static final boolean[] APOS_ATTR_STOP_XML11 = new boolean[0x10000];
 
-    /** Plain {@link #isLegalLiteralChar} as a table, for the comment/PI/
+    /** {@link #isLegalLiteralChar} as a table of flags (with the characters
+     *  that may begin a terminator), for the comment/PI/
      *  CDATA terminator scans ({@link #scanCommentData}, {@link
      *  #scanPIData}, {@link #scanCDATAContent}), which fold the legality
      *  check into their own terminator loop - one table read per character
@@ -1432,16 +1436,28 @@ class Scanner implements Locator2 {
      *  checkLiteralCharSpan} second pass did (re-checked from the span's
      *  start after every false-alarm terminator character, quadratic on
      *  hyphen/bracket/question-mark-dense data). */
-    private static final boolean[] LEGAL_LITERAL_XML10 = new boolean[0x10000];
-    private static final boolean[] LEGAL_LITERAL_XML11 = new boolean[0x10000];
+    private static final byte[] MARKUP_STOP_XML10 = new byte[0x10000];
+    private static final byte[] MARKUP_STOP_XML11 = new byte[0x10000];
+
+    /** Bits of {@link #MARKUP_STOP_XML10}: the character is not a legal
+     *  literal character, or it is the one that may begin the terminator of
+     *  the construct being scanned. A scan tests the bits that apply to it
+     *  with one table read per character, and when it stops, whatever it
+     *  stopped at that is not the terminator's first character is illegal. */
+    private static final int STOP_ILLEGAL = 1;
+    private static final int STOP_DASH = 2;
+    private static final int STOP_BRACKET = 4;
+    private static final int STOP_QUESTION = 8;
 
     static {
         for (int i = 0; i < 0x10000; i++) {
             char c = (char) i;
             boolean legal10 = isLegalLiteralCharXml10(c);
             boolean legal11 = isLegalLiteralCharXml11(c);
-            LEGAL_LITERAL_XML10[i] = legal10;
-            LEGAL_LITERAL_XML11[i] = legal11;
+            int terminators = (c == '-' ? STOP_DASH : 0) | (c == ']' ? STOP_BRACKET : 0)
+                    | (c == '?' ? STOP_QUESTION : 0);
+            MARKUP_STOP_XML10[i] = (byte) (terminators | (legal10 ? 0 : STOP_ILLEGAL));
+            MARKUP_STOP_XML11[i] = (byte) (terminators | (legal11 ? 0 : STOP_ILLEGAL));
             boolean contentStructural = (c == '<' || c == '&' || c == ']' || c == '>');
             CONTENT_STOP_XML10[i] = contentStructural || !legal10;
             CONTENT_STOP_XML11[i] = contentStructural || !legal11;
@@ -3033,17 +3049,17 @@ class Scanner implements Locator2 {
         // span's start.
         int p = pos;
         // Legal-Char rejection is folded into the terminator scan itself -
-        // one legalLiteralTable read per character in the same pass, instead
+        // one markupStopTable read per character in the same pass, instead
         // of a separate re-walk of the pending span (which would re-check
         // from the span's start after every literal '-' that turns out not
         // to begin "-->").
-        boolean[] legal = legalLiteralTable;
+        byte[] stops = markupStopTable;
         while (true) {
-            while (p < limit && buf[p] != '-') {
-                if (!legal[buf[p]]) {
-                    throw illegalCharError(buf[p]);
-                }
+            while (p < limit && (stops[buf[p]] & (STOP_ILLEGAL | STOP_DASH)) == 0) {
                 p++;
+            }
+            if (p < limit && buf[p] != '-') {
+                throw illegalCharError(buf[p]);
             }
             if (p >= limit || p + 2 >= limit) {
                 if (p > pos) {
@@ -3140,13 +3156,13 @@ class Scanner implements Locator2 {
         // pending span's start.
         int p = pos;
         // Legality folded into the terminator scan - see scanCommentData.
-        boolean[] legal = legalLiteralTable;
+        byte[] stops = markupStopTable;
         while (true) {
-            while (p < limit && buf[p] != ']') {
-                if (!legal[buf[p]]) {
-                    throw illegalCharError(buf[p]);
-                }
+            while (p < limit && (stops[buf[p]] & (STOP_ILLEGAL | STOP_BRACKET)) == 0) {
                 p++;
+            }
+            if (p < limit && buf[p] != ']') {
+                throw illegalCharError(buf[p]);
             }
             if (p >= limit || p + 2 >= limit) {
                 if (p > pos) {
@@ -3316,13 +3332,13 @@ class Scanner implements Locator2 {
             inPISeparator = false;
         }
         // Legality folded into the terminator scan - see scanCommentData.
-        boolean[] legal = legalLiteralTable;
+        byte[] stops = markupStopTable;
         while (true) {
-            while (p < limit && buf[p] != '?') {
-                if (!legal[buf[p]]) {
-                    throw illegalCharError(buf[p]);
-                }
+            while (p < limit && (stops[buf[p]] & (STOP_ILLEGAL | STOP_QUESTION)) == 0) {
                 p++;
+            }
+            if (p < limit && buf[p] != '?') {
+                throw illegalCharError(buf[p]);
             }
             if (p >= limit || p + 1 >= limit) {
                 if (p > pos) {

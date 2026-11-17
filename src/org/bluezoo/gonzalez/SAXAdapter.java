@@ -114,12 +114,11 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
 
     // This element's buffered attributes - see Attr's own Javadoc for the
     // pooling design. attrCount is the "used" length; the slots of attrs
-    // that are not null are the high-water mark (>= attrCount always).
+    // that are not null are the high-water mark (>= attrCount always). The
+    // attribute being assembled is attrs[attrCount], not counted until its
+    // value is complete.
     private Attr[] attrs = new Attr[16];
     private int attrCount;
-    // The attribute being assembled: attrs[attrCount], not counted until
-    // its value is complete.
-    private Attr currentAttr;
 
     // Whether a name has a colon in it, remembered by identity: names are
     // interned, so a document asks the same few questions over and over.
@@ -310,13 +309,24 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
             attr = new Attr();
             attrs[index] = attr;
         }
-        attr.uri = "";
-        attr.localName = name;
-        attr.qName = name;
-        attr.type = type;
+        // A slot is mostly given what it held for the same place in the last
+        // element, and a reference stored costs a write barrier, which is
+        // not small under G1 for an object that has been around for a while;
+        // so a reference is stored only when it differs.
+        if (attr.uri != "") {
+            attr.uri = "";
+        }
+        if (attr.localName != name) {
+            attr.localName = name;
+        }
+        if (attr.qName != name) {
+            attr.qName = name;
+        }
+        if (attr.type != type) {
+            attr.type = type;
+        }
         attr.declared = declared;
         attr.specified = specified;
-        currentAttr = attr;
         attributeValueFirstChunk = true;
     }
 
@@ -373,7 +383,8 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
      * attributes that differ in prefix but not in namespace.
      */
     private void addCurrentAttribute(String valueStr) {
-        Attr attr = currentAttr;
+        // The attribute that startAttribute made ready, which is the next one.
+        Attr attr = attrs[attrCount];
         attr.value = valueStr;
         String qName = attr.qName;
         if (namespaceAware && xmlnsUris

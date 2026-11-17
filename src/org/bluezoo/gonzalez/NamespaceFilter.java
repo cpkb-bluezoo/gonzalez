@@ -298,14 +298,17 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
     @Override
     public void startAttribute(String name, String type, boolean declared, boolean specified)
             throws SAXException {
-        currentAttrName = name;
-        currentAttrType = type;
-        currentAttrDeclared = declared;
-        currentAttrSpecified = specified;
         int slot = name.hashCode() & (CACHE_SIZE - 1);
         int kind = (cacheNames[slot] == name) ? cacheKinds[slot] : examine(name, slot);
         currentIsNamespaceDecl = (kind == KIND_DECLARATION);
         if (currentIsNamespaceDecl) {
+            // Only a declaration reads these back, when its value is complete,
+            // so no other attribute pays for storing them (a reference stored
+            // in an object that is long-lived is not free under G1).
+            currentAttrName = name;
+            currentAttrType = type;
+            currentAttrDeclared = declared;
+            currentAttrSpecified = specified;
             valueFirstChunk = true;
         } else {
             if (kind >= 0) {
