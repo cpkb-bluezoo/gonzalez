@@ -2,7 +2,8 @@
 # Compiles and runs DtdProbe.java: inspects the SAX events each parser emits
 # for the XHTML internal-subset corpus to establish whether the internal DTD
 # subset is actually processed (see DtdProbe.java for the specific facts
-# checked). Set AALTO_JAR and STAX2_JAR to the corresponding dependency jars.
+# checked). Set AALTO_JAR and STAX2_JAR to the corresponding dependency jars,
+# or run "ant benchmark-dtd-probe", which fetches them.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

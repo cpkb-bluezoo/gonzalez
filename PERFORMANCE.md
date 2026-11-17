@@ -255,11 +255,33 @@ A hosted runner is shared with other work and is not the same machine from one
 run to the next, so compare the columns of one run with each other, and not
 its figures with those here or in another run.
 
-For more control, the scripts that the target runs are in
-`benchmark/external-compare`. They need `AALTO_JAR` and `STAX2_JAR` to name the
-jars (after `ant download-comparison-deps`, `lib/aalto-xml-1.4.0.jar` and
-`lib/stax2-api-4.3.0.jar`), and exit with an error if either is unset or does
-not name a file:
+For more control there are other targets, each running a script in
+`benchmark/external-compare` and fetching what it needs. `ant benchmark-isolated`
+gives one figure for each of some corpora and modes, each the median of fresh
+JVMs, for looking at some of them or at a build with a change in it:
+
+```sh
+ant benchmark-isolated -Dbenchmark.isolated.corpora="plain french" \
+    -Dbenchmark.isolated.modes="xmlhandler-sum aalto-stax-sum"
+```
+
+Its corpora and modes are quoted lists, by default all of them, and
+`-Dbenchmark.isolated.unit=us` gives microseconds for a parse and not MB/s. Set
+`GONZALEZ_CLASSES` when running the script itself to compare another build of
+Gonzalez. The modes of the first table are `xmlhandler-sum` and
+`aalto-stax-sum`, and those of the second `sax-touch`, `jdk-touch` and
+`aalto-sax-touch`. The modes `xmlhandler`, `sax` and `jdk`, with empty handlers,
+and `aalto-stax`, which only steps the cursor through the events, read nothing
+of what they are given and are not comparable with the others.
+`ant benchmark-compare-quick` is a quick look at every parser in one JVM that
+uses those modes, so its figures are not comparable with the tables.
+`ant benchmark-dtd-probe` shows which parsers process an internal DTD subset,
+which is why Aalto is not compared on that document.
+
+The scripts can also be run on their own, which needs `AALTO_JAR` and
+`STAX2_JAR` to name the jars (after `ant download-comparison-deps`,
+`lib/aalto-xml-1.4.0.jar` and `lib/stax2-api-4.3.0.jar`); they exit with an error
+if either is unset or does not name a file:
 
 ```sh
 export AALTO_JAR=lib/aalto-xml-1.4.0.jar
@@ -267,16 +289,6 @@ export STAX2_JAR=lib/stax2-api-4.3.0.jar
 benchmark/external-compare/run-isolated.sh
 ```
 
-`run-isolated.sh` runs each corpus and parser in a fresh JVM, five times by
-default, and reports the median; its arguments are the number of runs, and
-quoted lists of corpora and modes. Set `GONZALEZ_CLASSES` to compare another
-build of Gonzalez. The modes of the first table are `xmlhandler-sum` and
-`aalto-stax-sum`, and those of the second `sax-touch`, `jdk-touch` and
-`aalto-sax-touch`. The modes `xmlhandler`, `sax` and `jdk`, with empty handlers,
-and `aalto-stax`, which only steps the cursor through the events, read nothing
-of what they are given and are not comparable with the others.
 `performance-tables.sh` takes the number of runs and a file for the tables, and
 includes the French and German novels when they are in `benchmark/corpora` (or
 `FRENCH_XML` and `GERMAN_XML` name a French and a German document of your own).
-`benchmark/external-compare/run.sh` is a quicker single-JVM comparison that runs
-every parser in turn, and `run-dtd-probe.sh` uses the same variables.

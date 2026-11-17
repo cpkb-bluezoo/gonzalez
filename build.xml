@@ -735,11 +735,27 @@
         dir='${lib}' file='stax2-api-${stax2.version}.jar' sha256='${stax2.sha256}'/>
   </target>
 
-  <!-- The comparison with the JDK's parser and aalto-xml: builds Gonzalez,
-       fetches what it is measured against and the documents it is measured on,
-       and runs benchmark/external-compare/performance-tables.sh, which prints
-       the tables of PERFORMANCE.md (it can be run on its own for more control).
-       -Dbenchmark.reps=N is how many fresh JVMs each figure is the median of,
+  <!-- The comparison with the JDK's parser and aalto-xml, by the scripts of
+       benchmark/external-compare. Each target builds Gonzalez, fetches what it
+       is measured against (and the documents, where it uses them), and runs
+       its script with the jars and the build. The scripts can also be run on
+       their own, for more control, with AALTO_JAR and STAX2_JAR set. -->
+  <macrodef name='comparison-script'>
+    <attribute name='script'/>
+    <element name='arguments' implicit='yes' optional='yes'/>
+    <sequential>
+      <exec executable='bash' dir='${basedir}' failonerror='true'>
+        <arg value='benchmark/external-compare/@{script}'/>
+        <arguments/>
+        <env key='AALTO_JAR' file='${aalto.jar}'/>
+        <env key='STAX2_JAR' file='${stax2.jar}'/>
+        <env key='GONZALEZ_CLASSES' file='${build.core}'/>
+      </exec>
+    </sequential>
+  </macrodef>
+
+  <!-- The tables of PERFORMANCE.md (performance-tables.sh). -Dbenchmark.reps=N is
+       how many fresh JVMs each figure is the median of,
        -Dbenchmark.compare.corpora="plain accent" limits it to some of the
        documents, and -Dbenchmark.report=FILE is where the tables are written. -->
   <property name='benchmark.reps' value='5'/>
@@ -751,37 +767,68 @@
           description='Compare with the JDK parser and aalto-xml; tables are printed and written to build/performance.md'>
     <mkdir dir='${build}'/>
     <echo message='Comparing, with ${benchmark.reps} JVMs for each figure. This takes a long time.'/>
-    <exec executable='bash' dir='${basedir}' failonerror='true'>
-      <arg value='benchmark/external-compare/performance-tables.sh'/>
+    <comparison-script script='performance-tables.sh'>
       <arg value='${benchmark.reps}'/>
       <arg value='${benchmark.report}'/>
-      <env key='AALTO_JAR' file='${aalto.jar}'/>
-      <env key='STAX2_JAR' file='${stax2.jar}'/>
-      <env key='GONZALEZ_CLASSES' file='${build.core}'/>
       <env key='CORPORA' value='${benchmark.compare.corpora}'/>
-    </exec>
+    </comparison-script>
     <concat><fileset file='${benchmark.report}'/></concat>
     <echo message='The tables are in ${benchmark.report}'/>
   </target>
 
+  <!-- One figure for each corpus and mode, each the median of fresh JVMs
+       (run-isolated.sh), for looking at some of them, or at a build with a change
+       in it. -Dbenchmark.isolated.corpora and -Dbenchmark.isolated.modes are
+       quoted lists, by default all of them (see the script for their names),
+       -Dbenchmark.reps is as above, and -Dbenchmark.isolated.unit=us gives
+       microseconds for a parse and not MB/s. -->
+  <property name='benchmark.isolated.corpora' value=''/>
+  <property name='benchmark.isolated.modes' value=''/>
+  <property name='benchmark.isolated.unit' value=''/>
+
+  <target name='benchmark-isolated'
+          depends='build-core,download-comparison-deps,download-corpora'
+          description='Throughput of chosen corpora and modes, each the median of fresh JVMs'>
+    <comparison-script script='run-isolated.sh'>
+      <arg value='${benchmark.reps}'/>
+      <arg value='${benchmark.isolated.corpora}'/>
+      <arg value='${benchmark.isolated.modes}'/>
+      <env key='UNIT' value='${benchmark.isolated.unit}'/>
+    </comparison-script>
+  </target>
+
+  <!-- A quick look, every parser in turn in one JVM (run.sh): with empty handlers
+       and an Aalto cursor that is only stepped through the events, so its figures
+       are not comparable with the tables of benchmark-compare. -->
+  <target name='benchmark-compare-quick'
+          depends='build-core,download-comparison-deps'
+          description='A quick look at throughput in one JVM, with empty handlers (not comparable with benchmark-compare)'>
+    <comparison-script script='run.sh'/>
+  </target>
+
+  <!-- Whether each parser processes the internal DTD subset (run-dtd-probe.sh):
+       what each reports for the XHTML document, which is the reason Aalto is
+       not compared on it. -->
+  <target name='benchmark-dtd-probe'
+          depends='build-core,download-comparison-deps'
+          description='Show which parsers process an internal DTD subset'>
+    <comparison-script script='run-dtd-probe.sh'/>
+  </target>
+
   <!-- Which parsers get to the end of one very large construct (a text node, a
-       CDATA section, an attribute value, a comment) in a small heap, by
-       benchmark/external-compare/run-memory.sh. -Dbenchmark.memory.mb=N is the
-       size of the construct and -Dbenchmark.memory.heap=Nm the heap. -->
+       CDATA section, an attribute value, a comment) in a small heap
+       (run-memory.sh). -Dbenchmark.memory.mb=N is the size of the construct and
+       -Dbenchmark.memory.heap=Nm the heap. -->
   <property name='benchmark.memory.mb' value='256'/>
   <property name='benchmark.memory.heap' value='32m'/>
 
   <target name='benchmark-memory'
           depends='build-core,download-comparison-deps'
           description='Compare how the parsers cope with one very large construct in a small heap'>
-    <exec executable='bash' dir='${basedir}' failonerror='true'>
-      <arg value='benchmark/external-compare/run-memory.sh'/>
+    <comparison-script script='run-memory.sh'>
       <arg value='${benchmark.memory.mb}'/>
       <arg value='${benchmark.memory.heap}'/>
-      <env key='AALTO_JAR' file='${aalto.jar}'/>
-      <env key='STAX2_JAR' file='${stax2.jar}'/>
-      <env key='GONZALEZ_CLASSES' file='${build.core}'/>
-    </exec>
+    </comparison-script>
   </target>
 
   <target name='build-benchmark' depends='build,download-jmh' description='Compile JMH benchmarks'>

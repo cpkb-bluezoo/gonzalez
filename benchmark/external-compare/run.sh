@@ -4,9 +4,9 @@
 # Xerces implementation (no download needed) and aalto-xml. Set AALTO_JAR
 # and STAX2_JAR to the corresponding dependency jars before running.
 #
-# Deliberately not wired into build.xml or ant - a standalone script, no new
-# project dependency. Run from the repo root, or this script will cd there
-# itself.
+# The usual way to run it is "ant benchmark-compare-quick", which fetches
+# aalto-xml; it can also be run on its own. Run from the repo root, or this
+# script will cd there itself.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -2,7 +2,8 @@
 # Parses a document with one very large construct, in a small heap, with each
 # parser in turn, and says which of them get to the end of it. The document is
 # made up as it is read (see MemoryProbe), so nothing about the harness is
-# large. Set AALTO_JAR and STAX2_JAR as for run-isolated.sh.
+# large. Set AALTO_JAR and STAX2_JAR as for run-isolated.sh, or run "ant
+# benchmark-memory", which fetches them.
 #
 #   benchmark/external-compare/run-memory.sh [megabytes] [heap]
 #

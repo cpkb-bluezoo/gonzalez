@@ -16,7 +16,9 @@ All notable changes to Gonzalez will be documented in this file.
   on the summary page of the run. The figures in PERFORMANCE.md were remade
   with it.
   `ant benchmark-memory` runs the memory comparison of PERFORMANCE.md the
-  same way.
+  same way, and `ant benchmark-isolated`, `ant benchmark-compare-quick` and
+  `ant benchmark-dtd-probe` the other scripts of `benchmark/external-compare`,
+  so that every benchmark task is run from `build.xml`.
 
 - **The sizes of the parser's own buffers are settings.** `XMLParser` has
   `setDecodeBufferSize`, `setScanBufferSize`, `setNameTableSize` and
