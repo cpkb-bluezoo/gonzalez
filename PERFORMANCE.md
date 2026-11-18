@@ -58,25 +58,25 @@ which the decoded characters are delivered whether it reads them or not.
 
 | Corpus | Size | Gonzalez XMLHandler | Aalto StAX cursor | Gonzalez / Aalto |
 |--------|-----:|--------------------:|------------------:|-----------------:|
-| Plain UTF-8 | 1.02 MiB | 960 MB/s | 935 MB/s | 1.03 |
-| Attribute-heavy UTF-8 | 1.28 MiB | 687 MB/s | 564 MB/s | 1.22 |
-| Whitespace-heavy UTF-8 | 0.94 MiB | 1,231 MB/s | 1,062 MB/s | 1.16 |
-| Markup-heavy UTF-8 | 0.96 MiB | 1,259 MB/s | 1,079 MB/s | 1.17 |
-| Multibyte UTF-8 | 0.49 MiB | 638 MB/s | 536 MB/s | 1.19 |
-| Mostly ASCII with accents | 1.02 MiB | 815 MB/s | 920 MB/s | 0.89 |
-| English with emoji | 1.04 MiB | 792 MB/s | 889 MB/s | 0.89 |
-| MathML | 1.17 MiB | 346 MB/s | 384 MB/s | 0.90 |
-| Japanese UTF-16LE | 1.50 MiB | 1,360 MB/s | 737 MB/s | 1.85 |
-| Japanese EUC-JP | 1.28 MiB | 885 MB/s | 535 MB/s | 1.65 |
-| French novel (ELTeC) | 1.00 MiB | 1,029 MB/s | 1,146 MB/s | 0.90 |
-| German novel (ELTeC) | 0.95 MiB | 1,013 MB/s | 982 MB/s | 1.03 |
+| Plain UTF-8 | 1.02 MiB | 978 MB/s | 937 MB/s | 1.04 |
+| Attribute-heavy UTF-8 | 1.28 MiB | 694 MB/s | 566 MB/s | 1.22 |
+| Whitespace-heavy UTF-8 | 0.94 MiB | 1,216 MB/s | 1,054 MB/s | 1.15 |
+| Markup-heavy UTF-8 | 0.96 MiB | 1,243 MB/s | 1,081 MB/s | 1.15 |
+| Multibyte UTF-8 | 0.49 MiB | 628 MB/s | 532 MB/s | 1.18 |
+| Mostly ASCII with accents | 1.02 MiB | 879 MB/s | 910 MB/s | 0.97 |
+| English with emoji | 1.04 MiB | 830 MB/s | 889 MB/s | 0.93 |
+| MathML | 1.17 MiB | 346 MB/s | 382 MB/s | 0.91 |
+| Japanese UTF-16LE | 1.50 MiB | 1,353 MB/s | 733 MB/s | 1.84 |
+| Japanese EUC-JP | 1.28 MiB | 884 MB/s | 527 MB/s | 1.68 |
+| French novel (ELTeC) | 1.00 MiB | 1,057 MB/s | 1,123 MB/s | 0.94 |
+| German novel (ELTeC) | 0.95 MiB | 993 MB/s | 1,022 MB/s | 0.97 |
 
 Gonzalez is faster than Aalto's cursor on plain, attribute-heavy,
-whitespace-heavy, markup-heavy and multibyte UTF-8 (by between 1.03 and 1.22
-times) and on UTF-16LE and EUC-JP (1.85 and 1.65 times), and is level on the
-German novel. Aalto is faster where the text has accented letters in it, by
-1.11 to 1.12 times (on the French novel, the document with accents and the
-document with emoji), and on MathML, by 1.11 times.
+whitespace-heavy, markup-heavy and multibyte UTF-8 (by between 1.04 and 1.22
+times) and on UTF-16LE and EUC-JP (1.84 and 1.68 times). Aalto is faster where
+the text has accented letters in it, by between 1.03 and 1.08 times (1.06 on
+the French novel, 1.03 on the German novel and 1.08 on the document with
+emoji), and on MathML, by 1.10 times.
 
 ## SAX
 
@@ -87,25 +87,25 @@ that it is given.
 
 | Corpus | Gonzalez SAX | JDK Xerces SAX | Aalto SAX | Gonzalez / Aalto |
 |--------|-------------:|---------------:|----------:|-----------------:|
-| Plain UTF-8 | 996 MB/s | 540 MB/s | 1,134 MB/s | 0.88 |
-| Attribute-heavy UTF-8 | 631 MB/s | 223 MB/s | 717 MB/s | 0.88 |
-| Whitespace-heavy UTF-8 | 1,320 MB/s | 715 MB/s | 1,323 MB/s | 1.00 |
-| Markup-heavy UTF-8 | 1,292 MB/s | 540 MB/s | 1,449 MB/s | 0.89 |
-| Multibyte UTF-8 | 602 MB/s | 317 MB/s | 583 MB/s | 1.03 |
-| Mostly ASCII with accents | 871 MB/s | 439 MB/s | 1,105 MB/s | 0.79 |
-| English with emoji | 812 MB/s | 409 MB/s | 1,071 MB/s | 0.76 |
-| MathML | 334 MB/s | 154 MB/s | 424 MB/s | 0.79 |
-| Japanese UTF-16LE | 1,280 MB/s | 762 MB/s | 770 MB/s | 1.66 |
-| Japanese EUC-JP | 842 MB/s | 426 MB/s | 569 MB/s | 1.48 |
-| French novel (ELTeC) | 1,307 MB/s | 855 MB/s | 1,561 MB/s | 0.84 |
-| German novel (ELTeC) | 1,208 MB/s | 674 MB/s | 1,373 MB/s | 0.88 |
-| XHTML with an internal DTD subset | 371 MB/s | 150 MB/s | *not compared†* | |
+| Plain UTF-8 | 1,008 MB/s | 537 MB/s | 1,140 MB/s | 0.88 |
+| Attribute-heavy UTF-8 | 631 MB/s | 218 MB/s | 718 MB/s | 0.88 |
+| Whitespace-heavy UTF-8 | 1,306 MB/s | 708 MB/s | 1,332 MB/s | 0.98 |
+| Markup-heavy UTF-8 | 1,268 MB/s | 537 MB/s | 1,470 MB/s | 0.86 |
+| Multibyte UTF-8 | 597 MB/s | 316 MB/s | 582 MB/s | 1.03 |
+| Mostly ASCII with accents | 968 MB/s | 442 MB/s | 1,119 MB/s | 0.87 |
+| English with emoji | 851 MB/s | 408 MB/s | 1,068 MB/s | 0.80 |
+| MathML | 334 MB/s | 176 MB/s | 420 MB/s | 0.80 |
+| Japanese UTF-16LE | 1,285 MB/s | 760 MB/s | 760 MB/s | 1.69 |
+| Japanese EUC-JP | 839 MB/s | 421 MB/s | 565 MB/s | 1.49 |
+| French novel (ELTeC) | 1,237 MB/s | 840 MB/s | 1,558 MB/s | 0.79 |
+| German novel (ELTeC) | 1,178 MB/s | 668 MB/s | 1,370 MB/s | 0.86 |
+| XHTML with an internal DTD subset | 388 MB/s | 148 MB/s | *not compared†* | |
 
 † Aalto is not compared on the document with a DTD. It is not a validating
 parser and does not process a DTD subset.
 
 Gonzalez SAX is faster than the JDK's Xerces on every document, by between 1.5
-and 2.8 times. Aalto SAX is ahead in some scenarios and behind on others,
+and 2.9 times. Aalto SAX is ahead in some scenarios and behind on others,
 as shown.
 
 These are microbenchmarks, not application-level latency guarantees. Results
