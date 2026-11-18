@@ -20,22 +20,17 @@ measured from the encoded size of the document. The documents are:
   elements, common and element-specific attributes, content models and
   character entities (it has no public or system identifier, so no external
   subset is fetched);
-- five that the harness makes from the plain document, as other kinds of text
+- two that the harness makes from the plain document, as other kinds of text
   with non-ASCII characters in them: an accented letter (two bytes of UTF-8)
   after one space in every 300 bytes or so, which is what text that is nearly
   all ASCII looks like once it has a few accents, dashes or quotation marks in
-  it; the letter e replaced by an accented e (two bytes) in every second place
-  and in every place in the text, about one non-ASCII character in 43 and in
-  22 bytes; an accented letter in about one place in 900 bytes, as in English
-  with the odd foreign word; and an emoji (four bytes) in about one place in
-  220 bytes, as in casual English;
-- two generated MathML documents of small expressions of Latin and Greek
+  it; and an emoji (four bytes) in about one place in 220 bytes, as in casual
+  English;
+- a generated MathML document of small expressions of Latin and Greek
   identifiers, numbers and operators, some of them the three-byte symbols of
   Unicode's mathematical blocks, which is a good deal of markup for each
-  character of text: one `math` element with the namespace declared once on
-  it, which everything under it inherits, as MathML is usually written, and
-  one document of many, each declaring it again, as the equations of a page
-  are when each is made separately;
+  character of text, in one `math` element with the namespace declared once on
+  it, which everything under it inherits, as MathML is usually written;
 - two real documents, a French and a German novel of about 1 MB each from the
   [ELTeC](https://github.com/COST-ELTeC) collection of public domain novels in
   TEI XML (`FRA03601_Proust.xml` and `DEU037.xml`). They are not kept in this
@@ -69,12 +64,8 @@ which the decoded characters are delivered whether it reads them or not.
 | Markup-heavy UTF-8 | 0.96 MiB | 1,259 MB/s | 1,079 MB/s | 1.17 |
 | Multibyte UTF-8 | 0.49 MiB | 638 MB/s | 536 MB/s | 1.19 |
 | Mostly ASCII with accents | 1.02 MiB | 815 MB/s | 920 MB/s | 0.89 |
-| Accent on every second e (German-like) | 1.04 MiB | 802 MB/s | 867 MB/s | 0.93 |
-| Accent on every e (French-like) | 1.06 MiB | 784 MB/s | 845 MB/s | 0.93 |
-| English with the odd foreign word | 1.02 MiB | 814 MB/s | 925 MB/s | 0.88 |
 | English with emoji | 1.04 MiB | 792 MB/s | 889 MB/s | 0.89 |
-| MathML, namespace declared once (generated) | 1.17 MiB | 346 MB/s | 384 MB/s | 0.90 |
-| MathML, namespace redeclared on each equation (generated) | 1.17 MiB | 371 MB/s | 392 MB/s | 0.95 |
+| MathML | 1.17 MiB | 346 MB/s | 384 MB/s | 0.90 |
 | Japanese UTF-16LE | 1.50 MiB | 1,360 MB/s | 737 MB/s | 1.85 |
 | Japanese EUC-JP | 1.28 MiB | 885 MB/s | 535 MB/s | 1.65 |
 | French novel (ELTeC) | 1.00 MiB | 1,029 MB/s | 1,146 MB/s | 0.90 |
@@ -84,8 +75,8 @@ Gonzalez is faster than Aalto's cursor on plain, attribute-heavy,
 whitespace-heavy, markup-heavy and multibyte UTF-8 (by between 1.03 and 1.22
 times) and on UTF-16LE and EUC-JP (1.85 and 1.65 times), and is level on the
 German novel. Aalto is faster where the text has accented letters in it, by
-between 1.07 and 1.14 times (1.11 on the French novel, and 1.12 on the document
-with emoji), and on MathML, by between 1.05 and 1.11 times.
+1.11 to 1.12 times (on the French novel, the document with accents and the
+document with emoji), and on MathML, by 1.11 times.
 
 ## SAX
 
@@ -102,12 +93,8 @@ that it is given.
 | Markup-heavy UTF-8 | 1,292 MB/s | 540 MB/s | 1,449 MB/s | 0.89 |
 | Multibyte UTF-8 | 602 MB/s | 317 MB/s | 583 MB/s | 1.03 |
 | Mostly ASCII with accents | 871 MB/s | 439 MB/s | 1,105 MB/s | 0.79 |
-| Accent on every second e (German-like) | 827 MB/s | 433 MB/s | 1,032 MB/s | 0.80 |
-| Accent on every e (French-like) | 813 MB/s | 437 MB/s | 1,009 MB/s | 0.81 |
-| English with the odd foreign word | 858 MB/s | 438 MB/s | 1,108 MB/s | 0.77 |
 | English with emoji | 812 MB/s | 409 MB/s | 1,071 MB/s | 0.76 |
-| MathML, namespace declared once (generated) | 334 MB/s | 154 MB/s | 424 MB/s | 0.79 |
-| MathML, namespace redeclared on each equation (generated) | 349 MB/s | 163 MB/s | 430 MB/s | 0.81 |
+| MathML | 334 MB/s | 154 MB/s | 424 MB/s | 0.79 |
 | Japanese UTF-16LE | 1,280 MB/s | 762 MB/s | 770 MB/s | 1.66 |
 | Japanese EUC-JP | 842 MB/s | 426 MB/s | 569 MB/s | 1.48 |
 | French novel (ELTeC) | 1,307 MB/s | 855 MB/s | 1,561 MB/s | 0.84 |
