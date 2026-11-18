@@ -87,35 +87,6 @@ German novel. Aalto is faster where the text has accented letters in it, by
 between 1.07 and 1.14 times (1.11 on the French novel, and 1.12 on the document
 with emoji), and on MathML, by between 1.05 and 1.11 times.
 
-Attribute values reach Aalto's consumer as `String`s, which the loop above reads
-a character at a time. If only the length of each value is read, Aalto reads the
-attribute-heavy document at about 647 MB/s and not 564, and Gonzalez is ahead of
-it by 1.06 times and not by 1.22.
-
-Throughput is measured from encoded byte size, so UTF-16's MB/s also reflects
-that it uses more bytes for the same logical Japanese document. UTF-16 is
-decoded by Gonzalez's own decoder, which copies the characters out of the input
-in bulk, where the JDK's takes about half the time of the whole parse to do the
-same.
-
-EUC-JP is decoded from tables, which are made once by asking the JDK's decoder
-what each sequence is, where the JDK's decoder took almost two thirds of the
-time of the whole parse to look each character up; anything that is not in the
-tables, an unassigned code or a sequence cut short, is given back to the JDK's
-decoder, so that errors are reported as they were.
-
-UTF-8 is decoded by the JDK's decoder up to the first byte that is not ASCII,
-and by Gonzalez's own from there. The JDK's is four times as fast as anything
-written in Java on ASCII, which it widens with a routine of the JVM's that
-application code cannot call, but it makes that call once for each piece of
-input it is given, and from the first non-ASCII byte decodes the rest of the
-piece a character at a time. One accented letter in every 300 bytes made the
-parse of the plain document 40% slower for that reason. What is left of the
-difference with Aalto on text with accents is the decoder: Aalto works on the
-bytes, where Gonzalez decodes them first, and the widening of the runs of ASCII
-between accented letters is the part that Gonzalez cannot do as fast as the
-JDK's own routine does.
-
 ## SAX
 
 The same documents through SAX. The handler does what the use of a SAX parser
@@ -144,45 +115,11 @@ that it is given.
 | XHTML with an internal DTD subset | 371 MB/s | 150 MB/s | *not compared†* | |
 
 † Aalto is not compared on the document with a DTD. It is not a validating
-parser and does not process a DTD subset: it recognises the DOCTYPE but skips
-the internal declarations, so it neither applies declared attribute types and
-defaults nor expands the declared entities, as Gonzalez and Xerces do, and its
-throughput would be for less work. Its SAX factory rejects validating mode, and
-its own `Attributes2` implementation states that DTD processing is absent.
+parser and does not process a DTD subset.
 
 Gonzalez SAX is faster than the JDK's Xerces on every document, by between 1.5
-and 2.8 times. Aalto SAX is up to 1.3 times as fast as Gonzalez SAX on the UTF-8
-documents: by about 1.1 times on plain, attribute-heavy and markup-heavy text,
-by 1.2 to 1.3 times on those with accented letters or emoji in them and on
-MathML, and not at all on whitespace-heavy and multibyte UTF-8, where the two
-are level; on UTF-16LE Gonzalez SAX is about 1.7 times as fast as Aalto, and on
-EUC-JP about 1.5 times. The difference between the two tables is the SAX layer,
-which costs the most on documents of small runs of text between much markup,
-such as MathML: it reports every start, text run and end, and builds the names,
-attributes and namespace mappings that SAX has, which the native interface
-leaves to its consumer.
-
-The SAX layer does as little as it can of that. The namespace filter, which
-every namespace-aware parse has in front of its handler, keeps what is
-declared and what each name means, and tells the SAX adapter, which does not
-keep it a second time; the scanner reports text, and an attribute whose value
-it has whole, to the adapter as ranges of its own buffer, and not as a
-`CharBuffer` each, and the adapter makes the one `String` that SAX needs and no
-more. These steps were each measured with fresh JVMs one at a time, and the
-ones that did not help (a lazily made attribute value, a wider cache of names,
-and comparing names as characters rather than as strings) are not in it.
-
-A document's figure can move by up to about 5% between builds that change
-nothing it exercises, because the JIT compiles the hot loops differently from
-one build to the next, so differences of that size between rows, or between two
-runs of different builds, are not evidence of anything.
-
-The DTD behaviour was verified from SAX events using
-`benchmark/external-compare/DtdProbe.java`: Gonzalez and JDK Xerces report
-`id` attributes with declared type `ID` and inject the DTD-defaulted,
-non-specified `type="text"` attribute on `<input>`. Aalto reports `id` as
-`CDATA` and omits the defaulted attribute, which is why it is left out of the
-row.
+and 2.8 times. Aalto SAX is ahead in a few scenarios and behind on others,
+as shown.
 
 These are microbenchmarks, not application-level latency guarantees. Results
 depend on the JDK, hardware, handlers and document shape. Gonzalez's primary
@@ -199,12 +136,11 @@ architectural advantages remain:
 ## What the throughput buys: memory
 
 Gonzalez separates scanning from SAX. The scanner reports every construct in
-pieces (the `XMLHandler` events, each with an `end` flag), and the SAX adapter
+chunks (the `XMLHandler` events, each with an `end` flag), and the SAX adapter
 is a layer on top of that. The layer costs throughput, which is most of the gap
 between the native interface and SAX above. In exchange, for a document with
 no DTD the parser itself holds no more than a bounded amount of it, however
-large any one construct is. The other parsers compared do not manage that for
-every kind of construct, and the throughput comparison does not show it.
+large any one construct is.
 
 `MemoryProbe` makes up a document with one very large construct as the parser
 reads it, so that nothing about the harness is large, and parses it in a JVM
@@ -234,10 +170,7 @@ copying a document, can process any of these in constant memory. The rest of
 what Gonzalez must remember is bounded by the structural limits described
 in [Secure Configuration and Limits](SECURE-CONFIGURATION.md#structural-limits).
 
-A document with a single construct that large is unusual, and this measures what
-a parser is able to do, not how typical documents behave. It is the reason for
-the layering all the same, and is what the SAX columns' lower throughput pays
-for. To run it:
+You can reproduce the memory comparison with:
 
 ```sh
 ant benchmark-memory
@@ -248,68 +181,9 @@ The construct is 256 MB and the heap 32 MB unless `-Dbenchmark.memory.mb=N` and
 `benchmark/external-compare/run-memory.sh`, which takes the same two as
 arguments, and needs `AALTO_JAR` and `STAX2_JAR` when run on its own.
 
-To reproduce the comparison:
+To reproduce the throughput comparison:
 
 ```sh
 ant benchmark-compare
 ```
 
-The target builds Gonzalez, fetches what it is measured against (aalto-xml, into
-`lib`) and the documents it is measured on (the French and German novels, into
-`benchmark/corpora`), each download checked against a SHA-256, runs the whole
-comparison, each figure in fresh JVMs, and prints the tables above, as Markdown,
-with the commit, the JDK and the machine it was run on. It takes a long time,
-and writes the tables to `build/performance.md`. `-Dbenchmark.reps=N` is how
-many fresh JVMs each figure is the median of (five by default),
-`-Dbenchmark.compare.corpora="plain french"` runs only some of the documents,
-and `-Dbenchmark.report=FILE` says where the tables are written. `ant
-download-comparison-deps` and `ant download-corpora` fetch their parts on
-their own.
-
-The "Performance comparison" workflow runs the same target on GitHub for any
-branch, tag or commit, `main` unless another is given, and shows the tables on
-the summary page of the run: from the Actions tab, or with
-
-```sh
-gh workflow run performance.yml -f ref=my-branch
-```
-
-A hosted runner is shared with other work and is not the same machine from one
-run to the next, so compare the columns of one run with each other, and not
-its figures with those here or in another run.
-
-For more control there are other targets, each running a script in
-`benchmark/external-compare` and fetching what it needs. `ant benchmark-isolated`
-gives one figure for each of some corpora and modes, each the median of fresh
-JVMs, for looking at some of them or at a build with a change in it:
-
-```sh
-ant benchmark-isolated -Dbenchmark.isolated.corpora="plain french" \
-    -Dbenchmark.isolated.modes="xmlhandler-sum aalto-stax-sum"
-```
-
-Its corpora and modes are quoted lists, by default all of them, and
-`-Dbenchmark.isolated.unit=us` gives microseconds for a parse and not MB/s. Set
-`GONZALEZ_CLASSES` when running the script itself to compare another build of
-Gonzalez. The modes of the first table are `xmlhandler-sum` and
-`aalto-stax-sum`, and those of the second `sax-touch`, `jdk-touch` and
-`aalto-sax-touch`. The modes `xmlhandler`, `sax` and `jdk`, with empty handlers,
-and `aalto-stax`, which only steps the cursor through the events, read nothing
-of what they are given and are not comparable with the others.
-`ant benchmark-dtd-probe` shows which parsers process an internal DTD subset,
-which is why Aalto is not compared on that document.
-
-The scripts can also be run on their own, which needs `AALTO_JAR` and
-`STAX2_JAR` to name the jars (after `ant download-comparison-deps`,
-`lib/aalto-xml-1.4.0.jar` and `lib/stax2-api-4.3.0.jar`); they exit with an error
-if either is unset or does not name a file:
-
-```sh
-export AALTO_JAR=lib/aalto-xml-1.4.0.jar
-export STAX2_JAR=lib/stax2-api-4.3.0.jar
-benchmark/external-compare/run-isolated.sh
-```
-
-`performance-tables.sh` takes the number of runs and a file for the tables, and
-includes the French and German novels when they are in `benchmark/corpora` (or
-`FRENCH_XML` and `GERMAN_XML` name a French and a German document of your own).
