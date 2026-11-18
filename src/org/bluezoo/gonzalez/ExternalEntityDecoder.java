@@ -133,6 +133,13 @@ class ExternalEntityDecoder {
     private CharsetDecoder asciiDecoder;
 
     /**
+     * For UTF-8 only, what decodes input in which the characters that are not
+     * ASCII are few, which {@link Utf8Decoder}, which {@link #decoder} is, is
+     * not as fast on. Null for any other charset.
+     */
+    private Utf8LongRuns longRuns;
+
+    /**
      * Where, in the input being decoded, the first byte at or above 0x80 is
      * to be found, to within eight bytes; the end of the input if there is
      * none. Set by {@link #scanBytes} for UTF-8.
@@ -316,6 +323,9 @@ class ExternalEntityDecoder {
             decoder.reset();
             if (asciiDecoder != null) {
                 asciiDecoder.reset();
+            }
+            if (longRuns != null) {
+                longRuns.reset();
             }
         }
         // Keep charBuffer allocated - just clear it
@@ -539,6 +549,7 @@ class ExternalEntityDecoder {
         // Reuse existing decoder if charset unchanged, otherwise create new one
         if (decoder == null || !charset.equals(previousCharset)) {
             asciiDecoder = null;
+            longRuns = null;
             if (charset.equals(StandardCharsets.UTF_16LE)) {
                 decoder = new Utf16Decoder(charset, false);
             } else if (charset.equals(StandardCharsets.UTF_16BE)) {
@@ -547,6 +558,9 @@ class ExternalEntityDecoder {
                 decoder = new EucJpDecoder(charset);
             } else if (charset.equals(StandardCharsets.UTF_8)) {
                 decoder = new Utf8Decoder();
+                longRuns = new Utf8LongRuns();
+                longRuns.onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT);
                 asciiDecoder = charset.newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT);
@@ -674,7 +688,9 @@ class ExternalEntityDecoder {
             }
 
             // Decode into charBuffer (from current position to limit)
-            CoderResult result = (ascii ? asciiDecoder : decoder).decode(data, charBuffer, false);
+            CharsetDecoder current = ascii ? asciiDecoder
+                    : longRuns != null && Utf8LongRuns.isSparse(data) ? longRuns : decoder;
+            CoderResult result = current.decode(data, charBuffer, false);
             if (ascii) {
                 data.limit(inputLimit);
             }

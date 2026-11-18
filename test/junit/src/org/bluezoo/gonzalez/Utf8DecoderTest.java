@@ -23,10 +23,12 @@ import static org.junit.Assert.fail;
 
 /**
  * {@link Utf8Decoder} is a second decoder for UTF-8, faster than the JDK's on
- * text that is not all ASCII. It must report exactly what the JDK's does for
- * the same input, however that arrives and into however small a buffer: the
- * same characters, the same refusal of what is not well-formed, with the same
- * length of malformed input, and the same waiting for the end of a sequence.
+ * text that is not all ASCII, and {@link Utf8LongRuns} is faster again on
+ * text in which what is not ASCII is rare. Each must report exactly what the
+ * JDK's does for the same input, however that arrives
+ * and into however small a buffer: the same characters, the same refusal of
+ * what is not well-formed, with the same length of malformed input, and the
+ * same waiting for the end of a sequence.
  */
 public class Utf8DecoderTest {
 
@@ -37,6 +39,12 @@ public class Utf8DecoderTest {
 
     private static CharsetDecoder ours() {
         return new Utf8Decoder().onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+    }
+
+    /** The decoder the parser uses instead of {@link #ours} where non-ASCII characters are few. */
+    private static CharsetDecoder forLongRuns() {
+        return new Utf8LongRuns().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT);
     }
 
@@ -81,9 +89,11 @@ public class Utf8DecoderTest {
         for (int inChunk : inChunks) {
             for (int outSize : outSizes) {
                 for (boolean direct : directs) {
-                    assertEquals(what + " in " + inChunk + " out " + outSize + (direct ? " direct" : ""),
-                            decode(jdk(), data, inChunk, outSize, direct),
-                            decode(ours(), data, inChunk, outSize, direct));
+                    String expected = decode(jdk(), data, inChunk, outSize, direct);
+                    String where = what + " in " + inChunk + " out " + outSize + (direct ? " direct" : "");
+                    assertEquals(where, expected, decode(ours(), data, inChunk, outSize, direct));
+                    assertEquals(where + " for long runs", expected,
+                            decode(forLongRuns(), data, inChunk, outSize, direct));
                 }
             }
         }
@@ -147,6 +157,102 @@ public class Utf8DecoderTest {
             System.arraycopy(data, 0, bad, 0, data.length);
             bad[data.length] = (byte) 0xFF;
             same("run " + run + " then bad", bad, chunks, outs, BOTH);
+        }
+    }
+
+    /**
+     * Where non-ASCII characters are few the runs of ASCII between them are
+     * widened by another decoder, a run at a time, after being measured; so
+     * the runs are of every length, near the lengths at which a run is given
+     * to it and the length of the sample that says whether to, and end at the
+     * input, at the output and at a byte that is not UTF-8.
+     */
+    @Test
+    public void longRunsOfAsciiOfEveryLength() {
+        int[] chunks = { 300, 1000, 40000 };
+        int[] outs = { 3, 47, 300, 4096 };
+        for (int run = 1; run <= 700; run += (run < 100 ? 1 : 7)) {
+            StringBuilder sb = new StringBuilder();
+            for (int part = 0; part < 3; part++) {
+                for (int i = 0; i < run; i++) {
+                    sb.append((char) ('a' + (i + part) % 26));
+                }
+                sb.append(part == 0 ? "\u00e9" : part == 1 ? "\u3042" : "\ud83d\ude00");
+            }
+            byte[] data = sb.toString().getBytes(StandardCharsets.UTF_8);
+            same("long run " + run, data, chunks, outs, BOTH);
+
+            byte[] bad = new byte[data.length + 1];
+            System.arraycopy(data, 0, bad, 0, data.length);
+            bad[data.length] = (byte) 0xFF;
+            same("long run " + run + " then bad", bad, chunks, outs, BOTH);
+        }
+    }
+
+    @Test
+    public void textWithFewNonAsciiCharacters() {
+        Random random = new Random(3);
+        for (int every : new int[] { 100, 300, 1000, 5000 }) {
+            byte[] data = randomText(random, 20000, every).getBytes(StandardCharsets.UTF_8);
+            same("sparse every " + every, data, new int[] { 1, 7, 300, 1000, 40000 },
+                    new int[] { 3, 64, 4096 }, BOTH);
+        }
+    }
+
+    /**
+     * What is not well-formed, in the middle of long runs of ASCII and at the
+     * end of them, is refused as the JDK's decoder refuses it, however long
+     * the part of it that is there is.
+     */
+    @Test
+    public void whatIsNotWellFormedAmongLongRuns() {
+        int[][] bad = {
+            { 0xE0, 0x80, 0x80 }, { 0xE0, 0x9F, 0xBF }, { 0xE0, 0x9C, 0x80 }, { 0xED, 0xA0, 0x80 },
+            { 0xED, 0xBF, 0xBF }, { 0xF0, 0x80, 0x80, 0x80 }, { 0xF0, 0x8F, 0xBF, 0xBF },
+            { 0xF4, 0x90, 0x80, 0x80 }, { 0xF5, 0x80, 0x80, 0x80 }, { 0xF8, 0x88, 0x80, 0x80 },
+            { 0xC0, 0x80 }, { 0xC1, 0xBF }, { 0x80 }, { 0xBF }, { 0xFF }, { 0xC3 }, { 0xC3, 0x41 },
+            { 0xE3, 0x81 }, { 0xE3, 0x41, 0x80 }, { 0xE3, 0x81, 0x41 }, { 0xF0, 0x9F, 0x98 },
+            { 0xF0, 0x9F, 0x41, 0x80 }, { 0xF0, 0x9F, 0x98, 0x41 }
+        };
+        for (int[] sequence : bad) {
+            for (int run : new int[] { 40, 300, 301 }) {
+                StringBuilder before = new StringBuilder();
+                for (int i = 0; i < run; i++) {
+                    before.append((char) ('a' + i % 26));
+                }
+                byte[] ascii = before.toString().getBytes(StandardCharsets.US_ASCII);
+                for (int after : new int[] { 0, 5, 300 }) {
+                    byte[] data = new byte[ascii.length + sequence.length + after];
+                    System.arraycopy(ascii, 0, data, 0, ascii.length);
+                    for (int i = 0; i < sequence.length; i++) {
+                        data[ascii.length + i] = (byte) sequence[i];
+                    }
+                    for (int i = 0; i < after; i++) {
+                        data[ascii.length + sequence.length + i] = (byte) ('a' + i % 26);
+                    }
+                    same("bad " + hex(java.util.Arrays.copyOfRange(data, ascii.length, ascii.length + sequence.length))
+                            + " after " + run + " before " + after, data,
+                            new int[] { 5, 300, 40000 }, new int[] { 4, 47, 4096 }, BOTH);
+                }
+            }
+        }
+    }
+
+    @Test
+    public void corruptedTextWithFewNonAsciiCharacters() {
+        Random random = new Random(11);
+        for (int round = 0; round < 200; round++) {
+            byte[] data = randomText(random, 1000 + random.nextInt(1000), 150 + random.nextInt(500))
+                    .getBytes(StandardCharsets.UTF_8);
+            int flips = 1 + random.nextInt(3);
+            for (int i = 0; i < flips; i++) {
+                data[random.nextInt(data.length)] = (byte) random.nextInt(256);
+            }
+            if (random.nextInt(4) == 0) {
+                data = java.util.Arrays.copyOf(data, data.length - random.nextInt(4));
+            }
+            same("corrupted sparse " + round, data, new int[] { 3, 300, 1000, 40000 },
+                    new int[] { 5, 47, 4096 }, new boolean[] { false });
         }
     }
 

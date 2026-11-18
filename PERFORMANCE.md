@@ -118,7 +118,7 @@ that it is given.
 parser and does not process a DTD subset.
 
 Gonzalez SAX is faster than the JDK's Xerces on every document, by between 1.5
-and 2.8 times. Aalto SAX is ahead in a few scenarios and behind on others,
+and 2.8 times. Aalto SAX is ahead in some scenarios and behind on others,
 as shown.
 
 These are microbenchmarks, not application-level latency guarantees. Results

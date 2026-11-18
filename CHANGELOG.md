@@ -84,6 +84,26 @@ All notable changes to Gonzalez will be documented in this file.
   from 556 to 740 on SAX. A document of dense multibyte text gains 5 to 7%,
   and one that is all ASCII is unchanged.
 
+- **UTF-8 with few non-ASCII characters is decoded by runs.** `Utf8Decoder`
+  widens ASCII a byte at a time, which is a third as fast as the routine the
+  JDK's ISO-8859-1 decoder widens bytes with, and costs a quarter of the
+  parse of a document that has an accent in every few hundred bytes. The new
+  `Utf8LongRuns` measures a run of ASCII a word at a time and gives it to that
+  decoder, which costs as much to call as thirty bytes do to copy, so it is
+  used where the runs are long: `ExternalEntityDecoder` chooses it for a piece
+  of input whose first 256 bytes have at most six that are not ASCII, and it
+  gives the run up to `Utf8Decoder` if the runs turn out to be short. It is a
+  class of its own because the loop of `Utf8Decoder` is compiled differently
+  for what else is in its method, and was a sixth slower on German text when
+  it held this. It reports no errors of its own: what is not well-formed is
+  left for `Utf8Decoder`, which refuses it as before. A document with an
+  accented word in every 900 bytes goes from 920 to 1000 MB/s on the native
+  path and from 845 to 950 on SAX, one with an accent in every 300 bytes
+  from 930 to 1010 and from 850 to 955, and one with an emoji in every 220
+  bytes by 6%. French and German novels, where there is a non-ASCII byte in
+  every 17 to 24, are within 3% either way, and text that is all ASCII is
+  unchanged.
+
 - **UTF-16 is decoded in bulk.** The JDK's UTF-16 decoder takes two bytes at a
   time through the buffer accessors, and on a document of Japanese text that
   was about half the time of the whole parse. A document of known byte order
