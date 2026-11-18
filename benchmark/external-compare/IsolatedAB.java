@@ -54,7 +54,10 @@ import org.xml.sax.helpers.DefaultHandler;
  * lets a parser that decodes them lazily skip the work, which no real
  * handler does.
  *
- * Every mode is namespace-aware. Run through run-isolated.sh, which needs
+ * Every mode is namespace-aware, except that -Dnamespaces=false makes
+ * sax-touch not (to see what namespace processing costs). Two modes are not
+ * parsers: size prints the corpus's size in bytes, and dump writes the
+ * corpus itself to standard output. Run through run-isolated.sh, which needs
  * the aalto-xml and stax2-api jars (AALTO_JAR, STAX2_JAR) on the classpath.
  */
 public class IsolatedAB {
@@ -84,6 +87,12 @@ public class IsolatedAB {
     public static void main(String[] args) throws Exception {
         byte[] bytes = corpus(args[0]);
         String mode = args[1];
+        if ("dump".equals(mode)) {
+            // Not a parser: the corpus itself, on standard output.
+            System.out.write(bytes);
+            System.out.flush();
+            return;
+        }
         if ("size".equals(mode)) {
             // Not a parser: the size of the corpus in bytes, for the tables.
             System.out.println(bytes.length);
@@ -309,7 +318,8 @@ public class IsolatedAB {
                 final TouchHandler h = new TouchHandler();
                 return () -> {
                     org.xml.sax.XMLReader reader = new Parser();
-                    reader.setFeature("http://xml.org/sax/features/namespaces", true);
+                    reader.setFeature("http://xml.org/sax/features/namespaces",
+                            !"false".equals(System.getProperty("namespaces")));
                     Integer decodeBuffer = Integer.getInteger("decodebuf");
                     if (decodeBuffer != null) {
                         reader.setProperty("http://www.nongnu.org/gonzalez/properties/decode-buffer-size",

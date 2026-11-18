@@ -40,52 +40,53 @@ import org.xml.sax.ext.LexicalHandler;
  * <p>
  * This is the point where {@link Scanner}'s (or, if namespace-aware, {@link
  * NamespaceFilter}'s) internal event stream becomes a real SAX {@code
- * ContentHandler} call sequence, and the only place namespace resolution
- * (raw qName -&gt; uri/localName, {@code Attributes} assembly) happens - the
- * event source (scanner, or the stateless namespace filter in front of it)
- * never resolves names itself.
+ * ContentHandler} call sequence, and where the {@code Attributes} are
+ * assembled. What names mean in namespace terms is not settled here: the
+ * {@link NamespaceFilter} in front of a namespace-aware adapter keeps the
+ * declarations, checks the names, and hands this the namespace and local name
+ * of each element ({@link #endAttributes(String, String)}) and of each
+ * prefixed attribute ({@link #resolvedAttribute}), and is asked for what an
+ * element declares when {@code startPrefixMapping} and {@code
+ * endPrefixMapping} are to be reported. The adapter keeps none of that
+ * itself, so the work is done once, whichever handler is behind the filter.
  * <p>
- * Attributes are buffered from {@link #startElement(String)} to
- * {@link #endAttributes()} into this class's own small pooled {@link Attr}
- * list, and this class implements {@link Attributes2} directly rather than
- * delegating to a separate object (unlike {@code ContentParser}, which
- * shares {@link SAXAttributes} - a richer implementation with lazy DTD-
- * backed {@code getType()}/{@code isDeclared()} lookups this pipeline
- * doesn't need, since {@link Scanner} already resolves an attribute's type
- * before {@link #startAttribute} ever sees it). {@link #startElement(String)}
- * clearing the list back to zero-length is genuinely {@code O(1)} - unlike
- * {@code SAXAttributes.clear()}, there is no per-attribute pool (a
- * {@link QNamePool} entry, a {@code StringBuilder}) to return, since {@link
- * Attr} doesn't use one; see {@link Attr}'s own Javadoc. Duplicate-attribute
- * detection by raw name (WFC "Unique Att Spec") is not this class's job:
- * {@link Scanner} enforces it before {@link #startAttribute} is ever
- * called, for every consumer of its events. Only the namespace-level form
- * (same expanded name through different prefixes) is checked here, in
- * {@link #resolveAttributeNamespaces}, since it depends on the namespace
- * resolution this class performs.
+ * Attributes are buffered from {@link #startElement(String)} to the end of
+ * the start tag into this class's own small pooled {@link Attr} list, and
+ * this class implements {@link Attributes2} directly rather than delegating
+ * to a separate object (unlike {@code ContentParser}, which shares {@link
+ * SAXAttributes} - a richer implementation with lazy DTD-backed {@code
+ * getType()}/{@code isDeclared()} lookups this pipeline doesn't need, since
+ * {@link Scanner} already resolves an attribute's type before it is reported
+ * here). {@link #startElement(String)} clearing the list back to zero-length
+ * is genuinely {@code O(1)}: there is no per-attribute pool to return
+ * anything to; see {@link Attr}'s own Javadoc. Duplicate-attribute detection
+ * by raw name (WFC "Unique Att Spec") is not this class's job: {@link
+ * Scanner} enforces it before an attribute is ever reported, for every
+ * consumer of its events, and the namespace-level form (same expanded name
+ * through different prefixes) is checked by the filter.
  * <p>
- * Namespace resolution follows the same resolve-at-end-of-tag pattern as
- * {@code ContentParser.fireStartElement} (an xmlns declaration appearing
- * after a prefixed attribute in the same start tag must still resolve that
- * attribute correctly). Since {@link XMLHandler#endElement()} carries no
- * name, this class maintains its own element stack of resolved
- * uri/localName/qName so it can supply SAX's {@code endElement(uri,
- * localName, qName)} - the event source is not required to remember this
- * itself.
+ * The scanner reports this class text, and attributes whose values it has
+ * whole, as ranges of its own buffer ({@link CharArrayHandler}), so that
+ * neither costs an object before the string, if there is one, that SAX needs.
+ * <p>
+ * Since {@link XMLHandler#endElement()} carries no name, this class maintains
+ * its own element stack of qName/uri/localName so it can supply SAX's {@code
+ * endElement(uri, localName, qName)} - the event source is not required to
+ * remember this itself.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
+class SAXAdapter implements XMLHandler, CharArrayHandler, Attributes2 {
 
     /**
      * One buffered attribute. Pooled and reused across {@link
      * #startElement(String)} calls exactly like {@code SAXAttributes}'s own
      * {@code Attribute} holder - the list only ever grows (never shrinks)
      * to the high-water mark of attributes-per-element seen so far - but
-     * unlike that class's holder, has no {@link QNamePool} entry of its own
-     * to check out/return: {@link #uri}/{@link #localName}/{@link #qName}
-     * are plain fields, resolved in place by {@link
-     * #resolveAttributeNamespaces}, needing no pooled wrapper object at all.
+     * unlike that class's holder, has no pooled name object of its own:
+     * {@link #uri}/{@link #localName}/{@link #qName} are plain fields, given
+     * what the namespace filter settled by {@link #resolvedAttribute},
+     * needing no pooled wrapper object at all.
      */
     private static final class Attr {
         String uri = "";
@@ -106,8 +107,10 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
     private String systemId;
 
     private final boolean namespaceAware;
-    private final NamespaceScopeTracker namespaceTracker;
-    private final QNamePool qnamePool;
+    /** The {@link NamespaceFilter} in front of this adapter, which settles
+     *  what names mean and what is declared, and which this asks for the
+     *  declarations. Null unless namespace aware. */
+    private NamespaceFilter namespaces;
 
     // This element's buffered attributes - see Attr's own Javadoc for the
     // pooling design. attrCount is the "used" length; the slots of attrs
@@ -117,33 +120,22 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
     private Attr[] attrs = new Attr[16];
     private int attrCount;
 
-    // Whether a name has a colon in it, remembered by identity: names are
-    // interned, so a document asks the same few questions over and over.
-    private static final int COLON_CACHE_SIZE = 64;
-    private final String[] colonCacheNames = new String[COLON_CACHE_SIZE];
-    private final boolean[] colonCacheValues = new boolean[COLON_CACHE_SIZE];
-    private boolean hasPrefixedAttributes;
+    // Where the next attribute that the filter reports as resolved is looked
+    // for: they are reported in the order the attributes came, so one is
+    // never looked for before the last found.
+    private int resolveCursor;
 
-    // Element stack: three parallel arrays under one depth. qName is set
-    // when the element starts; uri/localName are only meaningful (and only
-    // set, at the end of the start tag) in namespace-aware mode. Plain
-    // arrays, since each element pushes and pops all three.
+    // The elements that are open, innermost last: the name as written, the
+    // namespace it is in, and its local name if that is not the name (null
+    // when it is, as it is for every name with no prefix). The latter two
+    // are set at the end of the start tag, in namespace-aware mode only, and
+    // only when they differ from what is already there: most elements are in
+    // the namespace of the last at their depth, and a reference stored into
+    // an array that has been around a while is not free under G1.
     private String[] qNameStack = new String[32];
     private String[] uriStack = new String[32];
     private String[] localNameStack = new String[32];
     private int elementDepth;
-
-    // What element names resolved to, kept while the namespace bindings stay
-    // as they were (see NamespaceScopeTracker#getBindingVersion): a small
-    // direct-mapped cache, qName -> (uri, localName).
-    private static final int ELEMENT_NAME_CACHE_SIZE = 64;
-    private final String[] elementNameCacheQName = new String[ELEMENT_NAME_CACHE_SIZE];
-    private final String[] elementNameCacheUri = new String[ELEMENT_NAME_CACHE_SIZE];
-    private final String[] elementNameCacheLocal = new String[ELEMENT_NAME_CACHE_SIZE];
-    private final int[] elementNameCacheVersion = new int[ELEMENT_NAME_CACHE_SIZE];
-
-    // Reused across endElement() calls to avoid allocating a new list every
-    // time just to reverse iteration order for endPrefixMapping.
 
     // Current attribute being assembled from startAttribute()/
     // attributeValueContent() calls. attributeValueFirstChunk is true only
@@ -186,11 +178,15 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
      */
     SAXAdapter(boolean namespaceAware) {
         this.namespaceAware = namespaceAware;
-        this.namespaceTracker = namespaceAware ? new NamespaceScopeTracker() : null;
-        // Only the element's own name is resolved via a pooled QName (see
-        // endAttributes()) - attributes no longer need one at all, per
-        // Attr's own Javadoc.
-        this.qnamePool = new QNamePool();
+    }
+
+    /**
+     * Sets the filter that makes the pipeline namespace aware. It decides
+     * what every name means and keeps what is declared, and this takes the
+     * answers from it.
+     */
+    void setNamespaces(NamespaceFilter namespaces) {
+        this.namespaces = namespaces;
     }
 
     void setContentHandler(ContentHandler handler) {
@@ -259,13 +255,10 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
 
     @Override
     public void startElement(String qName) throws SAXException {
-        if (namespaceTracker != null) {
-            namespaceTracker.pushContext();
-        }
         // O(1): no per-attribute pool to return anything to - see Attr's
         // own Javadoc.
         attrCount = 0;
-        hasPrefixedAttributes = false;
+        resolveCursor = 0;
         int depth = elementDepth;
         if (depth == qNameStack.length) {
             int capacity = depth * 2;
@@ -279,13 +272,14 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
 
     @Override
     public void namespace(String prefix, String uri) throws SAXException {
-        if (namespaceTracker == null) {
+        if (!namespaceAware) {
             // Should not happen: a namespace-unaware pipeline configuration
             // has no stage that emits namespace() in the first place.
             throw new IllegalStateException(
                     "namespace() event received but this adapter is not namespace-aware");
         }
-        namespaceTracker.declarePrefix(prefix, uri);
+        // Nothing to do: the filter that reports it has kept it, and is
+        // asked for what an element declares when that is wanted.
     }
 
     @Override
@@ -324,6 +318,61 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
         attr.declared = declared;
         attr.specified = specified;
         attributeValueFirstChunk = true;
+    }
+
+    @Override
+    public boolean takesCharArrays() {
+        return true;
+    }
+
+    @Override
+    public void characters(char[] chars, int start, int length, boolean ignorable, boolean end)
+            throws SAXException {
+        ContentHandler handler = contentHandler;
+        if (handler == null) {
+            return;
+        }
+        if (ignorable) {
+            handler.ignorableWhitespace(chars, start, length);
+        } else {
+            handler.characters(chars, start, length);
+        }
+    }
+
+    @Override
+    public void attribute(String name, String type, boolean declared, boolean specified,
+            char[] chars, int start, int length) {
+        int index = attrCount;
+        if (index == attrs.length) {
+            attrs = Arrays.copyOf(attrs, index * 2);
+        }
+        Attr attr = attrs[index];
+        if (attr == null) {
+            attr = new Attr();
+            attrs[index] = attr;
+        }
+        // As in startAttribute, which this is that and the value together.
+        if (attr.uri != "") {
+            attr.uri = "";
+        }
+        if (attr.localName != name) {
+            attr.localName = name;
+        }
+        if (attr.qName != name) {
+            attr.qName = name;
+        }
+        if (attr.type != type) {
+            attr.type = type;
+        }
+        attr.declared = declared;
+        attr.specified = specified;
+        attr.value = new String(chars, start, length);
+        if (namespaceAware && xmlnsUris && ("xmlns".equals(name) || name.startsWith("xmlns:"))) {
+            attr.uri = NamespaceScopeTracker.XMLNS_NAMESPACE_URI;
+            int colon = name.indexOf(':');
+            attr.localName = colon < 0 ? "xmlns" : name.substring(colon + 1);
+        }
+        attrCount = index + 1;
     }
 
     @Override
@@ -368,10 +417,11 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
     /**
      * Buffers the current attribute (name/type already captured by {@link
      * #startAttribute}) into {@link #attrs}. {@code uri=""} and {@code
-     * localName=qName} for now, exactly as {@code ContentParser.
-     * handleAttributeValue} does - resolved in {@link
-     * #resolveAttributeNamespaces} below once all xmlns declarations for
-     * this element are known, regardless of attribute order.
+     * localName=qName} for now, as for an attribute with no prefix, which
+     * is all of them that are not given a namespace by {@link
+     * #resolvedAttribute} when the start tag ends, once all xmlns
+     * declarations for this element are known, regardless of attribute
+     * order.
      * <p>
      * No duplicate-qName check is made here: {@link Scanner} has already
      * rejected a repeated raw name (WFC "Unique Att Spec") before {@link
@@ -390,111 +440,80 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
             attr.localName = colon < 0 ? "xmlns" : qName.substring(colon + 1);
         }
         attrCount++;
-        if (hasColon(qName)) {
-            hasPrefixedAttributes = true;
-        }
-    }
-
-    private boolean hasColon(String name) {
-        int slot = name.hashCode() & (COLON_CACHE_SIZE - 1);
-        if (colonCacheNames[slot] == name) {
-            return colonCacheValues[slot];
-        }
-        boolean colon = name.indexOf(':') >= 0;
-        colonCacheNames[slot] = name;
-        colonCacheValues[slot] = colon;
-        return colon;
     }
 
     /**
-     * Resolves any prefixed attributes' {@code uri}/{@code localName} now
-     * that every xmlns declaration on this element is known - ported from
-     * {@code SAXAttributes.resolveAttributeNamespaces}, operating on {@link
-     * #attrs} instead. A no-op (single boolean check) unless this
-     * element actually has a prefixed attribute.
+     * Takes what the filter has settled about a prefixed attribute: the
+     * namespace its prefix is bound to and its local name. Attributes
+     * with no prefix are in no namespace and are their own local name, as
+     * {@link #startAttribute} leaves them, so this is only for the others,
+     * which come in the order the attributes did.
      * <p>
-     * This only resolves. Whether the names are legal - each prefix
-     * bound, no two attributes with the same expanded name - has already
-     * been decided by {@link NamespaceFilter}, which every namespace-aware
-     * pipeline has in front of its handler, so that the answer does not
-     * depend on which handler that is.
+     * Whether the names are legal - each prefix bound, no two attributes
+     * with the same expanded name - was decided by the filter before this
+     * was asked, whatever handler is behind it.
      */
-    private void resolveAttributeNamespaces(NamespaceScopeTracker tracker) throws SAXException {
-        if (!hasPrefixedAttributes) {
-            return;
-        }
-        for (int i = 0; i < attrCount; i++) {
+    void resolvedAttribute(String qName, String uri, String localName) {
+        int n = attrCount;
+        for (int i = resolveCursor; i < n; i++) {
             Attr attr = attrs[i];
-            String qName = attr.qName;
-            int colonPos = qName.indexOf(':');
-            if (colonPos > 0 && attr.uri.isEmpty()) {
-                if (qName.startsWith("xmlns:")) {
-                    continue;
-                }
-                String prefix = qName.substring(0, colonPos);
-                String localName = qName.substring(colonPos + 1);
-                String uri = tracker.getURI(prefix);
-                if (uri == null) {
-                    throw fatalError("Unbound namespace prefix: " + prefix);
-                }
+            if (attr.qName == qName) {
                 attr.uri = uri;
                 attr.localName = localName;
+                resolveCursor = i + 1;
+                return;
+            }
+        }
+        // Not where expected, which is not expected: look through them all.
+        for (int i = 0; i < n; i++) {
+            Attr attr = attrs[i];
+            if (attr.qName.equals(qName)) {
+                attr.uri = uri;
+                attr.localName = localName;
+                resolveCursor = i + 1;
+                return;
             }
         }
     }
 
     @Override
     public void endAttributes() throws SAXException {
-        String qName = qNameStack[elementDepth - 1];
+        if (namespaceAware) {
+            // The filter, which every namespace-aware pipeline has in front
+            // of this, does not come this way.
+            throw new IllegalStateException(
+                    "A namespace-aware adapter takes the end of a start tag from its NamespaceFilter");
+        }
+        if (contentHandler != null) {
+            String qName = qNameStack[elementDepth - 1];
+            contentHandler.startElement("", qName, qName, this);
+        }
+    }
 
-        if (namespaceTracker != null) {
-            if (contentHandler != null) {
-                for (int i = 0, n = namespaceTracker.getCurrentScopeDeclarationCount(); i < n; i++) {
-                    contentHandler.startPrefixMapping(
-                            namespaceTracker.getCurrentScopePrefix(i), namespaceTracker.getCurrentScopeURI(i));
-                }
+    /**
+     * The end of the start tag of a namespace-aware element, with what the
+     * filter has settled of its name.
+     *
+     * @param uri the namespace the element is in
+     * @param localName its local name, or null if that is its name as
+     *        written, which it is if that has no prefix
+     */
+    void endAttributes(String uri, String localName) throws SAXException {
+        int top = elementDepth - 1;
+        if (uriStack[top] != uri) {
+            uriStack[top] = uri;
+        }
+        if (localNameStack[top] != localName) {
+            localNameStack[top] = localName;
+        }
+        ContentHandler handler = contentHandler;
+        if (handler != null) {
+            NamespaceFilter filter = namespaces;
+            for (int i = 0, n = filter.declarationCount(); i < n; i++) {
+                handler.startPrefixMapping(filter.declarationPrefix(i), filter.declarationURI(i));
             }
-
-            resolveAttributeNamespaces(namespaceTracker);
-
-            // What an element name resolves to depends only on the name
-            // and on the bindings in scope, and a document uses few names
-            // and rebinds seldom, so keep the answer while the bindings stay
-            // as they are. Names are interned, so identity is the test; one
-            // that is not is simply worked out again.
-            int version = namespaceTracker.getBindingVersion();
-            int slot = qName.hashCode() & (ELEMENT_NAME_CACHE_SIZE - 1);
-            String uri;
-            String localName;
-            if (elementNameCacheQName[slot] == qName && elementNameCacheVersion[slot] == version) {
-                uri = elementNameCacheUri[slot];
-                localName = elementNameCacheLocal[slot];
-            } else {
-                QName elementQName;
-                try {
-                    elementQName = namespaceTracker.processName(qName, false, qnamePool);
-                } catch (NamespaceException e) {
-                    throw fatalError(e.getMessage());
-                }
-                uri = elementQName.getURI();
-                localName = elementQName.getLocalName();
-                qnamePool.returnToPool(elementQName);
-                elementNameCacheQName[slot] = qName;
-                elementNameCacheUri[slot] = uri;
-                elementNameCacheLocal[slot] = localName;
-                elementNameCacheVersion[slot] = version;
-            }
-
-            uriStack[elementDepth - 1] = uri;
-            localNameStack[elementDepth - 1] = localName;
-
-            if (contentHandler != null) {
-                contentHandler.startElement(uri, localName, qName, this);
-            }
-        } else {
-            if (contentHandler != null) {
-                contentHandler.startElement("", qName, qName, this);
-            }
+            String qName = qNameStack[top];
+            handler.startElement(uri, localName == null ? qName : localName, qName, this);
         }
     }
 
@@ -534,23 +553,24 @@ class SAXAdapter implements XMLHandler, CharArrayAttributeHandler, Attributes2 {
 
         String uri = "";
         String localName = qName;
-        if (namespaceTracker != null) {
+        if (namespaceAware) {
             uri = uriStack[top];
             localName = localNameStack[top];
+            if (localName == null) {
+                localName = qName;
+            }
         }
 
-        if (contentHandler != null) {
-            contentHandler.endElement(uri, localName, qName);
-        }
-
-        if (namespaceTracker != null) {
-            if (contentHandler != null) {
+        ContentHandler handler = contentHandler;
+        if (handler != null) {
+            handler.endElement(uri, localName, qName);
+            if (namespaceAware) {
                 // Reverse order, matching ContentParser.fireStartElement/fireEndElement.
-                for (int i = namespaceTracker.getCurrentScopeDeclarationCount() - 1; i >= 0; i--) {
-                    contentHandler.endPrefixMapping(namespaceTracker.getCurrentScopePrefix(i));
+                NamespaceFilter filter = namespaces;
+                for (int i = filter.declarationCount() - 1; i >= 0; i--) {
+                    handler.endPrefixMapping(filter.declarationPrefix(i));
                 }
             }
-            namespaceTracker.popContext();
         }
     }
 

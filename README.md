@@ -235,9 +235,10 @@ all the content on both sides, it is faster on markup-heavy, attribute-heavy and
 multibyte UTF-8 (by up to about 1.2 times), and on UTF-16 and EUC-JP (by 1.7 to
 1.9 times), and level or up to about 1.15 times slower on text with accented
 letters in it, such as French and English with the odd accent. Through SAX it
-is between 1.4 and 2.5 times as fast as Xerces on every document compared, and
-Aalto SAX is between about 1.1 and 1.5 times as fast as Gonzalez SAX on UTF-8
-text and slower on UTF-16 and EUC-JP. The difference between the native
+is between 1.5 and 2.8 times as fast as Xerces on every document compared, and
+Aalto SAX is up to about 1.3 times as fast as Gonzalez SAX on UTF-8 text
+(level on whitespace-heavy and multibyte text) and slower on UTF-16 and
+EUC-JP. The difference between the native
 interface and SAX is what the SAX layer costs.
 
 That layer is also what lets the parser report every construct in pieces. In a

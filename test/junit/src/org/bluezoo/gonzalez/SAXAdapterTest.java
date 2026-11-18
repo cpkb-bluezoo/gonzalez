@@ -49,6 +49,11 @@ public class SAXAdapterTest {
         adapter.attributeValueContent(cb(value), true);
     }
 
+    private static void filterAttr(NamespaceFilter filter, String name, String value) throws Exception {
+        filter.startAttribute(name, "CDATA");
+        filter.attributeValueContent(cb(value), true);
+    }
+
     @Test
     public void testSimpleElementWithAttributeAndText_namespaceUnaware() throws Exception {
         SAXAdapter adapter = new SAXAdapter(false);
@@ -198,29 +203,31 @@ public class SAXAdapterTest {
         // </root>
         //
         // The prefixed attribute is reported before its governing xmlns:p
-        // declaration (via namespace()) - this must still resolve correctly,
-        // matching XML's rule that attribute order within a start tag
-        // doesn't affect namespace resolution, and exercising the same
-        // resolve-at-endAttributes()-time design as
-        // ContentParser.fireStartElement/SAXAttributes.resolveAttributeNamespaces.
+        // declaration - this must still resolve correctly, matching XML's
+        // rule that attribute order within a start tag doesn't affect
+        // namespace resolution. A namespace-aware adapter takes what names
+        // mean from the NamespaceFilter in front of it, as it does in every
+        // pipeline, so that is what is driven here, with the declarations as
+        // attributes, as the scanner reports them.
         SAXAdapter adapter = new SAXAdapter(true);
         RecordingSaxHandler sink = new RecordingSaxHandler();
         adapter.setContentHandler(sink);
+        NamespaceFilter filter = new NamespaceFilter(adapter, false);
 
-        adapter.startDocument();
-        adapter.startElement("root");
-        adapter.namespace("", "urn:default");
-        attr(adapter, "p:attr", "v1");
-        adapter.namespace("p", "urn:p");
-        attr(adapter, "attr2", "v2");
-        adapter.endAttributes();
+        filter.startDocument();
+        filter.startElement("root");
+        filterAttr(filter, "xmlns", "urn:default");
+        filterAttr(filter, "p:attr", "v1");
+        filterAttr(filter, "xmlns:p", "urn:p");
+        filterAttr(filter, "attr2", "v2");
+        filter.endAttributes();
 
-        adapter.startElement("p:child");
-        adapter.endAttributes();
-        adapter.endElement();
+        filter.startElement("p:child");
+        filter.endAttributes();
+        filter.endElement();
 
-        adapter.endElement();
-        adapter.endDocument();
+        filter.endElement();
+        filter.endDocument();
 
         List<String> expected = Arrays.asList(
                 "startDocument()",

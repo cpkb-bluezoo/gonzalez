@@ -58,9 +58,7 @@ import org.xml.sax.SAXException;
  * declaration, so it is the natural place to reject an invalid one, exactly
  * as it is the natural place to translate a valid one. The downstream
  * {@link #namespace(String, String)} consumer can therefore keep trusting
- * that what it receives is already valid (it already does today -
- * {@code NamespaceScopeTracker.declarePrefix} performs no NSC validation of
- * its own), including the non-fatal "namespace name should be an absolute
+ * that what it receives is already valid, including the non-fatal "namespace name should be an absolute
  * URI" advisory ({@link #validateNamespaceURI}) - a recoverable warning via
  * {@link XMLHandler#error}, not a WFC/NSC fatal error.
  * <p>
@@ -78,18 +76,33 @@ import org.xml.sax.SAXException;
  * the start tag than it is used; by then the attributes concerned have
  * already been passed on, which is in the nature of a streaming interface.
  * <p>
- * For this the filter keeps the prefixes bound in each open element, and
- * the names of the prefixed attributes of the element being started. What
- * it finds out about a name it remembers, so a name is examined once and
- * recognised after that, and one with no prefix needs nothing more.
+ * For this the filter keeps the namespaces bound in each open element, the
+ * default one among them, and the names of the prefixed attributes of the
+ * element being started. What it finds out about a name it remembers, so a
+ * name is examined once and recognised after that, and one with no prefix
+ * needs nothing more.
+ * <p>
+ * <b>What names mean.</b> Since the filter knows what is bound, it is also
+ * the place that says what a name stands for, and a {@link SAXAdapter} behind
+ * it is told, rather than keeping the bindings again itself: the namespace
+ * and local name of the element when its start tag ends (the default
+ * namespace, for a name with no prefix, which costs no lookup), the same for
+ * each prefixed attribute, and what the element declares, when it is
+ * asked ({@link #declarationCount}). A handler that is not an adapter gets
+ * {@link XMLHandler#namespace} events and works it out for itself.
  *
  * @author <a href='mailto:dog@gnu.org'>Chris Burdess</a>
  */
-class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
+class NamespaceFilter implements XMLHandler, CharArrayHandler {
 
     private final XMLHandler delegate;
-    /** The delegate as a {@link CharArrayAttributeHandler}, or null if it is not one. */
-    private final CharArrayAttributeHandler delegateChars;
+    /** The delegate as a {@link CharArrayHandler}, or null if it is not one. */
+    private final CharArrayHandler delegateChars;
+    /** The delegate as a {@link SAXAdapter}, or null if it is not one. Such a
+     *  delegate is told what each element and prefixed attribute means in
+     *  namespace terms, which is settled here, and it can ask for what is
+     *  declared, rather than keeping it all again itself. */
+    private final SAXAdapter saxAdapter;
     private boolean xml11;
     private boolean namespacePrefixes;
     private boolean xmlnsUris;
@@ -109,9 +122,11 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
 
     // ===== Bindings in scope =====
     //
-    // Only prefixes: the default namespace has no bearing on whether a
-    // name is legal. The arrays are the declarations of every open
-    // element, innermost last, and a prefix is looked up by searching
+    // The declarations of every open element, innermost last, the default
+    // namespace (the empty prefix) among them. It has no bearing on whether
+    // a name is legal, but it is what a name with no prefix means, and
+    // keeping it with the rest makes one record of what an element declares.
+    // A prefix is looked up by searching
     // them backwards, which for the handful of bindings a document
     // usually has is quicker than anything cleverer and allocates
     // nothing. Past MAP_THRESHOLD of them a map takes over, kept in step
@@ -119,6 +134,11 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
     // lookup as slow as it likes by declaring thousands of prefixes.
 
     private static final int MAP_THRESHOLD = 32;
+
+    /** The namespace of names with no prefix: what the innermost
+     *  {@code xmlns} in scope says, or empty. Elements with no prefix are in
+     *  it; attributes with none are in no namespace. */
+    private String defaultNamespace = "";
 
     private String[] declaredPrefixes = new String[8];
     private String[] declaredURIs = new String[8];
@@ -173,6 +193,8 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
     private final String[] cacheNames = new String[CACHE_SIZE];
     private final int[] cacheKinds = new int[CACHE_SIZE];
     private final String[] cacheURIs = new String[CACHE_SIZE];
+    /** For a name with a prefix, the part after the colon. */
+    private final String[] cacheLocals = new String[CACHE_SIZE];
     private final int[] cacheGenerations = new int[CACHE_SIZE];
     /** Never zero, which marks an entry with no namespace recorded. */
     private int generation = 1;
@@ -211,8 +233,12 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
      */
     NamespaceFilter(XMLHandler delegate, boolean xml11) {
         this.delegate = delegate;
-        this.delegateChars = (delegate instanceof CharArrayAttributeHandler)
-                ? (CharArrayAttributeHandler) delegate : null;
+        this.delegateChars = (delegate instanceof CharArrayHandler)
+                ? (CharArrayHandler) delegate : null;
+        this.saxAdapter = (delegate instanceof SAXAdapter) ? (SAXAdapter) delegate : null;
+        if (saxAdapter != null) {
+            saxAdapter.setNamespaces(this);
+        }
         this.xml11 = xml11;
     }
 
@@ -234,8 +260,8 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
 
     void setXmlnsUris(boolean xmlnsUris) {
         this.xmlnsUris = xmlnsUris;
-        if (delegate instanceof SAXAdapter) {
-            ((SAXAdapter) delegate).setXmlnsUris(xmlnsUris);
+        if (saxAdapter != null) {
+            saxAdapter.setXmlnsUris(xmlnsUris);
         }
     }
 
@@ -319,6 +345,44 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
     }
 
     @Override
+    public boolean takesCharArrays() {
+        return delegateChars != null && delegateChars.takesCharArrays();
+    }
+
+    @Override
+    public void characters(char[] chars, int start, int length, boolean ignorable, boolean end)
+            throws SAXException {
+        delegateChars.characters(chars, start, length, ignorable, end);
+    }
+
+    @Override
+    public void attribute(String name, String type, boolean declared, boolean specified,
+            char[] chars, int start, int length) throws SAXException {
+        int slot = name.hashCode() & (CACHE_SIZE - 1);
+        int kind = (cacheNames[slot] == name) ? cacheKinds[slot] : examine(name, slot);
+        if (kind == KIND_DECLARATION) {
+            if (length > maxNamespaceLength) {
+                throw namespaceTooLong();
+            }
+            currentAttrName = name;
+            currentAttrType = type;
+            currentAttrDeclared = declared;
+            currentAttrSpecified = specified;
+            declareNamespace(name, new String(chars, start, length));
+            return;
+        }
+        if (kind >= 0) {
+            notePrefixedAttribute(name, kind, slot);
+        }
+        if (delegateChars != null) {
+            delegateChars.attribute(name, type, declared, specified, chars, start, length);
+        } else {
+            delegate.startAttribute(name, type, declared, specified);
+            delegate.attributeValueContent(CharBuffer.wrap(chars, start, length), true);
+        }
+    }
+
+    @Override
     public void attributeValueChars(char[] chars, int start, int length, boolean end)
             throws SAXException {
         if (!currentIsNamespaceDecl && delegateChars != null) {
@@ -371,6 +435,7 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
             }
             validateNamespaceURI(uri);
             prefix = "";
+            bind(prefix, uri);
         } else {
             prefix = attrName.substring(6); // skip "xmlns:"
             if (prefix.isEmpty()) {
@@ -461,10 +526,49 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
 
     @Override
     public void endAttributes() throws SAXException {
-        if (prefixedNameSeen) {
-            checkPrefixedNames();
+        if (saxAdapter == null) {
+            if (prefixedNameSeen) {
+                checkPrefixedNames();
+            }
+            delegate.endAttributes();
+            return;
         }
-        delegate.endAttributes();
+        // An element with no prefix is in the default namespace, and is its
+        // own local name, which the adapter has: nothing is looked up.
+        String uri = defaultNamespace;
+        String localName = null;
+        if (prefixedNameSeen) {
+            String name = elementName;
+            int colon = elementColon;
+            int slot = elementSlot;
+            checkPrefixedNames();
+            if (name != null) {
+                uri = namespaceOf(name, colon, slot);
+                localName = cacheLocals[slot];
+            }
+        }
+        saxAdapter.endAttributes(uri, localName);
+    }
+
+    // ===== What the adapter asks =====
+
+    /**
+     * The number of declarations the element being started or ended makes.
+     * Meaningful to the delegate while it is told that the start tag has
+     * ended, and while it is told that the element has.
+     */
+    int declarationCount() {
+        return (innermostScopeDepth == depth) ? declaredCount - scopeStarts[scopeCount - 1] : 0;
+    }
+
+    /** The prefix of one of the declarations of {@link #declarationCount}, in the order made. */
+    String declarationPrefix(int index) {
+        return declaredPrefixes[scopeStarts[scopeCount - 1] + index];
+    }
+
+    /** The namespace of one of the declarations of {@link #declarationCount}, in the order made. */
+    String declarationURI(int index) {
+        return declaredURIs[scopeStarts[scopeCount - 1] + index];
     }
 
     /**
@@ -503,6 +607,7 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
             kind = name.indexOf(':');
             if (kind >= 0) {
                 checkPrefixedQName(name, kind);
+                cacheLocals[slot] = name.substring(kind + 1);
             }
         }
         cacheNames[slot] = name;
@@ -569,8 +674,12 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
         if (count == 1 || declaredAgainCount == 0) {
             // Nothing to compare: no two prefixes share a namespace.
             for (int i = 0; i < count; i++) {
-                if (namespaceOf(prefixedNames[i], prefixedColons[i], prefixedSlots[i]) == null) {
+                String uri = namespaceOf(prefixedNames[i], prefixedColons[i], prefixedSlots[i]);
+                if (uri == null) {
                     throw unboundPrefix(prefixedNames[i], prefixedColons[i]);
+                }
+                if (saxAdapter != null) {
+                    saxAdapter.resolvedAttribute(prefixedNames[i], uri, cacheLocals[prefixedSlots[i]]);
                 }
             }
             return;
@@ -587,6 +696,9 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
                 throw unboundPrefix(name, colon);
             }
             prefixedURIs[i] = uri;
+            if (saxAdapter != null) {
+                saxAdapter.resolvedAttribute(name, uri, cacheLocals[prefixedSlots[i]]);
+            }
             int hash = 0;
             if (hashed) {
                 hash = uri.hashCode();
@@ -632,6 +744,9 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
         }
         String uri = lookUp(name, colon);
         if (uri != null) {
+            if (cacheNames[slot] != name) {
+                cacheLocals[slot] = name.substring(colon + 1);
+            }
             cacheNames[slot] = name;
             cacheKinds[slot] = colon;
             cacheURIs[slot] = uri;
@@ -683,7 +798,7 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
             previousURIs = Arrays.copyOf(previousURIs, count * 2);
         }
         boolean again = (count >= MAP_THRESHOLD);
-        if (!again) {
+        if (!again && !prefix.isEmpty()) {
             int hash = uri.hashCode();
             for (int i = 0; i < count; i++) {
                 String other = declaredURIs[i];
@@ -700,6 +815,9 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
         declaredPrefixes[count] = prefix;
         declaredURIs[count] = uri;
         declaredCount = count + 1;
+        if (prefix.isEmpty()) {
+            defaultNamespace = uri;
+        }
         if (mapInUse) {
             previousURIs[count] = boundMap.put(prefix, uri);
         } else if (declaredCount > MAP_THRESHOLD) {
@@ -719,8 +837,12 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
         int start = scopeStarts[--scopeCount];
         innermostScopeDepth = (scopeCount == 0) ? 0 : scopeDepths[scopeCount - 1];
         int count = declaredCount;
+        boolean defaultEnded = false;
         while (count > start) {
             count--;
+            if (declaredPrefixes[count].isEmpty()) {
+                defaultEnded = true;
+            }
             if (mapInUse) {
                 String previous = previousURIs[count];
                 if (previous == null) {
@@ -737,6 +859,17 @@ class NamespaceFilter implements XMLHandler, CharArrayAttributeHandler {
             declaredURIs[count] = null;
         }
         declaredCount = start;
+        if (defaultEnded) {
+            // The default namespace the enclosing elements left.
+            String outer = "";
+            for (int i = start - 1; i >= 0; i--) {
+                if (declaredPrefixes[i].isEmpty()) {
+                    outer = declaredURIs[i];
+                    break;
+                }
+            }
+            defaultNamespace = outer;
+        }
         if (mapInUse && start <= MAP_THRESHOLD) {
             boundMap.clear();
             mapInUse = false;

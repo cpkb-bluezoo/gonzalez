@@ -202,6 +202,36 @@ All notable changes to Gonzalez will be documented in this file.
   declared, and ended in the reverse of it; they were in the order of a hash
   map.
 
+- **The SAX adapter takes what names mean from the namespace filter.** The
+  filter that every namespace-aware parse has in front of its handler already
+  keeps the declarations in scope and checks every name, and the SAX adapter
+  kept the same bindings a second time to work out the namespace of each
+  element and prefixed attribute, once at the start tag and again, from a cache
+  of names, at the end. The filter now keeps the default namespace as well,
+  works out what a name stands for (a name with no prefix is in the default
+  namespace, which costs no lookup), and tells the adapter when the start tag
+  ends, as well as what is declared when the adapter reports the prefix
+  mappings; the adapter keeps no namespace state of its own, and a
+  namespace-aware adapter must be behind a filter (the package-private
+  `SAXAdapter` is not API). Through SAX, a document in which the namespace is
+  declared once is 9% faster, one in which it is declared again and again 18%
+  faster, plain text 8%, English with emoji 7%, and the others by 2 to 4%; the
+  native interface is within 1% of what it was.
+  `NamespaceScopeTracker`, `QName` and the other classes the adapter used
+  remain, unused by the parser.
+
+- **A whole attribute, and text, are reported to the SAX adapter without an
+  object each.** The scanner reported every attribute as two events, its name
+  and then its value, which the filter and the adapter each had to pass on and
+  remember between, and every run of text wrapped in a `CharBuffer` that the
+  adapter at once unwrapped. When the value of an attribute is entirely in the
+  buffer and needs nothing done to it (nearly all of them) it is now one call
+  with the range of the buffer, and text is passed on as a range too. This is
+  only done where the handler at the end of the chain is the SAX adapter: a
+  native `XMLHandler` is given the same events, with the same objects, as it
+  was. Through SAX, the attribute-heavy document is 11% faster, and documents
+  with a lot of text 1 to 5% faster.
+
 ### Fixed
 
 - **An `xsl:fork` could report a cycle between accumulators that was not

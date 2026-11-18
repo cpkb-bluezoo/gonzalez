@@ -174,8 +174,10 @@ class Scanner implements Locator2 {
     static final int INITIAL_ELEMENT_DEPTH = 64;
 
     private final XMLHandler handler;
-    /** The handler as a {@link CharArrayAttributeHandler}, or null if it is not one. */
-    private final CharArrayAttributeHandler attributeChars;
+    /** The handler as a {@link CharArrayHandler}, or null if it is not one. */
+    private final CharArrayHandler attributeChars;
+    /** Whether {@link #attributeChars} wants whole attributes. */
+    private final boolean charArrays;
     private final String locatorPublicId;
     private String encoding;
     private boolean documentStarted;
@@ -809,8 +811,9 @@ class Scanner implements Locator2 {
             boolean deferDocumentStartUntilEncoding, ScannerStorage storage) throws SAXException {
         this.storage = storage;
         this.handler = handler;
-        this.attributeChars = (handler instanceof CharArrayAttributeHandler)
-                ? (CharArrayAttributeHandler) handler : null;
+        this.attributeChars = (handler instanceof CharArrayHandler)
+                ? (CharArrayHandler) handler : null;
+        this.charArrays = attributeChars != null && attributeChars.takesCharArrays();
         this.locatorPublicId = publicId;
         this.xml11 = xml11;
         this.entityResolver = entityResolver;
@@ -1837,7 +1840,7 @@ class Scanner implements Locator2 {
             }
             if (pos >= limit) {
                 if (insideDocument && pos > runStart) {
-                    emitContentRun(CharBuffer.wrap(buf, runStart, pos - runStart), false, runIsWhitespace);
+                    emitContentChars(runStart, pos - runStart, false, runIsWhitespace);
                     contentRunOpen = true;
                     contentRunIsWhitespace = runIsWhitespace;
                 }
@@ -1846,7 +1849,7 @@ class Scanner implements Locator2 {
             if (buf[pos] == '<') {
                 if (insideDocument) {
                     if (pos > runStart) {
-                        emitContentRun(CharBuffer.wrap(buf, runStart, pos - runStart), true, runIsWhitespace);
+                        emitContentChars(runStart, pos - runStart, true, runIsWhitespace);
                         contentRunOpen = false;
                     } else if (contentRunOpen) {
                         emitContentRun(EMPTY_BUFFER, true, contentRunIsWhitespace);
@@ -1865,7 +1868,7 @@ class Scanner implements Locator2 {
                 // like the '<' case above - then the outer loop simply
                 // starts a fresh run right here for whatever comes next.
                 if (insideDocument && pos > runStart) {
-                    emitContentRun(CharBuffer.wrap(buf, runStart, pos - runStart), true, runIsWhitespace);
+                    emitContentChars(runStart, pos - runStart, true, runIsWhitespace);
                     contentRunOpen = false;
                 }
                 continue;
@@ -1890,7 +1893,7 @@ class Scanner implements Locator2 {
             // sizes and comparing output).
             int ampPos = pos;
             if (insideDocument && ampPos > runStart) {
-                emitContentRun(CharBuffer.wrap(buf, runStart, ampPos - runStart), false, runIsWhitespace);
+                emitContentChars(runStart, ampPos - runStart, false, runIsWhitespace);
                 contentRunOpen = true;
                 contentRunIsWhitespace = runIsWhitespace;
             }
@@ -1982,6 +1985,20 @@ class Scanner implements Locator2 {
      *  {@link #scanContent()}) closes it out with the same flag it was
      *  opened with. */
     private boolean contentRunIsWhitespace;
+
+    /**
+     * Reports {@code buf[start, start + length)} as a run of text, or as
+     * much of one as there is: to a handler that takes it as a range of the
+     * buffer, directly, and otherwise through {@link #emitContentRun}.
+     */
+    private void emitContentChars(int start, int length, boolean end, boolean isWhitespace)
+            throws SAXException {
+        if (charArrays && !validationEnabled) {
+            attributeChars.characters(buf, start, length, isWhitespace, end);
+        } else {
+            emitContentRun(CharBuffer.wrap(buf, start, length), end, isWhitespace);
+        }
+    }
 
     private void emitContentRun(CharBuffer text, boolean end, boolean isWhitespace) throws SAXException {
         if (validationEnabled) {
@@ -2582,11 +2599,29 @@ class Scanner implements Locator2 {
                 handler.error("Validity Constraint: Attribute Value Type (Section 3.3.1). Attribute \"" + attrName
                         + "\" is not declared for element \"" + currentElementName + "\".");
             }
+            collapseCurrentAttrValue = !"CDATA".equals(attrType);
+            boolean checkXmlSpace = "xml:space".equals(attrName);
+            if (charArrays && !collapseCurrentAttrValue && !validationEnabled && !checkXmlSpace) {
+                // Nearly always the whole value is here and is just text: look
+                // for its end, and if it is found with nothing in the way,
+                // report the attribute in one piece. If not, nothing has been
+                // consumed, and the value is streamed as below.
+                boolean[] valueStops = (quote == '"') ? quotAttrStopTable : aposAttrStopTable;
+                int valueStart = pos;
+                int valueEnd = valueStart;
+                while (valueEnd < limit && !valueStops[buf[valueEnd]]) {
+                    valueEnd++;
+                }
+                if (valueEnd < limit && buf[valueEnd] == quote) {
+                    pos = valueEnd + 1;
+                    attributeChars.attribute(attrName, attrType, attrDef != null, true,
+                            buf, valueStart, valueEnd - valueStart);
+                    continue;
+                }
+            }
             handler.startAttribute(attrName, attrType, attrDef != null, true);
             pendingQuote = quote;
             attrValueRunOpen = false;
-            collapseCurrentAttrValue = !"CDATA".equals(attrType);
-            boolean checkXmlSpace = "xml:space".equals(attrName);
             normalizingCurrentAttribute = collapseCurrentAttrValue || validationEnabled || checkXmlSpace;
             if (normalizingCurrentAttribute) {
                 normalizeBuilder.setLength(0);
@@ -3196,7 +3231,11 @@ class Scanner implements Locator2 {
             }
             recordTextForValidation(new String(buf, start, end - start), allWs);
         }
-        handler.characters(CharBuffer.wrap(buf, start, end - start), false, isEnd);
+        if (charArrays) {
+            attributeChars.characters(buf, start, end - start, false, isEnd);
+        } else {
+            handler.characters(CharBuffer.wrap(buf, start, end - start), false, isEnd);
+        }
     }
 
     // ===== Processing instruction =====
