@@ -5,56 +5,17 @@ Part of the [Gonzalez documentation](README.md).
 The XML parser was compared with the SAX parser bundled with JDK 25 (Xerces)
 and [aalto-xml](https://github.com/FasterXML/aalto-xml) 1.4.0. All paths ran
 namespace-aware. There are two comparisons, of the native interfaces and of
-SAX.
-
-The figures are median throughput across five fresh JVM runs, each with one
-corpus and one parser, 800 warm-up parses and then 500 measured parses,
-measured from the encoded size of the document. The documents are:
-
-- the original five, in `benchmark/resources`: plain, attribute-heavy,
-  whitespace-heavy, markup-heavy and multibyte UTF-8;
-- three that `BenchmarkCorpora` generates deterministically: the same
-  4,000-article Japanese document as BOM-marked UTF-16LE and as EUC-JP,
-  isolating the two decoder paths as far as practical, and a 1,500-article
-  XHTML-shaped document with a self-contained internal subset declaring 33
-  elements, common and element-specific attributes, content models and
-  character entities (it has no public or system identifier, so no external
-  subset is fetched);
-- two that the harness makes from the plain document, as other kinds of text
-  with non-ASCII characters in them: an accented letter (two bytes of UTF-8)
-  after one space in every 300 bytes or so, which is what text that is nearly
-  all ASCII looks like once it has a few accents, dashes or quotation marks in
-  it; and an emoji (four bytes) in about one place in 220 bytes, as in casual
-  English;
-- a generated MathML document of small expressions of Latin and Greek
-  identifiers, numbers and operators, some of them the three-byte symbols of
-  Unicode's mathematical blocks, which is a good deal of markup for each
-  character of text, in one `math` element with the namespace declared once on
-  it, which everything under it inherits, as MathML is usually written;
-- two real documents, a French and a German novel of about 1 MB each from the
-  [ELTeC](https://github.com/COST-ELTeC) collection of public domain novels in
-  TEI XML (`FRA03601_Proust.xml` and `DEU037.xml`). They are not kept in this
-  repository: `ant download-corpora` fetches them into `benchmark/corpora`,
-  each from a fixed commit of its collection and checked against its SHA-256,
-  and the harness and the table script measure them when they are there.
-  Their accented letters are about one in 35 bytes in the French and one in 48
-  in the German, lighter than the generated documents with an accent on every
-  e.
+SAX. The figures are median throughput across five fresh JVM runs, measured
+from the encoded size of the document; [how they were measured, and the
+documents](#corpora-and-method) follow the results.
 
 ## Native interfaces
 
-Gonzalez's `XMLHandler` is compared with Aalto's StAX cursor, each the parser's
-own interface and its most direct. The `XMLHandler` does byte decoding, XML
+Gonzalez's `XMLHandler` against Aalto's StAX cursor, each the parser's own
+interface and its most direct. The `XMLHandler` does byte decoding, XML
 grammar processing, DTD work and namespace declaration handling, but no SAX
 adaptation. Unlike SAX, the native SPI is Gonzalez-specific and may evolve
 between releases.
-
-Both are given a consumer that reads what it is handed: every character of
-text, comments, processing instruction data and attribute values, and the
-length of every name. This is what makes them comparable. Aalto's cursor
-decodes text and attribute values only when they are asked for, so a loop that
-only steps it through the events does less work than a Gonzalez handler, to
-which the decoded characters are delivered whether it reads them or not.
 
 | Corpus | Size | Gonzalez XMLHandler | Aalto StAX cursor | Gonzalez / Aalto |
 |--------|-----:|--------------------:|------------------:|-----------------:|
@@ -168,9 +129,53 @@ The construct is 256 MB and the heap 32 MB unless `-Dbenchmark.memory.mb=N` and
 `benchmark/external-compare/run-memory.sh`, which takes the same two as
 arguments, and needs `AALTO_JAR` and `STAX2_JAR` when run on its own.
 
+## Corpora and method
+
+Each figure is one corpus and one parser in a fresh JVM, with 800 warm-up
+parses and then 500 measured parses. The documents are:
+
+- the original five, in `benchmark/resources`: plain, attribute-heavy,
+  whitespace-heavy, markup-heavy and multibyte UTF-8;
+- three that `BenchmarkCorpora` generates deterministically: the same
+  4,000-article Japanese document as BOM-marked UTF-16LE and as EUC-JP,
+  isolating the two decoder paths as far as practical, and a 1,500-article
+  XHTML-shaped document with a self-contained internal subset declaring 33
+  elements, common and element-specific attributes, content models and
+  character entities (it has no public or system identifier, so no external
+  subset is fetched);
+- two that the harness makes from the plain document, as other kinds of text
+  with non-ASCII characters in them: an accented letter (two bytes of UTF-8)
+  after one space in every 300 bytes or so, which is what text that is nearly
+  all ASCII looks like once it has a few accents, dashes or quotation marks in
+  it; and an emoji (four bytes) in about one place in 220 bytes, as in casual
+  English;
+- a generated MathML document of small expressions of Latin and Greek
+  identifiers, numbers and operators, some of them the three-byte symbols of
+  Unicode's mathematical blocks, which is a good deal of markup for each
+  character of text, in one `math` element with the namespace declared once on
+  it, which everything under it inherits, as MathML is usually written;
+- two real documents, a French and a German novel of about 1 MB each from the
+  [ELTeC](https://github.com/COST-ELTeC) collection of public domain novels in
+  TEI XML (`FRA03601_Proust.xml` and `DEU037.xml`). They are not kept in this
+  repository: `ant download-corpora` fetches them into `benchmark/corpora`,
+  each from a fixed commit of its collection and checked against its SHA-256,
+  and the harness and the table script measure them when they are there.
+  Their accented letters are about one in 35 bytes in the French and one in
+  48 in the German.
+
+### What the native consumer reads
+
+Both native interfaces are given a consumer that reads what it is handed:
+every character of text, comments, processing instruction data and attribute
+values, and the length of every name. This is what makes them comparable.
+Aalto's cursor decodes text and attribute values only when they are asked for, so a loop that
+only steps it through the events does less work than a Gonzalez handler, to
+which the decoded characters are delivered whether it reads them or not.
+
+### Reproducing
+
 To reproduce the throughput comparison:
 
 ```sh
 ant benchmark-compare
 ```
-
