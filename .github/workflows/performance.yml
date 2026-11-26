@@ -1,11 +1,16 @@
 name: Performance comparison
 
 # Compares Gonzalez with the JDK's parser and aalto-xml, and prints the tables
-# of PERFORMANCE.md for the branch, tag or commit asked for: the main branch
-# unless another is given. It runs "ant benchmark-compare" of that commit, so
+# of PERFORMANCE.md for the branch or tag the run is started on: the main branch
+# unless another is chosen. It runs "ant benchmark-compare" of that commit, so
 # the commit must have the target. It is run by hand, from the Actions tab or with
 #
-#   gh workflow run performance.yml -f ref=my-branch
+#   gh workflow run performance.yml --ref my-branch
+#
+# There is deliberately no input naming something else to check out. A run can
+# write to the Actions cache of the ref it is started on, so code from another
+# commit, run from the main branch, could put entries in the cache that every
+# other branch and tag restores from.
 #
 # The tables are shown on the summary page of the run and kept as an artifact.
 # A hosted runner is shared and its hardware is not the same from one run to
@@ -15,11 +20,6 @@ name: Performance comparison
 on:
   workflow_dispatch:
     inputs:
-      ref:
-        description: 'Branch, tag or commit to measure'
-        required: true
-        default: 'main'
-        type: string
       reps:
         description: 'Fresh JVMs each figure is the median of'
         required: true
@@ -40,10 +40,8 @@ jobs:
     timeout-minutes: 150
 
     steps:
-      - name: Checkout ${{ inputs.ref }}
+      - name: Checkout ${{ github.ref_name }}
         uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref }}
 
       - name: Set up JDK 25
         uses: actions/setup-java@v5
@@ -55,7 +53,7 @@ jobs:
       # novels, each checked against a checksum, and runs the comparison.
       - name: Run the comparison
         env:
-          BENCH_REF: ${{ inputs.ref }}
+          BENCH_REF: ${{ github.ref_name }}
           REPS: ${{ inputs.reps }}
         run: ant benchmark-compare -Dbenchmark.reps="$REPS"
 

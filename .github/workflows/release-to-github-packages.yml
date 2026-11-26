@@ -29,7 +29,6 @@ jobs:
         with:
           java-version: '11'
           distribution: 'temurin'
-          cache: maven
           server-id: github
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN

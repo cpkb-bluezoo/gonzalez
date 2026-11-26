@@ -11,10 +11,10 @@ All notable changes to Gonzalez will be documented in this file.
   download-comparison-deps` and `ant download-corpora`, each download checked
   against a SHA-256), runs the comparison with the JDK's parser and aalto-xml,
   and prints the tables of PERFORMANCE.md, which it writes to
-  `build/performance.md`. The "Performance comparison" workflow runs it on a
-  branch, tag or commit (`main` unless another is given) and shows the tables
-  on the summary page of the run. The figures in PERFORMANCE.md were remade
-  with it.
+  `build/performance.md`. The "Performance comparison" workflow runs it on the
+  branch or tag the run is started on (`main` unless another is chosen) and
+  shows the tables on the summary page of the run. The figures in
+  PERFORMANCE.md were remade with it.
   `ant benchmark-memory` runs the memory comparison of PERFORMANCE.md the
   same way, and `ant benchmark-isolated` and `ant benchmark-dtd-probe` the
   other scripts of `benchmark/external-compare`, so that every benchmark task
